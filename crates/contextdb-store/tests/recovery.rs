@@ -49,17 +49,20 @@ fn reopen_replays_to_identical_state_t18() {
             applied.push(b);
         }
     }
-    let (epoch, digest) = (store.epoch(), store.db().digest());
+    let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
     assert!(epoch.0 >= 4);
     drop(store);
     let (store, report) = open(&disk).unwrap();
     assert_eq!(report.replayed, epoch.0);
-    assert_eq!((store.epoch(), store.db().digest()), (epoch, digest));
+    assert_eq!(
+        (store.epoch(), store.db().unwrap().digest()),
+        (epoch, digest)
+    );
     assert_eq!(*reference(&applied).last().unwrap(), digest);
     // Derived state after replay equals the oracle.
     assert_eq!(
-        DerivedView::derived(store.db()),
-        &contextdb_oracle::jacobi(&store.db().inputs())
+        DerivedView::derived(store.db().unwrap()),
+        &contextdb_oracle::jacobi(&store.db().unwrap().inputs())
     );
 }
 #[test]
@@ -223,7 +226,18 @@ fn g4_run(seed: u64, point: Point, fate: TailFate, broken_sync: bool) -> Result<
     if broken_sync {
         disk.disable_syncs();
     }
-    let (mut store, _) = open(&disk).map_err(|e| format!("{e:?}"))?;
+    // Odd seeds use tiny segments, so rollover, header-only segments and the
+    // cross-segment chain are crashed into as well (review finding 10).
+    let options = OpenOptions {
+        segment_target: if seed % 2 == 1 {
+            512
+        } else {
+            log::SEGMENT_TARGET
+        },
+        ..OpenOptions::default()
+    };
+    let reopen = |d: &SimDisk| Store::open(d.clone(), Path::new(DIR), &options);
+    let (mut store, _) = reopen(&disk).map_err(|e| format!("{e:?}"))?;
     let log = contextdb_testkit::generate_p1(seed);
     let k = (seed as usize) % log.batches.len();
     let mut acked: Vec<(Batch, CommitResult)> = Vec::new();
@@ -236,15 +250,22 @@ fn g4_run(seed: u64, point: Point, fate: TailFate, broken_sync: bool) -> Result<
             match point {
                 Point::PreWal => disk.fail_next("append"),
                 Point::PostWalPreSync => disk.fail_next("sync"),
-                Point::PostSyncPrePublish => {}
+                // Durable, but the process dies before publishing or acking.
+                Point::PostSyncPrePublish => store.crash_after_next_sync(),
             }
-            // PostSyncPrePublish: durable, but the ack is lost with the crash.
             let r = store.commit(&b);
-            fired = match point {
-                Point::PostSyncPrePublish => r.is_ok(),
-                _ => r == Err(StoreError::Poisoned),
-            };
+            fired = r == Err(StoreError::Poisoned);
             in_flight = Some(b.clone());
+            if fired {
+                // A poisoned store never exposes the non-durable epoch.
+                let last = acked.last().map_or(0, |(_, r)| r.epoch.0);
+                if store.epoch().0 != last
+                    || store.db().is_ok()
+                    || store.txn_status(&txn(n as u64)) != Err(StoreError::Poisoned)
+                {
+                    return Err("poisoned store serves non-durable state".into());
+                }
+            }
             break;
         }
         if let Ok(r) = store.commit(&b) {
@@ -253,7 +274,7 @@ fn g4_run(seed: u64, point: Point, fate: TailFate, broken_sync: bool) -> Result<
     }
     drop(store);
     let crashed = disk.crash(fate, seed);
-    let (mut store, _) = open(&crashed).map_err(|e| format!("open: {e:?}"))?;
+    let (mut store, _) = reopen(&crashed).map_err(|e| format!("open: {e:?}"))?;
     let recovered = store.epoch().0;
     let last_acked = acked.last().map_or(0, |(_, r)| r.epoch.0);
     if recovered < last_acked || recovered > last_acked + 1 {
@@ -277,10 +298,12 @@ fn g4_run(seed: u64, point: Point, fate: TailFate, broken_sync: bool) -> Result<
             .commit(in_flight.as_ref().unwrap())
             .map_err(|e| format!("{e:?}"))?;
     }
-    if store.db().digest() != reference.digest() {
+    if store.db().unwrap().digest() != reference.digest() {
         return Err("recovered state is not a committed prefix".into());
     }
-    if DerivedView::derived(store.db()) != &contextdb_oracle::jacobi(&store.db().inputs()) {
+    if DerivedView::derived(store.db().unwrap())
+        != &contextdb_oracle::jacobi(&store.db().unwrap().inputs())
+    {
         return Err("replayed derived state differs from oracle".into());
     }
     // Every acked id is Committed with its original result.
@@ -370,12 +393,15 @@ fn snapshot_accelerates_open_and_matches_full_replay() {
             more.push(b);
         }
     }
-    let (epoch, digest) = (store.epoch(), store.db().digest());
+    let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
     drop(store);
     let (store, report) = open(&disk).unwrap();
     assert_eq!(report.snapshot_epoch, Some(snap));
     assert_eq!(report.replayed, epoch.0 - snap.0);
-    assert_eq!((store.epoch(), store.db().digest()), (epoch, digest));
+    assert_eq!(
+        (store.epoch(), store.db().unwrap().digest()),
+        (epoch, digest)
+    );
     // A corrupt snapshot is ignored and full replay is used.
     let dir = Path::new(DIR).join("snap");
     let file = dir.join(disk.list(&dir).unwrap().pop().unwrap());
@@ -385,7 +411,7 @@ fn snapshot_accelerates_open_and_matches_full_replay() {
     assert_eq!(report.snapshot_epoch, None);
     assert_eq!(report.rejected_snapshots.len(), 1);
     assert_eq!(report.replayed, epoch.0);
-    assert_eq!(store.db().digest(), digest);
+    assert_eq!(store.db().unwrap().digest(), digest);
 }
 #[test]
 fn g4_mid_snapshot() {
@@ -396,7 +422,7 @@ fn g4_mid_snapshot() {
         for seed in 0..(runs() / 4 + 1) {
             let disk = SimDisk::new();
             let mut store = populated(&disk, 3 + (seed as usize % 6));
-            let (epoch, digest) = (store.epoch(), store.db().digest());
+            let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
             disk.fail_next(step);
             assert!(store.snapshot().is_err(), "{step}");
             // The log is untouched; the store stays usable.
@@ -405,7 +431,7 @@ fn g4_mid_snapshot() {
             let crashed = disk.crash(FATES[(seed as usize + n) % 4], seed);
             let (store, report) = open(&crashed).unwrap();
             assert_eq!(
-                (store.epoch(), store.db().digest()),
+                (store.epoch(), store.db().unwrap().digest()),
                 (epoch, digest),
                 "{step} {seed}"
             );
@@ -467,7 +493,7 @@ fn historical_reads_survive_restart_t07b_t13() {
     // After restart the Db starts at the snapshot; earlier epochs come from replay.
     let (store, report) = open(&disk).unwrap();
     assert_eq!(report.snapshot_epoch, Some(e3));
-    assert!(store.db().initial_epoch() == e3);
+    assert!(store.db().unwrap().initial_epoch() == e3);
     assert_eq!(read(&store), before, "T13: identical across restart");
     assert!(
         store.read_historical(RevisionId(1), e1).is_err(),
@@ -495,13 +521,13 @@ fn prop10_rebuild_from_op_log_equals_incremental() {
             let _ = store.commit(&b);
         }
         let end = store.epoch();
-        let digest = store.db().digest();
+        let digest = store.db().unwrap().digest();
         let diffs: Vec<_> = (0..=end.0)
             .map(|a| store.diff(Epoch(a), end).unwrap())
             .collect();
         drop(store);
         let (store, _) = open(&disk).unwrap();
-        assert_eq!(store.db().digest(), digest, "seed {seed}");
+        assert_eq!(store.db().unwrap().digest(), digest, "seed {seed}");
         for (a, d) in diffs.iter().enumerate() {
             assert_eq!(
                 &store.diff(Epoch(a as u64), end).unwrap(),
@@ -528,7 +554,7 @@ fn commit_some(store: &mut Store<SimDisk>, seed: u64, n: usize) {
 fn every_read(store: &Store<SimDisk>) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let end = store.epoch();
-    let inputs = store.db().inputs();
+    let inputs = store.db().unwrap().inputs();
     for e in 0..=end.0 {
         let e = Epoch(e);
         for r in 0..inputs.revisions.len() as u32 {
@@ -574,7 +600,7 @@ fn projections_roll_forward_rebuild_and_agree_with_replay() {
     let (store, report) = open_with(&disk, &proj);
     assert_eq!(report.projection_watermark, k, "lagging watermark detected");
     assert!(
-        store.db().initial_epoch() > Epoch(0),
+        store.db().unwrap().initial_epoch() > Epoch(0),
         "reads below it use projections"
     );
     assert_eq!(
@@ -657,11 +683,25 @@ fn doctor_truncate_before_repairs_broken_chain_t33() {
         plan.unreadable_tail,
         "the corrupt frame itself is unreadable"
     );
+    // Every readable dropped frame is listed, including those after the
+    // corrupt one (review finding 2).
+    let after: Vec<_> = committed.iter().filter(|(_, e)| e.0 > 3).collect();
+    assert_eq!(
+        plan.dropped_epochs,
+        after.iter().map(|(_, e)| *e).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan.dropped_txn_ids,
+        after.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    );
     // A plan past the corruption is refused: earlier frames must verify.
     assert!(doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(4)).is_err());
     doctor::truncate_before(&disk, Path::new(DIR), &plan).unwrap();
     let (store, _) = open(&disk).unwrap();
-    assert_eq!((store.epoch(), store.db().digest()), (keep, digest_at_keep));
+    assert_eq!(
+        (store.epoch(), store.db().unwrap().digest()),
+        (keep, digest_at_keep)
+    );
     for (id, epoch) in committed {
         let status = store.txn_status(&id).unwrap();
         assert_eq!(
@@ -683,7 +723,7 @@ fn g4_blob_write() {
         for seed in 0..(runs() / 4 + 1) {
             let disk = SimDisk::new();
             let mut store = populated(&disk, 1 + seed as usize % 4);
-            let (epoch, digest) = (store.epoch(), store.db().digest());
+            let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
             let payload = format!("blob-{seed}").into_bytes();
             disk.fail_next(step);
             assert_eq!(
@@ -694,7 +734,10 @@ fn g4_blob_write() {
             drop(store);
             let crashed = disk.crash(FATES[(seed as usize + n) % 4], seed);
             let (mut store, _) = open(&crashed).unwrap();
-            assert_eq!((store.epoch(), store.db().digest()), (epoch, digest));
+            assert_eq!(
+                (store.epoch(), store.db().unwrap().digest()),
+                (epoch, digest)
+            );
             let hash = *blake3::hash(&payload).as_bytes();
             match store.get_blob(&hash) {
                 Payload::Available(bytes) => assert_eq!(bytes, payload),
@@ -766,4 +809,280 @@ fn g4_projection_write() {
         assert_eq!(every_read(&store), live, "caught-up projection reads exact");
     }
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// Regression tests for the independent P2 review (docs/gates/P2-report.md).
+
+fn small_segments() -> OpenOptions {
+    OpenOptions {
+        segment_target: 400,
+        ..OpenOptions::default()
+    }
+}
+/// Commits generated batches with client ids; returns (id, epoch) per ack.
+fn commit_ids(store: &mut Store<SimDisk>, seed: u64) -> Vec<([u8; 16], Epoch)> {
+    let mut out = Vec::new();
+    for (n, b) in contextdb_testkit::generate_p1(seed)
+        .batches
+        .iter()
+        .enumerate()
+    {
+        let mut b = with_blobs(store, b);
+        b.client_txn_id = Some(txn(n as u64));
+        if let Ok(r) = store.commit(&b) {
+            out.push((txn(n as u64), r.epoch));
+        }
+    }
+    out
+}
+#[test]
+fn review1_corrupt_final_segment_header_with_frames_fails_closed() {
+    let disk = SimDisk::new();
+    let store = populated(&disk, 5);
+    assert!(store.epoch().0 >= 3);
+    drop(store);
+    disk.corrupt(&segment(&disk), 0, 0x00);
+    for strict_tail in [false, true] {
+        let r = Store::open(
+            disk.clone(),
+            Path::new(DIR),
+            &OpenOptions {
+                strict_tail,
+                ..OpenOptions::default()
+            },
+        );
+        assert!(
+            matches!(
+                r,
+                Err(StoreError::ChainBroken {
+                    epoch: Epoch(1),
+                    fault: log::FrameFault::SegmentHeader
+                })
+            ),
+            "strict_tail={strict_tail}: {:?}",
+            r.err()
+        );
+    }
+    assert!(disk.exists(&segment(&disk)), "evidence is kept");
+}
+#[test]
+fn review1_header_only_tail_segment_is_removed_unless_strict() {
+    let disk = SimDisk::new();
+    let (mut store, _) = Store::open(disk.clone(), Path::new(DIR), &small_segments()).unwrap();
+    commit_ids(&mut store, 41);
+    let epoch = store.epoch();
+    drop(store);
+    // An interrupted segment creation: a partial header and nothing else.
+    let dir = Path::new(DIR).join("log");
+    let partial = dir.join(log::segment_name(Epoch(epoch.0 + 1)));
+    disk.write_new(
+        &partial,
+        &log::segment_header(Epoch(epoch.0 + 1), [0; 32])[..20],
+    )
+    .unwrap();
+    disk.sync(&partial).unwrap();
+    disk.sync_dir(&dir).unwrap();
+    let strict = Store::open(
+        disk.clone(),
+        Path::new(DIR),
+        &OpenOptions {
+            strict_tail: true,
+            ..small_segments()
+        },
+    );
+    assert!(matches!(strict, Err(StoreError::TailUnverifiable { .. })));
+    let (store, report) = Store::open(disk.clone(), Path::new(DIR), &small_segments()).unwrap();
+    assert_eq!(report.removed_segment, Some(partial));
+    assert_eq!(store.epoch(), epoch);
+}
+#[test]
+fn review2_truncation_plan_lists_every_dropped_frame_across_segments() {
+    let disk = SimDisk::new();
+    let (mut store, _) = Store::open(disk.clone(), Path::new(DIR), &small_segments()).unwrap();
+    let committed = commit_ids(&mut store, 42);
+    let end = store.epoch();
+    drop(store);
+    let dir = Path::new(DIR).join("log");
+    assert!(
+        log::segments(&disk, &dir).unwrap().len() >= 3,
+        "several segments"
+    );
+    for cut in 2..=end.0 {
+        let plan = doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(cut)).unwrap();
+        let lost: Vec<_> = committed.iter().filter(|(_, e)| e.0 >= cut).collect();
+        assert_eq!(
+            plan.dropped_epochs,
+            lost.iter().map(|(_, e)| *e).collect::<Vec<_>>(),
+            "cut {cut}"
+        );
+        assert_eq!(plan.dropped_txn_ids.len(), lost.len());
+        assert!(!plan.unreadable_tail);
+    }
+    // Executing a plan keeps exactly the prefix, whatever segment it ends in.
+    let cut = end.0 / 2 + 1;
+    let plan = doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(cut)).unwrap();
+    doctor::truncate_before(&disk, Path::new(DIR), &plan).unwrap();
+    let (store, _) = Store::open(disk.clone(), Path::new(DIR), &small_segments()).unwrap();
+    assert_eq!(store.epoch(), Epoch(cut - 1));
+    for (id, e) in &committed {
+        let kept = matches!(store.txn_status(id).unwrap(), TxnStatus::Committed { .. });
+        assert_eq!(kept, e.0 < cut);
+    }
+}
+#[test]
+fn review3_interrupted_migration_is_refused_then_resumed() {
+    let disk = SimDisk::new();
+    let batches = contextdb_testkit::generate_p1(43).batches;
+    contextdb_store::migrate::write_legacy(&disk, Path::new(DIR), &batches).unwrap();
+    let mut expected = Db::default();
+    for b in &batches {
+        let _ = expected.commit(b);
+    }
+    // Reproduce a crash between the two renames of `migrate`.
+    let probe = disk.crash(TailFate::Torn, 0);
+    migrate::migrate(&probe, Path::new(DIR)).unwrap();
+    let (root, log_dir) = (Path::new(DIR), Path::new(DIR).join("log"));
+    probe
+        .rename_dir(&log_dir, &root.join("log.migrating"))
+        .unwrap();
+    probe.sync_dir(root).unwrap();
+    assert!(matches!(open(&probe), Err(StoreError::MigrationIncomplete)));
+    let report = migrate::migrate(&probe, root).unwrap();
+    assert_eq!(report.to, log::FORMAT_VERSION);
+    let (store, _) = open(&probe).unwrap();
+    assert_eq!(store.db().unwrap().digest(), expected.digest());
+}
+#[test]
+fn review4_offline_tools_respect_the_store_lock() {
+    let disk = SimDisk::new();
+    let store = populated(&disk, 6);
+    let plan = doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(2)).unwrap();
+    assert_eq!(
+        doctor::truncate_before(&disk, Path::new(DIR), &plan),
+        Err(StoreError::Locked)
+    );
+    assert_eq!(
+        migrate::migrate(&disk, Path::new(DIR)),
+        Err(StoreError::Locked)
+    );
+    drop(store);
+    // A plan made before further commits is refused once the log changed.
+    let (mut store, _) = open(&disk).unwrap();
+    commit_some(&mut store, 44, 3);
+    drop(store);
+    assert_eq!(
+        doctor::truncate_before(&disk, Path::new(DIR), &plan),
+        Err(StoreError::PlanOutdated)
+    );
+}
+#[test]
+fn review5_poisoned_store_serves_nothing() {
+    let disk = SimDisk::new();
+    let mut store = populated(&disk, 4);
+    let epoch = store.epoch();
+    let content = store.put_blob(b"ghost").unwrap();
+    let mut b = Batch::new(vec![Op::CreateLogical {
+        key: "ghost".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content,
+        adopt_as_base: true,
+    }]);
+    b.client_txn_id = Some(txn(99));
+    disk.fail_next("sync");
+    assert_eq!(store.commit(&b), Err(StoreError::Poisoned));
+    assert_eq!(store.epoch(), epoch, "durable epoch only");
+    assert_eq!(store.db().err(), Some(StoreError::Poisoned));
+    assert_eq!(store.txn_status(&txn(99)), Err(StoreError::Poisoned));
+    assert_eq!(store.read_row(Epoch(1)).err(), Some(StoreError::Poisoned));
+    assert_eq!(
+        store.diff(Epoch(0), epoch).err(),
+        Some(StoreError::Poisoned)
+    );
+    assert_eq!(
+        store.read_snapshot(LogicalId(0), epoch).err(),
+        Some(StoreError::Poisoned)
+    );
+}
+#[test]
+fn review7_valid_checksum_with_wrong_chain_fails_closed_even_at_the_tail() {
+    let disk = SimDisk::new();
+    let store = populated(&disk, 4);
+    let epoch = store.epoch();
+    let mut row = store.read_row(epoch).unwrap();
+    drop(store);
+    row.epoch = Epoch(epoch.0 + 1);
+    row.prev_checksum = [9; 32]; // not the tail's checksum
+    let (bytes, _) = log::frame(&row);
+    let seg = segment(&disk);
+    disk.append(&seg, &bytes).unwrap();
+    disk.sync(&seg).unwrap();
+    assert!(matches!(
+        open(&disk),
+        Err(StoreError::ChainBroken {
+            fault: log::FrameFault::Chain,
+            ..
+        })
+    ));
+}
+#[test]
+fn review8_unbuildable_snapshot_is_ignored() {
+    let disk = SimDisk::new();
+    let store = populated(&disk, 6);
+    let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
+    let mut inputs = store.db().unwrap().inputs();
+    drop(store);
+    // A cycle: verifies as a snapshot file, but the core cannot rebuild it.
+    let n = inputs.revisions.len() as u32;
+    assert!(n >= 2);
+    for (c, p) in [(0, 1), (1, 0)] {
+        inputs.rules.push(Rule {
+            conclusion: RevisionId(c),
+            premises: vec![Incidence {
+                premise: RevisionId(p),
+                kind: EdgeKind::Pin,
+            }],
+            references: Vec::new(),
+            enabled: true,
+            origin_branch: MAIN,
+            origin_epoch: epoch,
+        });
+    }
+    let scan = log::scan(&disk, &Path::new(DIR).join("log")).unwrap();
+    let checksum = scan.frames.last().unwrap().checksum;
+    contextdb_store::snapshot::write(&disk, Path::new(DIR), epoch, &checksum, &inputs).unwrap();
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(report.snapshot_epoch, None);
+    assert_eq!(report.rejected_snapshots.len(), 1);
+    assert_eq!(
+        (store.epoch(), store.db().unwrap().digest()),
+        (epoch, digest)
+    );
+}
+#[test]
+fn review9_poison_is_per_store_directory() {
+    let disk = SimDisk::new();
+    let (mut a, _) = Store::open(disk.clone(), Path::new("/a"), &OpenOptions::default()).unwrap();
+    let b = with_blobs(&mut a, &contextdb_testkit::generate_p1(46).batches[0]);
+    disk.fail_next("sync");
+    assert_eq!(a.commit(&b), Err(StoreError::Poisoned));
+    drop(a);
+    assert!(matches!(
+        Store::open(disk.clone(), Path::new("/a"), &OpenOptions::default()),
+        Err(StoreError::RestartRequired)
+    ));
+    assert!(Store::open(disk.clone(), Path::new("/b"), &OpenOptions::default()).is_ok());
+}
+#[test]
+fn review12_operator_open_does_not_create_a_store() {
+    let disk = SimDisk::new();
+    let options = OpenOptions {
+        create: false,
+        ..OpenOptions::default()
+    };
+    assert!(matches!(
+        Store::open(disk.clone(), Path::new("/typo"), &options),
+        Err(StoreError::NotAStore)
+    ));
+    assert!(!disk.exists(Path::new("/typo/log")));
 }

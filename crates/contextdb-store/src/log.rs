@@ -171,6 +171,14 @@ pub enum FrameFault {
     ResultEpoch,
     SegmentHeader,
 }
+impl FrameFault {
+    /// Faults a crash can produce in unsynced bytes. Every other fault sits in
+    /// a frame whose checksum verified, so it means a bug or tampering, never a
+    /// torn write, and fails closed even on the final frame (review finding 7).
+    pub fn is_torn(&self) -> bool {
+        matches!(self, Self::Incomplete | Self::LengthCheck | Self::Checksum)
+    }
+}
 /// A verified frame and where it sits.
 #[derive(Clone, Debug)]
 pub struct Located {
@@ -185,7 +193,8 @@ pub struct Scan {
     pub frames: Vec<Located>,
     /// Final-frame or trailing-byte fault: (segment, verified length, bytes dropped, fault).
     pub torn_tail: Option<(PathBuf, u64, u64, FrameFault)>,
-    /// Final segment without a valid header and without verified frames.
+    /// Final segment whose header is invalid and which contains no structurally
+    /// valid frame anywhere: an interrupted segment creation.
     pub empty_tail_segment: Option<PathBuf>,
     /// An earlier frame failed: fail closed.
     pub broken: Option<(Epoch, FrameFault)>,
@@ -268,7 +277,9 @@ pub fn scan(disk: &dyn Durability, dir: &Path) -> std::io::Result<Scan> {
         let bytes = disk.read(seg)?;
         let header = match parse_header(&bytes) {
             Some(h) => h,
-            None if last_segment => {
+            // A header is synced before any frame, so a valid frame behind an
+            // invalid header is corruption of acked data, never a crash.
+            None if last_segment && !any_frame_after(&bytes, 0) => {
                 out.empty_tail_segment = Some(seg.clone());
                 break;
             }
@@ -308,8 +319,8 @@ pub fn scan(disk: &dyn Durability, dir: &Path) -> std::io::Result<Scan> {
                 }
                 Err(fault) => {
                     // A later verified frame proves this one is not the tail.
-                    let later = last_segment && !any_frame_after(&bytes, pos);
-                    if later {
+                    let tail = fault.is_torn() && last_segment && !any_frame_after(&bytes, pos);
+                    if tail {
                         out.torn_tail =
                             Some((seg.clone(), pos as u64, (bytes.len() - pos) as u64, fault));
                     } else {
@@ -324,5 +335,31 @@ pub fn scan(disk: &dyn Durability, dir: &Path) -> std::io::Result<Scan> {
 }
 /// True when a structurally valid frame (length check + checksum) starts after `pos`.
 fn any_frame_after(bytes: &[u8], pos: usize) -> bool {
-    (pos + 1..bytes.len().saturating_sub(FRAME_OVERHEAD - 1)).any(|p| parse_frame(bytes, p).is_ok())
+    next_frame(bytes, pos + 1).is_some()
+}
+/// First position at or after `from` where a structurally valid frame starts.
+fn next_frame(bytes: &[u8], from: usize) -> Option<usize> {
+    (from..bytes.len().saturating_sub(FRAME_OVERHEAD - 1)).find(|p| parse_frame(bytes, *p).is_ok())
+}
+/// Every structurally valid frame in `bytes` from `pos` on, resynchronizing
+/// past unreadable regions. Returns the rows and whether any bytes were
+/// unreadable. Used to list what a repair would drop (review finding 2).
+pub fn readable_frames(bytes: &[u8], mut pos: usize) -> (Vec<LogRow>, bool) {
+    let (mut rows, mut unreadable) = (Vec::new(), false);
+    while pos < bytes.len() {
+        match parse_frame(bytes, pos) {
+            Ok((row, _, end)) => {
+                rows.push(row);
+                pos = end;
+            }
+            Err(_) => {
+                unreadable = true;
+                match next_frame(bytes, pos + 1) {
+                    Some(p) => pos = p,
+                    None => break,
+                }
+            }
+        }
+    }
+    (rows, unreadable)
 }

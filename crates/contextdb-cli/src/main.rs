@@ -21,9 +21,11 @@ Usage:
 
 Specification: SPEC.md; durability: docs/adr/0006-p2-durable-log.md";
 
+/// Operator commands never create a store: a mistyped path is an error.
 fn options(dir: &Path) -> OpenOptions {
     OpenOptions {
         projections: ProjectionFile::Path(dir.join("projections.sqlite")),
+        create: false,
         ..OpenOptions::default()
     }
 }
@@ -31,8 +33,11 @@ fn hex(id: &[u8]) -> String {
     id.iter().map(|b| format!("{b:02x}")).collect()
 }
 fn open(dir: &Path) -> Result<Store<StdDisk>, String> {
+    open_with(dir, &options(dir))
+}
+fn open_with(dir: &Path, options: &OpenOptions) -> Result<Store<StdDisk>, String> {
     let (store, report) =
-        Store::open(StdDisk::default(), dir, &options(dir)).map_err(|e| format!("open: {e:?}"))?;
+        Store::open(StdDisk::default(), dir, options).map_err(|e| format!("open: {e:?}"))?;
     println!(
         "epoch={} replayed={} snapshot={:?} projection_watermark={} self_checked={}",
         store.epoch().0,
@@ -61,24 +66,22 @@ fn open_quiet(dir: &Path) -> Result<Store<StdDisk>, String> {
         .map_err(|e| format!("open: {e:?}"))
 }
 fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
-    if rebuild {
-        // Projections are rebuildable; discard them and let open/catch-up rebuild.
-        for name in [
-            "projections.sqlite",
-            "projections.sqlite-wal",
-            "projections.sqlite-shm",
-        ] {
-            let _ = std::fs::remove_file(dir.join(name));
-        }
-    }
-    let mut store = open(dir)?;
+    // Projections are rebuildable: --rebuild clears them under the store lock.
+    let mut store = open_with(
+        dir,
+        &OpenOptions {
+            rebuild_projections: rebuild,
+            ..options(dir)
+        },
+    )?;
     let mark = store
         .catch_up_projections()
         .map_err(|e| format!("projections: {e:?}"))?;
     println!("projections complete through epoch {}", mark.0);
-    let inputs = store.db().inputs();
+    let db = store.db().map_err(|e| format!("{e:?}"))?;
+    let inputs = db.inputs();
     let oracle = contextdb_oracle::jacobi(&inputs);
-    if DerivedView::derived(store.db()) != &oracle {
+    if DerivedView::derived(db) != &oracle {
         return Err("derived state differs from the oracle".into());
     }
     println!(
@@ -105,7 +108,7 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
         plan.dropped_epochs.len(),
         plan.dropped_epochs.iter().map(|e| e.0).collect::<Vec<_>>(),
         if plan.unreadable_tail {
-            " plus unreadable frames"
+            " plus unreadable bytes that may hold more acked epochs"
         } else {
             ""
         }
@@ -117,14 +120,8 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
         println!("dry run: re-run with --yes to truncate");
         return Ok(());
     }
+    // Projections above the new tail no longer name the log; open clears them.
     doctor::truncate_before(&disk, dir, &plan).map_err(|e| format!("truncate: {e:?}"))?;
-    for name in [
-        "projections.sqlite",
-        "projections.sqlite-wal",
-        "projections.sqlite-shm",
-    ] {
-        let _ = std::fs::remove_file(dir.join(name));
-    }
     println!("truncated");
     Ok(())
 }

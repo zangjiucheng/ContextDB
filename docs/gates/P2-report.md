@@ -1,6 +1,6 @@
 # P2 implementation report — 2026-10-20
 
-**Every local gate layer passes.** The gate is not yet passed: independent review, remote Linux/macOS CI and the nightly workflow are still needed. Related documents:
+**Every local gate layer passes after the independent review's fixes.** The gate is not yet passed: the review's closure check, remote Linux/macOS CI and the nightly workflow are still needed. Related documents:
 - [gate matrix](P2.md)
 - [durable-log ADR 0006](../adr/0006-p2-durable-log.md), whose §12 records where the implementation differs from the text
 - [incremental structural commits ADR 0007](../adr/0007-incremental-structural-commits.md)
@@ -18,17 +18,20 @@
 3. append and sync (F_FULLFSYNC on macOS);
 4. publish, then projections.
 
-Any persistence I/O failure poisons the store (fail-stop). Reopening in the same process returns `RestartRequired`. A directory lock admits one writer.
+Any persistence I/O failure poisons the store (fail-stop). A poisoned store serves no reads and no `txn_status`, and `epoch()` reports the last durable epoch. Reopening the same directory in the same process returns `RestartRequired`. A directory lock admits one writer, and the offline tools (`doctor --truncate-before`, `migrate`) take the same lock.
 
 **Open:**
 1. Take the lock and remove temp blobs.
-2. Verify the chain.
-   - A broken final frame is truncated and reported (T34), or fails closed with `--strict-tail`.
-   - A broken earlier frame fails closed (T33).
-3. Load the newest valid snapshot.
-4. Replay with a CommitResult comparison (`ReplayDivergence`).
-5. Rebuild the id index.
-6. Run the 1,000-revision sampled self-check against the per-node oracle definition.
+2. Refuse an interrupted migration (`MigrationIncomplete`); operator opens never create a store (`NotAStore`).
+3. Verify the chain.
+   - A final frame with a crash-type fault (incomplete, length check, checksum) is truncated and reported (T34), or fails closed with `--strict-tail`.
+   - A frame whose checksum verifies but which is otherwise wrong fails closed even at the tail.
+   - An earlier broken frame fails closed (T33).
+   - A final segment with an invalid header is removed only when it contains no valid frame.
+4. Load the newest snapshot that verifies and that the core can rebuild.
+5. Replay with a CommitResult comparison (`ReplayDivergence`), rolling projections forward in one SQLite transaction.
+6. Rebuild the id index.
+7. Run the 1,000-revision sampled self-check against the per-node oracle definition.
 
 **Projections.** `diff_log`, `head_history` and `base_history` live in SQLite, with a watermark that names the log checksum. They accept contiguous epochs only. Reads use, in order:
 1. in-memory history;
@@ -49,7 +52,7 @@ All three go through one shared state function.
 | PROP10, store: reopen (half the seeds with a snapshot), digest and DIFF for all epoch pairs | 10,000 seeds pass |
 | PROP10, core: `from_inputs` == incremental, identical later results/errors, DIFF, oracle | 10,000 seeds pass |
 | Read modes reproduce past states | 1,000 seeds pass |
-| G4 pre-WAL / post-WAL-pre-sync / post-sync-pre-publish | 1,000 effective injections each; four tail fates (torn, zero-filled, garbage, out-of-order) |
+| G4 pre-WAL / post-WAL-pre-sync / post-sync-pre-publish | 1,000 effective injections each. Post-sync-pre-publish uses a hook: the frame is synced, then the commit fails unpublished. Four tail fates; half the seeds use 512-byte segments (rollover) |
 | G4 mid-snapshot, blob put (4 steps each) | 1,004 runs each |
 | G4 projection write (SQLite transaction fails before commit) | 1,000 runs |
 | Harness self-test (no-op sync) | detected |
@@ -61,20 +64,29 @@ After every G4 crash the harness checks five things:
 - every acked id is `Committed` with its original result;
 - the in-flight id is `Committed` or `NotCommitted`, and its retry applies at most once.
 
+Before the crash, the poisoned store must report only the durable epoch, refuse `db()` and refuse `txn_status`.
+
 ## G5 (initial targets)
 
 Apple M1 Pro, macOS 27.0.1, APFS internal SSD, Rust 1.95.0 release, one thread ([p2-env.json](p2-env.json)).
 
 | Metric | Target | Measured | Verdict |
 |---|---:|---:|---|
-| Single-transaction commit p99, fullfsync on | ≤ 25 ms | 13.22 ms | PASS |
-| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.49 ms | PASS |
-| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 1.245 s | PASS |
-| Cold open with a snapshot at the tail | ≤ 1 s | 0.158 s | PASS |
+| Single-transaction commit p99, fullfsync on | ≤ 25 ms | 17.62 ms | PASS |
+| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.36 ms | PASS |
+| Commit p99, fullfsync on, production file projections (`ctx` configuration) | ≤ 25 ms | 14.20 ms | PASS |
+| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 1.326 s | PASS |
+| Cold open, full replay, file projections written for all 100K epochs (first open / after `--rebuild`) | ≤ 5 s | 4.442 s | PASS |
+| Cold open, full replay, file projections already current | ≤ 5 s | 0.282 s | PASS |
+| Cold open with a snapshot at the tail (memory / file projections) | ≤ 1 s | 0.166 / 0.164 s | PASS |
+| Historical read at epoch 50,000 below the snapshot: log replay / projections (informational) | — | 821 ms / < 1 ms | — |
 
 Notes:
 - The replay log is built without syncs (build 4.8 s). Open is measured with the production `StdDisk`, and includes the lock, blob scan, chain verification, replay and self-check.
 - Every transaction is structural (each one creates a logical, `structural_every=1`). This is the costly case for replay; with mixed workloads, fast-path base toggles replay faster.
+- Fullfsync-on p99 varied from 10.5 to 17.6 ms across four runs on this machine. All runs met the target.
+- Before the review's fix (ranged frame reads), reads below a snapshot reread a whole segment per frame. The reviewer measured 469 ms at 10K epochs, quadratic growth, and about 50 s extrapolated at 100K.
+- Before the bulk roll-forward, the first open with file projections took 6.3 s.
 
 ## G7 regression
 
@@ -95,15 +107,43 @@ The live heap rose from 181.15 / 188.87 B/inc at the P1 gate. The rise comes fro
 
 Details are in ADR 0006 §12.
 - **Migration fixtures.** There is one frozen format-0 fixture rather than the two ADR 0006 §10 named. The "no-op" framework path is the migration of a current log.
-- **SimDisk renames.** `SimDisk::rename_dir` does not model a lost directory rename, so a crash between the two renames of `migrate` is not injected. Migration is an explicit offline operation that keeps a backup.
-- **Projections after a snapshot.** Projections stay behind when open starts from a newer snapshot. Reads fall back to log replay until `doctor` catches up.
+- **Migration crash.** The state left by a crash between the two renames of `migrate` is reproduced by a regression test; open refuses it, and `migrate` resumes. `SimDisk::rename_dir` itself is atomic, so a rename lost for want of a parent sync is not injected.
+- **Projections after a snapshot.** Projections stay behind when open starts from a newer snapshot. Reads below the snapshot then fall back to log replay (0.8 s at 50K epochs) until `doctor` catches up. The P3 daemon will catch up in the background.
+- **SQLite projections are not crash-injected.** They live on the real filesystem, and the G4 projection test fails the SQLite transaction instead of crashing it. SQLite's own atomicity plus the checksum-named watermark is relied on.
+- **Blob layout** is flat (`blobs/<64 hex>`), not ADR 0006 §5's two-level fan-out.
 - **Not implemented** (no gate depends on these): an `inputs_at` cache, bounding the in-memory history, and a store memory report covering the id index and `BlobPresence`.
 - **No signed head.** The hash chain detects corruption but not a full rewrite. Signing arrives with principals in P9.
 - **No erasure** before P9.
 
 ## Independent review
 
-Pending: a separate non-implementing reviewer per SPEC §4.2.
+A separate non-implementing reviewer (SPEC §4.2) reviewed commit `a3eedff`. They reproduced findings 1–6 by executing probes, and verified the following as accurate:
+- the G5 numbers;
+- commit order;
+- earlier-frame fail-closed, including across segments;
+- T34 and `--strict-tail`;
+- preservation of migration's `acked_result`;
+- projection watermark validation;
+- the ADR 0007 overlay, with no defect found.
+
+Every finding was fixed and has a `review*` regression test in `crates/contextdb-store/tests/recovery.rs`.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 1 | A corrupt header on the final segment silently deleted every acked frame in it, even with `--strict-tail` | blocker | Removed only if no valid frame exists anywhere in the segment; otherwise `ChainBroken{SegmentHeader}`; strict refuses even the empty case |
+| 2 | The `doctor --truncate-before` plan under-reported loss (frames after corruption, later segments, boundary cuts) | major | Plan resynchronizes and lists every readable dropped frame across segments; `unreadable_tail` flags hidden loss; test checks exact lists for every cut over ≥ 3 segments |
+| 3 | A crash between `migrate`'s renames produced a silently empty, writable store | major | Open refuses with `MigrationIncomplete`; `migrate` resumes after verifying `log.migrating`; SimDisk `list` now shows subdirectories, like `read_dir` |
+| 4 | Offline tools bypassed the directory lock; `--rebuild` deleted files before locking | major | `truncate_before` and `migrate` take the lock; `truncate_before` re-plans (`PlanOutdated`); `--rebuild` clears projections under the lock; the CLI no longer deletes projection files |
+| 5 | A poisoned store served the non-durable epoch and answered `txn_status` | major | Reads, `db()` and `txn_status` return `Poisoned`; `epoch()` is the durable epoch; G4 asserts it after each injection |
+| 6 | `read_row` read the whole segment per frame (quadratic reads below a snapshot) | major | `Durability::read_range` reads one frame |
+| 7 | A checksum-valid final frame with a semantic fault was truncated as a torn tail | minor | Only incomplete, length-check and checksum faults count as torn |
+| 8 | A verified but unbuildable snapshot made open fail | minor | Ignored and reported; replay starts earlier |
+| 9 | Poison was per process, not per store | minor | Keyed by (disk instance, directory) |
+| 10 | Post-sync-pre-publish had no hook; tail fates are mostly inert; rollover was never exercised | minor | Real `crash_after_next_sync` hook; odd G4 seeds use 512-byte segments; fate coverage documented (ADR 0006 §12) |
+| 11 | G5 was not measured in the production configuration (file projections) | minor | Bench now gates commit p99 and cold opens with file projections; roll-forward is batched (6.3 s → 4.4 s) |
+| 12 | A mistyped path created an empty store; the blob layout differed from the ADR | minor | `OpenOptions::create = false` for `ctx` (`NotAStore`); flat layout recorded in ADR 0006 §12 |
+
+Closure check by the reviewer: pending.
 
 ## Reproduce
 

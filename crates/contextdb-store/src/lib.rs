@@ -7,7 +7,8 @@ pub mod durability;
 pub mod log;
 pub mod migrate;
 pub mod projection;
-mod snapshot;
+#[doc(hidden)]
+pub mod snapshot;
 mod store;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::ProjectionFile;

@@ -284,19 +284,39 @@ All three use one shared state function, and a property test requires identical 
 These record where the implementation differs from or makes concrete the text above. None changes a SPEC guarantee.
 
 - **One format-0 fixture (§10).** A single frozen format 0 is checked in (`migrate::legacy`): identical framing, and a `result_blob` without `status_diff`. Its migration re-derives every result, checks the legacy fields against the re-derived ones, re-chains checksums, and keeps the originally acked bytes as `acked_result`. T68 checks the replayed state, the preserved acked results for retries, and the `log.v0.bak` backup. A corrupt legacy log aborts the migration and leaves the old log untouched. The no-op path of the framework (migrating a log that is already current) returns `from == to` without rewriting anything. A second, header-only fixture would test nothing that these two paths do not, so it was not added.
-- **Projection roll-forward (§8).** `Projections::apply` accepts only the next contiguous epoch. Each projection row set and its watermark are written in one SQLite transaction.
-  - At open, frames replayed above the watermark are applied, so a log replayed from genesis brings projections current.
+- **Projection roll-forward (§8).** `Projections::apply` accepts only the next contiguous epoch. Each projection row set and its watermark are written in one SQLite savepoint.
+  - At open, frames replayed above the watermark are applied, so a log replayed from genesis brings projections current. The whole roll-forward is one SQLite transaction; a crash before it commits leaves the old watermark.
   - When open starts from a snapshot newer than the watermark, projections stay behind. Reads at epochs above the watermark then use source 3 (log replay), which keeps open proportional to the tail after the snapshot.
   - `Store::catch_up_projections` (`ctx doctor`) fills the gap.
   - A failed projection write after a durable commit marks projections stale for the rest of the process; the commit is still acked.
-- **Doctor truncation (§4 step 3).** `ctx doctor --truncate-before` deletes the projection file instead of deleting rows above the new tail. The next open rebuilds it. A projection whose watermark checksum does not name the verified log is cleared at open in any case.
+- **Doctor truncation (§4 step 3).**
+  - Projection files are not touched. A watermark above the new tail no longer names a frame of the verified log, so the next open clears and rebuilds the tables. A watermark at or below the tail stays valid.
+  - The plan lists every readable frame that would be dropped: frames after an unreadable region (by resynchronizing on the next valid frame) and frames in later segments included. `unreadable_tail` says that unreadable bytes are dropped too, which may hide more acked epochs.
+  - `truncate_before` takes the store lock and re-plans. A store that is open gives `Locked`, and a log that changed since the reviewed plan gives `PlanOutdated`.
 - **Self-check (§4 step 7).** The sample is 1,000 revisions (all of them below that), drawn with xorshift seeded by the head checksum. `Db::verify_counting_sample` re-evaluates each sampled node's per-node definition: enabled rules with all premise literals true, the sat bits and the L0 bit. Any mismatch fails open with `SelfCheckFailed`. The open report counts the checked revisions.
 - **Crash injection (§9).** Every listed point runs ≥ 1,000 effective injections in the gate configuration (`CONTEXTDB_G4_RUNS=1000`):
   - pre-WAL, post-WAL-pre-sync and post-sync-pre-publish, cycling the four tail fates;
   - mid-snapshot, at the write, sync, rename and sync_dir steps;
   - each blob-put step (write, sync, rename, sync_dir). A failed put fail-stops, the blob is afterwards absent or intact, and no temp file survives open;
   - the projection write. `Store::fail_next_projection_write`, a hidden test hook, fails the SQLite transaction before it commits. The test checks that the commit is acked, that reads are exact while stale, after reopening at the lagging watermark and after catching up.
-- **SimDisk directory renames.** `SimDisk::rename_dir` moves a directory and its durable entries at once. It does not model a directory rename lost because the parent was not synced, so a crash between the two renames of `migrate` is not exercised. Migration is an explicit offline operation that keeps the backup; a crash there leaves either the old log in place (plus a stale `log.migrating`, discarded on the next attempt) or the new log and the backup.
+- **Migration crashes.** `migrate` holds the store lock. `log.migrating` is complete and synced before the swap.
+  - A crash before the first rename leaves the old log and a stale `log.migrating`, which the next run discards.
+  - A crash between the two renames leaves no `log/` but leaves the backup and `log.migrating`. Open refuses this state with `MigrationIncomplete` instead of creating an empty log, and `ctx migrate` resumes by verifying `log.migrating` and finishing the second rename. A regression test reproduces this state.
+  - `SimDisk::rename_dir` itself is atomic and does not model a rename lost for want of a parent sync.
+- **Fixes from the independent P2 review** (each with a regression test in `tests/recovery.rs`, `review*`):
+  1. A final segment whose header is invalid is removed only if it contains no structurally valid frame (an interrupted segment creation). Otherwise open fails closed with `ChainBroken{SegmentHeader}`, and `--strict-tail` refuses even the empty case.
+  2. Final-frame faults are a torn tail only when a crash can cause them: incomplete, length check or checksum. A frame whose checksum verifies but whose chain, epoch, batch hash, redundant fields or encoding are wrong fails closed.
+  3. A poisoned store serves nothing. `db()`, `txn_status`, `read_row`, the read modes and DIFF return `Poisoned`, and `epoch()` reports the last durable epoch. A client learns an in-flight id's fate only after restart.
+  4. `read_row` reads one frame via `Durability::read_range`, not the whole segment. A Historical read 50,000 epochs below a snapshot takes 0.8 s, against an extrapolated 50 s before.
+  5. A snapshot that verifies but cannot be rebuilt by the core is ignored like a corrupt one.
+  6. The poison registry key is (disk instance, store directory).
+  7. Operator opens (`ctx`) use `OpenOptions { create: false }`, so a mistyped path gives `NotAStore`. `doctor --rebuild` clears projections under the lock (`rebuild_projections`).
+- **Crash-injection evidence (§9).**
+  - Post-sync-pre-publish uses a real hook (`crash_after_next_sync`): the frame is synced, then the commit fails without publishing or acking.
+  - After each injected failure, the harness checks that the poisoned store exposes neither the non-durable epoch nor a `txn_status`.
+  - Odd seeds run with 512-byte segments, so crashes hit rollover, header-only segments and the cross-segment chain.
+  - Tail fates only matter where unsynced bytes exist (post-WAL-pre-sync, and a crash during segment creation).
+- **Blob layout.** Blobs are stored flat as `blobs/<64 hex>` rather than in the two-level `blobs/<2hex>/<62hex>` of §5. Fan-out directories are deferred to the blob GC work in P10.
 - **Not implemented in P2 (no gate depends on them):**
   - a cache of `inputs_at(e)` (each use replays the prefix);
   - bounding the in-memory history after open;

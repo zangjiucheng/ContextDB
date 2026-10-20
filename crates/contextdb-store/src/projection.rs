@@ -80,7 +80,7 @@ impl Projections {
         }
         Ok(p)
     }
-    fn clear(&mut self) -> Sql<()> {
+    pub fn clear(&mut self) -> Sql<()> {
         self.conn.execute_batch(
             "DELETE FROM diff_log; DELETE FROM head_history; DELETE FROM base_history;
              DELETE FROM projection_watermark;",
@@ -94,6 +94,15 @@ impl Projections {
     /// True when projections answer reads at `e` (ADR 0006 §8, source 2).
     pub fn covers(&self, e: Epoch) -> bool {
         !self.stale && e <= self.watermark
+    }
+    /// Groups many `apply` calls into one SQLite transaction (roll-forward at
+    /// open). Rows become durable at `end_bulk`; a crash before it only leaves
+    /// the watermark where it was.
+    pub fn begin_bulk(&mut self) -> Sql<()> {
+        self.conn.execute_batch("BEGIN")
+    }
+    pub fn end_bulk(&mut self) -> Sql<()> {
+        self.conn.execute_batch("COMMIT")
     }
     pub fn mark_stale(&mut self) {
         self.stale = true;
@@ -109,7 +118,8 @@ impl Projections {
             return Ok(());
         }
         let e = rows.epoch.0 as i64;
-        let tx = self.conn.transaction()?;
+        // A savepoint: its own transaction normally, nested inside `bulk`.
+        let tx = self.conn.savepoint()?;
         {
             let mut diff = tx.prepare_cached(
                 "INSERT INTO diff_log(epoch, revision, post) VALUES (?1, ?2, ?3)",

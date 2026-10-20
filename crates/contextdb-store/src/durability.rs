@@ -22,6 +22,8 @@ pub trait Durability: Send + Sync {
     fn list(&self, dir: &Path) -> io::Result<Vec<String>>;
     fn exists(&self, path: &Path) -> bool;
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
+    /// Reads exactly `len` bytes at `offset` (one frame without the segment).
+    fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>>;
     /// Appends, creating the file when absent. Not durable until `sync`.
     fn append(&self, path: &Path, data: &[u8]) -> io::Result<()>;
     /// Creates or replaces a file's contents. Not durable until `sync`.
@@ -82,6 +84,12 @@ impl Durability for StdDisk {
     }
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         std::fs::read(path)
+    }
+    fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        use std::os::unix::fs::FileExt;
+        let mut out = vec![0; len];
+        std::fs::File::open(path)?.read_exact_at(&mut out, offset)?;
+        Ok(out)
     }
     fn append(&self, path: &Path, data: &[u8]) -> io::Result<()> {
         use std::io::Write;
@@ -328,13 +336,16 @@ impl Durability for SimDisk {
         if !s.dirs.contains(dir) {
             return Err(not_found(dir));
         }
+        // Files and subdirectories, as `read_dir` lists them.
         let mut names: Vec<_> = s
             .live
             .keys()
-            .filter(|p| parent(p) == dir)
+            .chain(s.dirs.iter())
+            .filter(|p| parent(p) == dir && *p != dir)
             .map(|p| name(p))
             .collect();
         names.sort();
+        names.dedup();
         Ok(names)
     }
     fn exists(&self, path: &Path) -> bool {
@@ -345,6 +356,16 @@ impl Durability for SimDisk {
         let s = self.state();
         let i = s.live.get(path).ok_or_else(|| not_found(path))?;
         Ok(s.inodes[*i].data.clone())
+    }
+    fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let s = self.state();
+        let i = s.live.get(path).ok_or_else(|| not_found(path))?;
+        let data = &s.inodes[*i].data;
+        usize::try_from(offset)
+            .ok()
+            .and_then(|start| data.get(start..start.checked_add(len)?))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "short read"))
     }
     fn append(&self, path: &Path, data: &[u8]) -> io::Result<()> {
         let mut s = self.state();

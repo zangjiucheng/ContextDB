@@ -43,6 +43,13 @@ pub enum StoreError {
     SelfCheckFailed {
         revision: RevisionId,
     },
+    /// `log/` is missing while a migration's backup or staging log exists:
+    /// finish it with `ctx migrate` (review finding 3).
+    MigrationIncomplete,
+    /// No store at this path and `OpenOptions::create` is false.
+    NotAStore,
+    /// The log changed between `plan_truncate_before` and `truncate_before`.
+    PlanOutdated,
     Io(String),
 }
 impl From<TxError> for StoreError {
@@ -55,6 +62,27 @@ fn io(e: std::io::Error) -> StoreError {
 }
 fn sql(e: rusqlite::Error) -> StoreError {
     StoreError::Io(format!("projection: {e}"))
+}
+/// The store directory's exclusive lock, shared by the store and offline tools
+/// (doctor, migrate) so none of them runs against an open store (ADR 0006 §3.0).
+pub(crate) fn lock(disk: &dyn Durability, dir: &Path) -> Result<Box<dyn LockGuard>, StoreError> {
+    disk.lock(&dir.join("LOCK")).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            StoreError::Locked
+        } else {
+            io(e)
+        }
+    })
+}
+/// True when a migration left `log/` absent but its backup or staging log present.
+pub(crate) fn migration_incomplete(disk: &dyn Durability, dir: &Path) -> std::io::Result<bool> {
+    if disk.exists(&dir.join("log")) || !disk.exists(dir) {
+        return Ok(false);
+    }
+    Ok(disk
+        .list(dir)?
+        .iter()
+        .any(|n| n == "log.migrating" || (n.starts_with("log.v") && n.ends_with(".bak"))))
 }
 /// Projection rows for the epoch just committed to `db`.
 fn rows<'a>(
@@ -88,12 +116,22 @@ pub struct OpenOptions {
     pub strict_tail: bool,
     /// Projection tables; production keeps them in a file next to the log.
     pub projections: ProjectionFile,
+    /// Create an empty store when `<dir>/log` is absent. Operator tools pass
+    /// false so a mistyped path fails instead of creating a store.
+    pub create: bool,
+    /// Discard projection tables at open and rebuild them (`ctx doctor --rebuild`).
+    pub rebuild_projections: bool,
+    /// Segment rollover size; tests use small segments to exercise rollover.
+    pub segment_target: usize,
 }
 impl Default for OpenOptions {
     fn default() -> Self {
         Self {
             strict_tail: false,
             projections: ProjectionFile::Memory,
+            create: true,
+            rebuild_projections: false,
+            segment_target: log::SEGMENT_TARGET,
         }
     }
 }
@@ -159,7 +197,15 @@ pub struct Store<D: Durability> {
     /// Set across apply/append; still true after a panic, which poisons.
     in_flight: bool,
     poisoned: bool,
+    /// G4 fault injection: the next commit stops after its frame sync.
+    crash_after_sync: bool,
+    segment_target: usize,
     _lock: Box<dyn LockGuard>,
+}
+/// Poison registry key: one disk instance and one store directory, so a failure
+/// in one store does not block others in the same process (review finding 9).
+fn poison_key(disk: &dyn Durability, dir: &Path) -> String {
+    format!("{}:{}", disk.instance(), dir.display())
 }
 fn hex(h: &ContentHash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
@@ -221,11 +267,19 @@ impl<D: Durability> Store<D> {
         if POISONED
             .lock()
             .expect("poison registry")
-            .contains(&disk.instance())
+            .contains(&poison_key(&disk, dir))
         {
             return Err(StoreError::RestartRequired);
         }
         let (log_dir, blob_dir) = (dir.join("log"), dir.join("blobs"));
+        // Never create `log/` over an interrupted migration: the acked history
+        // is in the backup or staging log (review finding 3).
+        if migration_incomplete(&disk, dir).map_err(io)? {
+            return Err(StoreError::MigrationIncomplete);
+        }
+        if !options.create && !disk.exists(&log_dir) {
+            return Err(StoreError::NotAStore);
+        }
         for d in [&log_dir, &blob_dir] {
             disk.create_dir_all(d).map_err(io)?;
         }
@@ -233,13 +287,11 @@ impl<D: Durability> Store<D> {
         if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
             disk.sync_dir(parent).map_err(io)?;
         }
-        let lock = disk.lock(&dir.join("LOCK")).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                StoreError::Locked
-            } else {
-                io(e)
-            }
-        })?;
+        let lock = lock(&disk, dir)?;
+        // Re-check under the lock: a migration may have been running.
+        if migration_incomplete(&disk, dir).map_err(io)? {
+            return Err(StoreError::MigrationIncomplete);
+        }
         let mut report = OpenReport::default();
         // Blob presence: durable names only, leftovers removed (ADR 0006 §5).
         disk.sync_dir(&blob_dir).map_err(io)?;
@@ -269,6 +321,11 @@ impl<D: Durability> Store<D> {
             return Err(StoreError::ChainBroken { epoch, fault });
         }
         if let Some(seg) = &scan.empty_tail_segment {
+            if options.strict_tail {
+                return Err(StoreError::TailUnverifiable {
+                    fault: FrameFault::SegmentHeader,
+                });
+            }
             disk.remove(seg).map_err(io)?;
             disk.sync_dir(&log_dir).map_err(io)?;
             report.removed_segment = Some(seg.clone());
@@ -286,7 +343,10 @@ impl<D: Durability> Store<D> {
             });
         }
         let checksums: Vec<ContentHash> = scan.frames.iter().map(|f| f.checksum).collect();
-        let proj = Projections::open(&options.projections, &checksums).map_err(sql)?;
+        let mut proj = Projections::open(&options.projections, &checksums).map_err(sql)?;
+        if options.rebuild_projections {
+            proj.clear().map_err(sql)?;
+        }
         report.projection_watermark = proj.watermark();
         let mut store = Self {
             dir: dir.to_path_buf(),
@@ -299,22 +359,28 @@ impl<D: Durability> Store<D> {
             proj,
             in_flight: false,
             poisoned: false,
+            crash_after_sync: false,
+            segment_target: options.segment_target,
             _lock: lock,
             disk,
         };
-        // Newest valid snapshot at or below the tail (ADR 0006 §4 step 4, §6).
+        // Newest valid snapshot at or below the tail (ADR 0006 §4 step 4, §6);
+        // one the core cannot rebuild is ignored, and replay starts earlier.
         let (base, rejected) =
-            crate::snapshot::load_newest(&store.disk, dir, &checksums).map_err(io)?;
+            crate::snapshot::load_newest(&store.disk, dir, &checksums, |(epoch, inputs)| {
+                Db::from_inputs(inputs, epoch).ok()
+            })
+            .map_err(io)?;
         report.rejected_snapshots = rejected;
-        if let Some((epoch, inputs)) = base {
+        if let Some((epoch, db)) = base {
             // Projections behind the snapshot stay behind (reads fall back to
             // the log) until `catch_up_projections`; open stays proportional
             // to the tail after the snapshot.
-            store.db = Db::from_inputs(inputs, epoch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch })?;
+            store.db = db;
             report.snapshot_epoch = Some(epoch);
         }
         let skip = report.snapshot_epoch.map_or(0, |e| e.0);
+        store.proj.begin_bulk().map_err(sql)?;
         // Replay without idempotency, blob checks or appends (ADR 0006 §4 step 5).
         let mut start = log::HEADER_LEN as u64;
         let mut current = None;
@@ -361,6 +427,7 @@ impl<D: Durability> Store<D> {
                 checksum: f.checksum,
             });
         }
+        store.proj.end_bulk().map_err(sql)?;
         // Sampled self-check (ADR 0006 §4 step 7), seeded by the head checksum.
         let n = store.db.revision_count();
         if n > 0 {
@@ -396,8 +463,11 @@ impl<D: Durability> Store<D> {
         }
         Ok((store, report))
     }
-    pub fn db(&self) -> &Db {
-        &self.db
+    /// The live database. Unavailable once poisoned: it may hold an epoch
+    /// that never became durable (review finding 5).
+    pub fn db(&self) -> Result<&Db, StoreError> {
+        self.readable()?;
+        Ok(&self.db)
     }
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -407,8 +477,14 @@ impl<D: Durability> Store<D> {
         POISONED
             .lock()
             .expect("poison registry")
-            .insert(self.disk.instance());
+            .insert(poison_key(&self.disk, &self.dir));
         StoreError::Poisoned
+    }
+    fn readable(&self) -> Result<(), StoreError> {
+        if self.poisoned || self.in_flight {
+            return Err(StoreError::Poisoned);
+        }
+        Ok(())
     }
     fn usable(&mut self) -> Result<(), StoreError> {
         if self.in_flight {
@@ -421,7 +497,9 @@ impl<D: Durability> Store<D> {
         }
         Ok(())
     }
+    /// Poisoned stores refuse: the answer is only known after a restart.
     pub fn txn_status(&self, id: &[u8; 16]) -> Result<TxnStatus, StoreError> {
+        self.readable()?;
         match self.ids.get(id) {
             Some((epoch, _)) => Ok(TxnStatus::Committed {
                 epoch: *epoch,
@@ -436,14 +514,21 @@ impl<D: Durability> Store<D> {
     }
     /// Reads and re-verifies one durable frame.
     pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
+        self.readable()?;
         let loc = epoch
             .0
             .checked_sub(1)
             .and_then(|n| self.frames.get(n as usize))
             .ok_or(StoreError::Tx(TxError::UnknownRef))?;
-        let bytes = self.disk.read(&self.segments[loc.segment]).map_err(io)?;
-        let frame = &bytes[loc.start as usize + 16..loc.end as usize - 32];
-        if log::checksum(frame) != bytes[loc.end as usize - 32..loc.end as usize] {
+        // One frame, not the whole segment (review finding 6).
+        let len = usize::try_from(loc.end - loc.start)
+            .map_err(|_| StoreError::Io("frame size".into()))?;
+        let bytes = self
+            .disk
+            .read_range(&self.segments[loc.segment], loc.start, len)
+            .map_err(io)?;
+        let frame = &bytes[16..len - 32];
+        if log::checksum(frame) != bytes[len - 32..] {
             return Err(StoreError::ChainBroken {
                 epoch,
                 fault: FrameFault::Checksum,
@@ -503,6 +588,11 @@ impl<D: Durability> Store<D> {
                 return Err(self.poison());
             }
         };
+        if std::mem::take(&mut self.crash_after_sync) {
+            // Durable but never published or acked: the process "dies" here.
+            self.in_flight = false;
+            return Err(self.poison());
+        }
         // Step 4: publish.
         self.in_flight = false;
         let end = start + bytes.len() as u64;
@@ -541,7 +631,7 @@ impl<D: Durability> Store<D> {
         let rollover = self
             .tail
             .as_ref()
-            .is_none_or(|t| t.size as usize >= log::SEGMENT_TARGET);
+            .is_none_or(|t| t.size as usize >= self.segment_target);
         let (segment, start) = if rollover {
             let path = log_dir.join(log::segment_name(epoch));
             self.disk
@@ -594,8 +684,10 @@ impl<D: Durability> Store<D> {
             Err(_) => Payload::Unavailable(Unavailable::Missing),
         }
     }
+    /// The last durable epoch. After poisoning, the in-memory Db may be one
+    /// epoch ahead; this never is.
     pub fn epoch(&self) -> Epoch {
-        self.db.epoch()
+        Epoch(self.frames.len() as u64)
     }
     /// Database as of `e`: the live one when it retains `e`, otherwise a replay
     /// of the verified log prefix (ADR 0006 §8, source 3).
@@ -621,6 +713,7 @@ impl<D: Durability> Store<D> {
         r: RevisionId,
         e: Epoch,
     ) -> Result<(NodeState, Payload), StoreError> {
+        self.readable()?;
         if e < self.db.initial_epoch() && self.proj.covers(e) {
             let state = self
                 .proj
@@ -636,6 +729,7 @@ impl<D: Durability> Store<D> {
     }
     /// DIFF over any committed epochs: memory when retained, else log replay.
     pub fn diff(&self, a: Epoch, b: Epoch) -> Result<contextdb_core::EpochDiff, StoreError> {
+        self.readable()?;
         let low = a.min(b);
         if low >= self.db.initial_epoch() {
             return Ok(self.db.diff(a, b)?);
@@ -659,6 +753,7 @@ impl<D: Durability> Store<D> {
         l: LogicalId,
         e: Epoch,
     ) -> Result<(RevisionId, NodeState), StoreError> {
+        self.readable()?;
         if e < self.db.initial_epoch() && self.proj.covers(e) {
             let r = self
                 .proj
@@ -701,6 +796,12 @@ impl<D: Durability> Store<D> {
     }
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
+    }
+    /// G4 fault injection: the next commit syncs its frame, then fails before
+    /// publishing or acking (post-sync-pre-publish), poisoning the store.
+    #[doc(hidden)]
+    pub fn crash_after_next_sync(&mut self) {
+        self.crash_after_sync = true;
     }
     /// G4 fault injection: the next projection write fails mid-transaction.
     #[doc(hidden)]

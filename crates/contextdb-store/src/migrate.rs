@@ -62,8 +62,13 @@ pub fn log_format(disk: &dyn Durability, dir: &Path) -> Result<Option<u32>, Stor
     Ok(log::parse_header(&bytes).map(|h| h.format))
 }
 /// Rewrites a format-0 log as format 1. Frames are verified with the format-0
-/// rules first; any inconsistency aborts with the old log untouched.
+/// rules first; any inconsistency aborts with the old log untouched. Holds the
+/// store lock, and finishes a migration interrupted between its two renames.
 pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreError> {
+    let _lock = crate::store::lock(disk, dir)?;
+    if crate::store::migration_incomplete(disk, dir).map_err(io)? {
+        return resume(disk, dir);
+    }
     let from = match log_format(disk, dir)? {
         Some(f) if f == log::FORMAT_VERSION => {
             return Ok(MigrationReport {
@@ -118,8 +123,11 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
     }
     disk.sync(&seg).map_err(io)?;
     disk.sync_dir(&new_dir).map_err(io)?;
-    // Swap: keep the old log as a backup. A crash before the second rename
-    // leaves the old log in place and a stale `log.migrating` to discard.
+    // Swap: keep the old log as a backup. `log.migrating` is complete and
+    // durable before the first rename. A crash before it leaves the old log
+    // and a stale `log.migrating` (discarded above on the next run); a crash
+    // between the renames leaves no `log/`, which open refuses and `resume`
+    // finishes.
     let backup = dir.join(format!("log.v{from}.bak"));
     disk.rename_dir(&old_dir, &backup).map_err(io)?;
     disk.rename_dir(&new_dir, &old_dir).map_err(io)?;
@@ -129,6 +137,41 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
         to: log::FORMAT_VERSION,
         frames: rows.len() as u64,
         backup: backup.display().to_string(),
+    })
+}
+/// Second half of an interrupted swap: `log.migrating` was synced before the
+/// old log was renamed to its backup, so it is the complete migrated log.
+fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreError> {
+    let staged = dir.join("log.migrating");
+    let backup = disk
+        .list(dir)
+        .map_err(io)?
+        .into_iter()
+        .find(|n| n.starts_with("log.v") && n.ends_with(".bak"))
+        .ok_or_else(|| StoreError::Io("no migration backup to resume from".into()))?;
+    if !disk.exists(&staged) {
+        return Err(StoreError::Io(format!(
+            "log/ and log.migrating are both missing; restore {backup} manually"
+        )));
+    }
+    let scan = log::scan(disk, &staged).map_err(io)?;
+    if scan.broken.is_some() || scan.torn_tail.is_some() || scan.empty_tail_segment.is_some() {
+        return Err(StoreError::Io(format!(
+            "log.migrating does not verify; restore {backup} manually"
+        )));
+    }
+    disk.rename_dir(&staged, &dir.join("log")).map_err(io)?;
+    disk.sync_dir(dir).map_err(io)?;
+    let from = backup
+        .trim_start_matches("log.v")
+        .trim_end_matches(".bak")
+        .parse()
+        .unwrap_or(0);
+    Ok(MigrationReport {
+        from,
+        to: log::FORMAT_VERSION,
+        frames: scan.frames.len() as u64,
+        backup: dir.join(backup).display().to_string(),
     })
 }
 /// Verified format-0 rows (same framing and chain rules as format 1).

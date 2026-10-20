@@ -28,3 +28,15 @@
 - Add G4 crash injection at the blob-put and projection-write steps.
 - Add mutation tests for the key table, adjacency and staging overlay; bound key-table probes.
 - Shard the nightly mutation audit and add the P2 durability job.
+- Fix the findings of the independent P2 review:
+  - **Blocker:** a corrupt header on the final segment no longer deletes acked frames.
+  - **Doctor:** truncation plans list every dropped frame.
+  - **Migration:** an interrupted migration is refused at open and resumed by `migrate`.
+  - **Locking:** offline tools take the store lock.
+  - **Poisoning:** poisoned stores serve nothing, and poison is keyed per store directory.
+  - **Reads:** frames are read by range.
+  - **Tail handling:** semantic tail faults fail closed.
+  - **Snapshots:** an unbuildable snapshot is ignored.
+  - **`ctx`:** never creates a store.
+  - **G4:** a real post-sync-pre-publish hook; small-segment runs exercise rollover.
+  - **Bench:** gates the file-projection configuration; projection roll-forward is batched.

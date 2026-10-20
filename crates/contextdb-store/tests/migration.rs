@@ -44,7 +44,7 @@ fn format0_log_migrates_with_identical_state_t68() {
             acked.push((b.clone(), r));
         }
     }
-    assert_eq!(store.db().digest(), reference.digest());
+    assert_eq!(store.db().unwrap().digest(), reference.digest());
     // Idempotent retries return what was originally acked (format 0 had no status_diff).
     for (b, r) in &acked {
         let original = CommitResult {

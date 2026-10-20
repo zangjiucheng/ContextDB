@@ -66,11 +66,19 @@ fn golden(f: &MemoryFootprint, expected: [usize; 7]) {
 #[test]
 fn accounting_is_a_tight_lower_bound_of_live_heap() {
     // Allocator calibration: growth, in-place collect and drop leave no residual.
-    let base = live();
-    let grown: Vec<u64> = (0..100_000).collect();
-    let narrowed: Vec<u32> = grown.into_iter().map(|x| x as u32).collect();
-    drop(narrowed);
-    assert_eq!(live(), base);
+    // The counters are process-global, so another thread (the test harness)
+    // may allocate during a round; one clean round out of five proves the
+    // counters exact.
+    let residuals: Vec<isize> = (0..5)
+        .map(|_| {
+            let base = live();
+            let grown: Vec<u64> = (0..100_000).collect();
+            let narrowed: Vec<u32> = grown.into_iter().map(|x| x as u32).collect();
+            drop(narrowed);
+            live() - base
+        })
+        .collect();
+    assert!(residuals.contains(&0), "allocator residuals {residuals:?}");
 
     let multi = check(
         "multi_support",

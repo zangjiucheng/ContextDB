@@ -1,11 +1,10 @@
 //! Operator repair (SPEC T33/T34, ADR 0006 §4 step 3). `truncate_before` is the
 //! only way to open a log with a corrupt non-final frame: it drops every frame
-//! from `epoch` on, and the plan lists the acked epochs and client_txn_ids lost.
-use crate::{
-    durability::Durability,
-    log::{self, LogRow},
-    store::StoreError,
-};
+//! from `epoch` on. The plan lists every readable frame that would be dropped
+//! (including frames after an unreadable region and in later segments) and
+//! whether unreadable bytes are dropped too. Execution holds the store lock and
+//! re-plans, so it never races a running store or a stale plan.
+use crate::{durability::Durability, log, store::StoreError};
 use contextdb_model::*;
 use std::path::{Path, PathBuf};
 
@@ -13,10 +12,10 @@ use std::path::{Path, PathBuf};
 pub struct TruncationPlan {
     /// New tail: every frame after it is dropped.
     pub keep_through: Epoch,
-    /// Dropped frames that were still readable (acked data being lost).
+    /// Dropped frames that are still readable (acked data being lost), in log order.
     pub dropped_epochs: Vec<Epoch>,
     pub dropped_txn_ids: Vec<[u8; 16]>,
-    /// Unreadable bytes after the last readable dropped frame.
+    /// Some dropped bytes could not be read as frames: more acked epochs may be lost.
     pub unreadable_tail: bool,
     cut: Option<(PathBuf, u64)>,
     later_segments: Vec<PathBuf>,
@@ -45,40 +44,47 @@ pub fn plan_truncate_before(
     let mut prev = log::GENESIS;
     let mut next = Epoch(1);
     for seg in log::segments(disk, &log_dir).map_err(io)? {
-        if plan.cut.is_some() {
-            plan.later_segments.push(seg);
-            continue;
-        }
         let bytes = disk.read(&seg).map_err(io)?;
-        let mut pos = log::HEADER_LEN;
-        if next >= epoch {
-            // The cut falls on a segment boundary: drop this whole segment.
-            plan.cut = Some((seg.clone(), 0));
+        if plan.cut.is_some() || next >= epoch {
+            // At or after the cut: the whole segment is dropped. A segment
+            // boundary cut keeps nothing of this segment.
+            if plan.cut.is_none() {
+                plan.cut = Some((seg.clone(), 0));
+            }
+            let start = if log::parse_header(&bytes).is_some() {
+                log::HEADER_LEN
+            } else {
+                plan.unreadable_tail |= !bytes.is_empty();
+                0
+            };
+            dropped(&mut plan, &bytes, start);
             plan.later_segments.push(seg);
             continue;
         }
+        if log::parse_header(&bytes).is_none_or(|h| h.first_epoch != next || h.prev != prev) {
+            return Err(StoreError::ChainBroken {
+                epoch: next,
+                fault: log::FrameFault::SegmentHeader,
+            });
+        }
+        let mut pos = log::HEADER_LEN;
         while pos < bytes.len() {
             if next == epoch {
                 plan.cut = Some((seg.clone(), pos as u64));
+                dropped(&mut plan, &bytes, pos);
+                break;
             }
             match log::parse_frame(&bytes, pos) {
                 Ok((row, sum, end)) if row.epoch == next && row.prev_checksum == prev => {
-                    if next >= epoch {
-                        dropped(&mut plan, &row);
-                    }
                     prev = sum;
                     next = Epoch(next.0 + 1);
                     pos = end;
                 }
-                _ if next < epoch => {
+                _ => {
                     return Err(StoreError::ChainBroken {
                         epoch: next,
                         fault: log::FrameFault::Checksum,
                     });
-                }
-                _ => {
-                    plan.unreadable_tail = true;
-                    break;
                 }
             }
         }
@@ -89,10 +95,15 @@ pub fn plan_truncate_before(
     }
     Ok(plan)
 }
-fn dropped(plan: &mut TruncationPlan, row: &LogRow) {
-    plan.dropped_epochs.push(row.epoch);
-    if let Some(id) = row.client_txn_id {
-        plan.dropped_txn_ids.push(id);
+/// Records every readable frame from `pos` on as dropped.
+fn dropped(plan: &mut TruncationPlan, bytes: &[u8], pos: usize) {
+    let (rows, unreadable) = log::readable_frames(bytes, pos);
+    plan.unreadable_tail |= unreadable;
+    for row in rows {
+        plan.dropped_epochs.push(row.epoch);
+        if let Some(id) = row.client_txn_id {
+            plan.dropped_txn_ids.push(id);
+        }
     }
 }
 /// Executes a plan: truncates the cut segment, removes later segments and
@@ -102,6 +113,11 @@ pub fn truncate_before(
     dir: &Path,
     plan: &TruncationPlan,
 ) -> Result<(), StoreError> {
+    let _lock = crate::store::lock(disk, dir)?;
+    // The log must still be exactly what the operator reviewed.
+    if plan_truncate_before(disk, dir, Epoch(plan.keep_through.0 + 1))? != *plan {
+        return Err(StoreError::PlanOutdated);
+    }
     let log_dir = dir.join("log");
     if let Some((seg, pos)) = &plan.cut
         && *pos > 0

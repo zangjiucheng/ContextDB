@@ -61,13 +61,19 @@ fn parse(bytes: &[u8], checksums: &[ContentHash]) -> Option<(Epoch, Inputs)> {
 }
 /// A loaded snapshot: its epoch and input layer.
 pub type Loaded = (Epoch, Inputs);
+/// The accepted snapshot (if any) and the names of rejected snapshot files.
+pub type Newest<T> = (Option<(Epoch, T)>, Vec<String>);
 /// Newest snapshot consistent with the verified log, plus names of rejected files.
 /// Leftover temp files are removed.
-pub fn load_newest(
+/// Newest snapshot that matches the log and that `build` accepts; a snapshot
+/// whose body verifies but which `build` rejects is ignored like a corrupt
+/// one, since snapshots are only an accelerator (ADR 0006 §6).
+pub fn load_newest<T>(
     disk: &dyn Durability,
     dir: &Path,
     checksums: &[ContentHash],
-) -> io::Result<(Option<Loaded>, Vec<String>)> {
+    mut build: impl FnMut(Loaded) -> Option<T>,
+) -> io::Result<Newest<T>> {
     let snap = dir.join("snap");
     if !disk.exists(&snap) {
         return Ok((None, Vec::new()));
@@ -79,7 +85,11 @@ pub fn load_newest(
         disk.remove(&snap.join(n))?;
     }
     for n in names.iter().rev().filter(|n| n.ends_with(".bin")) {
-        match parse(&disk.read(&snap.join(n))?, checksums) {
+        let found = parse(&disk.read(&snap.join(n))?, checksums).and_then(|loaded| {
+            let epoch = loaded.0;
+            build(loaded).map(|t| (epoch, t))
+        });
+        match found {
             Some(found) => return Ok((Some(found), rejected)),
             None => rejected.push(n.clone()),
         }
