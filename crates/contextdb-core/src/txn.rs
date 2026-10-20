@@ -371,6 +371,7 @@ pub(crate) fn apply<S: StatsSink>(
     topo: &mut PearceKelly,
     stats: &mut S,
     context: &mut Context,
+    blobs: &dyn BlobPresence,
 ) -> Result<(), TxError> {
     let op = Resolver { i, a: ids }.op(op)?;
     channel(i, &op, b.channel)?;
@@ -393,6 +394,9 @@ pub(crate) fn apply<S: StatsSink>(
                 || (kind == RecordKind::CodeAnchor) != key.starts_with("code:")
             {
                 return Err(TxError::InvalidKey { key });
+            }
+            if !blobs.contains(&content) {
+                return Err(TxError::MissingBlob { content });
             }
             if context.keys.contains(&key) {
                 return Err(TxError::LogicalExists { key });
@@ -430,6 +434,9 @@ pub(crate) fn apply<S: StatsSink>(
             let logical = l(&logical);
             if i.logicals[logical.index()].kind == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
+            }
+            if !blobs.contains(&content) {
+                return Err(TxError::MissingBlob { content });
             }
             let existing = context.revisions.get(&(logical, content)).copied();
             let revision = match existing {

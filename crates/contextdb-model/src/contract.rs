@@ -248,6 +248,8 @@ pub enum CapacityKind {
     Epoch,
     WatermarkScope,
     WatermarkPosition,
+    /// A batch whose canonical encoding exceeds a u32 length field (P2 store).
+    Encoding,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TxError {
@@ -423,4 +425,23 @@ pub struct CommitResult {
     pub net_delta: NetDelta,
     pub l0_flips: Vec<RevisionId>,
     pub status_diff: Vec<RevisionId>,
+}
+
+/// Payload availability consulted by `MissingBlob` (SPEC §6.1 contract 4, ADR 0006 §3).
+/// Checked for `CreateLogical.content` and every `AddRevision.content`, dedup hits included.
+pub trait BlobPresence {
+    fn contains(&self, content: &ContentHash) -> bool;
+}
+/// P0/P1 callers and log replay: payloads are never consulted.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AllPresent;
+impl BlobPresence for AllPresent {
+    fn contains(&self, _: &ContentHash) -> bool {
+        true
+    }
+}
+impl BlobPresence for std::collections::BTreeSet<ContentHash> {
+    fn contains(&self, content: &ContentHash) -> bool {
+        std::collections::BTreeSet::contains(self, content)
+    }
 }

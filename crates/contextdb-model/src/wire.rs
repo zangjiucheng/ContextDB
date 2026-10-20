@@ -16,41 +16,92 @@ impl std::fmt::Display for WireError {
 }
 impl std::error::Error for WireError {}
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Decode limits (ADR 0006 §2). Element counts are always bounded by the
+/// remaining input as well, so `DURABLE` decodes everything an encoder produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeLimits {
+    pub max_bytes: usize,
+    pub max_elements: usize,
+}
+impl DecodeLimits {
+    /// EventLog v0 import and test traces.
+    pub const EVENTLOG: Self = Self {
+        max_bytes: MAX_BYTES,
+        max_elements: 1_000_000,
+    };
+    /// Durable frames and snapshots: no fixed caps beyond the input itself.
+    pub const DURABLE: Self = Self {
+        max_bytes: usize::MAX,
+        max_elements: usize::MAX,
+    };
+}
+/// Remaining input plus the limits every nested decode observes.
+#[derive(Debug)]
+pub struct Decoder<'a> {
+    rest: &'a [u8],
+    limits: DecodeLimits,
+}
+impl<'a> Decoder<'a> {
+    pub fn new(bytes: &'a [u8], limits: DecodeLimits) -> Self {
+        Self {
+            rest: bytes,
+            limits,
+        }
+    }
+    pub fn remaining(&self) -> usize {
+        self.rest.len()
+    }
+    /// Raw bytes for length-prefixed durable fields.
+    pub fn take_bytes(&mut self, n: usize) -> Result<&'a [u8], WireError> {
+        take(self, n)
+    }
+    /// Element count admitted by both the limits and the remaining bytes.
+    fn count(&mut self) -> Result<usize, WireError> {
+        let n = u32::decode(self)? as usize;
+        if n > self.limits.max_elements || n > self.remaining() {
+            return Err(WireError::LimitExceeded);
+        }
+        Ok(n)
+    }
+}
 pub trait Wire: Sized {
     fn encode(&self, out: &mut Vec<u8>);
-    fn decode(input: &mut &[u8]) -> Result<Self, WireError>;
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, WireError>;
     fn canonical_bytes(&self) -> Vec<u8> {
         let mut v = Vec::new();
         self.encode(&mut v);
         v
     }
     fn from_bytes(bytes: &[u8]) -> Result<Self, WireError> {
-        if bytes.len() > MAX_BYTES {
+        Self::from_bytes_with(bytes, DecodeLimits::EVENTLOG)
+    }
+    fn from_bytes_with(bytes: &[u8], limits: DecodeLimits) -> Result<Self, WireError> {
+        if bytes.len() > limits.max_bytes {
             return Err(WireError::LimitExceeded);
         }
-        let mut input = bytes;
+        let mut input = Decoder::new(bytes, limits);
         let value = Self::decode(&mut input)?;
-        if !input.is_empty() {
+        if input.remaining() != 0 {
             return Err(WireError::TrailingBytes);
         }
         Ok(value)
     }
 }
-fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], WireError> {
-    if n > input.len() {
+fn take<'a>(input: &mut Decoder<'a>, n: usize) -> Result<&'a [u8], WireError> {
+    if n > input.rest.len() {
         return Err(WireError::InvalidEncoding);
     }
-    let (a, b) = input.split_at(n);
-    *input = b;
+    let (a, b) = input.rest.split_at(n);
+    input.rest = b;
     Ok(a)
 }
-macro_rules! number {($($t:ty),*)=>{$(impl Wire for $t {fn encode(&self,o:&mut Vec<u8>){o.extend(self.to_le_bytes())}fn decode(i:&mut &[u8])->Result<Self,WireError>{Ok(Self::from_le_bytes(take(i,std::mem::size_of::<Self>())?.try_into().map_err(|_|WireError::InvalidEncoding)?))}})*};}
+macro_rules! number {($($t:ty),*)=>{$(impl Wire for $t {fn encode(&self,o:&mut Vec<u8>){o.extend(self.to_le_bytes())}fn decode(i:&mut Decoder<'_>)->Result<Self,WireError>{Ok(Self::from_le_bytes(take(i,std::mem::size_of::<Self>())?.try_into().map_err(|_|WireError::InvalidEncoding)?))}})*};}
 number!(u8, u16, u32, u64);
 impl Wire for bool {
     fn encode(&self, o: &mut Vec<u8>) {
         u8::from(*self).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(false),
             1 => Ok(true),
@@ -62,7 +113,7 @@ impl<const N: usize> Wire for [u8; N] {
     fn encode(&self, o: &mut Vec<u8>) {
         o.extend(self)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         take(i, N)?
             .try_into()
             .map_err(|_| WireError::InvalidEncoding)
@@ -77,11 +128,8 @@ impl<T: Wire> Wire for Vec<T> {
             x.encode(o)
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
-        let n = u32::decode(i)? as usize;
-        if n > 1_000_000 || n > i.len() {
-            return Err(WireError::LimitExceeded);
-        }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let n = i.count()?;
         (0..n).map(|_| T::decode(i)).collect()
     }
 }
@@ -89,7 +137,7 @@ impl Wire for String {
     fn encode(&self, o: &mut Vec<u8>) {
         self.as_bytes().to_vec().encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         String::from_utf8(Vec::<u8>::decode(i)?).map_err(|_| WireError::InvalidEncoding)
     }
 }
@@ -100,7 +148,7 @@ impl<T: Wire> Wire for Option<T> {
             x.encode(o)
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         if bool::decode(i)? {
             Ok(Some(T::decode(i)?))
         } else {
@@ -113,7 +161,7 @@ impl<A: Wire, B: Wire> Wire for (A, B) {
         self.0.encode(o);
         self.1.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok((A::decode(i)?, B::decode(i)?))
     }
 }
@@ -126,7 +174,7 @@ impl<T: Wire + Ord> Wire for BTreeSet<T> {
             x.encode(o)
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         let v = Vec::<T>::decode(i)?;
         if v.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(WireError::InvalidEncoding);
@@ -149,7 +197,7 @@ impl<K: Wire + Ord, V: Wire> Wire for BTreeMap<K, V> {
             pair.1.encode(o)
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         let v = Vec::<(K, V)>::decode(i)?;
         if v.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(WireError::InvalidEncoding);
@@ -166,7 +214,7 @@ impl Wire for LogicalId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -174,7 +222,7 @@ impl Wire for RevisionId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -182,7 +230,7 @@ impl Wire for RuleId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -190,7 +238,7 @@ impl Wire for ArtifactId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -198,7 +246,7 @@ impl Wire for IncId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -206,7 +254,7 @@ impl Wire for BranchId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u16::decode(i)?))
     }
 }
@@ -214,7 +262,7 @@ impl Wire for PrincipalId {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u32::decode(i)?))
     }
 }
@@ -222,7 +270,7 @@ impl Wire for Epoch {
     fn encode(&self, o: &mut Vec<u8>) {
         self.0.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self(u64::decode(i)?))
     }
 }
@@ -230,7 +278,7 @@ impl Wire for EdgeKind {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Ref),
             1 => Ok(Self::Pin),
@@ -244,7 +292,7 @@ impl Wire for RecordKind {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Fact),
             1 => Ok(Self::Assumption),
@@ -264,7 +312,7 @@ impl Wire for Channel {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Agent),
             1 => Ok(Self::Observer),
@@ -277,7 +325,7 @@ impl Wire for Verdict {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Verified),
             1 => Ok(Self::Rejected),
@@ -290,7 +338,7 @@ impl Wire for ArtifactType {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Conflict),
             1 => Ok(Self::PendingReview),
@@ -305,7 +353,7 @@ impl Wire for SemState {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::NotRequired),
             1 => Ok(Self::Verified),
@@ -320,7 +368,7 @@ impl Wire for PendingReason {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Semantic),
             1 => Ok(Self::StructuralUnknown),
@@ -333,7 +381,7 @@ impl Wire for Structural {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Supported),
             1 => Ok(Self::Unsupported),
@@ -346,7 +394,7 @@ impl Wire for Currency {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Current),
             1 => Ok(Self::Superseded),
@@ -359,7 +407,7 @@ impl Wire for Observation {
     fn encode(&self, o: &mut Vec<u8>) {
         (*self as u8).encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::NotApplicable),
             1 => Ok(Self::Fresh),
@@ -373,7 +421,7 @@ impl Wire for PolicyDoc {
         self.version.encode(o);
         self.require_deps.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             version: Wire::decode(i)?,
             require_deps: Wire::decode(i)?,
@@ -388,7 +436,7 @@ impl Wire for Batch {
         self.client_txn_id.encode(o);
         self.ops.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             branch: Wire::decode(i)?,
             principal: Wire::decode(i)?,
@@ -407,7 +455,7 @@ impl Wire for Logical {
         self.origin_branch.encode(o);
         self.origin_epoch.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             key: Wire::decode(i)?,
             kind: Wire::decode(i)?,
@@ -426,7 +474,7 @@ impl Wire for Revision {
         self.origin_branch.encode(o);
         self.origin_epoch.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             logical: Wire::decode(i)?,
             content: Wire::decode(i)?,
@@ -441,7 +489,7 @@ impl Wire for Incidence {
         self.premise.encode(o);
         self.kind.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             premise: Wire::decode(i)?,
             kind: Wire::decode(i)?,
@@ -457,7 +505,7 @@ impl Wire for Rule {
         self.origin_branch.encode(o);
         self.origin_epoch.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             conclusion: Wire::decode(i)?,
             premises: Wire::decode(i)?,
@@ -473,7 +521,7 @@ impl Wire for ValidationRecord {
         self.verdict.encode(o);
         self.validator.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             verdict: Wire::decode(i)?,
             validator: Wire::decode(i)?,
@@ -485,7 +533,7 @@ impl Wire for Metadata {
         self.tags.encode(o);
         self.dirs.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             tags: Wire::decode(i)?,
             dirs: Wire::decode(i)?,
@@ -502,7 +550,7 @@ impl Wire for Artifact {
         self.origin_branch.encode(o);
         self.origin_epoch.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             ty: Wire::decode(i)?,
             target: Wire::decode(i)?,
@@ -527,7 +575,7 @@ impl Wire for Inputs {
         self.watermarks.encode(o);
         self.policy.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             logicals: Wire::decode(i)?,
             revisions: Wire::decode(i)?,
@@ -554,7 +602,7 @@ impl Wire for Dimensions {
         self.stale_reason.encode(o);
         self.observation.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             authorized: Wire::decode(i)?,
             conflicted: Wire::decode(i)?,
@@ -575,12 +623,57 @@ impl Wire for Allocations {
         self.new_rules.encode(o);
         self.new_artifacts.encode(o);
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             new_logicals: Wire::decode(i)?,
             new_revisions: Wire::decode(i)?,
             new_rules: Wire::decode(i)?,
             new_artifacts: Wire::decode(i)?,
+        })
+    }
+}
+impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.0.encode(o);
+        self.1.encode(o);
+        self.2.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok((Wire::decode(i)?, Wire::decode(i)?, Wire::decode(i)?))
+    }
+}
+impl Wire for NetDelta {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.base_flips.encode(o);
+        self.head_moves.encode(o);
+        self.enable_flips.encode(o);
+        self.new_rules.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            base_flips: Wire::decode(i)?,
+            head_moves: Wire::decode(i)?,
+            enable_flips: Wire::decode(i)?,
+            new_rules: Wire::decode(i)?,
+        })
+    }
+}
+/// Durable `result_blob` (ADR 0006 §2): field declaration order.
+impl Wire for CommitResult {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.epoch.encode(o);
+        self.allocations.encode(o);
+        self.net_delta.encode(o);
+        self.l0_flips.encode(o);
+        self.status_diff.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            epoch: Wire::decode(i)?,
+            allocations: Wire::decode(i)?,
+            net_delta: Wire::decode(i)?,
+            l0_flips: Wire::decode(i)?,
+            status_diff: Wire::decode(i)?,
         })
     }
 }
@@ -601,7 +694,7 @@ impl Wire for LogicalRef {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Existing(Wire::decode(i)?)),
             1 => Ok(Self::Key(Wire::decode(i)?)),
@@ -623,7 +716,7 @@ impl Wire for RevRef {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Existing(Wire::decode(i)?)),
             1 => Ok(Self::New(Wire::decode(i)?)),
@@ -644,7 +737,7 @@ impl Wire for RuleRef {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Existing(Wire::decode(i)?)),
             1 => Ok(Self::New(Wire::decode(i)?)),
@@ -665,7 +758,7 @@ impl Wire for ArtifactRef {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Existing(Wire::decode(i)?)),
             1 => Ok(Self::New(Wire::decode(i)?)),
@@ -685,7 +778,7 @@ impl Wire for Witness {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Base),
             1 => Ok(Self::Rule(Wire::decode(i)?)),
@@ -711,7 +804,7 @@ impl Wire for StaleReason {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::HeadSuperseded),
             1 => Ok(Self::Unsupported),
@@ -839,7 +932,7 @@ impl Wire for Op {
             }
         }
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::CreateLogical {
                 key: Wire::decode(i)?,
@@ -921,7 +1014,7 @@ impl Wire for NodeState {
         }
         self.dimensions.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
             l0: Wire::decode(i)?,
             l1: Wire::decode(i)?,
@@ -947,13 +1040,13 @@ impl Wire for DerivedSnapshot {
         }
         self.sem.encode(o)
     }
-    fn decode(i: &mut &[u8]) -> Result<Self, WireError> {
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         let nodes = Wire::decode(i)?;
         let sat = Wire::decode(i)?;
         let unsat = Wire::decode(i)?;
         let active = Wire::decode(i)?;
         let n = u32::decode(i)? as usize;
-        if n > i.len() / 2 {
+        if n > i.remaining() / 2 {
             return Err(WireError::InvalidEncoding);
         }
         let layer_active = (0..n)

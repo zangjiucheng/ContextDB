@@ -21,6 +21,14 @@ impl InputModel {
         }
     }
     pub fn apply(&mut self, batch: &Batch) -> Result<ApplyResult, TxError> {
+        self.apply_with(batch, &AllPresent)
+    }
+    /// Same contract as core `commit_with`: `MissingBlob` at its §6.2 per-Op slot.
+    pub fn apply_with(
+        &mut self,
+        batch: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<ApplyResult, TxError> {
         if batch.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
@@ -29,7 +37,7 @@ impl InputModel {
         let next = Epoch(self.epoch.0.saturating_add(1));
         let old_revisions = staged.revisions.len();
         for (op_index, op) in batch.ops.iter().enumerate() {
-            apply_op(&mut staged, &mut ids, batch, op, op_index, next)?;
+            apply_op(&mut staged, &mut ids, batch, op, op_index, next, blobs)?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
             let logical = &staged.logicals[revision.logical.index()];
@@ -417,6 +425,7 @@ fn apply_op(
     op: &Op,
     op_index: usize,
     epoch: Epoch,
+    blobs: &dyn BlobPresence,
 ) -> Result<(), TxError> {
     let op = resolve(i, a, op)?;
     check_channel(i, b.channel, &op)?;
@@ -440,6 +449,9 @@ fn apply_op(
                 && (key.starts_with("code:") == (kind == RecordKind::CodeAnchor));
             if !valid {
                 return Err(TxError::InvalidKey { key });
+            }
+            if !blobs.contains(&content) {
+                return Err(TxError::MissingBlob { content });
             }
             if i.logicals.iter().any(|l| l.key == key) {
                 return Err(TxError::LogicalExists { key });
@@ -475,6 +487,9 @@ fn apply_op(
             let l = lid(&logical);
             if i.logicals[l.index()].kind == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
+            }
+            if !blobs.contains(&content) {
+                return Err(TxError::MissingBlob { content });
             }
             let r = if let Some(n) = i
                 .revisions

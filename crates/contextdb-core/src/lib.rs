@@ -199,9 +199,17 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.timing.as_ref()
     }
     pub fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        self.commit_with(b, &AllPresent)
+    }
+    /// Commit with payload availability for `MissingBlob` (P2 store; replay uses AllPresent).
+    pub fn commit_with(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<CommitResult, TxError> {
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
-        let result = self.commit_inner(b);
+        let result = self.commit_inner(b, blobs);
         #[cfg(feature = "timing")]
         if result.is_ok() {
             self.timing = Some(CommitTiming {
@@ -210,7 +218,11 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         }
         result
     }
-    fn commit_inner(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+    fn commit_inner(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<CommitResult, TxError> {
         if b.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
@@ -242,6 +254,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                         &mut pk,
                         &mut stats,
                         &mut context,
+                        blobs,
                     )?;
                 }
                 txn::final_policy(&working, rev_mark)?;
