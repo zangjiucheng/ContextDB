@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.4.2 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.4.3 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -303,7 +303,7 @@ contextdb/
 │   ├── contextdb-core/      # 内核：arena、canon、index、heads、undo、topo、txn、engine、layers、query、cert
 │   ├── contextdb-oracle/    # 只依赖 model；独立 InputModel + jacobi + kahn（双 oracle）
 │   ├── contextdb-testkit/   # scenario! DSL、proptest 策略、coverage 门槛、exhaustive、最小 shape 生成器
-│   ├── contextdb-store/     # P2：op log、snapshot、recovery（SQLite WAL）
+│   ├── contextdb-store/     # P2：op log（自有分段日志）、snapshot、recovery；SQLite 投影
 │   ├── contextdb-daemon/    # P3：ctxd、commit actor、snapshot readers、IPC、transport channels
 │   ├── contextdb-mcp/       # P3：MCP stdio server（thin client）
 │   ├── contextdb-hooks/     # P4：ctx-hook、outbox
@@ -431,7 +431,7 @@ commit(batch):
 - I2 exact 维护模式的派生状态 == oracle（P1 起每 epoch 精确比较计数器）。
 - I3 被拒事务不改变任何可观察状态（epoch、digest、heads、derived）。
 - I4 读者永远看不到半提交状态（P3 起）。
-- I5 durability 契约（P2 起）：(a) 已 ack 的事务崩溃后必定恢复；(b) 未 durable 的事务永不可见；(c) 恢复后的状态是 op_log 中某个 durable **前缀**，其最后 epoch 满足 `last_acked ≤ recovered ≤ last_durable`。已 durable 但未 ack 的事务可能被恢复，客户端用 `client_txn_id` 查询结果或幂等重试（§6.1）。
+- I5 durability 契约（P2 起；适用于进程崩溃与断电，介质损坏由 T33/T34 处理，见 ADR 0006）：(a) 已 ack 的事务崩溃后必定恢复；(b) 未 durable 的事务永不可见；(c) 恢复后的状态是 op_log 中某个 durable **前缀**，其最后 epoch 满足 `last_acked ≤ recovered ≤ last_durable`。已 durable 但未 ack 的事务可能被恢复，客户端用 `client_txn_id` 查询结果或幂等重试（§6.1）。
 - I6 任何非 CERTIFIED 状态（STALE / PENDING（含 StructuralUnknown、ObservationLag）/ CONFLICTED / UNAVAILABLE）永远不会被汇总、打包、缓存或展示为 CERTIFIED（P3 起）。
 - I7 未授权主体得不到受保护的 payload、witness、WHY（P9 起；P3–P8 单主体模式下由 transport 信任边界保证）。
 - I8 派生状态只依赖已提交输入（SD7）：`rebuild_from_op_log == live state`（P2 起）。
@@ -500,18 +500,18 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 
 **范围**
 - G0 前置：ADR 定稿 op_log canonical 编码、durable 顺序、幂等键存储与缺失 blob 恢复语义（§7）。
-- `contextdb-store`：SQLite（WAL）中的 append-only `op_log`（一行 = 一个完整已提交 batch，字段见 §7），**op_log 是唯一真相源**；revision payload 存 `blobs/`（blake3 内容寻址，同 hash 幂等）。
-- macOS durability：`PRAGMA fullfsync=ON; PRAGMA checkpoint_fullfsync=ON`，durability 语义以 F_FULLFSYNC 为准；Linux 用 `synchronous=FULL`。
+- `contextdb-store`：自有 append-only 分段日志中的 `op_log`（一帧 = 一个完整已提交 batch，字段见 §7；ADR 0006），**op_log 是唯一真相源**；全部日志 I/O 经 `Durability` trait，测试用模拟磁盘区分已同步/未同步字节。SQLite（WAL）只存可重建投影。revision payload 存 `blobs/`（blake3 内容寻址，同 hash 幂等）。
+- durability：op_log 帧在 ack 前 sync；macOS 以 F_FULLFSYNC 为准（另报告关闭 fullfsync 的测量值），Linux 用 fdatasync；新分段同步目录。持久化 I/O 错误 fail-stop，只能在新进程中恢复。
 - 快照 checkpoint（输入层 + 可选派生层序列化）+ 启动重放；启动后用 oracle 抽样校验 counter digest，不一致 fail-closed。
 - `head_history`（每次 SetHead 在同一事务关闭/打开窗口）、`base_history`（Assert/RetractBase）、`diff_log`。
 - HISTORICAL(epoch)、SNAPSHOT(epoch)、DIFF(epochA, epochB) 基于持久数据。
-- crash injection 框架（注入点：pre-WAL / post-WAL-pre-sync / post-sync-pre-publish / mid-snapshot）。
+- crash injection 框架（模拟磁盘只保留已同步状态；注入点：pre-WAL（帧写入前）/ post-WAL-pre-sync（已写未同步）/ post-sync-pre-publish / mid-snapshot，另含 blob 与投影写入步骤；sync 置空的变体必须使 G4 失败）。
 - `ctx replay`、`ctx doctor`（oracle 抽样自检、hash 链校验、`--rebuild` 从 op_log 重建全部投影）。
 - 格式版本化与迁移框架。
 
 **Gate P2**
 - G2：T07b（历史 revision 可读）、T13、T18、T18b、T33、T34、T35、T68（迁移：旧版本 op_log 重放后状态一致）。
-- G4：crash injection 在每个注入点各 ≥ 1,000 次随机运行：恢复后 epoch 满足 I5(c)；无部分事务；重放后派生状态 == oracle；对崩溃时 in-flight 的每个 `client_txn_id`，`txn_status` 返回 `Committed{epoch}` 或 `Unknown`，重试不重复应用。
+- G4：crash injection 在每个注入点各 ≥ 1,000 次随机运行：恢复后 epoch 满足 I5(c)；无部分事务；重放后派生状态 == oracle；对崩溃时 in-flight 的每个 `client_txn_id`，`txn_status` 返回 `Committed{epoch}` 或 `NotCommitted`（§6.1 输入契约 1；未 durable 即 NotCommitted，可安全重试），重试不重复应用。
 - G3：PROP10（rebuild_from_op_log == incremental）10,000 seed。
 - G5（initial）：单事务 commit（含 durable sync）p99 分别报告 fullfsync on/off；初始目标 on ≤ 25 ms、off ≤ 10 ms；冷启动重放 100K 事务 ≤ 5 s（有快照时 ≤ 1 s）。
 - G8：文档说明 durability 语义（何时 ack、fullfsync）与 P9 前不支持 erasure。
@@ -731,7 +731,7 @@ db.diff(epoch_a, epoch_b)?;
 db.certify(items, principal)?; db.validate_certificate(&cert, live_pos)?;
 ```
 
-Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不满足即 fail-closed）。
+Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不满足即 fail-closed）。`Snapshot(e)` 以 logical 为目标，返回 epoch e 时的 head 及其在 e 的 NodeStatus；`Historical(e)` 以 revision 为目标，返回该 revision 在 e 的 NodeStatus（不论当时是否为 head）及 payload 状态。目标在 e 尚不存在 → `UnknownRef`。payload 不版本化，其状态按读取时刻报告。同一 (目标, mode) 的结果按 Wire 编码逐字节稳定（T13），无论来自内存历史、投影或日志重放（ADR 0006 §8）。
 
 **Op 全集**（`contextdb-model`，P0 起冻结，后续阶段只追加）：`CreateLogical{key, kind, scope_lane, content, adopt_as_base}`、`AddRevision{logical, content, adopt_as_base}`、`SetHead{logical, expected, new}`、`AssertBase{rev}`、`RetractBase{rev}`、`AddRule{conclusion, incidences, enabled}`、`SetRuleEnabled{rule, enabled}`、`Rebind{rule, from, to}`、`RecordValidation{rule, curvec_seen, verdict, validator}`、`SetPolicy{policy}`、`ObserverWatermark{scope, expected, position}`、`SetMetadata{logical, tags, dirs}`、`OpenArtifact{type, target, payload_hash}`、`ResolveArtifact{id}`。**没有**修改 revision payload 的 Op。
 
@@ -791,7 +791,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `MergeNotCertified{logical, status}` | SD19 `require_certified` merge | 同名 |
 
 **单个 Op 的检查顺序**（规范性；oracle 与 front-end 相同，PROP1 / P0 G3 的错误等价按此判定）：
-`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
+`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。P2 起 store 在所有 Op 检查之前做 batch 级检查：先幂等（`TxnIdReuse` 或返回原结果），再编码容量（`CapacityExceeded{kind: Encoding}`）。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
 
 ### 6.3 MCP 工具（`ctx-mcp`）
 
@@ -871,8 +871,9 @@ Certificate {
 ## 7. 数据与存储格式
 
 ```sql
-op_log(epoch PRIMARY KEY, branch, batch_blob, principal, channel, client_txn_id UNIQUE NULL,
-       batch_hash, result_blob, prev_checksum, checksum)   -- 唯一真相源，一行 = 一个完整已提交 batch；hash 链
+op_log(epoch, branch, batch_blob, principal, channel, client_txn_id NULL /*唯一*/,
+       batch_hash, result_blob, prev_checksum, checksum)   -- 唯一真相源：自有分段日志的帧（ADR 0006），一帧 = 一个完整已提交 batch；hash 链
+-- 以下表为 SQLite 中的可重建投影，带 projection_watermark(epoch)
 logicals(id, key UNIQUE, kind, scope_lane, dirs_json, owner, origin_branch, origin_epoch)
 revisions(id, logical_id, payload_ref /*blake3*/, content_hash, code_commit,
           author_principal, origin_branch, origin_epoch,
@@ -897,7 +898,7 @@ handoffs(id, owner, state, cert_id, summary)
 -- client side outbox.sqlite: events(id, packet_id UNIQUE, payload, attempts, status)
 ```
 
-- **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文。erasure 的覆盖范围（blobs、快照中的 payload 缓存、git 镜像、导出物）在 P9 定义；镜像与导出物需要重新生成。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为在 P2 G0 以 ADR 定稿。
+- **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围（blobs、快照中的 payload 缓存、git 镜像、导出物）在 P9 定义；镜像与导出物需要重新生成。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
 - 内存内核是 op_log 的物化视图；除 op_log 与 blobs 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。
 - EventLog（JSONL / bincode，带 version）是 op_log 的可移植导出；研究 track 的所有 baseline 消费同一份 EventLog。
 - 格式变更必须版本化并提供迁移，迁移有测试（T68）。
@@ -957,7 +958,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T16b-sem | P0 | v1→v2→v1 后 sem 恢复 Verified |
 | T16b-cert | P3 | ABA 下证书 Valid；`strict_no_aba` 时 Invalid；锚点 base 撤销再恢复时 strict 亦为 Invalid |
 | T17 / T17b | P9 | 未授权主体 → UNAVAILABLE，不泄露 payload / witness / WHY；WHY 中未授权 premise 为 `Redacted{count}` |
-| T18 | P2 | WAL 中断：所有已 ack 提交都被恢复；未 durable 的不出现；恢复状态是 durable 前缀 |
+| T18 | P2 | 日志写入中断（含未同步写丢失）：所有已 ack 提交都被恢复；未 durable 的不出现；恢复状态是 durable 前缀 |
 | T18b | P2 | durable 后、ack 前崩溃：重启后该事务可见；用同一 `client_txn_id` 重试返回原 `CommitResult`，不重复应用；`txn_status` 返回 `Committed{epoch}` |
 | T19 | P6 | write skew：两个计划都读 A、B，写不同 key，第二个 `ReadSetConflict` |
 | T20a | P6 | branch 中 `D2[Cur]→D1@v1`，main 改为 v2，merge 后 D2 STALE |
@@ -975,7 +976,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T31 | P1 | Hu-Motik-Horrocks 2018 Example 3 的 DAG 改写版，比较计数器 |
 | T32 | P3 | retry escape：CAS 冲突后知情覆盖——新 revision 的 justification 必须引用实际读到的 head（文档化限制） |
 | T33 | P2 | op_log hash 链被篡改 → doctor 检测并拒绝启动 |
-| T34 | P2 | op_log 尾部截断/损坏 → 截断到最后完整记录并报告（行为由 ADR 固定） |
+| T34 | P2 | op_log 尾部截断/损坏（最后一段的最后一帧或其后字节校验失败，含撕裂、零填充、乱序页）→ 截断到最后完整记录并报告；更早的帧校验失败 → fail-closed（T33），仅 `ctx doctor --truncate-before` 经确认后截断并列出丢失的已 ack epoch（ADR 0006） |
 | T35 | P2 | 同内容 payload 幂等（同 blake3 不重复存储） |
 | T36 | P3 | deps 引用非本会话证书 handle → `InvalidDep` |
 | T37 | P3 | daemon 第二实例被拒 |
@@ -1228,7 +1229,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | B13 | 部署限定 co-located（§1.4） | centralized lineage 在 PlanFence 实验中劣于分布式方案 |
 | B14 | 项目化：daemon / MCP / hooks / code anchors / 检索 / 权限阶段（P3–P9） | 从研究原型扩展为长期产品 |
 | B15 | 新增 SD18 CodeAnchor、SD19 Branch、§2.5 准入矩阵、§3.5 禁止机制；SD14 扩展到观察缺失 | 代码锚点进入同一传播内核；源码核验结论规范化 |
-| B16 | 持久化选型改为 SQLite（op_log 为真相源），内核仍不依赖数据库 | 产品路线不需要自研存储引擎；研究 H1 只针对内存内核布局 |
+| B16 | 持久化选型改为 SQLite（op_log 为真相源），内核仍不依赖数据库（**v1.4.3 起由 ADR 0006 取代**：op_log 为自有分段日志，SQLite 只存投影） | 产品路线不需要自研存储引擎；研究 H1 只针对内存内核布局 |
 | B17 | 引用更正 | R10 标题更新为 v2；R6 补 PVLDB 2023；R15 补 arXiv 2501.13956；补 BPS、McAllester、Motik 2019、Shared Arrangements |
 
 **旧文献编号映射**（`docs/research/ContextDB_RESEARCH.md` 中的 R 编号；本 SPEC 不再使用 R 编号指代文献，R1–R4 仅指 §9.2 研究阶段）：R1 Doyle 1979；R2 de Kleer 1986；R3 Gupta et al. 1993；R4 Hu-Motik-Horrocks 2018；R5 McSherry et al. 2013；R6 Budiu et al. DBSP；R7 Orogat & Mansour 2026；R8 MemTX；R9 PACMI；R10 PlanFence / Fresh Memory, Stale Plans；R11 MemTrace；R12 Yu et al. 2026；R13 CoMemBench；R14 Letta Context Repositories；R15 Graphiti / Zep。
@@ -1238,7 +1239,8 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
-| 1.4.2 | 2026-10-20 | P1 G5 内存预算经 ADR 0005（项目所有者确认）校准：先压缩存储（下界 292.53 → live heap 181.15 B/incidence），再按 hot / inputs / query cache / history 分范围设预算（⌈1.10 × 实测上界⌉），并以计数分配器 live heap 作可证明的上界；不改变任何语义 |
+| 1.4.3 | 2026-10-20 | 项目所有者决定 op_log 改用自有 append-only 分段日志（可做精确的未同步写丢失注入），SQLite 只存可重建投影；P2 durability 语义改为帧 sync + fail-stop；T34 仅允许最后一帧自动截断并报告，更早帧损坏 fail-closed（doctor 显式截断）；payload 状态增加 Missing、Corrupt；§6.1 定义 Snapshot / Historical 读模式；§6.2 增加 batch 级检查与 `CapacityKind::Encoding`。见 ADR 0006 |
+| 1.4.2 | 2026-10-20 | P1 G5 内存预算经 ADR 0005（项目所有者确认）校准：先压缩存储（下界 292.53 → live heap 181.15 B/incidence），再按 hot / inputs / query cache / history 分范围设预算（⌈1.10 × 实测上界⌉），并以计数分配器 live heap 作可证明的上界；不改变任何语义。P2 G4 的 `Unknown` 统一为 §6.1 的 `NotCommitted` |
 | 1.4.1 | 2026-10-19 | P0 执行契约补全：PolicyViolation reason 与 ArtifactNotOpen 检查序同步；明确 Rebind 保留 enabled、确定性 cycle path、PENDING 原因顺序、metadata 收窄及 InvalidMetadata、EventLog v0、MAIN-only、A5 多错排序。见 ADR 0003；不引入后续阶段能力 |
 | 1.4 | 2026-10-19 | 按 `docs/SPEC_REVIEW.md`（R06、R09–R11）与 `docs/SPEC_REVIEW_v1.3.md`（Q01–Q06）修订：Observer 可原子提交 AnchorBroken（输入契约 7，T09t）；Policy 改为按 branch，key 命名空间为唯一全局例外且不泄露信息，跨 branch 去重引入可见性（SD19、输入契约 5，T73、T75）；PROP7 改为读写集充分条件 + canonical 重命名比较口径；A2 Summary 表述与 SD2/3 一致；diff 拆为 l0_flips 与 status_diff（SD8.4、PROP2/2b）；ArtifactId / ArtifactRef / new_artifacts（T09u）；幂等键只记录已提交事务、TxnIdReuse、op_log 一行一 batch；op_log 不含 payload 正文、shred 后可重放（§7，P2 G0 ADR）；§3.5.13 改为禁止“宣称原子”；A5 改为强制约束（enabled 规则 + 禁止 base，T09v） |
 | 1.3 | 2026-10-19 | 第三轮复核 5 条：(1) SD11 增加 Sem-head 条件（Sem 字面量要求当前 head 在对应层成立），SD5 增加 `V_l` 虚拟节点使其可做环检查，O3 关闭，修复“锚点更新验证后再删除 Sem 下游仍 CERTIFIED”；(2) §6.4 证书校验改为逐条全映射 + 聚合 + 重算 vector，新增 Conflicted、ValidRecertified（取代 ValidViaAlternative），strict 检查先于重新认证；(3) SD19 改为“物理全局、逻辑按 branch”：rule 可见性、enabled、ValidationRecord、Artifact、watermark 按 branch，cycle 图按 branch，WHAT_IF 改为 undo 回滚的 dry-run；(4) I5 改为 durable 前缀契约 + `client_txn_id` 幂等与 `txn_status`；(5) §6.1 输入契约：New(k) 引用、ID 分配、revision 身份 (logical, content)、CreateLogical key 规则、通道规则、PolicyDoc 内联与规范 hash；新增 ChannelRestricted、InvalidKey、InvalidPolicy、MissingBlob；新增 T09p–s、T15d/e、T18b、T43b、T47、T72 |

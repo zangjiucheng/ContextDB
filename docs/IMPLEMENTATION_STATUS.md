@@ -37,8 +37,9 @@ That run does not validate the current P1 changes.
 
 ## Boundaries
 
-- P1 Gate closes on remote CI. P2 persistence has not begun; its G0 ADR
-  ([0006](adr/0006-p2-durable-log.md)) is proposed.
+- P1 Gate closes on remote CI. P2 persistence has not begun. Its G0 ADR
+  ([0006](adr/0006-p2-durable-log.md)) has been accepted after three rounds of independent review
+  (owner decision: our own append-only op_log, with SQLite only for projections).
   client_txn_id is carried but not deduplicated. Content hashes have no blob store.
 - L1/L2 use memoized evaluation; full incremental layer maintenance is P3.
   Structural insertion is not covered by mutable-commit latency measurements.
