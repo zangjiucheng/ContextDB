@@ -199,7 +199,10 @@ fn corrupt_final_frame_truncates_and_reports_t34() {
     let strict = Store::open(
         disk.clone(),
         Path::new(DIR),
-        &OpenOptions { strict_tail: true },
+        &OpenOptions {
+            strict_tail: true,
+            ..OpenOptions::default()
+        },
     );
     assert!(matches!(strict, Err(StoreError::TailUnverifiable { .. })));
     let (store, report) = open(&disk).unwrap();
@@ -507,4 +510,99 @@ fn prop10_rebuild_from_op_log_equals_incremental() {
             );
         }
     }
+}
+fn open_with(disk: &SimDisk, proj: &std::path::Path) -> (Store<SimDisk>, OpenReport) {
+    let options = OpenOptions {
+        projections: ProjectionFile::Path(proj.to_path_buf()),
+        ..OpenOptions::default()
+    };
+    Store::open(disk.clone(), Path::new(DIR), &options).unwrap()
+}
+fn commit_some(store: &mut Store<SimDisk>, seed: u64, n: usize) {
+    for b in contextdb_testkit::generate_p1(seed).batches.iter().take(n) {
+        let b = with_blobs(store, b);
+        let _ = store.commit(&b);
+    }
+}
+/// Reads that must agree whichever source answers them (ADR 0006 §8).
+fn every_read(store: &Store<SimDisk>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let end = store.epoch();
+    let inputs = store.db().inputs();
+    for e in 0..=end.0 {
+        let e = Epoch(e);
+        for r in 0..inputs.revisions.len() as u32 {
+            if let Ok((s, _)) = store.read_historical(RevisionId(r), e) {
+                out.push(s.canonical_bytes());
+            } else {
+                out.push(vec![0xFF]);
+            }
+        }
+        for l in 0..inputs.logicals.len() as u32 {
+            match store.read_snapshot(LogicalId(l), e) {
+                Ok((r, s)) => out.push([r.0.to_le_bytes().to_vec(), s.canonical_bytes()].concat()),
+                Err(_) => out.push(vec![0xFE]),
+            }
+        }
+        out.push(format!("{:?}", store.diff(e, end).unwrap()).into_bytes());
+    }
+    out
+}
+#[test]
+fn projections_roll_forward_rebuild_and_agree_with_replay() {
+    let tmp = std::env::temp_dir().join(format!("contextdb-proj-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let proj = tmp.join("projections.sqlite");
+    let _ = std::fs::remove_file(&proj);
+    let disk = SimDisk::new();
+    let (mut store, report) = open_with(&disk, &proj);
+    assert_eq!(report.projection_watermark, Epoch(0));
+    commit_some(&mut store, 21, 8);
+    let k = store.epoch();
+    drop(store);
+    // Current projection: watermark equals the tail, nothing to roll forward.
+    let (store, report) = open_with(&disk, &proj);
+    assert_eq!(report.projection_watermark, k);
+    drop(store);
+    // The projection file misses later epochs: roll forward at the next open.
+    let (mut store, _) = open(&disk).unwrap();
+    commit_some(&mut store, 22, 8);
+    store.snapshot().unwrap();
+    commit_some(&mut store, 23, 4);
+    let reference = every_read(&store); // memory projection, rebuilt at open
+    drop(store);
+    let (store, report) = open_with(&disk, &proj);
+    assert_eq!(report.projection_watermark, k, "lagging watermark detected");
+    assert!(
+        store.db().initial_epoch() > Epoch(0),
+        "reads below it use projections"
+    );
+    assert_eq!(
+        every_read(&store),
+        reference,
+        "projection reads == replay/memory reads"
+    );
+    drop(store);
+    // A projection naming a different log is rebuilt from scratch.
+    let other = SimDisk::new();
+    let (mut s2, _) = open_with(&other, &proj);
+    let blob = s2.put_blob(b"foreign").unwrap();
+    s2.commit(&Batch::new(vec![Op::CreateLogical {
+        key: "foreign".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "x".into(),
+        content: blob,
+        adopt_as_base: true,
+    }]))
+    .unwrap();
+    commit_some(&mut s2, 99, 3);
+    drop(s2);
+    let (store, report) = open_with(&disk, &proj);
+    assert_eq!(
+        report.projection_watermark,
+        Epoch(0),
+        "foreign projection discarded"
+    );
+    assert_eq!(every_read(&store), reference);
+    let _ = std::fs::remove_dir_all(&tmp);
 }

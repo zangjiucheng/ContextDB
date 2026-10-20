@@ -26,6 +26,43 @@ pub struct Impact {
     pub supported: Vec<RevisionId>,
     pub reference_only: Vec<RevisionId>,
 }
+/// Exact endpoint comparison over retained post-states in epoch order
+/// (shared by in-memory history and the store's diff_log, ADR 0006 §8).
+/// Changes that cancel between the endpoints disappear.
+pub fn diff_rows<'a>(
+    from: Epoch,
+    to: Epoch,
+    rows: impl Iterator<Item = (Epoch, RevisionId, &'a NodeState)> + Clone,
+) -> EpochDiff {
+    let (low, high) = if from <= to { (from, to) } else { (to, from) };
+    let mut changes = BTreeMap::<RevisionId, NodeChange>::new();
+    for (_, r, after) in rows.clone().filter(|(e, _, _)| *e > low && *e <= high) {
+        changes
+            .entry(r)
+            .and_modify(|old| old.after = Some(after.clone()))
+            .or_insert_with(|| NodeChange {
+                revision: r,
+                before: None,
+                after: Some(after.clone()),
+            });
+    }
+    for (_, r, state) in rows.take_while(|(e, _, _)| *e <= low) {
+        if let Some(c) = changes.get_mut(&r) {
+            c.before = Some(state.clone());
+        }
+    }
+    let changes = changes
+        .into_values()
+        .filter(|c| c.before != c.after)
+        .map(|mut c| {
+            if from > to {
+                std::mem::swap(&mut c.before, &mut c.after);
+            }
+            c
+        })
+        .collect();
+    EpochDiff { from, to, changes }
+}
 impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub(crate) fn record(&mut self, epoch: Epoch, changes: Vec<NodeChange>) {
         crate::invariant_assert!(changes.iter().all(|c| {
@@ -101,42 +138,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         {
             return Err(TxError::UnknownRef);
         }
-        let (low, high) = if from <= to { (from, to) } else { (to, from) };
-        let mut changes = BTreeMap::<RevisionId, NodeChange>::new();
-        for step in self
-            .history
-            .iter()
-            .filter(|s| s.epoch > low && s.epoch <= high)
-        {
-            for (r, after) in &step.changes {
-                changes
-                    .entry(*r)
-                    .and_modify(|old| old.after = Some(after.clone()))
-                    .or_insert_with(|| NodeChange {
-                        revision: *r,
-                        before: None,
-                        after: Some(after.clone()),
-                    });
-            }
-        }
-        for step in self.history.iter().take_while(|s| s.epoch <= low) {
-            for (r, state) in &step.changes {
-                if let Some(c) = changes.get_mut(r) {
-                    c.before = Some(state.clone());
-                }
-            }
-        }
-        let changes = changes
-            .into_values()
-            .filter(|c| c.before != c.after)
-            .map(|mut c| {
-                if from > to {
-                    std::mem::swap(&mut c.before, &mut c.after);
-                }
-                c
-            })
-            .collect();
-        Ok(EpochDiff { from, to, changes })
+        Ok(diff_rows(
+            from,
+            to,
+            self.history
+                .iter()
+                .flat_map(|t| t.changes.iter().map(move |(r, s)| (t.epoch, *r, s))),
+        ))
     }
     /// Conservative support reachability. Ref sources are reported separately.
     pub fn impact_reachable(&self, roots: &[RevisionId]) -> Result<Impact, TxError> {

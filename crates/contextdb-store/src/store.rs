@@ -4,6 +4,7 @@
 use crate::{
     durability::{Durability, LockGuard},
     log::{self, FrameFault, LogRow},
+    projection::{EpochRows, ProjectionFile, Projections},
 };
 use contextdb_core::Db;
 use contextdb_model::*;
@@ -44,9 +45,49 @@ impl From<TxError> for StoreError {
 fn io(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
-#[derive(Clone, Debug, Default)]
+fn sql(e: rusqlite::Error) -> StoreError {
+    StoreError::Io(format!("projection: {e}"))
+}
+/// Projection rows for the epoch just committed to `db`.
+fn rows<'a>(
+    db: &Db,
+    result: &'a CommitResult,
+    checksum: ContentHash,
+    base: &'a mut Vec<(RevisionId, bool)>,
+) -> EpochRows<'a> {
+    base.clear();
+    base.extend(
+        result
+            .net_delta
+            .base_flips
+            .iter()
+            .map(|r| (*r, db.is_base(*r).expect("committed revision"))),
+    );
+    EpochRows {
+        epoch: result.epoch,
+        checksum,
+        result,
+        base,
+        posts: result
+            .status_diff
+            .iter()
+            .map(|r| (*r, db.node(*r).expect("committed revision")))
+            .collect(),
+    }
+}
+#[derive(Clone, Debug)]
 pub struct OpenOptions {
     pub strict_tail: bool,
+    /// Projection tables; production keeps them in a file next to the log.
+    pub projections: ProjectionFile,
+}
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            strict_tail: false,
+            projections: ProjectionFile::Memory,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TruncatedTail {
@@ -61,6 +102,8 @@ pub struct OpenReport {
     pub replayed: u64,
     pub removed_temp_blobs: usize,
     pub snapshot_epoch: Option<Epoch>,
+    /// Projection watermark found at open (rows above it were rolled forward).
+    pub projection_watermark: Epoch,
     /// Snapshot files ignored as incomplete, corrupt or not matching the log.
     pub rejected_snapshots: Vec<String>,
 }
@@ -102,6 +145,7 @@ pub struct Store<D: Durability> {
     ids: BTreeMap<[u8; 16], (Epoch, ContentHash)>,
     blobs: BTreeSet<ContentHash>,
     tail: Option<Tail>,
+    proj: Projections,
     /// Set across apply/append; still true after a panic, which poisons.
     in_flight: bool,
     poisoned: bool,
@@ -228,6 +272,9 @@ impl<D: Durability> Store<D> {
                 reason: fault,
             });
         }
+        let checksums: Vec<ContentHash> = scan.frames.iter().map(|f| f.checksum).collect();
+        let proj = Projections::open(&options.projections, &checksums).map_err(sql)?;
+        report.projection_watermark = proj.watermark();
         let mut store = Self {
             dir: dir.to_path_buf(),
             db: Db::default(),
@@ -236,17 +283,33 @@ impl<D: Durability> Store<D> {
             ids: BTreeMap::new(),
             blobs,
             tail: None,
+            proj,
             in_flight: false,
             poisoned: false,
             _lock: lock,
             disk,
         };
         // Newest valid snapshot at or below the tail (ADR 0006 §4 step 4, §6).
-        let checksums: Vec<ContentHash> = scan.frames.iter().map(|f| f.checksum).collect();
         let (base, rejected) =
             crate::snapshot::load_newest(&store.disk, dir, &checksums).map_err(io)?;
         report.rejected_snapshots = rejected;
         if let Some((epoch, inputs)) = base {
+            // Projections behind the snapshot roll forward from genesis first.
+            if store.proj.watermark() < epoch {
+                let mut db = Db::default();
+                let mut base = Vec::new();
+                for f in scan.frames.iter().take(epoch.0 as usize) {
+                    let result = db
+                        .commit(&f.row.batch().expect("verified frame"))
+                        .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
+                    if f.row.epoch > store.proj.watermark() {
+                        store
+                            .proj
+                            .apply(&rows(&db, &result, f.checksum, &mut base))
+                            .map_err(sql)?;
+                    }
+                }
+            }
             store.db = Db::from_inputs(inputs, epoch)
                 .map_err(|_| StoreError::ReplayDivergence { epoch })?;
             report.snapshot_epoch = Some(epoch);
@@ -273,6 +336,13 @@ impl<D: Durability> Store<D> {
                     .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
                 if result != f.row.result().expect("verified frame") {
                     return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
+                }
+                if f.row.epoch > store.proj.watermark() {
+                    let mut base = Vec::new();
+                    store
+                        .proj
+                        .apply(&rows(&store.db, &result, f.checksum, &mut base))
+                        .map_err(sql)?;
                 }
                 report.replayed += 1;
             }
@@ -427,6 +497,15 @@ impl<D: Durability> Store<D> {
         if let Some(id) = batch.client_txn_id {
             self.ids.insert(id, (result.epoch, batch_hash));
         }
+        // Projections after durability; a failure only makes them stale.
+        let mut base = Vec::new();
+        if self
+            .proj
+            .apply(&rows(&self.db, &result, sum, &mut base))
+            .is_err()
+        {
+            self.proj.mark_stale();
+        }
         Ok(result)
     }
     /// Appends a synced frame, opening a synced segment first when needed.
@@ -520,6 +599,14 @@ impl<D: Durability> Store<D> {
         r: RevisionId,
         e: Epoch,
     ) -> Result<(NodeState, Payload), StoreError> {
+        if e < self.db.initial_epoch() && self.proj.covers(e) {
+            let state = self
+                .proj
+                .state_at(r, e)
+                .map_err(sql)?
+                .ok_or(StoreError::Tx(TxError::UnknownRef))?;
+            return Ok((state, self.get_blob(&self.db.revision_content(r)?)));
+        }
         let db = self.db_at(e)?;
         let state = db.read_historical(r, e)?;
         let payload = self.get_blob(&db.revision_content(r)?);
@@ -532,6 +619,9 @@ impl<D: Durability> Store<D> {
             return Ok(self.db.diff(a, b)?);
         }
         let high = a.max(b);
+        if high <= self.epoch() && self.proj.covers(high) {
+            return self.proj.diff(a, b).map_err(sql);
+        }
         let mut db = Db::default();
         for n in 1..=high.0 {
             let row = self.read_row(Epoch(n))?;
@@ -547,6 +637,19 @@ impl<D: Durability> Store<D> {
         l: LogicalId,
         e: Epoch,
     ) -> Result<(RevisionId, NodeState), StoreError> {
+        if e < self.db.initial_epoch() && self.proj.covers(e) {
+            let r = self
+                .proj
+                .head_at(l, e)
+                .map_err(sql)?
+                .ok_or(StoreError::Tx(TxError::UnknownRef))?;
+            let state = self
+                .proj
+                .state_at(r, e)
+                .map_err(sql)?
+                .ok_or(StoreError::Tx(TxError::UnknownRef))?;
+            return Ok((r, state));
+        }
         Ok(self.db_at(e)?.read_snapshot(l, e)?)
     }
     /// Writes a snapshot of the current inputs (ADR 0006 §6). A failure leaves

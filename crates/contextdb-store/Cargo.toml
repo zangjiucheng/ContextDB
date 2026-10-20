@@ -14,6 +14,8 @@ workspace = true
 blake3 = "=1.8.7"
 contextdb-core.workspace = true
 contextdb-model.workspace = true
+# Rebuildable projections only (ADR 0006 §1); bundled SQLite is public domain.
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
 
 [dev-dependencies]
 contextdb-oracle.workspace = true

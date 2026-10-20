@@ -4,3 +4,9 @@
 allowed_workspace = ["contextdb-model", "contextdb-oracle"]
 # BLAKE3 runtime/platform dependencies and its C/assembly build helpers.
 allowed_external = ["blake3", "arrayvec", "cfg-if", "constant_time_eq", "cpufeatures", "libc", "cc", "find-msvc-tools", "shlex"]
+
+# ADR 0006 §1 review note (not enforced by the core check): contextdb-store may use
+# rusqlite (bundled SQLite, public domain; MIT wrapper) for rebuildable projections
+# only. The op_log never goes through SQLite.
+[store]
+reviewed_external = ["rusqlite", "blake3"]

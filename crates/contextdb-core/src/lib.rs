@@ -11,7 +11,7 @@ mod arena;
 mod fast;
 mod history;
 mod memory;
-pub use history::{EpochDiff, Impact, NodeChange};
+pub use history::{EpochDiff, Impact, NodeChange, diff_rows};
 pub use memory::MemoryFootprint;
 pub mod engine;
 mod layers;
@@ -222,6 +222,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .get(l.index())
             .ok_or(TxError::UnknownRef)?;
         Ok((r, self.node(r)?))
+    }
+    /// Current base bit of a revision (store projections, base_history).
+    pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
+        self.tables
+            .base
+            .get(r.index())
+            .copied()
+            .ok_or(TxError::UnknownRef)
     }
     /// Payload hash of a revision (payload bodies live in the store).
     pub fn revision_content(&self, r: RevisionId) -> Result<ContentHash, TxError> {
