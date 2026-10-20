@@ -3,16 +3,22 @@
 Date: 2026-10-19. SPEC: v1.4.1. Platform: Darwin arm64,
 `rustc 1.95.0 (59807616e 2026-04-14)`, aarch64-apple-darwin.
 
-**Implementation, local checks and independent review passed. Remote CI has not
-run: this local repository has no remote. The formal G1 CI requirement remains
-unverified; P1 has not started.** No failed check was waived or threshold relaxed.
+**P0 Gate passed: implementation, local checks, independent review and remote
+Linux/macOS CI all passed. P1 has not started.** No failed check was waived or
+threshold relaxed. [CI run 39364257458](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458) verified implementation commit
+`73789ef96efc3d385cefe78ae7c3b6aa1ec4980d` (`push` on `main`).
+
+| Remote job | Result | Completed (UTC) |
+|---|---|---|
+| [Rust 1.95.0 / ubuntu-latest](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458/job/118437294969) | Success: full checks + CLI smoke | 2026-10-20 03:29:23 |
+| [Rust 1.95.0 / macos-latest](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458/job/118437295163) | Success: full checks + CLI smoke | 2026-10-20 03:28:01 |
 
 ## Gate results
 
 | Layer | Result | Evidence |
 |---|---|---|
 | G0 Spec | Local pass | SPEC v1.4.1, ADR 0001–0003, SEMANTICS complete SD/admission/input mapping |
-| G1 Build/lint | Local pass; remote CI unverified | scripts/check.sh exit 0; fmt, all-target/all-feature Clippy -D warnings, workspace tests, dependency graph, cargo-deny, isolated DD fmt/check |
+| G1 Build/lint | Local and remote Linux/macOS pass | scripts/check.sh exit 0; fmt, all-target/all-feature Clippy -D warnings, workspace tests, dependency graph, cargo-deny, isolated DD fmt/check |
 | G2 Golden | Pass | 26 golden groups, 3 wire tests, 1 policy hash test, 3 compile-fail checks |
 | G3 Oracle/model | Pass | 1,000 fixed ChaCha8 seeds, 12,000 transactions, 0 mismatches |
 | G4–G7 | Not applicable to P0 | No concurrency/crash, performance, dogfood, prior semantic phase, mutation or exhaustive-search claim |
@@ -138,8 +144,8 @@ and examined the expanded handwritten expectations.
 | Certificate scope | P0 explicit-entry verdict only; P3 closure/strict-history/recertification explicitly deferred |
 | Query execution wording | README/status corrected: oracle rebuilds cached snapshot on commit; queries read the snapshot |
 
-All implementation review concerns are closed. These records do not substitute
-for an unexecuted remote CI run.
+All implementation review concerns are closed. Remote CI evidence above closes
+the remaining G1 requirement; every applicable P0 Gate layer has passed.
 
 ## Limits and next phase
 
@@ -148,6 +154,6 @@ incremental counting, durable acknowledgements, full certificate issuance, daemo
 MCP server, filesystem observer, multi-branch isolation, ACL or erasure. Conflict
 is None; synthetic future summary dimensions are pure-function tests only.
 
-No performance claim is made. After the remaining formal CI evidence is available,
-P1 can implement the Maintainer facade, counting, Pearce–Kelly, exact-mode regression,
+No performance claim is made. P0 is complete; P1 can implement the Maintainer
+facade, counting, Pearce–Kelly, exact-mode regression,
 coverage thresholds, exhaustive/mutation checks and specified performance budgets.

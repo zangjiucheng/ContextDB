@@ -1,9 +1,10 @@
 # Implementation status
 
-P0 implementation and local verification are complete. Independent adversarial
-review passed with no blocking findings. Remote Linux/macOS CI has not run; the
-repository has no configured remote. The formal CI requirement is therefore still
-unverified, and P1 has not started. See [P0-report.md](gates/P0-report.md).
+P0 Gate is complete. Implementation, local verification, independent adversarial
+review and remote Linux/macOS CI all passed. [CI run 39364257458](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)
+validated implementation commit `73789ef96efc3d385cefe78ae7c3b6aa1ec4980d` on both
+platforms, including full checks and CLI smoke tests. P1 has not started.
+See [P0-report.md](gates/P0-report.md).
 
 ## Available now
 

@@ -3,7 +3,7 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0（形式契约与 oracle）已实现，本地验证及独立复核通过；远程 CI 尚未运行。见 [`docs/gates/P0.md`](docs/gates/P0.md)
+- **当前阶段**：P0（形式契约与 oracle）Gate 已通过，本地验证、独立复核及 Linux/macOS CI 全部通过。见 [`docs/gates/P0.md`](docs/gates/P0.md)
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
@@ -46,7 +46,7 @@ bash scripts/check.sh
 cargo run --locked -p contextdb-cli --bin ctx -- --help
 ```
 
-检查覆盖格式、lint、构建、26 组 golden、3 个 wire 测试、1 个 policy hash 测试、3 个 compile-fail、1,000 seed / 12,000 事务验证、许可证与依赖边界。报告见 [`docs/gates/P0-report.md`](docs/gates/P0-report.md)。远程 Linux/macOS CI 的结果仍待实际运行。
+检查覆盖格式、lint、构建、26 组 golden、3 个 wire 测试、1 个 policy hash 测试、3 个 compile-fail、1,000 seed / 12,000 事务验证、许可证与依赖边界。报告见 [`docs/gates/P0-report.md`](docs/gates/P0-report.md)。远程 Linux/macOS [CI 均已通过](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)。
 
 运行 Rust API 示例：
 

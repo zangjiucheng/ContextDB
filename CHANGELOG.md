@@ -10,4 +10,4 @@
 - Implement independent InputModel staging/validation and Jacobi/Kahn full recomputation, three-layer certification, summaries and explanations.
 - Implement core SoA/CSR arenas, indexes, independent canonicalization/CAS/cycle validation, rollback, NetDelta and both diff sets, with oracle-backed queries.
 - Add 26 golden groups, three wire tests, policy hash golden, compile-fail API checks and 1,000 ChaCha8 seeds / 12,000 transaction comparisons.
-- Record SPEC v1.4.1 executable details in ADR 0003, semantics traceability and P0 verification/review evidence. Local checks and independent review passed; remote CI remains unexecuted.
+- Record SPEC v1.4.1 executable details in ADR 0003, semantics traceability and P0 verification/review evidence. Local checks, independent review and remote Linux/macOS CI passed; P0 Gate is complete.
