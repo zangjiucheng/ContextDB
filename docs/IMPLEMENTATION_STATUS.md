@@ -1,7 +1,7 @@
 # Implementation status
 
-P2 durability and recovery are implemented, and every local P2 gate layer passes.
-Independent review, remote CI and the nightly run are pending.
+**Gate P2 passed** (2026-10-20, commit `de80aa6`) after independent review and two closure
+checks, with CI run 39497969575 and nightly run 39498455621.
 See [P2 gate](gates/P2.md), [P2 report](gates/P2-report.md),
 [durable-log ADR 0006](adr/0006-p2-durable-log.md) and
 [incremental structural commits ADR 0007](adr/0007-incremental-structural-commits.md).
@@ -54,7 +54,6 @@ That run does not validate the current P1 changes.
 
 ## Boundaries
 
-- P2 closes on independent review plus remote CI/nightly.
 - No signed log head (P9).
 - No erasure: blobs are never deleted before P9.
 - No `inputs_at` cache.

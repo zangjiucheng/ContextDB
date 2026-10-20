@@ -1,6 +1,6 @@
 # P2 implementation report — 2026-10-20
 
-**Every local gate layer passes after the independent review's fixes and closure check.** The gate is not yet passed: the reviewer's confirmation of the closure-check fixes (N1–N6), remote Linux/macOS CI and the nightly workflow are still needed. Related documents:
+**Gate passed** on `de80aa6`, after the independent review and two closure checks. Remote Linux/macOS CI (run 39497969575) and the nightly exhaustive, four-shard mutation and durability workflow (run 39498455621) both passed. See [P2.md](P2.md). Related documents:
 - [gate matrix](P2.md)
 - [durable-log ADR 0006](../adr/0006-p2-durable-log.md), whose §12 records where the implementation differs from the text
 - [incremental structural commits ADR 0007](../adr/0007-incremental-structural-commits.md)
@@ -70,26 +70,24 @@ Before the crash, the poisoned store must report only the durable epoch, refuse 
 
 Apple M1 Pro, macOS 27.0.1, APFS internal SSD, Rust 1.95.0 release, one thread ([p2-env.json](p2-env.json)).
 
-| Metric | Target | Measured | Verdict |
-|---|---:|---:|---|
-Ranges are over four consecutive runs of `store_bench` on the final code.
+Ranges cover eight runs of `store_bench` on the final code (`de80aa6`): four of mine and four by the independent reviewer.
 
 | Metric | Target | Measured (min–max) | Verdict |
 |---|---:|---:|---|
 | Single-transaction commit p99, fullfsync on | ≤ 25 ms | 8.66–16.97 ms | PASS |
-| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.16–0.37 ms | PASS |
-| Commit p99, fullfsync on, production file projections (`ctx` configuration) | ≤ 25 ms | 8.01–14.69 ms | PASS |
-| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 0.522 s (one full run; ≤ 1.33 s before the bulk projection fix) | PASS |
-| Cold open, full replay, file projections written for all 100K epochs (first open / after `--rebuild`) | ≤ 5 s | 0.552–0.614 s | PASS |
-| Cold open, full replay, file projections already current | ≤ 5 s | 0.260–0.282 s | PASS |
-| Cold open with a snapshot at the tail, memory projections | ≤ 1 s | 0.158–0.166 s | PASS |
-| Cold open with a snapshot at the tail, file projections | ≤ 1 s | 0.159–0.171 s | PASS |
-| Historical read at epoch 50,000 below the snapshot: log replay / projections (informational) | — | 788–817 ms / < 1 ms | — |
+| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.16–0.41 ms | PASS |
+| Commit p99, fullfsync on, production file projections (`ctx` configuration) | ≤ 25 ms | 8.01–14.76 ms | PASS |
+| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 0.490–0.620 s (five runs; ≤ 1.33 s before the bulk projection fix) | PASS |
+| Cold open, full replay, file projections written for all 100K epochs (first open / after `--rebuild`) | ≤ 5 s | 0.543–0.621 s | PASS |
+| Cold open, full replay, file projections already current | ≤ 5 s | 0.257–0.333 s | PASS |
+| Cold open with a snapshot at the tail, memory projections | ≤ 1 s | 0.157–0.174 s | PASS |
+| Cold open with a snapshot at the tail, file projections | ≤ 1 s | 0.158–0.171 s | PASS |
+| Historical read at epoch 50,000 below the snapshot: log replay / projections (informational) | — | 785–872 ms / < 1 ms | — |
 
 Notes:
 - The replay log is built without syncs (build 4.8 s). Open is measured with the production `StdDisk`, and includes the lock, blob scan, chain verification, replay and self-check.
 - Every transaction is structural (each one creates a logical, `structural_every=1`). This is the costly case for replay; with mixed workloads, fast-path base toggles replay faster.
-- Fullfsync-on p99 varies with APFS flush latency: 8.7–17.6 ms across nine runs on this machine (seven of mine, two of the reviewer's). Every run met the target.
+- Fullfsync-on p99 varies with APFS flush latency: 8.7–17.6 ms across thirteen runs on this machine (seven of mine, six of the reviewer's). Every run met the target.
 - Before the review's fix (ranged frame reads), reads below a snapshot reread a whole segment per frame. The reviewer measured 469 ms at 10K epochs, quadratic growth, and about 50 s extrapolated at 100K.
 - The first open with file projections took 6.3 s with one SQLite transaction and freshly prepared statements per epoch. A single transaction brought it to 4.4–6.1 s, which the closure check showed was at the limit (review N1). Cached statements and one watermark write per bulk transaction brought it to 0.55–0.61 s. The same change sped up plain replay, whose in-memory projection writes had used the per-epoch path too.
 
@@ -161,7 +159,13 @@ New findings from the closure check:
 | N3 | `migrate` resume took the first backup in sort order; `log.migrating`'s entry was not parent-synced before the swap | minor | Picks the highest-version backup; syncs the parent directory before the first rename |
 | N4 | `get_blob` was not gated on poison | minor | Returns `Result`; `Poisoned` after a failure (asserted in `review5`) |
 | N5 | Rolled-forward projection rows were committed before the self-check | minor | `end_bulk` runs after the self-check |
-| N6 | `catch_up_projections` was not bulked (≈ 9 s at 100K) | minor | One bulk transaction; on failure it rolls back and restores the watermark (`review_n6_*`) |
+| N6 | `catch_up_projections` was not bulked (≈ 9 s at 100K) | minor | One bulk transaction; on failure it rolls back and restores the watermark (`review_n6_*` checks the rollback, not the speedup). Catch-up at 50K epochs: 4.5 s → 1.05 s |
+
+**Second closure check** (same reviewer, commit `de80aa6`): N1–N6 are all closed, and the projection rewrite introduced no regression.
+- Gate-setting runs pass: 29 recovery, 2 migration, 1 CLI and 9 probe tests.
+- All four `store_bench` runs give `g5_initial_pass=true`.
+- One docs defect (a leftover table header in G5) has been fixed.
+- N2, N3 and N5 are verified by code reading only: no test injects a migration that appears between the two checks, or a self-check failure.
 
 ## Reproduce
 

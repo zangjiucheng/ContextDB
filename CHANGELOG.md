@@ -47,3 +47,4 @@
   - open locks before creating `log/`;
   - `migrate` resumes from the newest backup and syncs before the swap;
   - `get_blob` is gated on poison.
+- Close the P2 gate: independent review and two closure checks, CI run 39497969575 and nightly run 39498455621 on `de80aa6`.
