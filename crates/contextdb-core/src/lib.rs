@@ -109,6 +109,69 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             ..Self::new()
         }
     }
+    /// Rebuilds a database from a durable input snapshot (ADR 0006 §6): the
+    /// same maintenance as one structural commit adding every input at once.
+    /// History starts empty at `epoch`; derived state must equal replay (PROP10).
+    pub fn from_inputs(mut inputs: Inputs, epoch: Epoch) -> Result<Self, TxError> {
+        let mut db = Self::at_epoch(epoch);
+        let mut stats = S::default();
+        let mut pk = PearceKelly::default();
+        pk.sync(&inputs, 0, &mut stats)?;
+        let delta = NetDelta {
+            base_flips: (0..inputs.base.len())
+                .filter(|n| inputs.base[*n])
+                .map(|n| RevisionId(n as u32))
+                .collect(),
+            head_moves: inputs
+                .heads
+                .iter()
+                .enumerate()
+                .map(|(n, h)| (LogicalId(n as u32), None, *h))
+                .collect(),
+            enable_flips: Vec::new(),
+            new_rules: (0..inputs.rules.len()).map(|n| RuleId(n as u32)).collect(),
+        };
+        let indexes = Indexes::build(&inputs);
+        db.maintainer
+            .update(&inputs, &indexes, &pk, &delta, &mut stats);
+        db.revisions.reserve_exact(inputs.revisions.len());
+        for r in &inputs.revisions {
+            db.revisions.append(r);
+        }
+        db.rules.reserve_exact(&inputs.rules);
+        for j in &inputs.rules {
+            db.rules.append(j);
+        }
+        db.logicals.reserve_exact(&inputs.logicals);
+        for l in &inputs.logicals {
+            db.logicals.append(l);
+        }
+        db.logicals.set_metadata(&inputs.metadata);
+        inputs.logicals = Vec::new();
+        inputs.metadata = Vec::new();
+        inputs.revisions = Vec::new();
+        inputs.rules = Vec::new();
+        db.tables = inputs;
+        db.pk = pk;
+        db.indexes = indexes;
+        // Baseline post-states at `epoch`: pre-states for later diffs. DIFF
+        // windows start after `epoch`, so the baseline is never reported itself.
+        let baseline = db
+            .derived()
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(n, state)| NodeChange {
+                revision: RevisionId(n as u32),
+                before: None,
+                after: Some(state.clone()),
+            })
+            .collect();
+        db.record(epoch, baseline);
+        #[cfg(feature = "paranoid")]
+        assert_eq!(db.derived(), &contextdb_oracle::jacobi(&db.inputs()));
+        Ok(db)
+    }
     pub fn epoch(&self) -> Epoch {
         self.epoch
     }
@@ -159,6 +222,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .get(l.index())
             .ok_or(TxError::UnknownRef)?;
         Ok((r, self.node(r)?))
+    }
+    /// Payload hash of a revision (payload bodies live in the store).
+    pub fn revision_content(&self, r: RevisionId) -> Result<ContentHash, TxError> {
+        (r.index() < self.revisions.len())
+            .then(|| self.revisions.content(r))
+            .ok_or(TxError::UnknownRef)
     }
     pub fn current_l0(&self, l: LogicalId) -> Result<(RevisionId, bool), TxError> {
         let r = *self

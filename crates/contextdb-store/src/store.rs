@@ -60,6 +60,9 @@ pub struct OpenReport {
     pub removed_segment: Option<PathBuf>,
     pub replayed: u64,
     pub removed_temp_blobs: usize,
+    pub snapshot_epoch: Option<Epoch>,
+    /// Snapshot files ignored as incomplete, corrupt or not matching the log.
+    pub rejected_snapshots: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TxnStatus {
@@ -238,6 +241,17 @@ impl<D: Durability> Store<D> {
             _lock: lock,
             disk,
         };
+        // Newest valid snapshot at or below the tail (ADR 0006 §4 step 4, §6).
+        let checksums: Vec<ContentHash> = scan.frames.iter().map(|f| f.checksum).collect();
+        let (base, rejected) =
+            crate::snapshot::load_newest(&store.disk, dir, &checksums).map_err(io)?;
+        report.rejected_snapshots = rejected;
+        if let Some((epoch, inputs)) = base {
+            store.db = Db::from_inputs(inputs, epoch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch })?;
+            report.snapshot_epoch = Some(epoch);
+        }
+        let skip = report.snapshot_epoch.map_or(0, |e| e.0);
         // Replay without idempotency, blob checks or appends (ADR 0006 §4 step 5).
         let mut start = log::HEADER_LEN as u64;
         let mut current = None;
@@ -251,13 +265,16 @@ impl<D: Durability> Store<D> {
                 current = Some(segment);
                 start = log::HEADER_LEN as u64;
             }
-            let batch = f.row.batch().expect("verified frame");
-            let result = store
-                .db
-                .commit(&batch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
-            if result != f.row.result().expect("verified frame") {
-                return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
+            if f.row.epoch.0 > skip {
+                let batch = f.row.batch().expect("verified frame");
+                let result = store
+                    .db
+                    .commit(&batch)
+                    .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
+                if result != f.row.result().expect("verified frame") {
+                    return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
+                }
+                report.replayed += 1;
             }
             if let Some(id) = f.row.client_txn_id {
                 store.ids.insert(id, (f.row.epoch, f.row.batch_hash));
@@ -273,7 +290,6 @@ impl<D: Durability> Store<D> {
                 size: f.end,
                 checksum: f.checksum,
             });
-            report.replayed += 1;
         }
         // A last segment with a valid header but no frames continues the chain.
         if store.tail.is_none() && !store.segments.is_empty() {
@@ -479,5 +495,68 @@ impl<D: Durability> Store<D> {
     }
     pub fn epoch(&self) -> Epoch {
         self.db.epoch()
+    }
+    /// Database as of `e`: the live one when it retains `e`, otherwise a replay
+    /// of the verified log prefix (ADR 0006 §8, source 3).
+    fn db_at(&self, e: Epoch) -> Result<std::borrow::Cow<'_, Db>, StoreError> {
+        if e > self.epoch() {
+            return Err(StoreError::Tx(TxError::UnknownRef));
+        }
+        if e >= self.db.initial_epoch() {
+            return Ok(std::borrow::Cow::Borrowed(&self.db));
+        }
+        let mut db = Db::default();
+        for n in 1..=e.0 {
+            let row = self.read_row(Epoch(n))?;
+            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+            db.commit(&batch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+        }
+        Ok(std::borrow::Cow::Owned(db))
+    }
+    /// `ReadMode::Historical(e)` (SPEC §6.1): status as of `e` plus payload state now.
+    pub fn read_historical(
+        &self,
+        r: RevisionId,
+        e: Epoch,
+    ) -> Result<(NodeState, Payload), StoreError> {
+        let db = self.db_at(e)?;
+        let state = db.read_historical(r, e)?;
+        let payload = self.get_blob(&db.revision_content(r)?);
+        Ok((state, payload))
+    }
+    /// DIFF over any committed epochs: memory when retained, else log replay.
+    pub fn diff(&self, a: Epoch, b: Epoch) -> Result<contextdb_core::EpochDiff, StoreError> {
+        let low = a.min(b);
+        if low >= self.db.initial_epoch() {
+            return Ok(self.db.diff(a, b)?);
+        }
+        let high = a.max(b);
+        let mut db = Db::default();
+        for n in 1..=high.0 {
+            let row = self.read_row(Epoch(n))?;
+            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+            db.commit(&batch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+        }
+        Ok(db.diff(a, b)?)
+    }
+    /// `ReadMode::Snapshot(e)` (SPEC §6.1): head as of `e` and its status then.
+    pub fn read_snapshot(
+        &self,
+        l: LogicalId,
+        e: Epoch,
+    ) -> Result<(RevisionId, NodeState), StoreError> {
+        Ok(self.db_at(e)?.read_snapshot(l, e)?)
+    }
+    /// Writes a snapshot of the current inputs (ADR 0006 §6). A failure leaves
+    /// the log untouched; snapshots are only an accelerator, so it does not poison.
+    pub fn snapshot(&mut self) -> Result<Epoch, StoreError> {
+        self.usable()?;
+        let epoch = self.epoch();
+        let checksum = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
+        crate::snapshot::write(&self.disk, &self.dir, epoch, &checksum, &self.db.inputs())
+            .map_err(io)?;
+        Ok(epoch)
     }
 }

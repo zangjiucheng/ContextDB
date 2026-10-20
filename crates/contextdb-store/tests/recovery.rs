@@ -355,3 +355,156 @@ fn g4_harness_detects_missing_fsync() {
         .any(|seed| g4_run(seed, Point::PostSyncPrePublish, TailFate::ZeroFill, true).is_err());
     assert!(detected, "G4 harness cannot detect a no-op sync");
 }
+#[test]
+fn snapshot_accelerates_open_and_matches_full_replay() {
+    let disk = SimDisk::new();
+    let mut store = populated(&disk, 6);
+    let snap = store.snapshot().unwrap();
+    let mut more = Vec::new();
+    for b in contextdb_testkit::generate_p1(12).batches.iter().take(6) {
+        let b = with_blobs(&mut store, b);
+        if store.commit(&b).is_ok() {
+            more.push(b);
+        }
+    }
+    let (epoch, digest) = (store.epoch(), store.db().digest());
+    drop(store);
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(report.snapshot_epoch, Some(snap));
+    assert_eq!(report.replayed, epoch.0 - snap.0);
+    assert_eq!((store.epoch(), store.db().digest()), (epoch, digest));
+    // A corrupt snapshot is ignored and full replay is used.
+    let dir = Path::new(DIR).join("snap");
+    let file = dir.join(disk.list(&dir).unwrap().pop().unwrap());
+    drop(store);
+    disk.corrupt(&file, 70, 0xEE);
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(report.snapshot_epoch, None);
+    assert_eq!(report.rejected_snapshots.len(), 1);
+    assert_eq!(report.replayed, epoch.0);
+    assert_eq!(store.db().digest(), digest);
+}
+#[test]
+fn g4_mid_snapshot() {
+    for (n, step) in ["write", "sync", "rename", "sync_dir"]
+        .into_iter()
+        .enumerate()
+    {
+        for seed in 0..(runs() / 4 + 1) {
+            let disk = SimDisk::new();
+            let mut store = populated(&disk, 3 + (seed as usize % 6));
+            let (epoch, digest) = (store.epoch(), store.db().digest());
+            disk.fail_next(step);
+            assert!(store.snapshot().is_err(), "{step}");
+            // The log is untouched; the store stays usable.
+            assert_eq!(store.epoch(), epoch);
+            drop(store);
+            let crashed = disk.crash(FATES[(seed as usize + n) % 4], seed);
+            let (store, report) = open(&crashed).unwrap();
+            assert_eq!(
+                (store.epoch(), store.db().digest()),
+                (epoch, digest),
+                "{step} {seed}"
+            );
+            assert_eq!(report.snapshot_epoch, None);
+        }
+    }
+}
+#[test]
+fn historical_reads_survive_restart_t07b_t13() {
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    let v1 = store.put_blob(b"db: mongodb").unwrap();
+    let v2 = store.put_blob(b"db: postgresql").unwrap();
+    let create = Op::CreateLogical {
+        key: "db".into(),
+        kind: RecordKind::Decision,
+        scope_lane: "repo".into(),
+        content: v1,
+        adopt_as_base: true,
+    };
+    let e1 = store.commit(&Batch::new(vec![create])).unwrap().epoch;
+    let add = Op::AddRevision {
+        logical: LogicalId(0).into(),
+        content: v2,
+        adopt_as_base: true,
+    };
+    store.commit(&Batch::new(vec![add])).unwrap();
+    let head = Op::SetHead {
+        logical: LogicalId(0).into(),
+        expected: RevisionId(0).into(),
+        new: RevisionId(1).into(),
+    };
+    let e3 = store.commit(&Batch::new(vec![head])).unwrap().epoch;
+    store.snapshot().unwrap();
+    let read = |s: &Store<SimDisk>| {
+        let (old, payload) = s.read_historical(RevisionId(0), e3).unwrap();
+        let (then, _) = s.read_historical(RevisionId(0), e1).unwrap();
+        let (h1, _) = s.read_snapshot(LogicalId(0), e1).unwrap();
+        let (h3, _) = s.read_snapshot(LogicalId(0), e3).unwrap();
+        (
+            old.canonical_bytes(),
+            payload,
+            then.canonical_bytes(),
+            h1,
+            h3,
+            old.dimensions.currency,
+        )
+    };
+    let before = read(&store);
+    assert_eq!(before, read(&store), "repeated reads are identical");
+    assert_eq!(before.1, Payload::Available(b"db: mongodb".to_vec()));
+    assert_eq!((before.3, before.4), (RevisionId(0), RevisionId(1)));
+    assert_eq!(
+        before.5,
+        Currency::Superseded,
+        "T07b: superseded yet readable"
+    );
+    drop(store);
+    // After restart the Db starts at the snapshot; earlier epochs come from replay.
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(report.snapshot_epoch, Some(e3));
+    assert!(store.db().initial_epoch() == e3);
+    assert_eq!(read(&store), before, "T13: identical across restart");
+    assert!(
+        store.read_historical(RevisionId(1), e1).is_err(),
+        "not yet created at e1"
+    );
+}
+/// PROP10 (store): reopening from op_log (with or without a snapshot) equals the
+/// incrementally maintained database, and DIFF agrees for every epoch pair.
+#[test]
+fn prop10_rebuild_from_op_log_equals_incremental() {
+    let seeds: u64 = std::env::var("CONTEXTDB_PROP10_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500);
+    for seed in 0..seeds {
+        let disk = SimDisk::new();
+        let (mut store, _) = open(&disk).unwrap();
+        let log = contextdb_testkit::generate_p1(seed);
+        let snap_at = (seed as usize) % (log.batches.len() + 1);
+        for (n, b) in log.batches.iter().enumerate() {
+            if n == snap_at && seed % 2 == 0 {
+                store.snapshot().unwrap();
+            }
+            let b = with_blobs(&mut store, b);
+            let _ = store.commit(&b);
+        }
+        let end = store.epoch();
+        let digest = store.db().digest();
+        let diffs: Vec<_> = (0..=end.0)
+            .map(|a| store.diff(Epoch(a), end).unwrap())
+            .collect();
+        drop(store);
+        let (store, _) = open(&disk).unwrap();
+        assert_eq!(store.db().digest(), digest, "seed {seed}");
+        for (a, d) in diffs.iter().enumerate() {
+            assert_eq!(
+                &store.diff(Epoch(a as u64), end).unwrap(),
+                d,
+                "seed {seed} diff {a}"
+            );
+        }
+    }
+}

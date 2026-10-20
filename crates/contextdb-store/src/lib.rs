@@ -4,6 +4,7 @@
 //! All durable I/O goes through [`Durability`]; [`SimDisk`] drives crash tests.
 pub mod durability;
 pub mod log;
+mod snapshot;
 mod store;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use store::{

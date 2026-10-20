@@ -50,6 +50,48 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             changes: retained,
         });
     }
+    /// First epoch whose post-states this database retains (SPEC §6.1 read modes;
+    /// earlier epochs are served by the store's log replay, ADR 0006 §8).
+    pub fn initial_epoch(&self) -> Epoch {
+        self.initial_epoch
+    }
+    /// Post-state of `r` as of `e`, or `None` when `r` did not exist yet.
+    fn state_at(&self, r: RevisionId, e: Epoch) -> Option<&NodeState> {
+        self.history
+            .iter()
+            .rev()
+            .filter(|t| t.epoch <= e)
+            .find_map(|t| t.changes.iter().find(|(x, _)| *x == r).map(|(_, s)| s))
+    }
+    fn retained(&self, e: Epoch) -> Result<(), TxError> {
+        if e < self.initial_epoch || e > self.epoch {
+            return Err(TxError::UnknownRef);
+        }
+        Ok(())
+    }
+    /// `ReadMode::Historical(e)`: status of a revision as of `e`, head or not.
+    pub fn read_historical(&self, r: RevisionId, e: Epoch) -> Result<NodeState, TxError> {
+        self.retained(e)?;
+        self.state_at(r, e).cloned().ok_or(TxError::UnknownRef)
+    }
+    /// `ReadMode::Snapshot(e)`: the logical's head as of `e` and its status then.
+    /// The head is the logical's revision whose state at `e` is `Current`.
+    pub fn read_snapshot(
+        &self,
+        l: LogicalId,
+        e: Epoch,
+    ) -> Result<(RevisionId, NodeState), TxError> {
+        self.retained(e)?;
+        (0..self.revisions.len() as u32)
+            .map(RevisionId)
+            .filter(|r| self.revisions.logical(*r) == l)
+            .find_map(|r| {
+                self.state_at(r, e)
+                    .filter(|s| s.dimensions.currency == Currency::Current)
+                    .map(|s| (r, s.clone()))
+            })
+            .ok_or(TxError::UnknownRef)
+    }
     /// Exact endpoint comparison: changes which cancel between epochs disappear.
     pub fn diff(&self, from: Epoch, to: Epoch) -> Result<EpochDiff, TxError> {
         if from < self.initial_epoch

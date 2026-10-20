@@ -139,6 +139,9 @@ impl RevisionArena {
     pub fn logical(&self, r: RevisionId) -> LogicalId {
         self.logical[r.index()]
     }
+    pub fn content(&self, r: RevisionId) -> ContentHash {
+        self.content[r.index()]
+    }
     pub fn len(&self) -> usize {
         self.logical.len()
     }
