@@ -2,8 +2,10 @@
 //!
 //! op_log is an own append-only segment log and the only source of truth.
 //! All durable I/O goes through [`Durability`]; [`SimDisk`] drives crash tests.
+pub mod doctor;
 pub mod durability;
 pub mod log;
+pub mod migrate;
 pub mod projection;
 mod snapshot;
 mod store;

@@ -79,7 +79,13 @@ fn main() {
     // update really changes support/base or canonical witness. No empty commits.
     for step in 0..samples {
         let r = RevisionId((n - 1 - step % 8) as u32);
-        let j = db.indexes().rules_by_concl[r.index()][0];
+        let j = db
+            .indexes()
+            .rules_by_concl
+            .row(r.index())
+            .first()
+            .copied()
+            .expect("rule");
         let op = Op::SetRuleEnabled {
             rule: j.into(),
             enabled: (step / 8) % 2 != 0,
@@ -161,6 +167,31 @@ fn main() {
     println!(
         "time_budgets_pass={time_pass} memory_scopes_pass={scopes_pass} live_heap_within_total_budget={total_pass}"
     );
+    // Structural probe (ADR 0007, informational; after memory measurement):
+    // each commit creates a logical and a rule concluding it from a near-tail revision.
+    let mut structural = Vec::with_capacity(samples);
+    for step in 0..samples {
+        let premise = RevisionId((n - 1 - step % 8) as u32);
+        let batch = Batch::new(vec![
+            Op::CreateLogical {
+                key: format!("probe-{step}"),
+                kind: RecordKind::Fact,
+                scope_lane: "bench".into(),
+                content: [7; 32],
+                adopt_as_base: false,
+            },
+            Op::AddRule {
+                conclusion: RevRef::New(0),
+                incidences: vec![(premise.into(), EdgeKind::Cur)],
+                enabled: true,
+            },
+        ]);
+        let begin = Instant::now();
+        black_box(db.commit(&batch).unwrap());
+        structural.push(begin.elapsed().as_nanos());
+    }
+    let structural = percentile(&mut structural);
+    println!("structural_commit_p99_ns={structural} (create logical + rule, informational)");
     // Keep db alive until all measurements are printed.
     black_box(&db);
     if !(time_pass && scopes_pass && total_pass) {

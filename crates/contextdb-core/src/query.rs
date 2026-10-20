@@ -17,13 +17,17 @@ pub(crate) fn why(
     Ok(Explanation {
         revision: r,
         base: i.base(r),
-        active_rules: index.rules_by_concl[r.index()]
+        active_rules: index
+            .rules_by_concl
+            .row(r.index())
             .iter()
             .filter(|j| c.counted[j.index()])
             .copied()
             .collect(),
         witness: c.witness[r.index()],
-        references: index.rules_by_concl[r.index()]
+        references: index
+            .rules_by_concl
+            .row(r.index())
             .iter()
             .flat_map(|j| i.references(*j).iter().map(move |r| (*j, *r)))
             .collect(),
@@ -42,7 +46,7 @@ pub(crate) fn why_not(
         return Err(TxError::UnknownRef);
     }
     let mut rules = Vec::new();
-    for j in &index.rules_by_concl[r.index()] {
+    for j in index.rules_by_concl.row(r.index()) {
         let (asserted, current) = vectors(i, *j);
         let mut incidences = Vec::new();
         let mut upstream = Vec::new();

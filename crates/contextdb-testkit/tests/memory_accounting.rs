@@ -14,8 +14,11 @@ fn live() -> isize {
     s.bytes_allocated as isize - s.bytes_deallocated as isize
 }
 /// (category lower bound, bytes actually released when the Db is dropped).
+/// A clone has exact capacities, so values do not depend on growth history or
+/// on features (paranoid materializes the snapshot during commits).
 fn measure(db: Db) -> (MemoryFootprint, usize) {
     let _ = contextdb_model::DerivedView::derived(&db);
+    let db = db.clone();
     let footprint = db.memory_footprint();
     let before = live();
     drop(db);
@@ -76,7 +79,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     );
     golden(
         &multi,
-        [716888, 369716, 141892, 519008, 707506, 519972, 9997],
+        [749584, 349708, 141892, 471840, 704098, 519908, 9997],
     );
     check("hub", load(&shape(Shape::Hub, 5_000, 7).batches), 0.01);
     // Sparse metadata, many interned lanes, references and B-tree tables.
@@ -101,7 +104,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
             })
             .collect(),
     ));
-    // Rules with Sem and Ref incidences, validation records and open artifacts.
+    // Rules with Sem, Cur and Ref incidences, validation records and open artifacts.
     let rule = RuleId(1_999);
     batches.push(Batch::new(
         (0..20u32)
@@ -109,6 +112,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
                 conclusion: RevisionId(2_100 + k).into(),
                 incidences: vec![
                     (RevisionId(2_000 + k).into(), EdgeKind::Sem),
+                    (RevisionId(1_000 + k).into(), EdgeKind::Cur),
                     (RevisionId(k).into(), EdgeKind::Ref),
                 ],
                 enabled: true,
@@ -141,9 +145,11 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
             .sum::<usize>(),
         20
     );
-    let lanes = check("metadata_lanes", db, 0.02);
+    // B-tree heavy (metadata, validations, adjacency overflow rows): the lower
+    // bound counts full 11-slot leaves; real leaves are ~2/3 full.
+    let lanes = check("metadata_lanes", db, 0.04);
     golden(
         &lanes,
-        [674136, 100488, 87984, 195832, 306685, 235244, 4519],
+        [496388, 100584, 51192, 195992, 306647, 235180, 4519],
     );
 }

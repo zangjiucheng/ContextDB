@@ -1,4 +1,4 @@
-name: P1 exhaustive and mutation audit
+name: Nightly exhaustive, mutation and durability gates
 on:
   workflow_dispatch:
   schedule:
@@ -21,6 +21,21 @@ jobs:
           CONTEXTDB_EXHAUSTIVE_DEPTH: '8'
         run: cargo test --release --locked -p contextdb-testkit --features contextdb-core/paranoid --test exhaustive -- --ignored --nocapture
   mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: Kernel mutations (shard ${{ matrix.shard }}/4)
+        run: bash scripts/mutation.sh --shard ${{ matrix.shard }}/4
+  durability:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -28,6 +43,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install 1.95.0 --profile minimal
-      - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - name: Counting and transaction mutations
-        run: bash scripts/mutation.sh
+      - name: P2 G4 crash injection (1,000 per point) and PROP10 (10,000 seeds)
+        env:
+          CONTEXTDB_G4_RUNS: '1000'
+          CONTEXTDB_PROP10_SEEDS: '10000'
+        run: cargo test --release --locked -p contextdb-store
+      - name: P2 rebuild == incremental and read modes
+        run: cargo test --release --locked -p contextdb-testkit --test p2_rebuild

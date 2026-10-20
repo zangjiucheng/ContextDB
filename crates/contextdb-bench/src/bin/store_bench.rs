@@ -45,6 +45,9 @@ impl Durability for Unsynced {
     fn sync_dir(&self, _: &Path) -> io::Result<()> {
         Ok(())
     }
+    fn rename_dir(&self, a: &Path, b: &Path) -> io::Result<()> {
+        self.0.rename_dir(a, b)
+    }
     fn lock(&self, p: &Path) -> io::Result<Box<dyn durability::LockGuard>> {
         self.0.lock(p)
     }

@@ -15,3 +15,16 @@
 - Compact P1 storage without semantic change: dense u32 PK, deduplicated indexes, CSR rule/logical arenas, post-state-only history. Live heap is 181–189 B/incidence (previous lower bound 292–314).
 - Calibrate the P1 memory budget per scope (ADR 0005, SPEC v1.4.2). The bench measures live heap with a counting allocator and exits non-zero on failure. An allocator-checked accounting test is added. The mutation audit is extended to arena/memory with 0 survivors.
 - Fix the nightly mutation job (missing `results/` directory). Propose the P2 durable op_log ADR 0006.
+- Accept ADR 0006 and SPEC v1.4.3. Implement `contextdb-store`:
+  - own segmented op_log with a blake3 hash chain and durable decoding limits;
+  - ordered commit (idempotency, blobs, append + sync, publish) with fail-stop poisoning and a directory lock;
+  - blobs, snapshots, replay and a sampled oracle self-check at open;
+  - SQLite projections with a watermark;
+  - Historical / Snapshot / DIFF read modes;
+  - format-0 migration and doctor truncation;
+  - a SimDisk crash-injection harness.
+- Make structural commits incremental (ADR 0007): staging overlay, appendable CSR adjacency, open-addressing key table, Pearce–Kelly undo journal, incremental A5 and status walker. Cold replay of 100K structural transactions goes from O(N²) to about 1 s.
+- Add `ctx replay | doctor | snapshot | migrate | export`.
+- Add G4 crash injection at the blob-put and projection-write steps.
+- Add mutation tests for the key table, adjacency and staging overlay; bound key-table probes.
+- Shard the nightly mutation audit and add the P2 durability job.

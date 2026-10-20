@@ -32,6 +32,8 @@ pub trait Durability: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn sync(&self, path: &Path) -> io::Result<()>;
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
+    /// Renames a directory; durable after `sync_dir` of its parent.
+    fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>>;
 }
 
@@ -109,6 +111,9 @@ impl Durability for StdDisk {
     }
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         self.sync_file(&std::fs::File::open(dir)?)
+    }
+    fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()> {
+        std::fs::rename(from, to)
     }
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>> {
         let file = std::fs::OpenOptions::new()
@@ -417,6 +422,30 @@ impl Durability for SimDisk {
             .map(|(p, i)| (name(p), *i))
             .collect();
         s.durable.insert(dir.to_path_buf(), entries);
+        Ok(())
+    }
+    /// Simplification: the simulated directory rename is immediately durable
+    /// (crash tests cover log/blob/snapshot files, not migrations).
+    fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let mut s = self.state();
+        Self::check_fault(&mut s, "rename")?;
+        let moved: Vec<_> = s
+            .live
+            .keys()
+            .filter(|p| p.starts_with(from))
+            .cloned()
+            .collect();
+        for p in moved {
+            let i = s.live.remove(&p).expect("listed");
+            s.live
+                .insert(to.join(p.strip_prefix(from).expect("prefix")), i);
+        }
+        if let Some(entries) = s.durable.remove(from) {
+            s.durable.insert(to.to_path_buf(), entries);
+        }
+        if s.dirs.remove(from) {
+            s.dirs.insert(to.to_path_buf());
+        }
         Ok(())
     }
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>> {

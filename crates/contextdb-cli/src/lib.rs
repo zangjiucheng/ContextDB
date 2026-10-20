@@ -1,4 +1,2 @@
-//! Command-line interface for ContextDB.
-//!
-//! Planned phase: P0 scaffold; commands in later phases. This crate currently reserves its workspace boundary.
-//! No database behavior or verification gate is implemented here yet.
+//! Command-line interface for ContextDB. P2 operator commands live in `src/main.rs`
+//! (`ctx replay`, `doctor`, `snapshot`, `migrate`); agent commands arrive in P3.

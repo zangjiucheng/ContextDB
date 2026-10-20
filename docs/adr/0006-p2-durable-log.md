@@ -278,3 +278,26 @@ All three use one shared state function, and a property test requires identical 
   - n7 → §4 step 7
   - n8 → §8
   - n9, n10 → §10
+
+## 12. Implementation notes (P2 gate, 2026-10-20)
+
+These record where the implementation differs from or makes concrete the text above. None changes a SPEC guarantee.
+
+- **One format-0 fixture (§10).** A single frozen format 0 is checked in (`migrate::legacy`): identical framing, and a `result_blob` without `status_diff`. Its migration re-derives every result, checks the legacy fields against the re-derived ones, re-chains checksums, and keeps the originally acked bytes as `acked_result`. T68 checks the replayed state, the preserved acked results for retries, and the `log.v0.bak` backup. A corrupt legacy log aborts the migration and leaves the old log untouched. The no-op path of the framework (migrating a log that is already current) returns `from == to` without rewriting anything. A second, header-only fixture would test nothing that these two paths do not, so it was not added.
+- **Projection roll-forward (§8).** `Projections::apply` accepts only the next contiguous epoch. Each projection row set and its watermark are written in one SQLite transaction.
+  - At open, frames replayed above the watermark are applied, so a log replayed from genesis brings projections current.
+  - When open starts from a snapshot newer than the watermark, projections stay behind. Reads at epochs above the watermark then use source 3 (log replay), which keeps open proportional to the tail after the snapshot.
+  - `Store::catch_up_projections` (`ctx doctor`) fills the gap.
+  - A failed projection write after a durable commit marks projections stale for the rest of the process; the commit is still acked.
+- **Doctor truncation (§4 step 3).** `ctx doctor --truncate-before` deletes the projection file instead of deleting rows above the new tail. The next open rebuilds it. A projection whose watermark checksum does not name the verified log is cleared at open in any case.
+- **Self-check (§4 step 7).** The sample is 1,000 revisions (all of them below that), drawn with xorshift seeded by the head checksum. `Db::verify_counting_sample` re-evaluates each sampled node's per-node definition: enabled rules with all premise literals true, the sat bits and the L0 bit. Any mismatch fails open with `SelfCheckFailed`. The open report counts the checked revisions.
+- **Crash injection (§9).** Every listed point runs ≥ 1,000 effective injections in the gate configuration (`CONTEXTDB_G4_RUNS=1000`):
+  - pre-WAL, post-WAL-pre-sync and post-sync-pre-publish, cycling the four tail fates;
+  - mid-snapshot, at the write, sync, rename and sync_dir steps;
+  - each blob-put step (write, sync, rename, sync_dir). A failed put fail-stops, the blob is afterwards absent or intact, and no temp file survives open;
+  - the projection write. `Store::fail_next_projection_write`, a hidden test hook, fails the SQLite transaction before it commits. The test checks that the commit is acked, that reads are exact while stale, after reopening at the lagging watermark and after catching up.
+- **SimDisk directory renames.** `SimDisk::rename_dir` moves a directory and its durable entries at once. It does not model a directory rename lost because the parent was not synced, so a crash between the two renames of `migrate` is not exercised. Migration is an explicit offline operation that keeps the backup; a crash there leaves either the old log in place (plus a stale `log.migrating`, discarded on the next attempt) or the new log and the backup.
+- **Not implemented in P2 (no gate depends on them):**
+  - a cache of `inputs_at(e)` (each use replays the prefix);
+  - bounding the in-memory history after open;
+  - a store memory report covering the id index and `BlobPresence`. P3's MCP memory budgets will include these.

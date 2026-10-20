@@ -1,5 +1,11 @@
 # Implementation status
 
+P2 durability and recovery are implemented, and every local P2 gate layer passes.
+Independent review, remote CI and the nightly run are pending.
+See [P2 gate](gates/P2.md), [P2 report](gates/P2-report.md),
+[durable-log ADR 0006](adr/0006-p2-durable-log.md) and
+[incremental structural commits ADR 0007](adr/0007-incremental-structural-commits.md).
+
 P1 functionality is implemented, and every local P1 gate layer passes. After
 storage compaction, memory is 181.15 / 188.87 B/incidence of live heap. It is within
 the per-scope budgets of ADR 0005, which the owner chose to calibrate per scope.
@@ -23,7 +29,8 @@ That run does not validate the current P1 changes.
   Pearce–Kelly maintains the revision/Sem-virtual DAG with NaiveTopo reference.
 - Atomic mutable commits with undo, final-net-delta seeding, local status propagation,
   retained snapshot patching, allocations, exact flips/diffs and deterministic digests.
-  Structural changes use staged input validation and rebuilt indexes.
+  Structural changes validate against a staging overlay and publish incrementally
+  (appendable CSR adjacency, key table, PK undo journal; ADR 0007).
 - O(1) CURRENT L0; independent memoized L1/L2; WHY with bounded canonical proof,
   WHY_NOT; Reachable and undo-restored Exact IMPACT; endpoint-folded in-memory DIFF.
 - Debug/paranoid DA1–DA6 checks, release-paranoid oracle cross-checks, separate timing
@@ -32,24 +39,35 @@ That run does not validate the current P1 changes.
   seeds / 120,000 transactions, PROP7 metamorphic checks, depth-6/8 finite-state
   exploration and counting/transaction mutation audit. See report for exact results.
 - Rust 1.95.0, Apache-2.0, architecture/license gates, standard Linux/macOS CI and
-  scheduled/manual P1 exhaustive/mutation workflow (new workflow not yet run remotely).
+  a nightly workflow: exhaustive depth 6/8, four-shard mutation audit, P2 G4/PROP10 at gate counts.
+
+- `contextdb-store`:
+  - own segmented op_log behind `Durability` (StdDisk, and SimDisk for crash injection);
+  - blake3 blobs;
+  - idempotent `client_txn_id` with `txn_status`;
+  - snapshots and replay with a sampled oracle self-check;
+  - SQLite projections with a watermark;
+  - Historical / Snapshot / DIFF over persisted data;
+  - format-0 → 1 migration;
+  - doctor truncation.
+- `ctx replay | doctor | snapshot | migrate | export`.
 
 ## Boundaries
 
-- P1 Gate closes on remote CI. P2 persistence has not begun. Its G0 ADR
-  ([0006](adr/0006-p2-durable-log.md)) has been accepted after three rounds of independent review
-  (owner decision: our own append-only op_log, with SQLite only for projections).
-  client_txn_id is carried but not deduplicated. Content hashes have no blob store.
+- P2 closes on independent review plus remote CI/nightly.
+- No signed log head (P9).
+- No erasure: blobs are never deleted before P9.
+- No `inputs_at` cache.
+- In-memory history is not bounded after open.
 - L1/L2 use memoized evaluation; full incremental layer maintenance is P3.
-  Structural insertion is not covered by mutable-commit latency measurements.
 - MAIN only, one subject, positive DAG, transaction time only. No branch-isolation
   product API, ACL, negation, recursive production rules, erasure or replication.
 - Certificate closure issuance, daemon/MCP/hooks and transport binding are P3+.
   CodeAnchor input/channel rules exist, but no filesystem observer before P5.
 - Conflict remains None before P7, visibility Authorized before P9; structural
-  Unknown/freshness are summary-function fixtures. No durable history retention.
-- `ctx` exposes help/version; operational commands and other product crates remain
-  placeholders. Research DD/DBSP workspaces stay excluded.
+  Unknown/freshness are summary-function fixtures.
+- `ctx` has operator commands only; agent-facing commands arrive with the daemon
+  in P3. Other product crates remain placeholders. Research DD/DBSP workspaces stay excluded.
 
 ## Dependency policy
 

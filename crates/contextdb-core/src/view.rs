@@ -4,6 +4,7 @@ use contextdb_model::*;
 /// Read-only columns consumed by maintainers and queries, never validation logic.
 pub trait InputView {
     fn revision_count(&self) -> usize;
+    fn logical_count(&self) -> usize;
     fn rule_count(&self) -> usize;
     fn logical_kind(&self, id: LogicalId) -> RecordKind;
     fn revision_logical(&self, id: RevisionId) -> LogicalId;
@@ -20,6 +21,9 @@ pub trait InputView {
 impl InputView for Inputs {
     fn revision_count(&self) -> usize {
         self.revisions.len()
+    }
+    fn logical_count(&self) -> usize {
+        self.logicals.len()
     }
     fn rule_count(&self) -> usize {
         self.rules.len()
@@ -64,6 +68,9 @@ pub(crate) struct StoredView<'a> {
 impl InputView for StoredView<'_> {
     fn revision_count(&self) -> usize {
         self.revisions.len()
+    }
+    fn logical_count(&self) -> usize {
+        self.logicals.len()
     }
     fn rule_count(&self) -> usize {
         self.rules.len()

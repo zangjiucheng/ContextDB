@@ -81,6 +81,9 @@ name = "contextdb-cli"
 version = "0.1.0"
 dependencies = [
  "contextdb-model",
+ "contextdb-oracle",
+ "contextdb-store",
+ "contextdb-testkit",
 ]
 
 [[package]]

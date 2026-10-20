@@ -606,3 +606,164 @@ fn projections_roll_forward_rebuild_and_agree_with_replay() {
     assert_eq!(every_read(&store), reference);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+#[test]
+fn doctor_truncate_before_repairs_broken_chain_t33() {
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    let mut committed = Vec::new();
+    for (n, b) in contextdb_testkit::generate_p1(31)
+        .batches
+        .iter()
+        .enumerate()
+    {
+        let mut b = with_blobs(&mut store, b);
+        b.client_txn_id = Some(txn(n as u64));
+        if let Ok(r) = store.commit(&b) {
+            committed.push((txn(n as u64), r.epoch));
+        }
+    }
+    let end = store.epoch();
+    assert!(end.0 >= 4);
+    let keep = Epoch(2);
+    let digest_at_keep = {
+        let mut db = Db::default();
+        for e in 1..=keep.0 {
+            db.commit(&store.read_row(Epoch(e)).unwrap().batch().unwrap())
+                .unwrap();
+        }
+        db.digest()
+    };
+    drop(store);
+    // Corrupt the third frame: an earlier frame, so open fails closed.
+    let seg = segment(&disk);
+    let bytes = disk.peek(&seg).unwrap();
+    let mut pos = log::HEADER_LEN;
+    for _ in 0..keep.0 {
+        let (_, _, end) = log::parse_frame(&bytes, pos).unwrap();
+        pos = end;
+    }
+    disk.corrupt(&seg, pos + 40, 0x77);
+    assert!(matches!(
+        open(&disk),
+        Err(StoreError::ChainBroken {
+            epoch: Epoch(3),
+            ..
+        })
+    ));
+    // A plan before the corrupt frame lists the acked data that will be lost.
+    let plan = doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(3)).unwrap();
+    assert_eq!(plan.keep_through, keep);
+    assert!(
+        plan.unreadable_tail,
+        "the corrupt frame itself is unreadable"
+    );
+    // A plan past the corruption is refused: earlier frames must verify.
+    assert!(doctor::plan_truncate_before(&disk, Path::new(DIR), Epoch(4)).is_err());
+    doctor::truncate_before(&disk, Path::new(DIR), &plan).unwrap();
+    let (store, _) = open(&disk).unwrap();
+    assert_eq!((store.epoch(), store.db().digest()), (keep, digest_at_keep));
+    for (id, epoch) in committed {
+        let status = store.txn_status(&id).unwrap();
+        assert_eq!(
+            matches!(status, TxnStatus::Committed { .. }),
+            epoch <= keep,
+            "{epoch:?}"
+        );
+    }
+}
+/// G4 blob step (SPEC P2 scope): a failure at any put_blob step fail-stops;
+/// after a crash the blob is absent or intact, never torn, and no temp file
+/// survives open.
+#[test]
+fn g4_blob_write() {
+    for (n, step) in ["write", "sync", "rename", "sync_dir"]
+        .into_iter()
+        .enumerate()
+    {
+        for seed in 0..(runs() / 4 + 1) {
+            let disk = SimDisk::new();
+            let mut store = populated(&disk, 1 + seed as usize % 4);
+            let (epoch, digest) = (store.epoch(), store.db().digest());
+            let payload = format!("blob-{seed}").into_bytes();
+            disk.fail_next(step);
+            assert_eq!(
+                store.put_blob(&payload),
+                Err(StoreError::Poisoned),
+                "{step}"
+            );
+            drop(store);
+            let crashed = disk.crash(FATES[(seed as usize + n) % 4], seed);
+            let (mut store, _) = open(&crashed).unwrap();
+            assert_eq!((store.epoch(), store.db().digest()), (epoch, digest));
+            let hash = *blake3::hash(&payload).as_bytes();
+            match store.get_blob(&hash) {
+                Payload::Available(bytes) => assert_eq!(bytes, payload),
+                Payload::Unavailable(why) => {
+                    assert_eq!(why, Unavailable::Missing, "{step} {seed}")
+                }
+            }
+            let blobs = Path::new(DIR).join("blobs");
+            assert!(
+                crashed
+                    .list(&blobs)
+                    .unwrap()
+                    .iter()
+                    .all(|f| !f.ends_with(".tmp")),
+                "{step} {seed}: temp blob left after open"
+            );
+            assert_eq!(store.put_blob(&payload).unwrap(), hash);
+            store
+                .commit(&Batch::new(vec![Op::CreateLogical {
+                    key: format!("after-{seed}"),
+                    kind: RecordKind::Fact,
+                    scope_lane: "repo".into(),
+                    content: hash,
+                    adopt_as_base: true,
+                }]))
+                .unwrap();
+        }
+    }
+}
+/// G4 projection step: a projection write failing mid-transaction after a
+/// durable commit leaves the commit acked, reads exact (projections skipped),
+/// and the next open rolls the projection forward from its watermark.
+#[test]
+fn g4_projection_write() {
+    let tmp = std::env::temp_dir().join(format!("contextdb-g4proj-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    for seed in 0..runs() {
+        let proj = tmp.join(format!("p{seed}.sqlite"));
+        let disk = SimDisk::new();
+        let (mut store, _) = open_with(&disk, &proj);
+        commit_some(&mut store, seed, 1 + seed as usize % 5);
+        let mark = store.epoch();
+        assert_eq!(store.projection_watermark(), mark);
+        store.fail_next_projection_write();
+        let mut acked = 0;
+        for b in contextdb_testkit::generate_p1(seed + 1000)
+            .batches
+            .iter()
+            .take(4)
+        {
+            let b = with_blobs(&mut store, b);
+            if store.commit(&b).is_ok() {
+                acked += 1;
+            }
+        }
+        // The first failed write rolled back; later epochs leave a gap.
+        let expected_mark = if acked > 0 { mark } else { store.epoch() };
+        assert_eq!(store.projection_watermark(), expected_mark);
+        let live = every_read(&store);
+        drop(store);
+        let crashed = disk.crash(FATES[seed as usize % 4], seed);
+        let (reference, _) = open(&crashed).unwrap();
+        assert_eq!(every_read(&reference), live, "stale projections skipped");
+        drop(reference);
+        let (mut store, report) = open_with(&crashed, &proj);
+        assert_eq!(report.projection_watermark, expected_mark);
+        assert_eq!(every_read(&store), live, "lagging projection reads exact");
+        assert_eq!(store.catch_up_projections().unwrap(), store.epoch());
+        assert_eq!(every_read(&store), live, "caught-up projection reads exact");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}

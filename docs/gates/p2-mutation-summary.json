@@ -1,0 +1,75 @@
+{
+  "tool": "cargo-mutants 27.1.0",
+  "rust": "1.95.0",
+  "date": "2026-10-20",
+  "runs": [
+    {
+      "name": "full scope",
+      "files": [
+        "crates/contextdb-core/src/engine/counting.rs",
+        "crates/contextdb-core/src/txn.rs",
+        "crates/contextdb-core/src/stage.rs",
+        "crates/contextdb-core/src/arena.rs",
+        "crates/contextdb-core/src/memory.rs"
+      ],
+      "mutants": 601,
+      "caught": 535,
+      "unviable": 43,
+      "timeouts": 0,
+      "missed": 23,
+      "missed_note": "all 23 in capacity growth (memory::grow, LogicalArena/RevisionArena/RuleArena::reserve); closed by memory::growth + exact-capacity tests, then arena.rs/memory.rs rerun"
+    },
+    {
+      "name": "rerun after growth tests",
+      "files": [
+        "crates/contextdb-core/src/arena.rs",
+        "crates/contextdb-core/src/memory.rs"
+      ],
+      "mutants": 350,
+      "caught": 321,
+      "unviable": 29,
+      "timeouts": 0,
+      "missed": 0,
+      "unviable_list": [
+        "crates/contextdb-core/src/arena.rs:113:9: replace LogicalArena::kind -> RecordKind with Default::default()",
+        "crates/contextdb-core/src/arena.rs:178:9: replace LogicalArena::export -> (Vec<Logical>, Vec<Metadata>) with (vec![Default::default()], vec![])",
+        "crates/contextdb-core/src/arena.rs:178:9: replace LogicalArena::export -> (Vec<Logical>, Vec<Metadata>) with (vec![Default::default()], vec![Default::default()])",
+        "crates/contextdb-core/src/arena.rs:238:9: replace RevisionArena::export -> Vec<Revision> with vec![Default::default()]",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::new()",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::from_iter([0])",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::from(0)",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::new(0)",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::from_iter([1])",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::new(1)",
+        "crates/contextdb-core/src/arena.rs:271:5: replace span -> std::ops::Range<usize> with Range::from(1)",
+        "crates/contextdb-core/src/arena.rs:293:9: replace RuleArena::premises -> impl Iterator<Item = Incidence>+'_ with ::std::iter::once(Default::default())",
+        "crates/contextdb-core/src/arena.rs:299:9: replace RuleArena::premise_at -> Incidence with Default::default()",
+        "crates/contextdb-core/src/arena.rs:337:9: replace RuleArena::export -> Vec<Rule> with vec![Default::default()]",
+        "crates/contextdb-core/src/arena.rs:392:9: replace Row<'a, T>::first -> Option<&'a T> with Some(Box::leak(Box::new(Default::default())))",
+        "crates/contextdb-core/src/arena.rs:417:9: replace Adjacency<T>::with_rows -> Self with Default::default()",
+        "crates/contextdb-core/src/arena.rs:445:9: replace Adjacency<T>::row -> Row<'_, T> with Row::new()",
+        "crates/contextdb-core/src/arena.rs:445:9: replace Adjacency<T>::row -> Row<'_, T> with Row::from_iter([Default::default()])",
+        "crates/contextdb-core/src/arena.rs:445:9: replace Adjacency<T>::row -> Row<'_, T> with Row::new(Default::default())",
+        "crates/contextdb-core/src/arena.rs:445:9: replace Adjacency<T>::row -> Row<'_, T> with Row::from(Default::default())",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::new()",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from_iter([0])",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from(0)",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::new(0)",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from_iter([1])",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::new(1)",
+        "crates/contextdb-core/src/arena.rs:521:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from(1)",
+        "crates/contextdb-core/src/arena.rs:525:9: replace Indexes::incidence -> Incidence with Default::default()",
+        "crates/contextdb-core/src/memory.rs:61:9: replace Db<M, S>::memory_footprint -> MemoryFootprint with Default::default()"
+      ]
+    }
+  ],
+  "final": "0 surviving mutants, 0 timeouts, no exclusions or waivers; counting.rs, txn.rs and stage.rs are unchanged since the full-scope run",
+  "scope_sha256": {
+    "crates/contextdb-core/src/engine/counting.rs": "80fd87a3ce0508b78e25768f41820194a5d2cb79dfece706e4b57e6f0b9ffb75",
+    "crates/contextdb-core/src/txn.rs": "b9aad18552f37a91d36cbca0fd77a081dec374bf5944a30e5bd7c365c909b5e6",
+    "crates/contextdb-core/src/stage.rs": "acc43145b23c23207cc61a01916b27afd66b8ca7e30bdce55926e7fa351160a8",
+    "crates/contextdb-core/src/arena.rs": "9e929740418f02daf2b434856d3a34ed6b3ae2e626ee7b0eefd44c76d8644b4a",
+    "crates/contextdb-core/src/memory.rs": "cd65b2b835f708d9598f191b303857be0c9da636554badd49ddf756c2ecf6657"
+  },
+  "tests": "core/testkit --lib --test p0 --test p1 --test memory_accounting --locked"
+}

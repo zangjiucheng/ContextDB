@@ -1,0 +1,19 @@
+{
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "arch": "arm64",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "seed": 42,
+  "samples": 1000,
+  "profile": "release",
+  "features": [],
+  "threads": 1,
+  "warmup": "initial full load; complete derived snapshot populated before each early-revision commit, outside timing; p99 over 1000 changes per probe",
+  "memory": "live heap via stats_alloc counting allocator (requested bytes; allocator metadata excluded); category lower bounds checked by tests/memory_accounting.rs; per-scope upper bound = lower + untracked; RSS reported only; no payload bodies stored",
+  "machdep.cpu.brand_string": "Apple M1 Pro",
+  "hw.memsize": "17179869184",
+  "store": "StdDisk on APFS (internal SSD), temp dir; fullfsync on = F_FULLFSYNC via sync_all, off = fsync(2) via nix (measurement only); SQLite projections in memory for bench",
+  "commit_samples": 1000,
+  "replay_txns": 100000,
+  "structural_every": 1,
+  "commit_probe": "single-transaction commit through Store::commit including frame append + sync, p99 over 1000 samples"
+}

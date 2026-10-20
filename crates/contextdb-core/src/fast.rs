@@ -7,11 +7,14 @@ use crate::{
 use contextdb_model::*;
 use std::collections::BTreeMap;
 
+/// Pre-batch values of overwritten published entries; the `Before` view reads
+/// through them. Structural commits also record replaced validation records.
 #[derive(Debug, Default)]
 pub(crate) struct Undo {
-    base: BTreeMap<RevisionId, bool>,
-    heads: BTreeMap<LogicalId, RevisionId>,
-    enabled: BTreeMap<RuleId, bool>,
+    pub base: BTreeMap<RevisionId, bool>,
+    pub heads: BTreeMap<LogicalId, RevisionId>,
+    pub enabled: BTreeMap<RuleId, bool>,
+    pub validations: BTreeMap<(RuleId, HeadVector), Option<ValidationRecord>>,
 }
 pub(crate) fn eligible(b: &Batch) -> bool {
     b.ops.iter().all(|op| {
@@ -200,14 +203,16 @@ pub(crate) fn status_seeds(
     for (l, old, new) in &delta.head_moves {
         for r in old.iter().chain(std::iter::once(new)) {
             seen.insert(*r);
-            for id in index.exact_by_rev[r.index()]
+            for id in index
+                .exact_by_rev
+                .row(r.index())
                 .iter()
-                .chain(&index.pin_by_rev[r.index()])
+                .chain(index.pin_by_rev.row(r.index()))
             {
                 seen.insert(i.conclusion(index.inc_rule[id.index()]));
             }
         }
-        for id in &index.sem_by_logical[l.index()] {
+        for id in index.sem_by_logical.row(l.index()) {
             seen.insert(i.conclusion(index.inc_rule[id.index()]));
         }
     }
@@ -216,6 +221,9 @@ pub(crate) fn status_seeds(
 impl InputView for Before<'_> {
     fn revision_count(&self) -> usize {
         self.view.revision_count()
+    }
+    fn logical_count(&self) -> usize {
+        self.view.logical_count()
     }
     fn rule_count(&self) -> usize {
         self.view.rule_count()
@@ -260,6 +268,9 @@ impl InputView for Before<'_> {
         self.view.references(id)
     }
     fn validation(&self, id: RuleId, v: &HeadVector) -> Option<&ValidationRecord> {
-        self.view.validation(id, v)
+        match self.undo.validations.get(&(id, v.clone())) {
+            Some(old) => old.as_ref(),
+            None => self.view.validation(id, v),
+        }
     }
 }

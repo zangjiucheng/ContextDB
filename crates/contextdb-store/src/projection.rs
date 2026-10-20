@@ -16,6 +16,8 @@ pub struct Projections {
     watermark: Epoch,
     /// A write failed after a durable commit; reads skip projections until reopen.
     stale: bool,
+    /// G4 fault injection: the next `apply` fails before its transaction commits.
+    fail_next: bool,
 }
 /// Post-states and head/base movements of one committed epoch.
 pub struct EpochRows<'a> {
@@ -71,6 +73,7 @@ impl Projections {
             conn,
             watermark: valid.unwrap_or(Epoch(0)),
             stale: false,
+            fail_next: false,
         };
         if valid.is_none() {
             p.clear()?;
@@ -94,6 +97,9 @@ impl Projections {
     }
     pub fn mark_stale(&mut self) {
         self.stale = true;
+    }
+    pub fn fail_next_write(&mut self) {
+        self.fail_next = true;
     }
     /// Writes one epoch and advances the watermark in a single transaction.
     /// Only the next contiguous epoch is accepted; after a gap the tables stay
@@ -141,6 +147,10 @@ impl Projections {
                  ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, log_checksum = excluded.log_checksum",
                 params![e, rows.checksum.as_slice()],
             )?;
+        }
+        if std::mem::take(&mut self.fail_next) {
+            // Dropping the transaction rolls back the rows written above.
+            return Err(rusqlite::Error::InvalidQuery);
         }
         tx.commit()?;
         self.watermark = rows.epoch;

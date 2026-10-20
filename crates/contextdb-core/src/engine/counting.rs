@@ -87,16 +87,17 @@ impl Maintainer for Counting {
         let old_len = self.state.s.len();
         let mut before = BTreeMap::new();
         let n = i.revision_count();
-        self.state.s.resize(n, false);
-        self.state.support.resize(n, 0);
-        self.state.witness.resize(n, None);
+        use crate::memory::resize;
+        resize(&mut self.state.s, n, false);
+        resize(&mut self.state.support, n, 0);
+        resize(&mut self.state.witness, n, None);
         let old_rules = self.state.unsat.len();
-        self.state.unsat.resize(i.rule_count(), 0);
-        self.state.counted.resize(i.rule_count(), false);
-        self.state.sat.resize(index.inc_rule.len(), false);
-        self.dirty_inc.resize(index.inc_rule.len(), false);
-        self.dirty_rule.resize(i.rule_count(), false);
-        self.queued.resize(n, false);
+        resize(&mut self.state.unsat, i.rule_count(), 0);
+        resize(&mut self.state.counted, i.rule_count(), false);
+        resize(&mut self.state.sat, index.inc_rule.len(), false);
+        resize(&mut self.dirty_inc, index.inc_rule.len(), false);
+        resize(&mut self.dirty_rule, i.rule_count(), false);
+        resize(&mut self.queued, n, false);
         let mut heap = BinaryHeap::new();
         // DA1: no pop occurs until all final net-delta seeds have been installed.
         for r in &delta.base_flips {
@@ -104,7 +105,7 @@ impl Maintainer for Counting {
         }
         for (_, old, new) in &delta.head_moves {
             for r in old.iter().chain(std::iter::once(new)) {
-                for id in &index.exact_by_rev[r.index()] {
+                for id in index.exact_by_rev.row(r.index()) {
                     self.incidence(*id, index, i, topo, &mut heap, stats, true);
                 }
             }
@@ -135,7 +136,7 @@ impl Maintainer for Counting {
                 before.insert(r, self.state.row(r));
             }
             // DA3 / DA6: all supporting premises precede their conclusion.
-            crate::invariant_assert!(index.rules_by_concl[r.index()].iter().all(|j| {
+            crate::invariant_assert!(index.rules_by_concl.row(r.index()).iter().all(|j| {
                 i.premises(*j)
                     .all(|p| topo.rank(&CycleNode::Revision(p.premise)) < rank)
             }));
@@ -183,7 +184,9 @@ impl Maintainer for Counting {
             self.state.witness[r.index()] = if i.base(r) {
                 Some(Witness::Base)
             } else {
-                index.rules_by_concl[r.index()]
+                index
+                    .rules_by_concl
+                    .row(r.index())
                     .iter()
                     .find(|j| self.state.counted[j.index()])
                     .map(|j| Witness::Rule(*j))
@@ -193,7 +196,7 @@ impl Maintainer for Counting {
                 self.state.s[r.index()] = now;
                 flips.push(r);
                 stats.record(Work::NodeFlip);
-                for id in &index.rules_by_premise[r.index()] {
+                for id in index.rules_by_premise.row(r.index()) {
                     let c = i.conclusion(index.inc_rule[id.index()]);
                     crate::invariant_assert!(topo.rank(&CycleNode::Revision(c)) > rank);
                     self.incidence(*id, index, i, topo, &mut heap, stats, false);

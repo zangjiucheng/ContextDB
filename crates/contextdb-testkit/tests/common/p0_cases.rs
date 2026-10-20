@@ -203,8 +203,8 @@ fn t07ac_t63_refs_are_non_supporting_and_why_lists_all() {
     let why = x.db.why(RevisionId(1)).unwrap();
     assert_eq!(why.active_rules, vec![RuleId(0), RuleId(1)]);
     assert_eq!(why.references, vec![(RuleId(0), RevisionId(2))]);
-    assert!(x.db.indexes().rules_by_premise[2].is_empty());
-    assert_eq!(x.db.indexes().refs_by_target[2], vec![RuleId(0)]);
+    assert!(x.db.indexes().rules_by_premise.row(2).is_empty());
+    assert_eq!(x.db.indexes().refs_by_target.row(2), vec![RuleId(0)]);
     x.ok(vec![
         Op::RetractBase { rev: r(2) },
         revision(2, 9, true),
@@ -1018,8 +1018,8 @@ fn t10_cycle_path_and_csr_index_ids_are_exact() {
         x.db.indexes().rules_by_premise,
         vec![vec![IncId(0)], vec![IncId(1)], vec![]]
     );
-    assert_eq!(x.db.indexes().pin_by_rev[0], vec![IncId(0)]);
-    assert_eq!(x.db.indexes().exact_by_rev[1], vec![IncId(1)]);
+    assert_eq!(x.db.indexes().pin_by_rev.row(0), vec![IncId(0)]);
+    assert_eq!(x.db.indexes().exact_by_rev.row(1), vec![IncId(1)]);
     x.err(
         vec![add(0, &[(2, EdgeKind::Pin)])],
         TxError::CycleDetected {

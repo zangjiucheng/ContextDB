@@ -78,6 +78,8 @@ impl LayerMemo {
         r: RevisionId,
         epoch: Epoch,
     ) {
+        let missing = i.revision_count().saturating_sub(self.entries.len());
+        crate::memory::grow(&mut self.entries, missing);
         self.entries.resize_with(i.revision_count(), Entry::default);
         let mut stack = vec![(r, false)];
         while let Some((r, expanded)) = stack.pop() {
@@ -86,7 +88,7 @@ impl LayerMemo {
             }
             if !expanded && !i.base(r) {
                 stack.push((r, true));
-                for j in &index.rules_by_concl[r.index()] {
+                for j in index.rules_by_concl.row(r.index()) {
                     if !i.enabled(*j) {
                         continue;
                     }
@@ -111,7 +113,7 @@ impl LayerMemo {
                 [None; 2]
             };
             if !i.base(r) {
-                for j in &index.rules_by_concl[r.index()] {
+                for j in index.rules_by_concl.row(r.index()) {
                     if !i.enabled(*j) {
                         continue;
                     }

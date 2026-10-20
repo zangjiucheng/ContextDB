@@ -120,6 +120,10 @@ pub fn frame(row: &LogRow) -> (Vec<u8>, ContentHash) {
     out.extend_from_slice(&sum);
     (out, sum)
 }
+/// Check bytes over the first 52 header bytes.
+pub fn header_check(header: &[u8]) -> [u8; 8] {
+    check8(HEADER_DOMAIN, header)
+}
 pub fn segment_header(first_epoch: Epoch, prev: ContentHash) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
     out.extend_from_slice(MAGIC);
@@ -186,6 +190,8 @@ pub struct Scan {
     /// An earlier frame failed: fail closed.
     pub broken: Option<(Epoch, FrameFault)>,
     pub newer_format: Option<u32>,
+    /// An older format: open requires an explicit migration.
+    pub older_format: Option<u32>,
 }
 fn verify(row: &LogRow, prev: &ContentHash, expected: Epoch) -> Result<(), FrameFault> {
     if row.prev_checksum != *prev {
@@ -217,7 +223,7 @@ fn verify(row: &LogRow, prev: &ContentHash, expected: Epoch) -> Result<(), Frame
     Ok(())
 }
 /// Parses one frame at `pos`; `Err` carries the fault.
-fn parse_frame(bytes: &[u8], pos: usize) -> Result<(LogRow, ContentHash, usize), FrameFault> {
+pub fn parse_frame(bytes: &[u8], pos: usize) -> Result<(LogRow, ContentHash, usize), FrameFault> {
     let rest = &bytes[pos..];
     if rest.len() < 16 {
         return Err(FrameFault::Incomplete);
@@ -273,6 +279,10 @@ pub fn scan(disk: &dyn Durability, dir: &Path) -> std::io::Result<Scan> {
         };
         if header.format > FORMAT_VERSION {
             out.newer_format = Some(header.format);
+            return Ok(out);
+        }
+        if header.format < FORMAT_VERSION {
+            out.older_format = Some(header.format);
             return Ok(out);
         }
         if header.first_epoch != next_epoch || header.prev != prev {

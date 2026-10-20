@@ -11,6 +11,23 @@ pub(crate) fn vec_bytes<T>(v: &Vec<T>) -> usize {
 pub(crate) fn btree_slots(n: usize) -> usize {
     n.div_ceil(11) * 11
 }
+/// Amortized growth with a 1.25x factor (ADR 0007): exact from empty and for
+/// bulk appends, at most ~25 % slack, O(1) amortized copies per element.
+/// Returns the `reserve_exact` amount, or None when `additional` already fits.
+pub(crate) fn growth(len: usize, capacity: usize, additional: usize) -> Option<usize> {
+    let need = len + additional;
+    (need > capacity).then(|| need.max(len + len / 4) - len)
+}
+pub(crate) fn grow<T>(v: &mut Vec<T>, additional: usize) {
+    if let Some(n) = growth(v.len(), v.capacity(), additional) {
+        v.reserve_exact(n);
+    }
+}
+/// `grow` then `resize`: extends to `n` elements with the same growth policy.
+pub(crate) fn resize<T: Clone>(v: &mut Vec<T>, n: usize, value: T) {
+    grow(v, n.saturating_sub(v.len()));
+    v.resize(n, value);
+}
 pub(crate) fn bool_bytes(v: &Vec<bool>) -> usize {
     v.capacity()
 }
@@ -80,5 +97,25 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             history,
             history_changes: self.history.iter().map(|t| t.changes.len()).sum(),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn growth_is_exact_for_bulk_and_amortized_for_small_appends() {
+        assert_eq!(growth(0, 0, 10), Some(10), "exact from empty");
+        assert_eq!(growth(100, 100, 1), Some(25), "1.25x for a small append");
+        assert_eq!(growth(100, 100, 50), Some(50), "bulk append is exact");
+        assert_eq!(growth(100, 101, 1), None, "fits exactly");
+        assert_eq!(growth(100, 100, 0), None);
+        let mut v: Vec<u32> = Vec::new();
+        grow(&mut v, 8);
+        assert_eq!(v.capacity(), 8);
+        v.extend(0..8);
+        grow(&mut v, 1);
+        assert_eq!(v.capacity(), 10);
+        resize(&mut v, 20, 0);
+        assert_eq!((v.len(), v.capacity()), (20, 20));
     }
 }

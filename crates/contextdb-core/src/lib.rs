@@ -19,6 +19,7 @@ mod query;
 pub use query::Proof;
 use std::{cell::RefCell, sync::OnceLock};
 mod pk;
+mod stage;
 mod stats;
 mod topo;
 pub use engine::{Counting, FullRecompute, Maintainer};
@@ -223,6 +224,45 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .ok_or(TxError::UnknownRef)?;
         Ok((r, self.node(r)?))
     }
+    /// Recomputes the oracle's per-node L0 definition for `sample` from the
+    /// inputs and the stored premise bits, and compares it with the counting
+    /// state (store open self-check, ADR 0006 §4 step 7). Returns the first
+    /// mismatching revision. The graph is acyclic, so each node is checked
+    /// against its own premises.
+    pub fn verify_counting_sample(&self, sample: &[RevisionId]) -> Result<(), RevisionId> {
+        let view = self.view();
+        let c = self.maintainer.state();
+        for r in sample {
+            let n = r.index();
+            if n >= view.revision_count() {
+                return Err(*r);
+            }
+            let holds = |j: RuleId| {
+                view.enabled(j)
+                    && view.premises(j).all(|p| {
+                        c.s[p.premise.index()]
+                            && (p.kind != EdgeKind::Cur
+                                || view.head(view.revision_logical(p.premise)) == p.premise)
+                    })
+            };
+            let rules = self.indexes.rules_by_concl.row(n);
+            let support = rules.iter().filter(|j| holds(**j)).count() as u32;
+            let base = view.base(*r);
+            let witness = if base {
+                Some(Witness::Base)
+            } else {
+                rules.iter().find(|j| holds(**j)).map(|j| Witness::Rule(*j))
+            };
+            if c.support[n] != support || c.s[n] != (base || support > 0) || c.witness[n] != witness
+            {
+                return Err(*r);
+            }
+        }
+        Ok(())
+    }
+    pub fn revision_count(&self) -> usize {
+        self.revisions.len()
+    }
     /// Current base bit of a revision (store projections, base_history).
     pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
         self.tables
@@ -306,143 +346,180 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         if fast::eligible(b) {
             return self.commit_mutable(b);
         }
-        let mut pk = self.pk.clone();
+        self.commit_structural(b, blobs)
+    }
+    /// Structural batches (ADR 0007): validate against an overlay, publish
+    /// incrementally, then walk statuses from the net-delta seeds.
+    fn commit_structural(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<CommitResult, TxError> {
+        #[cfg(any(debug_assertions, feature = "paranoid"))]
+        let pk_before = self.pk.clone();
+        let pk_mark = self.pk.begin();
         let mut stats = S::default();
-        let before = self.inputs();
-        let before_snapshot = self.derived().clone();
-        let rev_mark = self.revisions.len();
-        let rule_mark = self.rules.len();
-        // Mutable-column undo; other input tables stay staged until publication.
-        let enabled_undo = self.rules.enabled.clone();
-        let mut working = before.clone();
         let mut allocations = Allocations::default();
-        let mut context = txn::Context::new(&working);
-        let next = Epoch(self.epoch.0.saturating_add(1));
-        let result =
-            (|| {
-                for (n, op) in b.ops.iter().enumerate() {
-                    txn::apply(
-                        &mut working,
-                        &mut allocations,
-                        b,
-                        op,
-                        n,
-                        next,
-                        &mut pk,
-                        &mut stats,
-                        &mut context,
-                        blobs,
-                    )?;
-                }
-                txn::final_policy(&working, rev_mark)?;
-                pk.sync(&working, b.ops.len().saturating_sub(1), &mut stats)?;
-                let epoch = Epoch(self.epoch.0.checked_add(1).ok_or(
-                    TxError::CapacityExceeded {
-                        kind: CapacityKind::Epoch,
-                    },
-                )?);
-                Ok(epoch)
-            })();
+        let now = self.epoch;
+        let next = Epoch(now.0.saturating_add(1));
+        let mut staged = stage::Stage::new(
+            &self.tables,
+            &self.logicals,
+            &self.revisions,
+            &self.rules,
+            &self.indexes,
+        );
+        let pk = &mut self.pk;
+        let result = (|| {
+            for (n, op) in b.ops.iter().enumerate() {
+                txn::apply(
+                    &mut staged,
+                    &mut allocations,
+                    b,
+                    op,
+                    n,
+                    next,
+                    pk,
+                    &mut stats,
+                    blobs,
+                )?;
+            }
+            txn::final_policy(&staged)?;
+            pk.sync(&staged, b.ops.len().saturating_sub(1), &mut stats)?;
+            now.0
+                .checked_add(1)
+                .map(Epoch)
+                .ok_or(TxError::CapacityExceeded {
+                    kind: CapacityKind::Epoch,
+                })
+        })();
+        let stage::Stage {
+            new_logicals,
+            new_heads,
+            new_revisions,
+            new_base,
+            new_rules,
+            new_artifacts,
+            heads,
+            base,
+            enabled,
+            artifact_open,
+            metadata,
+            validations,
+            watermarks,
+            policy,
+            ..
+        } = staged;
         let epoch = match result {
-            Ok(v) => v,
+            Ok(epoch) => epoch,
             Err(error) => {
-                self.revisions.truncate(rev_mark);
-                self.rules.truncate(rule_mark);
-                self.rules.enabled = enabled_undo;
+                self.pk.rollback(pk_mark);
+                #[cfg(any(debug_assertions, feature = "paranoid"))]
+                assert_eq!(
+                    self.pk, pk_before,
+                    "PK rollback restores the published graph"
+                );
                 return Err(error);
             }
         };
-        // Amortized growth (exact from empty): per-commit exact reservations
-        // would copy the arenas on every structural commit.
-        self.revisions.reserve(working.revisions.len() - rev_mark);
-        for r in &working.revisions[rev_mark..] {
-            self.revisions.append(r);
+        self.pk.commit();
+        // Publication: append, then apply overrides while recording pre-states.
+        let (old_logicals, old_revisions, old_rules) =
+            (self.logicals.len(), self.revisions.len(), self.rules.len());
+        let mut undo = fast::Undo::default();
+        self.logicals.reserve(&new_logicals);
+        memory::grow(&mut self.tables.heads, new_heads.len());
+        for (l, h) in new_logicals.iter().zip(&new_heads) {
+            self.logicals.append(l);
+            self.tables.heads.push(*h);
         }
-        self.rules.reserve(&working.rules[rule_mark..]);
-        for j in &working.rules[rule_mark..] {
+        for (l, h) in heads {
+            let old = std::mem::replace(&mut self.tables.heads[l.index()], h);
+            if old != h {
+                undo.heads.insert(l, old);
+            }
+        }
+        self.revisions.reserve(new_revisions.len());
+        memory::grow(&mut self.tables.base, new_base.len());
+        for (r, b) in new_revisions.iter().zip(&new_base) {
+            self.revisions.append(r);
+            self.tables.base.push(*b);
+        }
+        for (r, b) in base {
+            let old = std::mem::replace(&mut self.tables.base[r.index()], b);
+            if old != b {
+                undo.base.insert(r, old);
+            }
+        }
+        self.rules.reserve(&new_rules);
+        for j in &new_rules {
             self.rules.append(j);
         }
-        for (n, j) in working.rules.iter().enumerate() {
-            self.rules.enabled[n] = j.enabled;
+        for (j, e) in enabled {
+            let old = std::mem::replace(&mut self.rules.enabled[j.index()], e);
+            if old != e {
+                undo.enabled.insert(j, old);
+            }
         }
-        let net_delta = NetDelta {
-            base_flips: working
-                .base
-                .iter()
-                .enumerate()
-                .filter(|(n, v)| **v != before.base.get(*n).copied().unwrap_or(false))
-                .map(|(n, _)| RevisionId(n as u32))
-                .collect(),
-            head_moves: working
-                .heads
-                .iter()
-                .enumerate()
-                .filter(|(n, v)| before.heads.get(*n) != Some(*v))
-                .map(|(n, v)| (LogicalId(n as u32), before.heads.get(n).copied(), *v))
-                .collect(),
-            enable_flips: working
-                .rules
-                .iter()
-                .enumerate()
-                .take(before.rules.len())
-                .filter(|(n, j)| j.enabled != before.rules[*n].enabled)
-                .map(|(n, _)| RuleId(n as u32))
-                .collect(),
-            new_rules: (rule_mark..working.rules.len())
+        for (key, record) in validations {
+            let old = self.tables.validations.insert(key.clone(), record);
+            undo.validations.entry(key).or_insert(old);
+        }
+        if let Some(p) = policy {
+            self.tables.policy = p;
+        }
+        self.tables.watermarks.extend(watermarks);
+        for (l, m) in metadata {
+            self.logicals.put_metadata(l, m);
+        }
+        for (a, open) in artifact_open {
+            self.tables.artifacts[a.index()].open = open;
+        }
+        self.tables.artifacts.extend(new_artifacts);
+        let view = view::StoredView {
+            tables: &self.tables,
+            logicals: &self.logicals,
+            revisions: &self.revisions,
+            rules: &self.rules,
+        };
+        self.indexes.append(&view, old_revisions, old_rules);
+        #[cfg(feature = "paranoid")]
+        assert!(self.indexes == Indexes::build(&self.inputs()));
+        let mut base_flips: Vec<RevisionId> = undo.base.keys().copied().collect();
+        base_flips.extend(
+            (old_revisions..self.revisions.len())
+                .filter(|n| self.tables.base[*n])
+                .map(|n| RevisionId(n as u32)),
+        );
+        let mut head_moves: Vec<_> = undo
+            .heads
+            .iter()
+            .map(|(l, old)| (*l, Some(*old), self.tables.heads[l.index()]))
+            .collect();
+        head_moves.extend(
+            (old_logicals..self.logicals.len())
+                .map(|n| (LogicalId(n as u32), None, self.tables.heads[n])),
+        );
+        let delta = NetDelta {
+            base_flips,
+            head_moves,
+            enable_flips: undo.enabled.keys().copied().collect(),
+            new_rules: (old_rules..self.rules.len())
                 .map(|n| RuleId(n as u32))
                 .collect(),
         };
-        let indexes = Indexes::build(&working);
-        let l0_flips = self
-            .maintainer
-            .update(&working, &indexes, &pk, &net_delta, &mut stats)
-            .flips;
-        let mut memo = layers::LayerMemo::default();
-        let derived = memo.snapshot(&working, self.maintainer.state(), &indexes, epoch);
-        #[cfg(feature = "paranoid")]
-        assert_eq!(derived, contextdb_oracle::jacobi(&working));
-        let status_diff: Vec<_> = derived
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(n, v)| before_snapshot.nodes.get(*n) != Some(*v))
-            .map(|(n, _)| RevisionId(n as u32))
+        // New revisions, new rules' conclusions and revalidated rules' conclusions.
+        let mut extra: std::collections::BTreeSet<RevisionId> = (old_revisions
+            ..self.revisions.len())
+            .map(|n| RevisionId(n as u32))
             .collect();
-        self.record(
-            epoch,
-            status_diff
-                .iter()
-                .map(|r| NodeChange {
-                    revision: *r,
-                    before: before_snapshot.nodes.get(r.index()).cloned(),
-                    after: Some(derived.nodes[r.index()].clone()),
-                })
-                .collect(),
+        extra.extend(delta.new_rules.iter().map(|j| self.rules.conclusion(*j)));
+        extra.extend(
+            undo.validations
+                .keys()
+                .map(|(j, _)| self.rules.conclusion(*j)),
         );
-        self.stats = stats;
-        self.pk = pk;
-        self.indexes = indexes;
-        self.derived = OnceLock::from(derived);
-        self.memo = RefCell::new(memo);
-        self.epoch = epoch;
-        let new_logicals = &working.logicals[self.logicals.len()..];
-        self.logicals.reserve(new_logicals);
-        for l in new_logicals {
-            self.logicals.append(l);
-        }
-        self.logicals.set_metadata(&working.metadata);
-        working.logicals = Vec::new();
-        working.metadata = Vec::new();
-        working.revisions = Vec::new();
-        working.rules = Vec::new();
-        self.tables = working;
-        Ok(CommitResult {
-            epoch,
-            allocations,
-            net_delta,
-            l0_flips,
-            status_diff,
-        })
+        Ok(self.finish(undo, delta, allocations, extra, old_revisions, epoch, stats))
     }
     fn commit_mutable(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
@@ -454,9 +531,34 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             self.epoch,
         )?;
         let delta = undo.delta(&self.tables, &self.rules);
-        let mut seeds = fast::status_seeds(&self.view(), &self.indexes, &delta);
         let epoch = Epoch(self.epoch.0 + 1); // checked by stage
-        let mut stats = S::default();
+        let old_revisions = self.revisions.len();
+        Ok(self.finish(
+            undo,
+            delta,
+            Allocations::default(),
+            Default::default(),
+            old_revisions,
+            epoch,
+            S::default(),
+        ))
+    }
+    /// Shared publication tail: counting maintenance, the status walker from
+    /// net-delta seeds (revisions at or above `old_revisions` are new and have
+    /// no pre-state), snapshot patching, history and epoch.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &mut self,
+        undo: fast::Undo,
+        delta: NetDelta,
+        allocations: Allocations,
+        extra: std::collections::BTreeSet<RevisionId>,
+        old_revisions: usize,
+        epoch: Epoch,
+        mut stats: S,
+    ) -> CommitResult {
+        let mut seeds = fast::status_seeds(&self.view(), &self.indexes, &delta);
+        seeds.extend(extra);
         let view = view::StoredView {
             tables: &self.tables,
             logicals: &self.logicals,
@@ -486,22 +588,27 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut memo = self.memo.borrow_mut();
         while let Some(Reverse((_, r))) = heap.pop() {
             stats.record(stats::Work::Status(r));
-            let old = update
-                .before
-                .get(&r)
-                .copied()
-                .unwrap_or_else(|| self.maintainer.state().row(r));
-            let before = memo.cached_node(&before_view, r, old);
+            let is_new = r.index() >= old_revisions;
+            let before = (!is_new).then(|| {
+                let old = update
+                    .before
+                    .get(&r)
+                    .copied()
+                    .unwrap_or_else(|| self.maintainer.state().row(r));
+                memo.cached_node(&before_view, r, old)
+            });
             memo.invalidate(&[r]);
             let after = memo
                 .node(&view, self.maintainer.state(), &self.indexes, r, epoch)
                 .expect("status revision");
-            let propagates = before.l0 != after.l0
-                || before.l1 != after.l1
-                || before.l2 != after.l2
-                || before.dimensions.stale_reason != after.dimensions.stale_reason;
+            let propagates = before.as_ref().is_none_or(|before| {
+                before.l0 != after.l0
+                    || before.l1 != after.l1
+                    || before.l2 != after.l2
+                    || before.dimensions.stale_reason != after.dimensions.stale_reason
+            });
             if propagates {
-                for id in &self.indexes.rules_by_premise[r.index()] {
+                for id in self.indexes.rules_by_premise.row(r.index()) {
                     let c = view.conclusion(self.indexes.inc_rule[id.index()]);
                     if seeds.insert(c) {
                         heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
@@ -509,7 +616,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 }
                 let logical = view.revision_logical(r);
                 if view.head(logical) == r {
-                    for id in &self.indexes.sem_by_logical[logical.index()] {
+                    for id in self.indexes.sem_by_logical.row(logical.index()) {
                         let c = view.conclusion(self.indexes.inc_rule[id.index()]);
                         if seeds.insert(c) {
                             heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
@@ -517,25 +624,50 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     }
                 }
             }
-            if before != after {
+            if before.as_ref() != Some(&after) {
                 changes.push(NodeChange {
                     revision: r,
-                    before: Some(before),
+                    before,
                     after: Some(after),
                 });
             }
         }
         drop(memo);
-        // Preserve an already materialized public snapshot by patching changed
-        // rows. Dropping its N nodes / per-rule sat allocations here is O(N).
+        changes.sort_by_key(|c| c.revision);
+        // Preserve an already materialized public snapshot: extend it for new
+        // revisions/rules and patch changed rows. Rebuilding would be O(N).
         if let Some(snapshot) = self.derived.get_mut() {
             for change in &changes {
-                snapshot.nodes[change.revision.index()] =
-                    change.after.as_ref().expect("existing revision").clone();
+                let after = change.after.as_ref().expect("post-state").clone();
+                let n = change.revision.index();
+                if n < snapshot.nodes.len() {
+                    snapshot.nodes[n] = after;
+                } else {
+                    crate::invariant_assert!(n == snapshot.nodes.len());
+                    snapshot.nodes.push(after);
+                }
+            }
+            let added = delta.new_rules.len();
+            memory::grow(&mut snapshot.sat, added);
+            memory::grow(&mut snapshot.unsat, added);
+            memory::grow(&mut snapshot.active, added);
+            memory::grow(&mut snapshot.layer_active, added);
+            memory::grow(&mut snapshot.sem, added);
+            let missing = self.revisions.len().saturating_sub(snapshot.nodes.len());
+            memory::grow(&mut snapshot.nodes, missing);
+            for j in delta.new_rules.iter() {
+                crate::invariant_assert!(j.index() == snapshot.sat.len());
+                snapshot
+                    .sat
+                    .push(vec![false; self.indexes.rule_incidences(*j).len()]);
+                snapshot.unsat.push(0);
+                snapshot.active.push(false);
+                snapshot.layer_active.push([false; 2]);
+                snapshot.sem.push(SemState::NotRequired);
             }
             let mut memo = self.memo.borrow_mut();
             for r in &seeds {
-                for j in &self.indexes.rules_by_concl[r.index()] {
+                for j in self.indexes.rules_by_concl.row(r.index()) {
                     memo.refresh_rule(
                         &view,
                         self.maintainer.state(),
@@ -547,7 +679,6 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 }
             }
         }
-        changes.sort_by_key(|c| c.revision);
         let l0_flips = update.flips;
         let status_diff = changes.iter().map(|c| c.revision).collect();
         self.record(epoch, changes);
@@ -555,13 +686,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.stats = stats;
         #[cfg(feature = "paranoid")]
         assert_eq!(self.derived(), &contextdb_oracle::jacobi(&self.inputs()));
-        Ok(CommitResult {
+        CommitResult {
             epoch,
-            allocations: Allocations::default(),
+            allocations,
             net_delta: delta,
             l0_flips,
             status_diff,
-        })
+        }
     }
 }
 

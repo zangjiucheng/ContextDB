@@ -3,14 +3,14 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0、P1 Gate 已通过（P1：内存按 ADR 0005 分范围预算，live heap 181–189 B/incidence；远程 CI 与 nightly 审计通过）。P2（持久化与恢复）进行中，见 [`docs/gates/P1.md`](docs/gates/P1.md)、[ADR 0006](docs/adr/0006-p2-durable-log.md)。
+- **当前阶段**：P0、P1 Gate 已通过。P2（持久化与恢复）本地各 gate 层已通过，等待独立复核与远程 CI / nightly，见 [`docs/gates/P2.md`](docs/gates/P2.md)、[ADR 0006](docs/adr/0006-p2-durable-log.md)。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
 
 ## 已实现的语义
 
-Rust API 提供 `Db<Counting, NoStats>` / `Db<FullRecompute, CommitStats>`、原子事务、CURRENT、WHY / WHY_NOT、Reachable / Exact IMPACT、跨 epoch DIFF 和确定性 digest。Counting 增量维护 L0，L1/L2 使用 memo DFS；`paranoid` 在提交后与独立 oracle 全量交叉检查。`ctx` 目前仍只支持 `--help` / `--version`。
+Rust API 提供 `Db<Counting, NoStats>` / `Db<FullRecompute, CommitStats>`、原子事务、CURRENT、WHY / WHY_NOT、Reachable / Exact IMPACT、跨 epoch DIFF 和确定性 digest。Counting 增量维护 L0，L1/L2 使用 memo DFS；`paranoid` 在提交后与独立 oracle 全量交叉检查。`contextdb-store` 提供持久化：自有 op_log、blob、快照、投影与恢复；`ctx` 提供运维命令（见下文「持久化」）。
 
 - 不可变 revision 和 logical head，强制 CAS
 - 正向、无环的 AND/OR justification，精确增量 set support / unsat / witness，Pearce–Kelly 动态拓扑与 NaiveTopo 参考
@@ -62,7 +62,21 @@ cargo run --locked -p contextdb-core --example basic
 ```
 
 示例建立 source → derived 规则，撤回 source 后断言两节点翻转和 derived STALE。
-当前状态仅保存在内存；持久化与恢复属于 P2。
+## 持久化（P2）
+
+- **真相源**：`<dir>/log/` 中的自有 append-only 分段日志，一帧对应一个完整的已提交 batch，按 blake3 hash 链接。SQLite 只保存可重建的投影（`diff_log`、`head_history`、`base_history`）。
+- **何时 ack**：帧写入并 sync 之后才发布和返回。macOS 默认用 F_FULLFSYNC（`StdDisk { full_sync: true }`）；关闭 fullfsync 的模式只用于测量。sync 或写入失败即 fail-stop，store 被 poison，只能在新进程中重新打开恢复。
+- **崩溃后**：恢复到已 ack 前缀（I5）。最后一帧不完整时截断并在 open report 中报告（`--strict-tail` 则拒绝打开）；更早的帧损坏时拒绝打开，只能用 `ctx doctor --truncate-before` 显式修复，修复前会列出将丢失的 epoch 和 client_txn_id。
+- **幂等**：带 `client_txn_id` 的重试返回原始结果；`txn_status` 返回 `Committed{epoch}` 或 `NotCommitted`。
+- **不支持**：P9 之前不支持 erasure，不会删除 blob；没有签名 head，hash 链能检测损坏，但不能防止整体重写。
+
+```sh
+ctx replay <dir>        # 打开、重放并打印 open report
+ctx doctor <dir>        # hash 链、全量 oracle 校验、blob 检查；--rebuild 重建投影
+ctx snapshot <dir>      # 写输入层快照，加速冷启动
+ctx migrate <dir>       # 迁移旧格式 op_log（保留备份）
+ctx export <dir>        # 导出为 EventLog v0 JSONL
+```
 
 研究原型与 `crates/contextdb-dd` 已从主 workspace 排除。R2 的 workspace 独立保留；
 归档的 DBSP 原型需要研究 README 所述补丁源码，主项目构建不依赖它。

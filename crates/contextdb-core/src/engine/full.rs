@@ -43,7 +43,7 @@ impl Maintainer for FullRecompute {
             };
             stats.record(Work::Seed(*r));
             stats.record(Work::Pop(*r));
-            for j in &index.rules_by_concl[r.index()] {
+            for j in index.rules_by_concl.row(r.index()) {
                 stats.record(Work::Rule);
 
                 for n in index.rule_incidences(*j) {

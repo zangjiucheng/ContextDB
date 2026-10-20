@@ -14,6 +14,7 @@ use std::{
     sync::Mutex,
 };
 
+const SELF_CHECK_SAMPLE: usize = 1_000;
 /// Disk instances that hit a durability failure in this process (ADR 0006 §3 step 5).
 static POISONED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
@@ -24,6 +25,9 @@ pub enum StoreError {
     RestartRequired,
     Locked,
     FormatTooNew(u32),
+    /// An older durable format: run the explicit migration (`ctx migrate`).
+    FormatMigrationRequired(u32),
+    FormatUnsupported(u32),
     ChainBroken {
         epoch: Epoch,
         fault: FrameFault,
@@ -34,6 +38,10 @@ pub enum StoreError {
     },
     ReplayDivergence {
         epoch: Epoch,
+    },
+    /// Recovered counting state disagrees with the inputs (ADR 0006 §4 step 7).
+    SelfCheckFailed {
+        revision: RevisionId,
     },
     Io(String),
 }
@@ -101,6 +109,8 @@ pub struct OpenReport {
     pub removed_segment: Option<PathBuf>,
     pub replayed: u64,
     pub removed_temp_blobs: usize,
+    /// Revisions checked by the open-time self-check.
+    pub self_checked: usize,
     pub snapshot_epoch: Option<Epoch>,
     /// Projection watermark found at open (rows above it were rolled forward).
     pub projection_watermark: Epoch,
@@ -252,6 +262,9 @@ impl<D: Durability> Store<D> {
         if let Some(format) = scan.newer_format {
             return Err(StoreError::FormatTooNew(format));
         }
+        if let Some(format) = scan.older_format {
+            return Err(StoreError::FormatMigrationRequired(format));
+        }
         if let Some((epoch, fault)) = scan.broken {
             return Err(StoreError::ChainBroken { epoch, fault });
         }
@@ -347,6 +360,28 @@ impl<D: Durability> Store<D> {
                 size: f.end,
                 checksum: f.checksum,
             });
+        }
+        // Sampled self-check (ADR 0006 §4 step 7), seeded by the head checksum.
+        let n = store.db.revision_count();
+        if n > 0 {
+            let seed = store.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
+            let mut x = u64::from_le_bytes(seed[..8].try_into().expect("eight bytes")) | 1;
+            let sample: Vec<RevisionId> = if n <= SELF_CHECK_SAMPLE {
+                (0..n).map(|r| RevisionId(r as u32)).collect()
+            } else {
+                (0..SELF_CHECK_SAMPLE)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        RevisionId((x % n as u64) as u32)
+                    })
+                    .collect()
+            };
+            if let Err(r) = store.db.verify_counting_sample(&sample) {
+                return Err(StoreError::SelfCheckFailed { revision: r });
+            }
+            report.self_checked = sample.len();
         }
         // A last segment with a valid header but no frames continues the chain.
         if store.tail.is_none() && !store.segments.is_empty() {
@@ -666,6 +701,11 @@ impl<D: Durability> Store<D> {
     }
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
+    }
+    /// G4 fault injection: the next projection write fails mid-transaction.
+    #[doc(hidden)]
+    pub fn fail_next_projection_write(&mut self) {
+        self.proj.fail_next_write();
     }
     /// Writes a snapshot of the current inputs (ADR 0006 §6). A failure leaves
     /// the log untouched; snapshots are only an accelerator, so it does not poison.

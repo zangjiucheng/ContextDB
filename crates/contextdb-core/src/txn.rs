@@ -1,52 +1,15 @@
-use crate::{PearceKelly, StatsSink};
+use crate::{
+    InputView, PearceKelly, StatsSink,
+    stage::{Stage, rule_key},
+};
 use contextdb_model::*;
-use std::collections::{BTreeMap, BTreeSet};
-type RuleKey = (RevisionId, Vec<(RevisionId, u8)>, Vec<RevisionId>);
-fn rule_key(c: RevisionId, p: &[Incidence], refs: &[RevisionId]) -> RuleKey {
-    (
-        c,
-        p.iter().map(|p| (p.premise, p.kind as u8)).collect(),
-        refs.to_vec(),
-    )
-}
-/// Per-transaction indexes avoid quadratic validation of bulk input batches.
-pub(crate) struct Context {
-    keys: BTreeSet<String>,
-    revisions: BTreeMap<(LogicalId, ContentHash), RevisionId>,
-    rules: BTreeMap<RuleKey, RuleId>,
-    incidences: u64,
-}
-impl Context {
-    pub fn new(i: &Inputs) -> Self {
-        Self {
-            keys: i.logicals.iter().map(|l| l.key.clone()).collect(),
-            revisions: i
-                .revisions
-                .iter()
-                .enumerate()
-                .map(|(n, r)| ((r.logical, r.content), RevisionId(n as u32)))
-                .collect(),
-            rules: i
-                .rules
-                .iter()
-                .enumerate()
-                .map(|(n, j)| {
-                    (
-                        rule_key(j.conclusion, &j.premises, &j.references),
-                        RuleId(n as u32),
-                    )
-                })
-                .collect(),
-            incidences: i.rules.iter().map(|j| j.premises.len() as u64).sum(),
-        }
-    }
-}
+use std::collections::BTreeSet;
 
-struct Resolver<'a> {
-    i: &'a Inputs,
+struct Resolver<'a, 'b> {
+    i: &'a Stage<'b>,
     a: &'a Allocations,
 }
-impl Resolver<'_> {
+impl Resolver<'_, '_> {
     fn r(&self, r: RevRef) -> Result<RevRef, TxError> {
         let id = match r {
             RevRef::Existing(id) => id,
@@ -56,7 +19,7 @@ impl Resolver<'_> {
                 .get(n as usize)
                 .ok_or(TxError::UnknownRef)?,
         };
-        if id.index() >= self.i.revisions.len() {
+        if id.index() >= self.i.revision_count() {
             return Err(TxError::UnknownRef);
         }
         Ok(id.into())
@@ -69,15 +32,9 @@ impl Resolver<'_> {
                 .new_logicals
                 .get(*n as usize)
                 .ok_or(TxError::UnknownRef)?,
-            LogicalRef::Key(k) => LogicalId(
-                self.i
-                    .logicals
-                    .iter()
-                    .position(|v| v.key == *k)
-                    .ok_or(TxError::UnknownRef)? as u32,
-            ),
+            LogicalRef::Key(k) => self.i.find_key(k).ok_or(TxError::UnknownRef)?,
         };
-        if id.index() >= self.i.logicals.len() {
+        if id.index() >= self.i.logical_count() {
             return Err(TxError::UnknownRef);
         }
         Ok(id.into())
@@ -91,7 +48,7 @@ impl Resolver<'_> {
                 .get(n as usize)
                 .ok_or(TxError::UnknownRef)?,
         };
-        if id.index() >= self.i.rules.len() {
+        if id.index() >= self.i.rule_count() {
             return Err(TxError::UnknownRef);
         }
         Ok(id.into())
@@ -105,7 +62,7 @@ impl Resolver<'_> {
                 .get(n as usize)
                 .ok_or(TxError::UnknownRef)?,
         };
-        if id.index() >= self.i.artifacts.len() {
+        if id.index() >= self.i.artifact_count() {
             return Err(TxError::UnknownRef);
         }
         Ok(id.into())
@@ -220,14 +177,14 @@ fn a(a: ArtifactRef) -> ArtifactId {
     };
     a
 }
-fn kind(i: &Inputs, r: RevisionId) -> RecordKind {
-    i.logicals[i.revisions[r.index()].logical.index()].kind
+fn kind(i: &Stage, r: RevisionId) -> RecordKind {
+    i.logical_kind(i.revision_logical(r))
 }
-fn channel(i: &Inputs, op: &Op, c: Channel) -> Result<(), TxError> {
+fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
     let anchor = match op {
         Op::CreateLogical { kind, .. } => *kind == RecordKind::CodeAnchor,
         Op::AddRevision { logical, .. } | Op::SetHead { logical, .. } => {
-            i.logicals[l(logical).index()].kind == RecordKind::CodeAnchor
+            i.logical_kind(l(logical)) == RecordKind::CodeAnchor
         }
         Op::AssertBase { rev } | Op::RetractBase { rev } => {
             kind(i, r(*rev)) == RecordKind::CodeAnchor
@@ -237,8 +194,8 @@ fn channel(i: &Inputs, op: &Op, c: Channel) -> Result<(), TxError> {
     let broken = match op {
         Op::OpenArtifact { ty, target, .. } => Some((*ty, *target)),
         Op::ResolveArtifact { id } => {
-            let x = &i.artifacts[a(*id).index()];
-            Some((x.ty, x.target.into()))
+            let (ty, target, _) = i.artifact(a(*id));
+            Some((ty, target.into()))
         }
         _ => None,
     };
@@ -267,7 +224,7 @@ fn id(n: usize, kind: CapacityKind) -> Result<u32, TxError> {
 }
 
 fn canonical(
-    i: &Inputs,
+    i: &Stage,
     conclusion: RevisionId,
     incidences: &[(RevRef, EdgeKind)],
 ) -> Result<(Vec<Incidence>, Vec<RevisionId>), TxError> {
@@ -286,7 +243,7 @@ fn canonical(
     }
     let mut seen = BTreeSet::new();
     for (p, _) in &raw {
-        let logical = i.revisions[p.index()].logical;
+        let logical = i.revision_logical(*p);
         if !seen.insert(logical) {
             return Err(TxError::InvalidRule(InvalidRule::ConflictingVersions(
                 logical,
@@ -324,7 +281,7 @@ fn canonical(
 }
 #[allow(clippy::too_many_arguments)]
 fn add<S: StatsSink>(
-    i: &mut Inputs,
+    i: &mut Stage,
     ids: &mut Allocations,
     b: &Batch,
     epoch: Epoch,
@@ -334,21 +291,18 @@ fn add<S: StatsSink>(
     op_index: usize,
     topo: &mut PearceKelly,
     stats: &mut S,
-    context: &mut Context,
 ) -> Result<(), TxError> {
     let (premises, references) = canonical(i, conclusion, raw)?;
     let key = rule_key(conclusion, &premises, &references);
-    if let Some(existing) = context.rules.get(&key) {
+    if let Some(existing) = i.find_rule(&key) {
         return Err(TxError::DuplicateRule {
-            existing: *existing,
-            enabled: i.rules[existing.index()].enabled,
+            existing,
+            enabled: i.enabled(existing),
         });
     }
-    let n = id(i.rules.len(), CapacityKind::Rule)?;
-    let count = incidence_count(context.incidences, premises.len())?;
-    context.incidences = count;
-    context.rules.insert(key, RuleId(n));
-    i.rules.push(Rule {
+    id(i.rule_count(), CapacityKind::Rule)?;
+    i.incidences = incidence_count(i.incidences, premises.len())?;
+    let rule = i.push_rule(Rule {
         conclusion,
         premises,
         references,
@@ -357,12 +311,12 @@ fn add<S: StatsSink>(
         origin_epoch: epoch,
     });
     topo.sync(i, op_index, stats)?;
-    ids.new_rules.push(RuleId(n));
+    ids.new_rules.push(rule);
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply<S: StatsSink>(
-    i: &mut Inputs,
+    i: &mut Stage,
     ids: &mut Allocations,
     b: &Batch,
     op: &Op,
@@ -370,7 +324,6 @@ pub(crate) fn apply<S: StatsSink>(
     epoch: Epoch,
     topo: &mut PearceKelly,
     stats: &mut S,
-    context: &mut Context,
     blobs: &dyn BlobPresence,
 ) -> Result<(), TxError> {
     let op = Resolver { i, a: ids }.op(op)?;
@@ -398,31 +351,32 @@ pub(crate) fn apply<S: StatsSink>(
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
-            if context.keys.contains(&key) {
+            if i.find_key(&key).is_some() {
                 return Err(TxError::LogicalExists { key });
             }
-            let logical = LogicalId(id(i.logicals.len(), CapacityKind::Logical)?);
-            let revision = RevisionId(id(i.revisions.len(), CapacityKind::Revision)?);
-            context.keys.insert(key.clone());
-            context.revisions.insert((logical, content), revision);
-            i.logicals.push(Logical {
-                key,
-                kind,
-                scope_lane,
-                owner: b.principal,
-                origin_branch: b.branch,
-                origin_epoch: epoch,
-            });
-            i.heads.push(revision);
-            i.metadata.push(Metadata::default());
-            i.revisions.push(Revision {
-                logical,
-                content,
-                author: b.principal,
-                origin_branch: b.branch,
-                origin_epoch: epoch,
-            });
-            i.base.push(adopt_as_base);
+            id(i.logical_count(), CapacityKind::Logical)?;
+            let revision = RevisionId(id(i.revision_count(), CapacityKind::Revision)?);
+            let logical = i.push_logical(
+                Logical {
+                    key,
+                    kind,
+                    scope_lane,
+                    owner: b.principal,
+                    origin_branch: b.branch,
+                    origin_epoch: epoch,
+                },
+                revision,
+            );
+            i.push_revision(
+                Revision {
+                    logical,
+                    content,
+                    author: b.principal,
+                    origin_branch: b.branch,
+                    origin_epoch: epoch,
+                },
+                adopt_as_base,
+            );
             ids.new_logicals.push(logical);
             ids.new_revisions.push(revision);
         }
@@ -432,30 +386,31 @@ pub(crate) fn apply<S: StatsSink>(
             adopt_as_base,
         } => {
             let logical = l(&logical);
-            if i.logicals[logical.index()].kind == RecordKind::Evidence {
+            if i.logical_kind(logical) == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
-            let existing = context.revisions.get(&(logical, content)).copied();
-            let revision = match existing {
+            let revision = match i.find_revision(logical, &content) {
                 Some(v) => v,
                 None => {
-                    let v = RevisionId(id(i.revisions.len(), CapacityKind::Revision)?);
-                    context.revisions.insert((logical, content), v);
-                    i.revisions.push(Revision {
-                        logical,
-                        content,
-                        author: b.principal,
-                        origin_branch: b.branch,
-                        origin_epoch: epoch,
-                    });
-                    i.base.push(false);
-                    v
+                    id(i.revision_count(), CapacityKind::Revision)?;
+                    i.push_revision(
+                        Revision {
+                            logical,
+                            content,
+                            author: b.principal,
+                            origin_branch: b.branch,
+                            origin_epoch: epoch,
+                        },
+                        false,
+                    )
                 }
             };
-            i.base[revision.index()] |= adopt_as_base;
+            if adopt_as_base {
+                i.set_base(revision, true);
+            }
             ids.new_revisions.push(revision);
         }
         Op::SetHead {
@@ -466,16 +421,16 @@ pub(crate) fn apply<S: StatsSink>(
             let logical = l(&logical);
             let expected = r(expected);
             let new = r(new);
-            if i.logicals[logical.index()].kind == RecordKind::Evidence {
+            if i.logical_kind(logical) == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
             if [new, expected]
                 .iter()
-                .any(|r| i.revisions[r.index()].logical != logical)
+                .any(|r| i.revision_logical(*r) != logical)
             {
                 return Err(TxError::LogicalMismatch);
             }
-            let actual = i.heads[logical.index()];
+            let actual = i.head(logical);
             if expected != actual {
                 return Err(TxError::HeadConflict {
                     logical,
@@ -483,10 +438,10 @@ pub(crate) fn apply<S: StatsSink>(
                     actual,
                 });
             }
-            i.heads[logical.index()] = new;
+            i.set_head(logical, new);
         }
-        Op::AssertBase { rev } => i.base[r(rev).index()] = true,
-        Op::RetractBase { rev } => i.base[r(rev).index()] = false,
+        Op::AssertBase { rev } => i.set_base(r(rev), true),
+        Op::RetractBase { rev } => i.set_base(r(rev), false),
         Op::AddRule {
             conclusion,
             incidences,
@@ -502,17 +457,23 @@ pub(crate) fn apply<S: StatsSink>(
             index,
             topo,
             stats,
-            context,
         )?,
-        Op::SetRuleEnabled { rule, enabled } => i.rules[j(rule).index()].enabled = enabled,
+        Op::SetRuleEnabled { rule, enabled } => i.set_enabled(j(rule), enabled),
         Op::Rebind { rule, from, to } => {
             let rule = j(rule);
             let from = r(from);
             let to = r(to);
-            if i.revisions[from.index()].logical != i.revisions[to.index()].logical {
+            if i.revision_logical(from) != i.revision_logical(to) {
                 return Err(TxError::LogicalMismatch);
             }
-            let old = i.rules[rule.index()].clone();
+            let old = Rule {
+                conclusion: i.conclusion(rule),
+                premises: i.premises(rule).collect(),
+                references: i.references(rule).to_vec(),
+                enabled: i.enabled(rule),
+                origin_branch: b.branch,
+                origin_epoch: epoch,
+            };
             if !old.premises.iter().any(|p| p.premise == from) {
                 return Err(TxError::InvalidRebind {
                     reason: RebindReason::NotPremise,
@@ -545,9 +506,8 @@ pub(crate) fn apply<S: StatsSink>(
                 index,
                 topo,
                 stats,
-                context,
             )?;
-            i.rules[rule.index()].enabled = false;
+            i.set_enabled(rule, false);
         }
         Op::RecordValidation {
             rule,
@@ -556,13 +516,12 @@ pub(crate) fn apply<S: StatsSink>(
             validator,
         } => {
             let rule = j(rule);
-            let mut current: Vec<_> = i.rules[rule.index()]
-                .premises
-                .iter()
+            let mut current: Vec<_> = i
+                .premises(rule)
                 .filter(|p| p.kind == EdgeKind::Sem)
                 .map(|p| {
-                    let l = i.revisions[p.premise.index()].logical;
-                    (l, i.heads[l.index()])
+                    let l = i.revision_logical(p.premise);
+                    (l, i.head(l))
                 })
                 .collect();
             current.sort_unstable();
@@ -583,14 +542,14 @@ pub(crate) fn apply<S: StatsSink>(
             if policy.version != 1 {
                 return Err(TxError::InvalidPolicy);
             }
-            i.policy = policy;
+            i.policy = Some(policy);
         }
         Op::ObserverWatermark {
             scope,
             expected,
             position,
         } => {
-            let actual = i.watermarks.get(&scope).cloned();
+            let actual = i.watermark(&scope);
             if actual != expected {
                 return Err(TxError::WatermarkConflict {
                     scope,
@@ -616,7 +575,7 @@ pub(crate) fn apply<S: StatsSink>(
             dirs,
         } => {
             let logical = l(&logical);
-            let before = &i.metadata[logical.index()].dirs;
+            let before = i.metadata_of(logical).dirs;
             for path in &dirs {
                 if path.is_empty()
                     || path
@@ -636,15 +595,15 @@ pub(crate) fn apply<S: StatsSink>(
             if !before.is_empty() && dirs.is_empty() {
                 return Err(TxError::InvalidMetadata);
             }
-            i.metadata[logical.index()] = Metadata { tags, dirs };
+            i.metadata.insert(logical, Metadata { tags, dirs });
         }
         Op::OpenArtifact {
             ty,
             target,
             payload_hash,
         } => {
-            let artifact = ArtifactId(id(i.artifacts.len(), CapacityKind::Artifact)?);
-            i.artifacts.push(Artifact {
+            let artifact = ArtifactId(id(i.artifact_count(), CapacityKind::Artifact)?);
+            i.new_artifacts.push(Artifact {
                 ty,
                 target: r(target),
                 payload_hash,
@@ -657,30 +616,42 @@ pub(crate) fn apply<S: StatsSink>(
         }
         Op::ResolveArtifact { id } => {
             let id = a(id);
-            if !i.artifacts[id.index()].open {
+            if !i.artifact(id).2 {
                 return Err(TxError::ArtifactNotOpen { id });
             }
-            i.artifacts[id.index()].open = false;
+            i.set_artifact_open(id, false);
         }
     }
 
     Ok(())
 }
-pub(crate) fn final_policy(i: &Inputs, old_revisions: usize) -> Result<(), TxError> {
-    for (n, r) in i.revisions.iter().enumerate() {
-        let k = i.logicals[r.logical.index()].kind;
+/// A5 over the staged batch (ADR 0007 §5). Published revisions were valid at
+/// the previous commit, so only revisions whose base became true and new
+/// revisions can violate it, unless the policy itself changed (full scan).
+/// Candidates are scanned in ascending RevisionId order, as the full scan is.
+pub(crate) fn final_policy(i: &Stage) -> Result<(), TxError> {
+    let old_revisions = i.published_revisions();
+    let candidates: BTreeSet<RevisionId> = if i.policy.is_some() {
+        (0..i.revision_count())
+            .map(|n| RevisionId(n as u32))
+            .collect()
+    } else {
+        i.base_candidates()
+            .chain((old_revisions..i.revision_count()).map(|n| RevisionId(n as u32)))
+            .collect()
+    };
+    let policy = i.policy();
+    for r in candidates {
+        let logical = i.revision_logical(r);
+        let k = i.logical_kind(logical);
         if matches!(k, RecordKind::CodeAnchor | RecordKind::Evidence)
-            || !i.policy.require_deps.contains(&k)
+            || !policy.require_deps.contains(&k)
         {
             continue;
         }
-        let reason = if i.base[n] {
+        let reason = if i.base(r) {
             Some(PolicyReason::BaseNotAllowed)
-        } else if n >= old_revisions
-            && i.rules
-                .iter()
-                .all(|j| j.conclusion.index() != n || !j.enabled)
-        {
+        } else if r.index() >= old_revisions && !i.staged_rule_enabled(r) {
             Some(PolicyReason::NoEnabledRule)
         } else {
             None
@@ -688,7 +659,7 @@ pub(crate) fn final_policy(i: &Inputs, old_revisions: usize) -> Result<(), TxErr
         if let Some(reason) = reason {
             return Err(TxError::PolicyViolation {
                 kind: k,
-                logical: r.logical,
+                logical,
                 reason,
             });
         }

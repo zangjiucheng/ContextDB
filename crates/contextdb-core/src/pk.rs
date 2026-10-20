@@ -7,6 +7,42 @@ use std::collections::BTreeSet;
 
 const NONE: u32 = u32::MAX;
 
+/// Inputs Pearce–Kelly reads while syncing (published or staged, ADR 0007).
+pub(crate) trait PkSource: crate::InputView {
+    /// Revisions of a logical, for Sem virtual-node edges.
+    fn revisions_of(&self, l: LogicalId) -> Vec<RevisionId>;
+    /// Full inputs for the deterministic cycle diagnostic (error path only).
+    fn export(&self) -> Inputs;
+}
+impl PkSource for Inputs {
+    fn revisions_of(&self, l: LogicalId) -> Vec<RevisionId> {
+        (0..self.revisions.len())
+            .filter(|n| self.revisions[*n].logical == l)
+            .map(|n| RevisionId(n as u32))
+            .collect()
+    }
+    fn export(&self) -> Inputs {
+        self.clone()
+    }
+}
+/// Reversible change recorded while a staging journal is active.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PkUndo {
+    Edge(u32, u32),
+    Rank(u32, u32),
+    Order(u32, u32),
+    LogicalSlot(u32),
+}
+/// State to restore on rejection: lengths plus the journal position.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PkMark {
+    nodes: usize,
+    rev_node: usize,
+    logical_node: usize,
+    seen_revisions: usize,
+    seen_rules: usize,
+}
+
 /// Pearce–Kelly (2006): bounded bidirectional discovery, stable reassignment.
 /// Graph edges include disabled rules and Sem virtual logical nodes.
 /// Node handles are dense u32; revision/logical lookups are direct columns.
@@ -22,8 +58,58 @@ pub struct PearceKelly {
     rank: Vec<u32>,
     seen_revisions: usize,
     seen_rules: usize,
+    /// Active only during staging; empty otherwise.
+    journal: Option<Vec<PkUndo>>,
 }
 impl PearceKelly {
+    /// Starts journalling changes so a rejected batch can be reverted.
+    pub(crate) fn begin(&mut self) -> PkMark {
+        self.journal = Some(Vec::new());
+        PkMark {
+            nodes: self.nodes.len(),
+            rev_node: self.rev_node.len(),
+            logical_node: self.logical_node.len(),
+            seen_revisions: self.seen_revisions,
+            seen_rules: self.seen_rules,
+        }
+    }
+    pub(crate) fn commit(&mut self) {
+        self.journal = None;
+    }
+    /// Reverts every change since `begin`: edges and reorders in reverse, then
+    /// truncation of appended nodes (which reorders may have moved).
+    pub(crate) fn rollback(&mut self, mark: PkMark) {
+        for undo in self.journal.take().unwrap_or_default().into_iter().rev() {
+            match undo {
+                PkUndo::Edge(u, v) => {
+                    let (u, v) = (u as usize, v as usize);
+                    if let Ok(pos) = self.out[u].binary_search(&(v as u32)) {
+                        self.out[u].remove(pos);
+                    }
+                    if let Ok(pos) = self.incoming[v].binary_search(&(u as u32)) {
+                        self.incoming[v].remove(pos);
+                    }
+                }
+                PkUndo::Rank(n, old) => self.rank[n as usize] = old,
+                PkUndo::Order(pos, old) => self.order[pos as usize] = old,
+                PkUndo::LogicalSlot(l) => self.logical_node[l as usize] = NONE,
+            }
+        }
+        self.nodes.truncate(mark.nodes);
+        self.out.truncate(mark.nodes);
+        self.incoming.truncate(mark.nodes);
+        self.rank.truncate(mark.nodes);
+        self.order.truncate(mark.nodes);
+        self.rev_node.truncate(mark.rev_node);
+        self.logical_node.truncate(mark.logical_node);
+        self.seen_revisions = mark.seen_revisions;
+        self.seen_rules = mark.seen_rules;
+    }
+    fn record(&mut self, undo: PkUndo) {
+        if let Some(j) = &mut self.journal {
+            j.push(undo);
+        }
+    }
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::vec_bytes as b;
         b(&self.rev_node)
@@ -56,9 +142,17 @@ impl PearceKelly {
             CycleNode::Logical(l) => (&mut self.logical_node, l.index()),
         };
         if column.len() <= index {
-            column.resize(index + 1, NONE);
+            crate::memory::resize(column, index + 1, NONE);
         }
         column[index] = handle;
+        if let CycleNode::Logical(l) = n {
+            self.record(PkUndo::LogicalSlot(l.0));
+        }
+        crate::memory::grow(&mut self.nodes, 1);
+        crate::memory::grow(&mut self.out, 1);
+        crate::memory::grow(&mut self.incoming, 1);
+        crate::memory::grow(&mut self.rank, 1);
+        crate::memory::grow(&mut self.order, 1);
         self.nodes.push(n);
         self.out.push(Vec::new());
         self.incoming.push(Vec::new());
@@ -140,55 +234,61 @@ impl PearceKelly {
             let mut positions: Vec<_> = b.iter().chain(&f).map(|n| self.rank[*n]).collect();
             positions.sort_unstable();
             for (pos, n) in positions.into_iter().zip(b.into_iter().chain(f)) {
+                self.record(PkUndo::Order(pos, self.order[pos as usize]));
+                self.record(PkUndo::Rank(n as u32, self.rank[n]));
                 self.order[pos as usize] = n as u32;
                 self.rank[n] = pos;
                 stats.record(Work::PkReorder);
             }
         }
-        let pos = self.out[u].binary_search(&vh).unwrap_err();
-        self.out[u].insert(pos, vh);
-        let pos = self.incoming[v].binary_search(&uh).unwrap_err();
-        self.incoming[v].insert(pos, uh);
+        // Edge lists grow exactly while small (most nodes have few edges), 1.5x after.
+        fn insert_sorted(list: &mut Vec<u32>, x: u32) {
+            if list.len() == list.capacity() {
+                list.reserve_exact((list.len() / 2).max(1));
+            }
+            let pos = list.binary_search(&x).unwrap_err();
+            list.insert(pos, x);
+        }
+        insert_sorted(&mut self.out[u], vh);
+        insert_sorted(&mut self.incoming[v], uh);
+        self.record(PkUndo::Edge(uh, vh));
         crate::invariant_assert!(self.rank[u] < self.rank[v]);
         Ok(())
     }
     /// Only entry for structural rule insertion. Prefixes may contain new revisions.
     pub(crate) fn sync<S: StatsSink>(
         &mut self,
-        i: &Inputs,
+        i: &impl PkSource,
         op_index: usize,
         stats: &mut S,
     ) -> Result<(), TxError> {
         let result: Result<(), ()> = (|| {
-            for n in self.seen_revisions..i.revisions.len() {
+            for n in self.seen_revisions..i.revision_count() {
                 let r = RevisionId(n as u32);
                 self.node(CycleNode::Revision(r));
-                let logical = i.revisions[n].logical;
+                let logical = i.revision_logical(r);
                 if self.is_sem_logical(logical) {
                     self.edge(CycleNode::Revision(r), CycleNode::Logical(logical), stats)?;
                 }
             }
-            self.seen_revisions = i.revisions.len();
-            for rule in &i.rules[self.seen_rules..] {
-                for p in &rule.premises {
+            self.seen_revisions = i.revision_count();
+            for n in self.seen_rules..i.rule_count() {
+                let j = RuleId(n as u32);
+                let conclusion = i.conclusion(j);
+                let premises: Vec<_> = i.premises(j).collect();
+                for p in premises {
                     self.edge(
                         CycleNode::Revision(p.premise),
-                        CycleNode::Revision(rule.conclusion),
+                        CycleNode::Revision(conclusion),
                         stats,
                     )?;
                     if p.kind == EdgeKind::Sem {
-                        let logical = i.revisions[p.premise.index()].logical;
+                        let logical = i.revision_logical(p.premise);
                         if !self.is_sem_logical(logical) {
                             self.node(CycleNode::Logical(logical));
-                            for (n, r) in i
-                                .revisions
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, r)| r.logical == logical)
-                            {
-                                let _ = r;
+                            for r in i.revisions_of(logical) {
                                 self.edge(
-                                    CycleNode::Revision(RevisionId(n as u32)),
+                                    CycleNode::Revision(r),
                                     CycleNode::Logical(logical),
                                     stats,
                                 )?;
@@ -196,17 +296,17 @@ impl PearceKelly {
                         }
                         self.edge(
                             CycleNode::Logical(logical),
-                            CycleNode::Revision(rule.conclusion),
+                            CycleNode::Revision(conclusion),
                             stats,
                         )?;
                     }
                 }
             }
-            self.seen_rules = i.rules.len();
+            self.seen_rules = i.rule_count();
             Ok(())
         })();
         if result.is_err() {
-            return match NaiveTopo::build(i, op_index) {
+            return match NaiveTopo::build(&i.export(), op_index) {
                 Err(error) => Err(error),
                 Ok(_) => panic!("PK rejected a DAG"),
             };

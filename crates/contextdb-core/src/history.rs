@@ -162,13 +162,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         }
         let mut refs = BTreeSet::new();
         while let Some(r) = queue.pop_front() {
-            for j in &self.indexes.refs_by_target[r.index()] {
+            for j in self.indexes.refs_by_target.row(r.index()) {
                 refs.insert(view.conclusion(*j));
             }
-            for id in self.indexes.rules_by_premise[r.index()]
-                .iter()
-                .chain(&self.indexes.sem_by_logical[view.revision_logical(r).index()])
-            {
+            for id in self.indexes.rules_by_premise.row(r.index()).iter().chain(
+                self.indexes
+                    .sem_by_logical
+                    .row(view.revision_logical(r).index()),
+            ) {
                 let c = view.conclusion(self.indexes.inc_rule[id.index()]);
                 if seen.insert(c) {
                     queue.push_back(c);

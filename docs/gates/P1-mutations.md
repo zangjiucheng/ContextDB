@@ -57,3 +57,17 @@ paths; the scenario was extended to cover them.
 
 Final: **394 mutants, 361 caught, 33 unviable, 0 survivors, no exclusions**.
 Source hashes and the unviable list: [p1-mutation-summary.json](p1-mutation-summary.json).
+
+## P2 round (ADR 0007)
+
+The scope now includes `stage.rs`. The first full run on the incremental-commit code tested 617 mutants: 42 survived and 8 timed out, all in the new key table, adjacency, indexes and staging overlay. Fixes:
+- **Removed code.** Four overlay guards were dead or had no observable effect, and were removed (empty adjacency rows already cover them). The NoEnabledRule lookup became `staged_rule_enabled`.
+- **Bounded probes.** Key-table probes are bounded, so a broken probe panics instead of looping forever.
+- **Shared lookup.** The rehash closure reuses the key lookup used by `find`.
+- **New unit tests:** overlay reads, A5 candidates, rebuilt indexes == incremental, key-table wrap-around and growth, and adjacency overflow, compaction and equality. The accounting scenario gained Cur incidences, with updated goldens.
+
+The second full run tested 601 mutants: 535 caught, 43 unviable, 0 timeouts and 23 survivors. Every survivor was in capacity growth, which is invisible to accounting that measures a clone. The growth arithmetic became one function, `memory::growth`, tested together with exact arena reserve capacities.
+
+The rerun of `arena.rs` and `memory.rs` tested 350 mutants: 321 caught, 29 unviable, 0 survivors.
+
+Final: **0 surviving mutants, 0 timeouts, no exclusions.** See [p2-mutation-summary.json](p2-mutation-summary.json). The nightly job runs the full scope in four shards.

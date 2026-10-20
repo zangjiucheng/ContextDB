@@ -7,6 +7,7 @@ allowed_external = ["blake3", "arrayvec", "cfg-if", "constant_time_eq", "cpufeat
 
 # ADR 0006 §1 review note (not enforced by the core check): contextdb-store may use
 # rusqlite (bundled SQLite, public domain; MIT wrapper) for rebuildable projections
-# only. The op_log never goes through SQLite.
+# only. The op_log never goes through SQLite. nix (fs feature) provides plain
+# fsync(2) for the "fullfsync off" measurement mode (ADR 0006 §10).
 [store]
-reviewed_external = ["rusqlite", "blake3"]
+reviewed_external = ["rusqlite", "blake3", "nix"]

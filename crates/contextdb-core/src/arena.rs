@@ -1,6 +1,66 @@
 use contextdb_model::*;
 use std::collections::BTreeMap;
 
+const EMPTY: u32 = u32::MAX;
+fn key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    // Fixed keys: deterministic across runs and platforms of equal word size.
+    let mut h = std::hash::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+fn key_at<'a>(keys: &'a str, ends: &[u64], n: usize) -> &'a str {
+    let start = if n == 0 { 0 } else { ends[n - 1] as usize };
+    &keys[start..ends[n] as usize]
+}
+/// Open-addressing key → LogicalId table (ADR 0007). Slots hold ids only;
+/// probes compare against the key buffer. Load factor stays at most 3/4, so a
+/// probe meets an empty slot within `len + 1` steps.
+#[derive(Clone, Debug, Default)]
+struct KeyTable {
+    slots: Vec<u32>,
+    len: usize,
+}
+impl KeyTable {
+    fn find(&self, hash: u64, eq: impl Fn(u32) -> bool) -> Option<u32> {
+        if self.slots.is_empty() {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut n = hash as usize & mask;
+        for _ in 0..=self.len {
+            match self.slots[n] {
+                EMPTY => return None,
+                id if eq(id) => return Some(id),
+                _ => n = (n + 1) & mask,
+            }
+        }
+        unreachable!("load factor keeps an empty slot")
+    }
+    fn insert(&mut self, hash: u64, id: u32, rehash: impl Fn(u32) -> u64) {
+        if (self.len + 1) * 4 > self.slots.len() * 3 {
+            let old = std::mem::take(&mut self.slots);
+            self.slots = vec![EMPTY; (old.len() * 2).max(16)];
+            for id in old.into_iter().filter(|id| *id != EMPTY) {
+                self.place(rehash(id), id);
+            }
+        }
+        self.place(hash, id);
+        self.len += 1;
+    }
+    fn place(&mut self, hash: u64, id: u32) {
+        let mask = self.slots.len() - 1;
+        let mut n = hash as usize & mask;
+        for _ in 0..=self.len {
+            if self.slots[n] == EMPTY {
+                self.slots[n] = id;
+                return;
+            }
+            n = (n + 1) & mask;
+        }
+        unreachable!("load factor keeps an empty slot")
+    }
+}
 /// Append-only logical columns: keys share one buffer, scope lanes are interned,
 /// and only non-empty metadata is stored.
 #[derive(Clone, Debug, Default)]
@@ -16,12 +76,14 @@ pub(crate) struct LogicalArena {
     branch: Vec<BranchId>,
     epoch: Vec<Epoch>,
     metadata: BTreeMap<LogicalId, Metadata>,
+    keys_by_hash: KeyTable,
 }
 impl LogicalArena {
     pub fn retained_bytes(&self) -> usize {
         use crate::memory::{btree_slots, vec_bytes as b};
         use std::mem::size_of;
         b(&self.key_end)
+            + b(&self.keys_by_hash.slots)
             + self.keys.capacity()
             + b(&self.kind)
             + b(&self.scope)
@@ -51,31 +113,34 @@ impl LogicalArena {
         self.kind[l.index()]
     }
     fn key(&self, n: usize) -> &str {
-        let start = if n == 0 {
-            0
-        } else {
-            self.key_end[n - 1] as usize
-        };
-        &self.keys[start..self.key_end[n] as usize]
+        key_at(&self.keys, &self.key_end, n)
     }
     pub fn find_key(&self, key: &str) -> Option<LogicalId> {
-        (0..self.len())
-            .position(|n| self.key(n) == key)
-            .map(|n| LogicalId(n as u32))
+        self.keys_by_hash
+            .find(key_hash(key), |id| self.key(id as usize) == key)
+            .map(LogicalId)
     }
     pub fn reserve(&mut self, new: &[Logical]) {
         let n = new.len();
-        self.keys.reserve(new.iter().map(|l| l.key.len()).sum());
-        self.key_end.reserve(n);
-        self.kind.reserve(n);
-        self.scope.reserve(n);
-        self.owner.reserve(n);
-        self.branch.reserve(n);
-        self.epoch.reserve(n);
+        let bytes: usize = new.iter().map(|l| l.key.len()).sum();
+        if let Some(n) = crate::memory::growth(self.keys.len(), self.keys.capacity(), bytes) {
+            self.keys.reserve_exact(n);
+        }
+        crate::memory::grow(&mut self.key_end, n);
+        crate::memory::grow(&mut self.kind, n);
+        crate::memory::grow(&mut self.scope, n);
+        crate::memory::grow(&mut self.owner, n);
+        crate::memory::grow(&mut self.branch, n);
+        crate::memory::grow(&mut self.epoch, n);
     }
     pub fn append(&mut self, l: &Logical) {
+        let id = u32::try_from(self.kind.len()).expect("bounded logical ids");
         self.keys.push_str(&l.key);
         self.key_end.push(self.keys.len() as u64);
+        let (buffer, ends) = (&self.keys, &self.key_end);
+        self.keys_by_hash.insert(key_hash(&l.key), id, |old| {
+            key_hash(key_at(buffer, ends, old as usize))
+        });
         self.kind.push(l.kind);
         let next = u32::try_from(self.scopes.len()).expect("lanes bounded by logicals");
         let scope = *self
@@ -89,6 +154,17 @@ impl LogicalArena {
         self.owner.push(l.owner);
         self.branch.push(l.origin_branch);
         self.epoch.push(l.origin_epoch);
+    }
+    pub fn metadata(&self, l: LogicalId) -> Metadata {
+        self.metadata.get(&l).cloned().unwrap_or_default()
+    }
+    /// Sets one logical's metadata; defaults are not stored.
+    pub fn put_metadata(&mut self, l: LogicalId, m: Metadata) {
+        if m == Metadata::default() {
+            self.metadata.remove(&l);
+        } else {
+            self.metadata.insert(l, m);
+        }
     }
     pub fn set_metadata(&mut self, all: &[Metadata]) {
         self.metadata = all
@@ -145,11 +221,11 @@ impl RevisionArena {
         self.logical.len()
     }
     pub fn reserve(&mut self, n: usize) {
-        self.logical.reserve(n);
-        self.content.reserve(n);
-        self.author.reserve(n);
-        self.branch.reserve(n);
-        self.epoch.reserve(n);
+        crate::memory::grow(&mut self.logical, n);
+        crate::memory::grow(&mut self.content, n);
+        crate::memory::grow(&mut self.author, n);
+        crate::memory::grow(&mut self.branch, n);
+        crate::memory::grow(&mut self.epoch, n);
     }
     pub fn append(&mut self, r: &Revision) {
         self.logical.push(r.logical);
@@ -236,15 +312,15 @@ impl RuleArena {
         let n = new.len();
         let premises = new.iter().map(|j| j.premises.len()).sum();
         let refs = new.iter().map(|j| j.references.len()).sum();
-        self.conclusion.reserve(n);
-        self.start.reserve(n);
-        self.premise.reserve(premises);
-        self.kind.reserve(premises);
-        self.ref_start.reserve(n);
-        self.refs.reserve(refs);
-        self.enabled.reserve(n);
-        self.branch.reserve(n);
-        self.epoch.reserve(n);
+        crate::memory::grow(&mut self.conclusion, n);
+        crate::memory::grow(&mut self.start, n);
+        crate::memory::grow(&mut self.premise, premises);
+        crate::memory::grow(&mut self.kind, premises);
+        crate::memory::grow(&mut self.ref_start, n);
+        crate::memory::grow(&mut self.refs, refs);
+        crate::memory::grow(&mut self.enabled, n);
+        crate::memory::grow(&mut self.branch, n);
+        crate::memory::grow(&mut self.epoch, n);
     }
     pub fn append(&mut self, j: &Rule) {
         self.conclusion.push(j.conclusion);
@@ -283,22 +359,68 @@ impl RuleArena {
         self.epoch.truncate(n);
     }
 }
-/// Compact CSR reverse index; callers retain slice indexing by dense ID.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Reverse index: a compact CSR base plus per-row overflow for entries appended
+/// since the last compaction (ADR 0007). A row reads as base then overflow, so
+/// entries stay in ascending insertion order (canonical witnesses depend on it).
+#[derive(Clone, Debug, Default)]
 pub struct Adjacency<T> {
     offsets: Vec<u32>,
     items: Vec<T>,
     building: Vec<Vec<T>>,
+    /// Rows beyond the CSR base or with appended entries.
+    extra: BTreeMap<u32, Vec<T>>,
+    extra_len: usize,
+    rows: usize,
+}
+/// One adjacency row: CSR part followed by appended entries.
+#[derive(Clone, Copy, Debug)]
+pub struct Row<'a, T> {
+    base: &'a [T],
+    extra: &'a [T],
+}
+impl<'a, T> Row<'a, T> {
+    pub fn iter(&self) -> std::iter::Chain<std::slice::Iter<'a, T>, std::slice::Iter<'a, T>> {
+        self.base.iter().chain(self.extra.iter())
+    }
+    pub fn len(&self) -> usize {
+        self.base.len() + self.extra.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn first(&self) -> Option<&'a T> {
+        self.base.first().or(self.extra.first())
+    }
+}
+impl<'a, T> IntoIterator for Row<'a, T> {
+    type Item = &'a T;
+    type IntoIter = std::iter::Chain<std::slice::Iter<'a, T>, std::slice::Iter<'a, T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.base.iter().chain(self.extra.iter())
+    }
+}
+impl<T: PartialEq> PartialEq<Vec<T>> for Row<'_, T> {
+    fn eq(&self, other: &Vec<T>) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a == b)
+    }
 }
 impl<T> Adjacency<T> {
     fn retained_bytes(&self) -> usize {
-        crate::memory::vec_bytes(&self.offsets) + crate::memory::vec_bytes(&self.items)
+        use crate::memory::{btree_slots, vec_bytes as b};
+        b(&self.offsets)
+            + b(&self.items)
+            + btree_slots(self.extra.len())
+                * (std::mem::size_of::<u32>() + std::mem::size_of::<Vec<T>>())
+            + self.extra.values().map(b).sum::<usize>()
     }
-    fn rows(n: usize) -> Self {
+    fn with_rows(n: usize) -> Self {
         Self {
             offsets: Vec::new(),
             items: Vec::new(),
             building: (0..n).map(|_| Vec::new()).collect(),
+            extra: BTreeMap::new(),
+            extra_len: 0,
+            rows: n,
         }
     }
     fn push(&mut self, row: usize, value: T) {
@@ -316,17 +438,67 @@ impl<T> Adjacency<T> {
         }
         self.building = Vec::new();
     }
-}
-impl<T> std::ops::Index<usize> for Adjacency<T> {
-    type Output = [T];
-    fn index(&self, n: usize) -> &[T] {
-        &self.items[self.offsets[n] as usize..self.offsets[n + 1] as usize]
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+    pub fn row(&self, n: usize) -> Row<'_, T> {
+        let base = if n + 1 < self.offsets.len() {
+            &self.items[self.offsets[n] as usize..self.offsets[n + 1] as usize]
+        } else {
+            &[]
+        };
+        let extra = if self.extra.is_empty() {
+            &[][..]
+        } else {
+            self.extra.get(&(n as u32)).map_or(&[][..], Vec::as_slice)
+        };
+        Row { base, extra }
+    }
+    /// Grows the row count; new rows start empty.
+    pub(crate) fn ensure_rows(&mut self, n: usize) {
+        self.rows = self.rows.max(n);
+    }
+    /// Appends after every existing entry of `row`.
+    pub(crate) fn append(&mut self, row: usize, value: T) {
+        debug_assert!(row < self.rows);
+        self.extra.entry(row as u32).or_default().push(value);
+        self.extra_len += 1;
     }
 }
+impl<T: Clone> Adjacency<T> {
+    /// Folds overflow into the CSR once it exceeds a quarter of the base:
+    /// amortized O(1) per appended entry.
+    pub(crate) fn maybe_compact(&mut self) {
+        if self.extra_len <= (self.items.len() / 4).max(1024) {
+            return;
+        }
+        let mut items = Vec::with_capacity(self.items.len() + self.extra_len);
+        let mut offsets = Vec::with_capacity(self.rows + 1);
+        offsets.push(0);
+        for n in 0..self.rows {
+            items.extend(self.row(n).iter().cloned());
+            offsets.push(u32::try_from(items.len()).expect("bounded index"));
+        }
+        self.items = items;
+        self.offsets = offsets;
+        self.extra = BTreeMap::new();
+        self.extra_len = 0;
+    }
+}
+impl<T: PartialEq> PartialEq for Adjacency<T> {
+    /// Logical equality: same rows with the same entries, however stored.
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows
+            && (0..self.rows).all(|n| {
+                let (a, b) = (self.row(n), other.row(n));
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            })
+    }
+}
+impl<T: Eq> Eq for Adjacency<T> {}
 impl<T: PartialEq> PartialEq<Vec<Vec<T>>> for Adjacency<T> {
     fn eq(&self, other: &Vec<Vec<T>>) -> bool {
-        self.offsets.len() == other.len() + 1
-            && other.iter().enumerate().all(|(n, row)| self[n] == *row)
+        self.rows == other.len() && other.iter().enumerate().all(|(n, row)| self.row(n) == *row)
     }
 }
 /// Stable incidence IDs enumerate CSR premises only; Ref never enters support indexes.
@@ -338,6 +510,8 @@ pub struct Indexes {
     pub pin_by_rev: Adjacency<IncId>,
     pub sem_by_logical: Adjacency<IncId>,
     pub refs_by_target: Adjacency<RuleId>,
+    /// Revisions of each logical in creation order (Sem virtual-node edges).
+    pub revisions_by_logical: Adjacency<RevisionId>,
     pub(crate) inc_rule: Vec<RuleId>,
     // rule_start[j]..rule_start[j + 1] are rule j's incidence IDs.
     pub(crate) rule_start: Vec<u32>,
@@ -359,20 +533,26 @@ impl Indexes {
             + self.pin_by_rev.retained_bytes()
             + self.sem_by_logical.retained_bytes()
             + self.refs_by_target.retained_bytes()
+            + self.revisions_by_logical.retained_bytes()
             + b(&self.inc_rule)
             + b(&self.rule_start)
     }
     pub(crate) fn build(i: &Inputs) -> Self {
         let mut out = Self {
-            rules_by_premise: Adjacency::rows(i.revisions.len()),
-            rules_by_concl: Adjacency::rows(i.revisions.len()),
-            exact_by_rev: Adjacency::rows(i.revisions.len()),
-            pin_by_rev: Adjacency::rows(i.revisions.len()),
-            sem_by_logical: Adjacency::rows(i.logicals.len()),
-            refs_by_target: Adjacency::rows(i.revisions.len()),
+            rules_by_premise: Adjacency::with_rows(i.revisions.len()),
+            rules_by_concl: Adjacency::with_rows(i.revisions.len()),
+            exact_by_rev: Adjacency::with_rows(i.revisions.len()),
+            pin_by_rev: Adjacency::with_rows(i.revisions.len()),
+            sem_by_logical: Adjacency::with_rows(i.logicals.len()),
+            refs_by_target: Adjacency::with_rows(i.revisions.len()),
+            revisions_by_logical: Adjacency::with_rows(i.logicals.len()),
             inc_rule: Vec::with_capacity(i.rules.iter().map(|j| j.premises.len()).sum()),
             rule_start: Vec::with_capacity(i.rules.len() + 1),
         };
+        for (n, r) in i.revisions.iter().enumerate() {
+            out.revisions_by_logical
+                .push(r.logical.index(), RevisionId(n as u32));
+        }
         let mut inc = 0;
         for (n, j) in i.rules.iter().enumerate() {
             let id = RuleId(n as u32);
@@ -405,6 +585,290 @@ impl Indexes {
         out.pin_by_rev.seal();
         out.sem_by_logical.seal();
         out.refs_by_target.seal();
+        out.revisions_by_logical.seal();
         out
+    }
+    /// Incremental counterpart of `build` for appended inputs (ADR 0007):
+    /// revisions from `old_revisions` and rules from `old_rules` onward.
+    pub(crate) fn append(
+        &mut self,
+        i: &impl crate::InputView,
+        old_revisions: usize,
+        old_rules: usize,
+    ) {
+        let (revisions, logicals) = (i.revision_count(), i.logical_count());
+        for a in [
+            &mut self.rules_by_premise,
+            &mut self.exact_by_rev,
+            &mut self.pin_by_rev,
+        ] {
+            a.ensure_rows(revisions);
+        }
+        self.rules_by_concl.ensure_rows(revisions);
+        self.refs_by_target.ensure_rows(revisions);
+        self.sem_by_logical.ensure_rows(logicals);
+        self.revisions_by_logical.ensure_rows(logicals);
+        for n in old_revisions..revisions {
+            let r = RevisionId(n as u32);
+            self.revisions_by_logical
+                .append(i.revision_logical(r).index(), r);
+        }
+        if self.rule_start.is_empty() {
+            self.rule_start.push(0);
+        }
+        let new_rules = i.rule_count().saturating_sub(old_rules);
+        crate::memory::grow(&mut self.rule_start, new_rules);
+        crate::memory::grow(
+            &mut self.inc_rule,
+            (old_rules..i.rule_count())
+                .map(|n| i.premises(RuleId(n as u32)).count())
+                .sum(),
+        );
+        for n in old_rules..i.rule_count() {
+            let j = RuleId(n as u32);
+            self.rules_by_concl.append(i.conclusion(j).index(), j);
+            for p in i.premises(j) {
+                let id = IncId(u32::try_from(self.inc_rule.len()).expect("bounded index"));
+                self.inc_rule.push(j);
+                self.rules_by_premise.append(p.premise.index(), id);
+                match p.kind {
+                    EdgeKind::Cur => self.exact_by_rev.append(p.premise.index(), id),
+                    EdgeKind::Pin => self.pin_by_rev.append(p.premise.index(), id),
+                    EdgeKind::Sem => self
+                        .sem_by_logical
+                        .append(i.revision_logical(p.premise).index(), id),
+                    EdgeKind::Ref => unreachable!("canonical premises"),
+                }
+            }
+            for r in i.references(j) {
+                self.refs_by_target.append(r.index(), j);
+            }
+            self.rule_start
+                .push(u32::try_from(self.inc_rule.len()).expect("bounded index"));
+        }
+        self.rules_by_premise.maybe_compact();
+        self.rules_by_concl.maybe_compact();
+        self.exact_by_rev.maybe_compact();
+        self.pin_by_rev.maybe_compact();
+        self.sem_by_logical.maybe_compact();
+        self.refs_by_target.maybe_compact();
+        self.revisions_by_logical.maybe_compact();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    #[test]
+    fn key_table_probes_wrap_and_grow_at_three_quarters() {
+        // Pairs of ids share a home slot near the end, so probes wrap to slot 0.
+        let hash = |id: u32| 13 + u64::from(id / 2);
+        let mut t = KeyTable::default();
+        assert_eq!(t.find(0, |_| true), None);
+        for id in 0..12 {
+            t.insert(hash(id), id, hash);
+        }
+        assert_eq!(t.slots.len(), 16, "12 of 16 slots is exactly 3/4");
+        for id in 0..12 {
+            assert_eq!(t.find(hash(id), |x| x == id), Some(id));
+        }
+        assert_eq!(t.find(15, |_| false), None);
+        t.insert(hash(12), 12, hash);
+        assert_eq!((t.slots.len(), t.len), (32, 13));
+        for id in 0..13 {
+            assert_eq!(t.find(hash(id), |x| x == id), Some(id));
+        }
+        assert_ne!(key_hash("a"), key_hash("b"));
+        assert_eq!(key_hash("a"), key_hash("a"));
+    }
+    fn logical(key: String) -> Logical {
+        Logical {
+            key,
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            owner: PrincipalId::default(),
+            origin_branch: BranchId::default(),
+            origin_epoch: Epoch(0),
+        }
+    }
+    #[test]
+    fn logical_arena_finds_keys_across_rehashes_and_keeps_sparse_metadata() {
+        let mut a = LogicalArena::default();
+        let keys: Vec<String> = (0..100).map(|n| format!("k{n}")).collect();
+        for k in &keys {
+            a.append(&logical(k.clone()));
+        }
+        for (n, k) in keys.iter().enumerate() {
+            assert_eq!(a.find_key(k), Some(LogicalId(n as u32)));
+        }
+        assert_eq!(a.find_key("k100"), None);
+        // Distinct keys spread over the table instead of sharing one probe chain.
+        let homes: BTreeSet<usize> = keys
+            .iter()
+            .map(|k| key_hash(k) as usize & (a.keys_by_hash.slots.len() - 1))
+            .collect();
+        assert!(homes.len() > keys.len() / 2);
+        let tagged = Metadata {
+            tags: ["t".to_owned()].into(),
+            dirs: Default::default(),
+        };
+        let mut all = vec![Metadata::default(); 100];
+        all[3] = tagged.clone();
+        a.set_metadata(&all);
+        assert_eq!(a.metadata.len(), 1, "defaults are not stored");
+        assert_eq!(a.metadata(LogicalId(3)), tagged);
+        assert_eq!(a.export().1, all);
+    }
+    #[test]
+    fn revision_arena_returns_content() {
+        let mut a = RevisionArena::default();
+        a.append(&Revision {
+            logical: LogicalId(0),
+            content: [7; 32],
+            author: PrincipalId::default(),
+            origin_branch: BranchId::default(),
+            origin_epoch: Epoch(1),
+        });
+        assert_eq!(a.content(RevisionId(0)), [7; 32]);
+    }
+    fn sealed(rows: &[&[u32]]) -> Adjacency<u32> {
+        let mut a = Adjacency::with_rows(rows.len());
+        for (n, row) in rows.iter().enumerate() {
+            for v in *row {
+                a.push(n, *v);
+            }
+        }
+        a.seal();
+        a
+    }
+    #[test]
+    fn adjacency_rows_combine_csr_and_overflow() {
+        let mut a = sealed(&[&[1, 2], &[], &[3]]);
+        assert_eq!(a.rows(), 3);
+        assert_eq!(a, vec![vec![1, 2], vec![], vec![3]]);
+        assert!(a.row(1).is_empty() && !a.row(0).is_empty());
+        assert_eq!(a.row(0).first(), Some(&1));
+        assert_eq!(a.row(1).first(), None);
+        a.append(1, 9);
+        assert_eq!(a.row(1).first(), Some(&9), "overflow-only row");
+        a.ensure_rows(5);
+        assert_eq!(a.rows(), 5);
+        assert!(a.row(3).is_empty() && a.row(4).is_empty());
+        a.append(4, 8);
+        assert_eq!(a, vec![vec![1, 2], vec![9], vec![3], vec![], vec![8]]);
+    }
+    #[test]
+    fn adjacency_equality_is_logical_and_strict() {
+        let a = sealed(&[&[1, 2], &[3]]);
+        let mut b = sealed(&[&[1], &[]]);
+        b.append(0, 2);
+        b.append(1, 3);
+        assert_eq!(a, b, "same rows, different storage");
+        assert_ne!(a, sealed(&[&[1, 2], &[3], &[]]), "row count");
+        assert_ne!(a, sealed(&[&[1, 2], &[3, 4]]), "row length");
+        assert_ne!(a, sealed(&[&[1, 2], &[4]]), "entries");
+        assert_ne!(a, sealed(&[&[2, 1], &[3]]), "order");
+    }
+    #[test]
+    fn adjacency_compacts_past_a_quarter_of_the_base() {
+        let base: Vec<u32> = (0..8192).collect();
+        let fresh = || sealed(&[&base, &[]]);
+        // Threshold: max(8192 / 4, 1024) = 2048 overflow entries.
+        let mut a = fresh();
+        for v in 0..2048 {
+            a.append(1, v);
+        }
+        a.maybe_compact();
+        assert_eq!(a.extra_len, 2048, "at the threshold: no compaction");
+        a.append(1, 2048);
+        a.maybe_compact();
+        assert_eq!((a.extra_len, a.items.len()), (0, 8192 + 2049));
+        let mut expected = fresh();
+        for v in 0..2049 {
+            expected.append(1, v);
+        }
+        assert_eq!(a, expected);
+        // Small bases use the 1024 floor.
+        let mut small = sealed(&[&[1]]);
+        for v in 0..1025 {
+            small.append(0, v);
+        }
+        small.maybe_compact();
+        assert_eq!(small.extra_len, 0);
+    }
+}
+#[cfg(test)]
+mod reserve_tests {
+    use super::*;
+    fn logical(key: &str) -> Logical {
+        Logical {
+            key: key.into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            owner: PrincipalId::default(),
+            origin_branch: BranchId::default(),
+            origin_epoch: Epoch(0),
+        }
+    }
+    #[test]
+    fn arenas_reserve_with_the_shared_growth_policy() {
+        let mut a = LogicalArena::default();
+        let first: Vec<_> = ["abc", "de", "f"].map(logical).into();
+        a.reserve(&first);
+        assert_eq!((a.keys.capacity(), a.key_end.capacity()), (6, 3));
+        assert_eq!(
+            [a.kind.capacity(), a.scope.capacity(), a.owner.capacity()],
+            [3, 3, 3]
+        );
+        assert_eq!([a.branch.capacity(), a.epoch.capacity()], [3, 3]);
+        for l in &first {
+            a.append(l);
+        }
+        // 6 + 1 key bytes: grows to max(7, 6 + 6 / 4) = 7.
+        a.reserve(&[logical("g")]);
+        assert_eq!(a.keys.capacity(), 7);
+        let mut r = RevisionArena::default();
+        r.reserve(4);
+        assert_eq!(
+            [
+                r.logical.capacity(),
+                r.content.capacity(),
+                r.author.capacity(),
+                r.branch.capacity(),
+                r.epoch.capacity()
+            ],
+            [4; 5]
+        );
+        let mut j = RuleArena::default();
+        let rule = Rule {
+            conclusion: RevisionId(1),
+            premises: vec![
+                Incidence {
+                    premise: RevisionId(0),
+                    kind: EdgeKind::Pin,
+                };
+                3
+            ],
+            references: vec![RevisionId(2); 2],
+            enabled: true,
+            origin_branch: BranchId::default(),
+            origin_epoch: Epoch(0),
+        };
+        j.reserve(&[rule.clone(), rule]);
+        assert_eq!(
+            [
+                j.conclusion.capacity(),
+                j.start.capacity(),
+                j.ref_start.capacity(),
+                j.enabled.capacity(),
+                j.branch.capacity(),
+                j.epoch.capacity()
+            ],
+            [2; 6]
+        );
+        assert_eq!(
+            [j.premise.capacity(), j.kind.capacity(), j.refs.capacity()],
+            [6, 6, 4]
+        );
     }
 }
