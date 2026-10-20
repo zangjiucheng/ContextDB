@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.4.3 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.5.3 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -388,7 +388,7 @@ commit(batch):
 4. 无前置条件的先读后写编辑（必须 CAS）。
 5. 无 fencing（epoch / token）的租约作为写入互斥。
 6. 丢失任一来源即硬删派生项（必须 OR 计数，失去全部支持时标记而不删除）。
-7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。
+7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集与证书这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
 8. mtime 漂移扫描作为锚点或失效信号。
 9. 可被调用方忽略错误的“否决 hook”（否决必须在提交事务内生效）。
 10. 嵌入 Dolt / prolly tree 作为内核存储。
@@ -526,12 +526,12 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `ctxd`：单实例租约（pid + start-time 栅栏 + flock 能力探测；拒绝 NFS/SMB/WSL 数据目录）、单 writer commit actor、epoch-pinned snapshot readers（chunked persistent vector / `Arc` COW，读者无锁）。
 - IPC：Unix domain socket，长度前缀帧，版本化协议。
 - **transport channels**：`agent` / `observer` / `admin`；channel 与 principal 由 transport 层绑定（socket 路径与 peer credential），请求参数不能改变身份；`observer` 通道是 CodeAnchor 唯一写入入口（SD18.3）。
-- 会话：`sessions` 表；session 钉住 repo / branch / git HEAD；append-only `read_ledger(session, logical, rev, layer, epoch, required)`。
+- 会话：自有 append-only session log（ADR 0008；`sessions`、`read_ledger`、`certificates` 表都是它的可重建投影）；session 钉住 repo / branch / git HEAD；`read_ledger(session, logical, rev, layer, epoch, required)` 只追加。
 - Certificate：由 read_ledger 生成；`validate_certificate` 全部结果与优先级见 §6.4。
 - 强制 CAS：所有 agent 写入必须带 `expected_head` 或 `create_only`；deps 只能引用本会话证书中的 handle 或显式 `logical@rev`（证据准入）。
 - 增量 L1/L2 列（§3.4 Phase 3b，替换 P1 的按需计算；与 oracle 精确比较）。
 - 基础检索投影：精确 ID / 前缀 / FTS5。
-- `ctx-mcp` 工具：`ctx_recall`（基础）、`ctx_read`、`ctx_record`、`ctx_supersede`、`ctx_why`、`ctx_why_not`、`ctx_impact`、`ctx_check`、`ctx_validate`（人工）。
+- `ctx-mcp` 工具：`ctx_recall`（基础）、`ctx_read`、`ctx_record`、`ctx_supersede`、`ctx_why`、`ctx_why_not`、`ctx_impact`、`ctx_check`；人工验证在 P3 只经 admin 通道的 `ctx validate`（CLI）进入，agent 无法提交 RecordValidation（§3.5 #14，ADR 0008 §0.4）。
 
 **Gate P3**
 - G2：T06b（引擎）、T06d-sem、T07e、T08（并发变体）、T12（并发）、T15/b/c/d（增量）、T16、T16b-cert、T21、T32、T36、T37、T46a（agent 通道写 CodeAnchor 被拒）、T62（引擎版）、T65（certificate 判定优先级）。
@@ -731,7 +731,7 @@ db.diff(epoch_a, epoch_b)?;
 db.certify(items, principal)?; db.validate_certificate(&cert, live_pos)?;
 ```
 
-Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不满足即 fail-closed）。`Snapshot(e)` 以 logical 为目标，返回 epoch e 时的 head 及其在 e 的 NodeStatus；`Historical(e)` 以 revision 为目标，返回该 revision 在 e 的 NodeStatus（不论当时是否为 head）及 payload 状态。目标在 e 尚不存在 → `UnknownRef`。payload 不版本化，其状态按读取时刻报告。同一 (目标, mode) 的结果按 Wire 编码逐字节稳定（T13），无论来自内存历史、投影或日志重放（ADR 0006 §8）。
+Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不满足即 fail-closed）。`Snapshot(e)` 以 logical 为目标，返回 epoch e 时的 head 及其在 e 的 NodeStatus；`Historical(e)` 以 revision 为目标，返回该 revision 在 e 的 NodeStatus（不论当时是否为 head）及 payload 状态。目标在 e 尚不存在 → `UnknownRef`。`CertifiedCurrent` 以 logical 为目标，仅当当前 head 的 SD13 汇总为 CERTIFIED 时返回 head、NodeStatus 与 payload，否则返回 `NotCertified{logical, summary}` 且不输出 payload；按 handle 或 `logical@rev` 指定的 revision 若已不是 head，同样 `NotCertified`（T07e）。payload 不版本化，其状态按读取时刻报告。同一 (目标, mode) 的结果按 Wire 编码逐字节稳定（T13），无论来自内存历史、投影或日志重放（ADR 0006 §8）。
 
 **Op 全集**（`contextdb-model`，P0 起冻结，后续阶段只追加）：`CreateLogical{key, kind, scope_lane, content, adopt_as_base}`、`AddRevision{logical, content, adopt_as_base}`、`SetHead{logical, expected, new}`、`AssertBase{rev}`、`RetractBase{rev}`、`AddRule{conclusion, incidences, enabled}`、`SetRuleEnabled{rule, enabled}`、`Rebind{rule, from, to}`、`RecordValidation{rule, curvec_seen, verdict, validator}`、`SetPolicy{policy}`、`ObserverWatermark{scope, expected, position}`、`SetMetadata{logical, tags, dirs}`、`OpenArtifact{type, target, payload_hash}`、`ResolveArtifact{id}`。**没有**修改 revision payload 的 Op。
 
@@ -777,7 +777,14 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `MissingBlob{content}` | P2 起 payload 未先写入 store | 同名 |
 | `CurvecMoved{rule, seen, current}` | RecordValidation CAS（SD10） | 同名 |
 | `UnknownRef` | 引用不存在的 id / handle | `InvalidArgument` |
-| `InvalidDep` | deps 引用非本会话证书 handle 且非显式 `logical@rev`（P3） | 同名 |
+| `InvalidDep` | deps 引用非本会话证书中 required 条目的 handle，且不是显式 `logical@rev`（P3；daemon 在构造 batch 之前检查） | 同名 |
+| `NotCertified{logical, summary}` | `CertifiedCurrent` 读取的目标不是 CERTIFIED head（P3，读错误） | 同名 |
+| `OutcomeUnknown` | 组提交在 durable 之前失败或进程 poison；客户端重启后用 `txn_status` 查询（P3，daemon 错误） | 同名 |
+| `Busy` / `Timeout` | 写队列已满；请求超时（P3，daemon 错误） | 同名 |
+| `InvalidArgument` | 工具参数缺失或互斥（如 `expected_head` 与 `create_only` 都未给出）（P3，daemon 错误） | 同名 |
+| `Poisoned` / `RestartRequired` / `Locked` | 持久化失败后 fail-stop；同进程重开；另一实例持有锁（P2 store 错误） | 同名 |
+| `UnsupportedFilesystem{fs}` / `ProtocolVersion{supported}` | 数据目录位于网络或虚拟文件系统；IPC 协议版本不支持（P3，daemon 错误） | 同名 |
+| `Unavailable` | daemon 不可达（客户端侧） | 同名 |
 | `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}` | §2.5 A5（batch 末尾检查） | 同名 |
 | `InvalidMetadata` | §6.1 输入契约 10 | `InvalidArgument` |
 | `InvalidRebind{reason: NotPremise \| SameRevision}` | SD9 前置条件（不同 logical 为 `LogicalMismatch`） | 同名 |
@@ -797,13 +804,13 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 
 | 工具 | 签名要点 | 阶段 |
 |---|---|---|
-| `ctx_recall` | `(query, scope{lane, dir?, kinds?}, budget_tokens?, mode: certified\|advisory)` → `{items:[{handle, logical, rev, status, abstract, anchors}], withheld:[...], cert_id}` | P3 基础 / P8 hybrid + packing |
-| `ctx_read` | `(handle \| logical@rev, level: abstract\|outline\|full)`；记入读集（certified 模式 required=true，advisory 模式 required=false） | P3 |
+| `ctx_recall` | `(query, scope{lane, dir?, kinds?}, budget_tokens?, mode: certified\|advisory)` → `{items:[{handle, logical, rev, status, abstract, anchors}], withheld:[...], cert_id}`；advisory 模式不签发证书，返回的 `cert_id` 与 handle 为空 | P3 基础 / P8 hybrid + packing |
+| `ctx_read` | `(handle \| logical@rev, level: abstract\|outline\|full, mode: certified\|advisory)`；certified 模式按 `CertifiedCurrent`（§6.1）读取，成功记 required=true，`NotCertified` 记 required=false 且不返回 payload；advisory 模式记 required=false | P3 |
 | `ctx_record` | `(kind, body, anchors?, deps:[{target, kind}], expected_head \| create_only（必填）, adopt_as_base（必填）)` → `{rev, epoch}` 或 §6.2 错误 | P3 |
-| `ctx_supersede` | `(logical, body, expected_head, carry_rules: rebind\|none, reason)` | P3 |
+| `ctx_supersede` | `(logical, body, expected_head, adopt_as_base, carry_rules: copy\|none, reason)`；`copy` 只把旧 head **自己的**支撑规则（结论为旧 head 的 enabled 规则）复制到新 revision，**从不**改写依赖旧 revision 的规则（§3.5 #2） | P3 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | SD15；impact 支持 hypothetical batch | P3 |
-| `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}` | P3 / P4 / P5a（按路径） |
-| `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3 人工 / P7 worker |
+| `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径） |
+| `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker |
 | `ctx_txn_status` | `(client_txn_id)` → `Committed{epoch, result} \| NotCommitted`；所有写工具都接受可选 `client_txn_id` | P3 |
 | `ctx_commit` | 多 head 原子 + `expect_cert_valid` | P6 |
 | `ctx_branch` / `ctx_what_if` / `ctx_merge` | | P6 |
@@ -816,18 +823,23 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 ```
 Certificate {
   cert_id, session_id, principal, branch, issued_epoch,
+  log_checksum_at_issue,                           // op_log 在 issued_epoch 的帧校验和（P3）
   code_commit, watermarks: [(scope, position)],
-  entries: [{logical, rev, required: bool, via: Head | Alternative}],
+  entries: [{logical, rev, required: bool, via: Head | Alternative, since_epoch}],   // since_epoch：首次覆盖该条目的证书的 issued_epoch（strict 区间起点）
   vector:  sorted[(logical, effective_rev)],      // items ∪ L2 witness 闭包中 Cur/Pin 前提 ∪ Sem 生效 head
   strict_no_aba: bool
 }
 ```
 
-**签发**：`required=true` 的条目必须为 CERTIFIED，否则签发失败并返回该条目的汇总状态；advisory 读以 `required=false` 记录，不影响判定。向量中同一 logical 出现两个生效 revision → `Ambiguous`（签发失败）。
+**签发**：`required=true` 的条目必须为 CERTIFIED，否则签发失败并返回该条目的汇总状态；advisory 读以 `required=false` 记录，不影响判定。向量中同一 logical 出现两个生效 revision → `Ambiguous`（签发失败）。没有 required 条目 → 签发失败 `Empty`；`Empty` 永不视为通过（I6）。P3 有两类证书（ADR 0008 §6.2）：
+- **recall 证书**：由 certified 模式的 `ctx_recall` 签发，条目即本次返回的 items，handle 来自它；advisory recall 不签发证书。
+- **session 证书**：由 `ctx_check` 签发，条目是会话读集中仍然有效的 required 条目。同一 logical 后来读到的另一 revision 会取代先前条目，失败的 certified 读按 advisory 记录。
 
-**校验** `validate_certificate(c, live_pos)` 是当前状态（c.branch 的最新 epoch）与 `live_pos` 的纯函数，按以下步骤计算：
+**校验** `validate_certificate(c, live_pos)` 是以下输入的纯函数：当前状态（c.branch 的最新 epoch）、自各条目 `since_epoch` 起的提交历史（head 移动、base 翻转、watermark 推进）、op_log 校验和链、`live_pos`。按以下步骤计算：
 
-1. **strict 检查**（仅 `strict_no_aba=true`）：自 `issued_epoch` 起，若 vector 中任一 logical 的 head 移动过（含移走再移回）、vector 中任一 revision 的 base 翻转过、或闭包内任一 scope 的 watermark 推进过 → 结果为 `Invalid{StrictChange}`；**不进入**第 4 步的重新认证，因此替代支持路径不能绕过 strict。
+0. **日志关联**（P3）：若 `issued_epoch` 超过当前 op_log 尾部，或 op_log 在 `issued_epoch` 的帧校验和 ≠ `log_checksum_at_issue`（已 ack 的帧丢失或经 doctor 截断后 ID 被重新分配）→ `Invalid{LogMismatch}`，与 `Invalid` 同一优先级，并且不进入后续步骤。
+
+1. **strict 检查**（仅 `strict_no_aba=true`）：自各条目的 `since_epoch` 起（被多个条目的闭包共享的 vector 项取其中最早的 `since_epoch`），若 vector 中任一 logical 的 head 移动过（含移走再移回）、vector 中任一 revision 的 base 翻转过、或闭包内任一 scope 的 watermark 推进过 → 结果为 `Invalid{StrictChange}`；**不进入**第 4 步的重新认证，因此替代支持路径不能绕过 strict。
 2. **逐条映射**：对每个 `required=true` 条目，按 SD13 计算其**当前** logical head 的汇总状态，再按下表映射。该表覆盖 SD13 的全部状态（totality 由 PROP11 检查）：
 
    | 当前汇总 | 条目结果 |
@@ -899,7 +911,7 @@ handoffs(id, owner, state, cert_id, summary)
 ```
 
 - **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围（blobs、快照中的 payload 缓存、git 镜像、导出物）在 P9 定义；镜像与导出物需要重新生成。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
-- 内存内核是 op_log 的物化视图；除 op_log 与 blobs 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。
+- 内存内核是 op_log 的物化视图；除 op_log、blobs 与 session log 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。`sessions`、`read_ledger`、`certificates` 是 session log（ADR 0008 §4）的投影；session log 不参与内核状态。
 - EventLog（JSONL / bincode，带 version）是 op_log 的可移植导出；研究 track 的所有 baseline 消费同一份 EventLog。
 - 格式变更必须版本化并提供迁移，迁移有测试（T68）。
 
@@ -976,7 +988,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T31 | P1 | Hu-Motik-Horrocks 2018 Example 3 的 DAG 改写版，比较计数器 |
 | T32 | P3 | retry escape：CAS 冲突后知情覆盖——新 revision 的 justification 必须引用实际读到的 head（文档化限制） |
 | T33 | P2 | op_log hash 链被篡改 → doctor 检测并拒绝启动 |
-| T34 | P2 | op_log 尾部截断/损坏（最后一段的最后一帧或其后字节校验失败，含撕裂、零填充、乱序页）→ 截断到最后完整记录并报告；更早的帧校验失败 → fail-closed（T33），仅 `ctx doctor --truncate-before` 经确认后截断并列出丢失的已 ack epoch（ADR 0006） |
+| T34 | P2/P3 | op_log 尾部截断/损坏（最后一段的最后一帧或其后字节校验失败，含撕裂、零填充、乱序页）→ 截断到最后完整记录并报告；P3 组提交起（op_log 格式 2，ADR 0008 §3.2），可截断的单位是**最后一组**：组内首个崩溃类故障之后不存在更大 seq 的有效组时，从该组首帧截断，否则 fail-closed；session log 使用同一规则；更早的帧校验失败 → fail-closed（T33），仅 `ctx doctor --truncate-before` 经确认后截断并列出丢失的已 ack epoch（ADR 0006） |
 | T35 | P2 | 同内容 payload 幂等（同 blake3 不重复存储） |
 | T36 | P3 | deps 引用非本会话证书 handle → `InvalidDep` |
 | T37 | P3 | daemon 第二实例被拒 |
@@ -1012,7 +1024,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T59 | P9 | shred 后 payload 不可读、拓扑与状态不变、WHY 不泄露内容 |
 | T60 | P9 | 跨 lane 引用的授权检查 |
 | T61 | P10 | lazy 节点 STRICT 读不返回缓存 CERTIFIED |
-| T62 | P0/P3 | P0（oracle 版）：两个独立 InputModel 共用一个 epoch 计数器；oracle 的纯函数 `cert_verdict(vector, inputs, live_pos)` 签名不含 epoch，对 epoch 不同但 vector 与输入相同的两个状态给出相同判定。P3（引擎版）：跨 branch 无关提交后证书仍 Valid |
+| T62 | P0/P3 | P0（oracle 版）：两个独立 InputModel 共用一个 epoch 计数器；oracle 的纯函数 `cert_verdict(vector, inputs, live_pos)` 签名不含 epoch，对 epoch 不同但 vector 与输入相同的两个状态给出相同判定。P3（引擎版）：同 branch 的无关提交推进 epoch 后证书仍 Valid，且 `validate` 的签名不含 epoch 参数（只以 issued_epoch 作 strict 区间下界）；跨 branch 部分随多 branch 在 P6 补齐 |
 | T63 | P0 | WHY 返回全部 active 规则，witness 与 oracle 一致，Ref 单列为 non-supporting |
 | T64 | P0 | SetHead 后旧 revision 的 base 不变 |
 | T65 | P3 | certificate 判定（§6.4）：Invalid 与 Unknown 同时成立 → Invalid；Pending 与 Unknown → Unknown；required 条目 CONFLICTED → Conflicted；PENDING(StructuralUnknown) → Pending；Sem head 移动并重新验证后 → ValidRecertified；strict 下 head 移动后虽有替代支持 → Invalid{StrictChange}（不得为 ValidRecertified） |
@@ -1123,7 +1135,8 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 威胁 | 缓解 | 阶段 |
 |---|---|---|
 | agent 伪造身份（`principal="admin"`） | principal 与 channel 由 transport 层绑定，请求参数不参与身份 | P3 起；P9 多用户 |
-| agent 伪造 CodeAnchor | 锚点写入只接受 observer 通道（SD18.3） | P3 |
+| 同一 OS 用户下有 shell 的恶意 agent 直接连接 observer / admin socket | P3–P8 只声明**协作式**边界：通道分离防止经 MCP / 请求参数伪造身份，不防同用户进程直连；硬隔离随 P9 主体与 ACL 引入（ADR 0008 §0.5） | P3 文档化 / P9 |
+| agent 伪造 CodeAnchor | 锚点写入只接受 observer 通道（SD18.3）；P3–P8 为协作式边界，经 MCP 的 agent 无法伪造，同用户 shell 直连 observer socket 不在防护范围内 | P3 / P9 |
 | agent 伪造依赖 / 投毒 | deps 只能引用证书内 handle 或显式 `logical@rev`；provenance 门控晋升 | P3 / P9 |
 | agent 不声明依赖（图为空） | 读证书自动记录读集；policy 锚定要求（§2.5 A5）；Stop drift 检查；PreToolUse 提示缺失依赖；P4 测量覆盖率 | P3–P5 |
 | Bash 副作用绕过 PreToolUse 的路径解析 | 只能经 PostToolUse git diff 与 drift 事后检测；文档化 | P4 |
@@ -1239,6 +1252,10 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.5.3 | 2026-10-20 | ADR 0008 确认轮：先校验时跳过读集中已被取代的条目，并作为取代 diff 报告，使冲突后重读即可恢复（T32 流程）；共享 vector 项的 strict 区间从最早的 `since_epoch` 起算。P3 G0 通过 |
+| 1.5.2 | 2026-10-20 | ADR 0008 第三轮复核：条目增加 `since_epoch`，strict 区间从它起算；`ctx_check` 先校验再重新签发，不得用重新签发掩盖 strict 变化；签发失败时按 §6.4 映射为判定；`Empty` 加入判定集合；校验的输入写明含历史与日志链。op_log 尾部算法中，语义故障即使位于组边界也 fail-closed（见 ADR 0008 §3.2） |
+| 1.5.1 | 2026-10-20 | ADR 0008 第二轮复核：T34 的截断单位改为最后一组（op_log 格式 2 与 session log 共用尾部算法）；§6.4 增加 `log_checksum_at_issue` 与第 0 步 `Invalid{LogMismatch}`；签发增加 `Empty` 失败，并区分 recall 证书与 session 证书（读集条目可被取代，失败的 certified 读记为 advisory）；advisory recall 不签发证书；`ctx_read` 增加 `mode`；§6.2 增加 daemon / store 错误；§10 CodeAnchor 一行写明协作式边界 |
+| 1.5.0 | 2026-10-20 | P3 G0（ADR 0008，项目所有者决定）：session、读集与证书存于自有 session log，§3.5 #7 与 §7 写明这是互不相交领域的唯一例外；`ctx_supersede` 的 `carry_rules` 改为 `copy\|none`，只复制旧 head 自己的支撑规则，从不改写依赖方（§3.5 #2）；人工验证在 P3 只经 admin 通道 `ctx validate`；§10 声明 P3–P8 为协作式信任边界；§6.1 定义 CertifiedCurrent 与 `NotCertified`；§6.2 增加 `NotCertified`、`OutcomeUnknown`、`Busy`、`Timeout`，`InvalidDep` 限定为 required 条目 handle；T62 引擎版在 P3 以同 branch 无关提交验证，跨 branch 部分移至 P6 |
 | 1.4.3 | 2026-10-20 | 项目所有者决定 op_log 改用自有 append-only 分段日志（可做精确的未同步写丢失注入），SQLite 只存可重建投影；P2 durability 语义改为帧 sync + fail-stop；T34 仅允许最后一帧自动截断并报告，更早帧损坏 fail-closed（doctor 显式截断）；payload 状态增加 Missing、Corrupt；§6.1 定义 Snapshot / Historical 读模式；§6.2 增加 batch 级检查与 `CapacityKind::Encoding`。见 ADR 0006 |
 | 1.4.2 | 2026-10-20 | P1 G5 内存预算经 ADR 0005（项目所有者确认）校准：先压缩存储（下界 292.53 → live heap 181.15 B/incidence），再按 hot / inputs / query cache / history 分范围设预算（⌈1.10 × 实测上界⌉），并以计数分配器 live heap 作可证明的上界；不改变任何语义。P2 G4 的 `Unknown` 统一为 §6.1 的 `NotCommitted` |
 | 1.4.1 | 2026-10-19 | P0 执行契约补全：PolicyViolation reason 与 ArtifactNotOpen 检查序同步；明确 Rebind 保留 enabled、确定性 cycle path、PENDING 原因顺序、metadata 收窄及 InvalidMetadata、EventLog v0、MAIN-only、A5 多错排序。见 ADR 0003；不引入后续阶段能力 |
