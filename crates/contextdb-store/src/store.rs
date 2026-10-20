@@ -280,17 +280,19 @@ impl<D: Durability> Store<D> {
         if !options.create && !disk.exists(&log_dir) {
             return Err(StoreError::NotAStore);
         }
+        // Lock before creating `log/`, so the re-check below sees exactly
+        // what a concurrent `migrate` left (review N2).
+        disk.create_dir_all(dir).map_err(io)?;
+        let lock = lock(&disk, dir)?;
+        if migration_incomplete(&disk, dir).map_err(io)? {
+            return Err(StoreError::MigrationIncomplete);
+        }
         for d in [&log_dir, &blob_dir] {
             disk.create_dir_all(d).map_err(io)?;
         }
         disk.sync_dir(dir).map_err(io)?;
         if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
             disk.sync_dir(parent).map_err(io)?;
-        }
-        let lock = lock(&disk, dir)?;
-        // Re-check under the lock: a migration may have been running.
-        if migration_incomplete(&disk, dir).map_err(io)? {
-            return Err(StoreError::MigrationIncomplete);
         }
         let mut report = OpenReport::default();
         // Blob presence: durable names only, leftovers removed (ADR 0006 §5).
@@ -427,7 +429,6 @@ impl<D: Durability> Store<D> {
                 checksum: f.checksum,
             });
         }
-        store.proj.end_bulk().map_err(sql)?;
         // Sampled self-check (ADR 0006 §4 step 7), seeded by the head checksum.
         let n = store.db.revision_count();
         if n > 0 {
@@ -450,6 +451,9 @@ impl<D: Durability> Store<D> {
             }
             report.self_checked = sample.len();
         }
+        // Projection rows rolled forward are committed only after the
+        // self-check accepted the state they came from (review N5).
+        store.proj.end_bulk().map_err(sql)?;
         // A last segment with a valid header but no frames continues the chain.
         if store.tail.is_none() && !store.segments.is_empty() {
             let n = store.segments.len() - 1;
@@ -677,12 +681,15 @@ impl<D: Durability> Store<D> {
         self.blobs.insert(hash);
         Ok(hash)
     }
-    pub fn get_blob(&self, hash: &ContentHash) -> Payload {
-        match self.disk.read(&self.blob_dir().join(hex(hash))) {
+    /// Poisoned stores refuse: a blob whose put failed may be visible now
+    /// and gone after restart (review N4).
+    pub fn get_blob(&self, hash: &ContentHash) -> Result<Payload, StoreError> {
+        self.readable()?;
+        Ok(match self.disk.read(&self.blob_dir().join(hex(hash))) {
             Ok(bytes) if *blake3::hash(&bytes).as_bytes() == *hash => Payload::Available(bytes),
             Ok(_) => Payload::Unavailable(Unavailable::Corrupt),
             Err(_) => Payload::Unavailable(Unavailable::Missing),
-        }
+        })
     }
     /// The last durable epoch. After poisoning, the in-memory Db may be one
     /// epoch ahead; this never is.
@@ -720,11 +727,11 @@ impl<D: Durability> Store<D> {
                 .state_at(r, e)
                 .map_err(sql)?
                 .ok_or(StoreError::Tx(TxError::UnknownRef))?;
-            return Ok((state, self.get_blob(&self.db.revision_content(r)?)));
+            return Ok((state, self.get_blob(&self.db.revision_content(r)?)?));
         }
         let db = self.db_at(e)?;
         let state = db.read_historical(r, e)?;
-        let payload = self.get_blob(&db.revision_content(r)?);
+        let payload = self.get_blob(&db.revision_content(r)?)?;
         Ok((state, payload))
     }
     /// DIFF over any committed epochs: memory when retained, else log replay.
@@ -777,20 +784,29 @@ impl<D: Durability> Store<D> {
         if mark >= self.epoch() {
             return Ok(mark);
         }
-        let mut db = Db::default();
-        let mut base = Vec::new();
-        for n in 1..=self.epoch().0 {
-            let row = self.read_row(Epoch(n))?;
-            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
-            let result = db
-                .commit(&batch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
-            if Epoch(n) > mark {
-                let checksum = log::checksum(&row.encode_body());
-                self.proj
-                    .apply(&rows(&db, &result, checksum, &mut base))
-                    .map_err(sql)?;
+        // One bulk transaction; any failure rolls back to the old watermark (N6).
+        self.proj.begin_bulk().map_err(sql)?;
+        let filled = (|| {
+            let mut db = Db::default();
+            let mut base = Vec::new();
+            for n in 1..=self.epoch().0 {
+                let row = self.read_row(Epoch(n))?;
+                let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+                let result = db
+                    .commit(&batch)
+                    .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+                if Epoch(n) > mark {
+                    let checksum = log::checksum(&row.encode_body());
+                    self.proj
+                        .apply(&rows(&db, &result, checksum, &mut base))
+                        .map_err(sql)?;
+                }
             }
+            self.proj.end_bulk().map_err(sql)
+        })();
+        if let Err(e) = filled {
+            self.proj.abort_bulk();
+            return Err(e);
         }
         Ok(self.proj.watermark())
     }

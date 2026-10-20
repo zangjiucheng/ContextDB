@@ -40,3 +40,10 @@
   - **`ctx`:** never creates a store.
   - **G4:** a real post-sync-pre-publish hook; small-segment runs exercise rollover.
   - **Bench:** gates the file-projection configuration; projection roll-forward is batched.
+- Close the P2 closure-check findings:
+  - projection writes use cached statements, and bulk roll-forward writes the watermark once (first open with file projections 0.55–0.61 s, previously up to 6.1 s);
+  - roll-forward commits after the self-check;
+  - catch-up is bulked and rolls back on failure;
+  - open locks before creating `log/`;
+  - `migrate` resumes from the newest backup and syncs before the swap;
+  - `get_blob` is gated on poison.

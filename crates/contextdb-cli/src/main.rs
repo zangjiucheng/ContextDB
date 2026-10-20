@@ -90,7 +90,9 @@ fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
     );
     let mut problems = 0;
     for (n, r) in inputs.revisions.iter().enumerate() {
-        if let contextdb_store::Payload::Unavailable(why) = store.get_blob(&r.content) {
+        if let contextdb_store::Payload::Unavailable(why) =
+            store.get_blob(&r.content).map_err(|e| format!("{e:?}"))?
+        {
             println!("revision {n}: payload {why:?} ({})", hex(&r.content));
             problems += 1;
         }

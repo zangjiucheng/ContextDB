@@ -18,6 +18,7 @@ pub struct Projections {
     stale: bool,
     /// G4 fault injection: the next `apply` fails before its transaction commits.
     fail_next: bool,
+    bulk: Option<Bulk>,
 }
 /// Post-states and head/base movements of one committed epoch.
 pub struct EpochRows<'a> {
@@ -28,6 +29,55 @@ pub struct EpochRows<'a> {
     pub posts: Vec<(RevisionId, NodeState)>,
 }
 type Sql<T> = rusqlite::Result<T>;
+/// An open bulk transaction: the watermark it started from and the checksum
+/// of the last epoch written in it.
+struct Bulk {
+    start: Epoch,
+    checksum: Option<ContentHash>,
+}
+/// One epoch's rows, through cached statements.
+fn write_rows(conn: &Connection, rows: &EpochRows<'_>) -> Sql<()> {
+    let e = rows.epoch.0 as i64;
+    let mut diff =
+        conn.prepare_cached("INSERT INTO diff_log(epoch, revision, post) VALUES (?1, ?2, ?3)")?;
+    for (r, s) in &rows.posts {
+        diff.execute(params![e, r.0, s.canonical_bytes()])?;
+    }
+    for (l, old, new) in &rows.result.net_delta.head_moves {
+        if old.is_some() {
+            conn.prepare_cached(
+                "UPDATE head_history SET to_epoch = ?1 WHERE logical_id = ?2 AND to_epoch IS NULL",
+            )?
+            .execute(params![e, l.0])?;
+        }
+        conn.prepare_cached(
+            "INSERT INTO head_history(branch, logical_id, rev_id, from_epoch) VALUES (?1, ?2, ?3, ?4)",
+        )?
+        .execute(params![MAIN.0, l.0, new.0, e])?;
+    }
+    for (r, asserted) in rows.base {
+        if *asserted {
+            conn.prepare_cached(
+                "INSERT INTO base_history(branch, rev_id, asserted_epoch) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![MAIN.0, r.0, e])?;
+        } else {
+            conn.prepare_cached(
+                "UPDATE base_history SET retracted_epoch = ?1 WHERE rev_id = ?2 AND retracted_epoch IS NULL",
+            )?
+            .execute(params![e, r.0])?;
+        }
+    }
+    Ok(())
+}
+fn write_watermark(conn: &Connection, epoch: Epoch, checksum: &ContentHash) -> Sql<()> {
+    conn.prepare_cached(
+        "INSERT INTO projection_watermark(id, epoch, log_checksum) VALUES (0, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, log_checksum = excluded.log_checksum",
+    )?
+    .execute(params![epoch.0 as i64, checksum.as_slice()])?;
+    Ok(())
+}
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projection_watermark(
     id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, log_checksum BLOB NOT NULL);
@@ -42,6 +92,7 @@ CREATE INDEX IF NOT EXISTS head_history_logical ON head_history(logical_id, from
 CREATE TABLE IF NOT EXISTS base_history(
     branch INTEGER NOT NULL, rev_id INTEGER NOT NULL,
     asserted_epoch INTEGER NOT NULL, retracted_epoch INTEGER);
+CREATE INDEX IF NOT EXISTS base_history_rev ON base_history(rev_id, asserted_epoch);
 ";
 impl Projections {
     /// Opens the tables and returns the watermark if it names `checksums`
@@ -74,6 +125,7 @@ impl Projections {
             watermark: valid.unwrap_or(Epoch(0)),
             stale: false,
             fail_next: false,
+            bulk: None,
         };
         if valid.is_none() {
             p.clear()?;
@@ -96,13 +148,35 @@ impl Projections {
         !self.stale && e <= self.watermark
     }
     /// Groups many `apply` calls into one SQLite transaction (roll-forward at
-    /// open). Rows become durable at `end_bulk`; a crash before it only leaves
-    /// the watermark where it was.
+    /// open, catch-up). Epochs are written without per-epoch savepoints and the
+    /// watermark row once, at `end_bulk`; a crash or `abort_bulk` before it
+    /// leaves tables and watermark where they were.
     pub fn begin_bulk(&mut self) -> Sql<()> {
-        self.conn.execute_batch("BEGIN")
+        self.conn.execute_batch("BEGIN")?;
+        self.bulk = Some(Bulk {
+            start: self.watermark,
+            checksum: None,
+        });
+        Ok(())
     }
     pub fn end_bulk(&mut self) -> Sql<()> {
-        self.conn.execute_batch("COMMIT")
+        if let Some(Bulk {
+            checksum: Some(sum),
+            ..
+        }) = self.bulk.as_ref()
+        {
+            write_watermark(&self.conn, self.watermark, sum)?;
+        }
+        self.conn.execute_batch("COMMIT")?;
+        self.bulk = None;
+        Ok(())
+    }
+    /// Discards a bulk transaction and restores the watermark.
+    pub fn abort_bulk(&mut self) {
+        if let Some(b) = self.bulk.take() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            self.watermark = b.start;
+        }
     }
     pub fn mark_stale(&mut self) {
         self.stale = true;
@@ -110,59 +184,31 @@ impl Projections {
     pub fn fail_next_write(&mut self) {
         self.fail_next = true;
     }
-    /// Writes one epoch and advances the watermark in a single transaction.
-    /// Only the next contiguous epoch is accepted; after a gap the tables stay
-    /// behind (still exact up to the watermark) until caught up.
+    /// Writes one epoch and advances the watermark atomically (its own
+    /// transaction, or part of the bulk one). Only the next contiguous epoch
+    /// is accepted; after a gap the tables stay behind (still exact up to the
+    /// watermark) until caught up.
     pub fn apply(&mut self, rows: &EpochRows<'_>) -> Sql<()> {
         if rows.epoch.0 != self.watermark.0 + 1 {
             return Ok(());
         }
-        let e = rows.epoch.0 as i64;
-        // A savepoint: its own transaction normally, nested inside `bulk`.
-        let tx = self.conn.savepoint()?;
-        {
-            let mut diff = tx.prepare_cached(
-                "INSERT INTO diff_log(epoch, revision, post) VALUES (?1, ?2, ?3)",
-            )?;
-            for (r, s) in &rows.posts {
-                diff.execute(params![e, r.0, s.canonical_bytes()])?;
+        let fail = std::mem::take(&mut self.fail_next);
+        if let Some(bulk) = self.bulk.as_mut() {
+            write_rows(&self.conn, rows)?;
+            if fail {
+                return Err(rusqlite::Error::InvalidQuery);
             }
-            for (l, old, new) in &rows.result.net_delta.head_moves {
-                if old.is_some() {
-                    tx.execute(
-                        "UPDATE head_history SET to_epoch = ?1 WHERE logical_id = ?2 AND to_epoch IS NULL",
-                        params![e, l.0],
-                    )?;
-                }
-                tx.execute(
-                    "INSERT INTO head_history(branch, logical_id, rev_id, from_epoch) VALUES (?1, ?2, ?3, ?4)",
-                    params![MAIN.0, l.0, new.0, e],
-                )?;
+            bulk.checksum = Some(rows.checksum);
+        } else {
+            let tx = self.conn.transaction()?;
+            write_rows(&tx, rows)?;
+            write_watermark(&tx, rows.epoch, &rows.checksum)?;
+            if fail {
+                // Dropping the transaction rolls back the rows written above.
+                return Err(rusqlite::Error::InvalidQuery);
             }
-            for (r, asserted) in rows.base {
-                if *asserted {
-                    tx.execute(
-                        "INSERT INTO base_history(branch, rev_id, asserted_epoch) VALUES (?1, ?2, ?3)",
-                        params![MAIN.0, r.0, e],
-                    )?;
-                } else {
-                    tx.execute(
-                        "UPDATE base_history SET retracted_epoch = ?1 WHERE rev_id = ?2 AND retracted_epoch IS NULL",
-                        params![e, r.0],
-                    )?;
-                }
-            }
-            tx.execute(
-                "INSERT INTO projection_watermark(id, epoch, log_checksum) VALUES (0, ?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, log_checksum = excluded.log_checksum",
-                params![e, rows.checksum.as_slice()],
-            )?;
+            tx.commit()?;
         }
-        if std::mem::take(&mut self.fail_next) {
-            // Dropping the transaction rolls back the rows written above.
-            return Err(rusqlite::Error::InvalidQuery);
-        }
-        tx.commit()?;
         self.watermark = rows.epoch;
         Ok(())
     }

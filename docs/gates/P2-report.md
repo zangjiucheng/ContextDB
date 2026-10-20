@@ -1,6 +1,6 @@
 # P2 implementation report — 2026-10-20
 
-**Every local gate layer passes after the independent review's fixes.** The gate is not yet passed: the review's closure check, remote Linux/macOS CI and the nightly workflow are still needed. Related documents:
+**Every local gate layer passes after the independent review's fixes and closure check.** The gate is not yet passed: the reviewer's confirmation of the closure-check fixes (N1–N6), remote Linux/macOS CI and the nightly workflow are still needed. Related documents:
 - [gate matrix](P2.md)
 - [durable-log ADR 0006](../adr/0006-p2-durable-log.md), whose §12 records where the implementation differs from the text
 - [incremental structural commits ADR 0007](../adr/0007-incremental-structural-commits.md)
@@ -18,7 +18,7 @@
 3. append and sync (F_FULLFSYNC on macOS);
 4. publish, then projections.
 
-Any persistence I/O failure poisons the store (fail-stop). A poisoned store serves no reads and no `txn_status`, and `epoch()` reports the last durable epoch. Reopening the same directory in the same process returns `RestartRequired`. A directory lock admits one writer, and the offline tools (`doctor --truncate-before`, `migrate`) take the same lock.
+Any persistence I/O failure poisons the store (fail-stop). A poisoned store refuses `db()`, every read mode, DIFF, `read_row`, `get_blob` and `txn_status`. `epoch()` and `projection_watermark()` still answer, and report only durable state. Reopening the same directory in the same process returns `RestartRequired`. A directory lock admits one writer, and the offline tools (`doctor --truncate-before`, `migrate`) take the same lock.
 
 **Open:**
 1. Take the lock and remove temp blobs.
@@ -52,7 +52,7 @@ All three go through one shared state function.
 | PROP10, store: reopen (half the seeds with a snapshot), digest and DIFF for all epoch pairs | 10,000 seeds pass |
 | PROP10, core: `from_inputs` == incremental, identical later results/errors, DIFF, oracle | 10,000 seeds pass |
 | Read modes reproduce past states | 1,000 seeds pass |
-| G4 pre-WAL / post-WAL-pre-sync / post-sync-pre-publish | 1,000 effective injections each. Post-sync-pre-publish uses a hook: the frame is synced, then the commit fails unpublished. Four tail fates; half the seeds use 512-byte segments (rollover) |
+| G4 pre-WAL / post-WAL-pre-sync / post-sync-pre-publish | 1,000 effective injections each. Post-sync-pre-publish uses a hook: the frame is synced, then the commit fails unpublished. Four tail fates cycle through every point, but they only change bytes where unsynced data exists: post-WAL-pre-sync, and segment creation. Half the seeds use 512-byte segments (rollover) |
 | G4 mid-snapshot, blob put (4 steps each) | 1,004 runs each |
 | G4 projection write (SQLite transaction fails before commit) | 1,000 runs |
 | Harness self-test (no-op sync) | detected |
@@ -72,21 +72,26 @@ Apple M1 Pro, macOS 27.0.1, APFS internal SSD, Rust 1.95.0 release, one thread (
 
 | Metric | Target | Measured | Verdict |
 |---|---:|---:|---|
-| Single-transaction commit p99, fullfsync on | ≤ 25 ms | 17.62 ms | PASS |
-| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.36 ms | PASS |
-| Commit p99, fullfsync on, production file projections (`ctx` configuration) | ≤ 25 ms | 14.20 ms | PASS |
-| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 1.326 s | PASS |
-| Cold open, full replay, file projections written for all 100K epochs (first open / after `--rebuild`) | ≤ 5 s | 4.442 s | PASS |
-| Cold open, full replay, file projections already current | ≤ 5 s | 0.282 s | PASS |
-| Cold open with a snapshot at the tail (memory / file projections) | ≤ 1 s | 0.166 / 0.164 s | PASS |
-| Historical read at epoch 50,000 below the snapshot: log replay / projections (informational) | — | 821 ms / < 1 ms | — |
+Ranges are over four consecutive runs of `store_bench` on the final code.
+
+| Metric | Target | Measured (min–max) | Verdict |
+|---|---:|---:|---|
+| Single-transaction commit p99, fullfsync on | ≤ 25 ms | 8.66–16.97 ms | PASS |
+| Single-transaction commit p99, fullfsync off (fsync(2), measurement only) | ≤ 10 ms | 0.16–0.37 ms | PASS |
+| Commit p99, fullfsync on, production file projections (`ctx` configuration) | ≤ 25 ms | 8.01–14.69 ms | PASS |
+| Cold open, full replay of 100,000 structural transactions | ≤ 5 s | 0.522 s (one full run; ≤ 1.33 s before the bulk projection fix) | PASS |
+| Cold open, full replay, file projections written for all 100K epochs (first open / after `--rebuild`) | ≤ 5 s | 0.552–0.614 s | PASS |
+| Cold open, full replay, file projections already current | ≤ 5 s | 0.260–0.282 s | PASS |
+| Cold open with a snapshot at the tail, memory projections | ≤ 1 s | 0.158–0.166 s | PASS |
+| Cold open with a snapshot at the tail, file projections | ≤ 1 s | 0.159–0.171 s | PASS |
+| Historical read at epoch 50,000 below the snapshot: log replay / projections (informational) | — | 788–817 ms / < 1 ms | — |
 
 Notes:
 - The replay log is built without syncs (build 4.8 s). Open is measured with the production `StdDisk`, and includes the lock, blob scan, chain verification, replay and self-check.
 - Every transaction is structural (each one creates a logical, `structural_every=1`). This is the costly case for replay; with mixed workloads, fast-path base toggles replay faster.
-- Fullfsync-on p99 varied from 10.5 to 17.6 ms across four runs on this machine. All runs met the target.
+- Fullfsync-on p99 varies with APFS flush latency: 8.7–17.6 ms across nine runs on this machine (seven of mine, two of the reviewer's). Every run met the target.
 - Before the review's fix (ranged frame reads), reads below a snapshot reread a whole segment per frame. The reviewer measured 469 ms at 10K epochs, quadratic growth, and about 50 s extrapolated at 100K.
-- Before the bulk roll-forward, the first open with file projections took 6.3 s.
+- The first open with file projections took 6.3 s with one SQLite transaction and freshly prepared statements per epoch. A single transaction brought it to 4.4–6.1 s, which the closure check showed was at the limit (review N1). Cached statements and one watermark write per bulk transaction brought it to 0.55–0.61 s. The same change sped up plain replay, whose in-memory projection writes had used the per-epoch path too.
 
 ## G7 regression
 
@@ -135,7 +140,7 @@ Every finding was fixed and has a `review*` regression test in `crates/contextdb
 | 3 | A crash between `migrate`'s renames produced a silently empty, writable store | major | Open refuses with `MigrationIncomplete`; `migrate` resumes after verifying `log.migrating`; SimDisk `list` now shows subdirectories, like `read_dir` |
 | 4 | Offline tools bypassed the directory lock; `--rebuild` deleted files before locking | major | `truncate_before` and `migrate` take the lock; `truncate_before` re-plans (`PlanOutdated`); `--rebuild` clears projections under the lock; the CLI no longer deletes projection files |
 | 5 | A poisoned store served the non-durable epoch and answered `txn_status` | major | Reads, `db()` and `txn_status` return `Poisoned`; `epoch()` is the durable epoch; G4 asserts it after each injection |
-| 6 | `read_row` read the whole segment per frame (quadratic reads below a snapshot) | major | `Durability::read_range` reads one frame |
+| 6 | `read_row` read the whole segment per frame (quadratic reads below a snapshot) | major | `Durability::read_range` reads one frame. The only guard is the informational bench line (788–817 ms at 50K); P3 sets read budgets |
 | 7 | A checksum-valid final frame with a semantic fault was truncated as a torn tail | minor | Only incomplete, length-check and checksum faults count as torn |
 | 8 | A verified but unbuildable snapshot made open fail | minor | Ignored and reported; replay starts earlier |
 | 9 | Poison was per process, not per store | minor | Keyed by (disk instance, directory) |
@@ -143,7 +148,20 @@ Every finding was fixed and has a `review*` regression test in `crates/contextdb
 | 11 | G5 was not measured in the production configuration (file projections) | minor | Bench now gates commit p99 and cold opens with file projections; roll-forward is batched (6.3 s → 4.4 s) |
 | 12 | A mistyped path created an empty store; the blob layout differed from the ADR | minor | `OpenOptions::create = false` for `ctx` (`NotAStore`); flat layout recorded in ADR 0006 §12 |
 
-Closure check by the reviewer: pending.
+**Closure check** (same reviewer, commit `01f2d9d`):
+- All 12 findings are closed, with executed evidence.
+- Reverting each fix in a copy made its `review*` test fail, so the tests are not vacuous.
+
+New findings from the closure check:
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| N1 | First open with file projections took 4.9–6.1 s; the 4.442 s PASS did not reproduce | major | Cached statements, no per-epoch savepoint in bulk mode, one watermark write per bulk: 0.55–0.61 s over four runs; the table reports ranges |
+| N2 | The re-check for an interrupted migration under the lock could never fire (`log/` was created first) | minor | Open takes the lock before creating `log/`, then re-checks |
+| N3 | `migrate` resume took the first backup in sort order; `log.migrating`'s entry was not parent-synced before the swap | minor | Picks the highest-version backup; syncs the parent directory before the first rename |
+| N4 | `get_blob` was not gated on poison | minor | Returns `Result`; `Poisoned` after a failure (asserted in `review5`) |
+| N5 | Rolled-forward projection rows were committed before the self-check | minor | `end_bulk` runs after the self-check |
+| N6 | `catch_up_projections` was not bulked (≈ 9 s at 100K) | minor | One bulk transaction; on failure it rolls back and restores the watermark (`review_n6_*`) |
 
 ## Reproduce
 

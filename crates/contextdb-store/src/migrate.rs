@@ -123,6 +123,8 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
     }
     disk.sync(&seg).map_err(io)?;
     disk.sync_dir(&new_dir).map_err(io)?;
+    // `log.migrating`'s own entry is durable before the swap begins (N3).
+    disk.sync_dir(dir).map_err(io)?;
     // Swap: keep the old log as a backup. `log.migrating` is complete and
     // durable before the first rename. A crash before it leaves the old log
     // and a stale `log.migrating` (discarded above on the next run); a crash
@@ -143,11 +145,22 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
 /// old log was renamed to its backup, so it is the complete migrated log.
 fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreError> {
     let staged = dir.join("log.migrating");
+    // The interrupted migration started from the newest older format, so its
+    // backup carries the highest version (review N3).
     let backup = disk
         .list(dir)
         .map_err(io)?
         .into_iter()
-        .find(|n| n.starts_with("log.v") && n.ends_with(".bak"))
+        .filter_map(|n| {
+            let v: u32 = n
+                .strip_prefix("log.v")?
+                .strip_suffix(".bak")?
+                .parse()
+                .ok()?;
+            Some((v, n))
+        })
+        .max()
+        .map(|(_, n)| n)
         .ok_or_else(|| StoreError::Io("no migration backup to resume from".into()))?;
     if !disk.exists(&staged) {
         return Err(StoreError::Io(format!(

@@ -117,10 +117,13 @@ fn blobs_are_idempotent_verified_and_required_t35() {
     let (mut store, _) = open(&disk).unwrap();
     let h = store.put_blob(b"same").unwrap();
     assert_eq!(store.put_blob(b"same").unwrap(), h);
-    assert_eq!(store.get_blob(&h), Payload::Available(b"same".to_vec()));
+    assert_eq!(
+        store.get_blob(&h).unwrap(),
+        Payload::Available(b"same".to_vec())
+    );
     let missing = [7; 32];
     assert_eq!(
-        store.get_blob(&missing),
+        store.get_blob(&missing).unwrap(),
         Payload::Unavailable(Unavailable::Missing)
     );
     let create = Op::CreateLogical {
@@ -140,11 +143,14 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         .join(h.iter().map(|b| format!("{b:02x}")).collect::<String>());
     disk.corrupt(&path, 0, b'X');
     assert_eq!(
-        store.get_blob(&h),
+        store.get_blob(&h).unwrap(),
         Payload::Unavailable(Unavailable::Corrupt)
     );
     store.put_blob(b"same").unwrap();
-    assert_eq!(store.get_blob(&h), Payload::Available(b"same".to_vec()));
+    assert_eq!(
+        store.get_blob(&h).unwrap(),
+        Payload::Available(b"same".to_vec())
+    );
 }
 #[test]
 fn lock_poison_and_restart() {
@@ -739,7 +745,7 @@ fn g4_blob_write() {
                 (epoch, digest)
             );
             let hash = *blake3::hash(&payload).as_bytes();
-            match store.get_blob(&hash) {
+            match store.get_blob(&hash).unwrap() {
                 Payload::Available(bytes) => assert_eq!(bytes, payload),
                 Payload::Unavailable(why) => {
                     assert_eq!(why, Unavailable::Missing, "{step} {seed}")
@@ -1003,6 +1009,7 @@ fn review5_poisoned_store_serves_nothing() {
         store.read_snapshot(LogicalId(0), epoch).err(),
         Some(StoreError::Poisoned)
     );
+    assert_eq!(store.get_blob(&content), Err(StoreError::Poisoned));
 }
 #[test]
 fn review7_valid_checksum_with_wrong_chain_fails_closed_even_at_the_tail() {
@@ -1085,4 +1092,34 @@ fn review12_operator_open_does_not_create_a_store() {
         Err(StoreError::NotAStore)
     ));
     assert!(!disk.exists(Path::new("/typo/log")));
+}
+#[test]
+fn review_n6_failed_catch_up_rolls_back_to_the_old_watermark() {
+    let tmp = std::env::temp_dir().join(format!("contextdb-catchup-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let proj = tmp.join("p.sqlite");
+    let _ = std::fs::remove_file(&proj);
+    let disk = SimDisk::new();
+    let (mut store, _) = open_with(&disk, &proj);
+    commit_some(&mut store, 51, 4);
+    let mark = store.epoch();
+    drop(store);
+    // Later epochs land after a snapshot, so open leaves projections behind.
+    let (mut store, _) = open(&disk).unwrap();
+    commit_some(&mut store, 52, 6);
+    store.snapshot().unwrap();
+    drop(store);
+    let (mut store, report) = open_with(&disk, &proj);
+    assert_eq!(report.projection_watermark, mark);
+    let reference = every_read(&store);
+    store.fail_next_projection_write();
+    assert!(store.catch_up_projections().is_err());
+    assert_eq!(store.projection_watermark(), mark, "rolled back");
+    assert_eq!(every_read(&store), reference);
+    assert_eq!(store.catch_up_projections().unwrap(), store.epoch());
+    assert_eq!(every_read(&store), reference);
+    drop(store);
+    let (store, report) = open_with(&disk, &proj);
+    assert_eq!(report.projection_watermark, store.epoch(), "committed");
+    let _ = std::fs::remove_dir_all(&tmp);
 }
