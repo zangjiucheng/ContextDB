@@ -144,6 +144,6 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     let lanes = check("metadata_lanes", db, 0.02);
     golden(
         &lanes,
-        [480808, 100488, 87984, 195832, 306685, 235244, 4519],
+        [674136, 100488, 87984, 195832, 306685, 235244, 4519],
     );
 }

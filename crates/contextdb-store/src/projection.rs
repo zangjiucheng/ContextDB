@@ -96,7 +96,12 @@ impl Projections {
         self.stale = true;
     }
     /// Writes one epoch and advances the watermark in a single transaction.
+    /// Only the next contiguous epoch is accepted; after a gap the tables stay
+    /// behind (still exact up to the watermark) until caught up.
     pub fn apply(&mut self, rows: &EpochRows<'_>) -> Sql<()> {
+        if rows.epoch.0 != self.watermark.0 + 1 {
+            return Ok(());
+        }
         let e = rows.epoch.0 as i64;
         let tx = self.conn.transaction()?;
         {

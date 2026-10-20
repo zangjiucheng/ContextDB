@@ -39,6 +39,7 @@ contextdb-model = { path = "crates/contextdb-model", version = "=0.1.0" }
 contextdb-core = { path = "crates/contextdb-core", version = "=0.1.0" }
 contextdb-oracle = { path = "crates/contextdb-oracle", version = "=0.1.0" }
 contextdb-testkit = { path = "crates/contextdb-testkit", version = "=0.1.0" }
+contextdb-store = { path = "crates/contextdb-store", version = "=0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -294,22 +294,9 @@ impl<D: Durability> Store<D> {
             crate::snapshot::load_newest(&store.disk, dir, &checksums).map_err(io)?;
         report.rejected_snapshots = rejected;
         if let Some((epoch, inputs)) = base {
-            // Projections behind the snapshot roll forward from genesis first.
-            if store.proj.watermark() < epoch {
-                let mut db = Db::default();
-                let mut base = Vec::new();
-                for f in scan.frames.iter().take(epoch.0 as usize) {
-                    let result = db
-                        .commit(&f.row.batch().expect("verified frame"))
-                        .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
-                    if f.row.epoch > store.proj.watermark() {
-                        store
-                            .proj
-                            .apply(&rows(&db, &result, f.checksum, &mut base))
-                            .map_err(sql)?;
-                    }
-                }
-            }
+            // Projections behind the snapshot stay behind (reads fall back to
+            // the log) until `catch_up_projections`; open stays proportional
+            // to the tail after the snapshot.
             store.db = Db::from_inputs(inputs, epoch)
                 .map_err(|_| StoreError::ReplayDivergence { epoch })?;
             report.snapshot_epoch = Some(epoch);
@@ -651,6 +638,34 @@ impl<D: Durability> Store<D> {
             return Ok((r, state));
         }
         Ok(self.db_at(e)?.read_snapshot(l, e)?)
+    }
+    /// Fills projection rows between the watermark and the tail by replaying
+    /// the log (doctor / background maintenance; ADR 0006 §8).
+    pub fn catch_up_projections(&mut self) -> Result<Epoch, StoreError> {
+        self.usable()?;
+        let mark = self.proj.watermark();
+        if mark >= self.epoch() {
+            return Ok(mark);
+        }
+        let mut db = Db::default();
+        let mut base = Vec::new();
+        for n in 1..=self.epoch().0 {
+            let row = self.read_row(Epoch(n))?;
+            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+            let result = db
+                .commit(&batch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+            if Epoch(n) > mark {
+                let checksum = log::checksum(&row.encode_body());
+                self.proj
+                    .apply(&rows(&db, &result, checksum, &mut base))
+                    .map_err(sql)?;
+            }
+        }
+        Ok(self.proj.watermark())
+    }
+    pub fn projection_watermark(&self) -> Epoch {
+        self.proj.watermark()
     }
     /// Writes a snapshot of the current inputs (ADR 0006 §6). A failure leaves
     /// the log untouched; snapshots are only an accelerator, so it does not poison.

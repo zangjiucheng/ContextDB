@@ -134,15 +134,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let indexes = Indexes::build(&inputs);
         db.maintainer
             .update(&inputs, &indexes, &pk, &delta, &mut stats);
-        db.revisions.reserve_exact(inputs.revisions.len());
+        db.revisions.reserve(inputs.revisions.len());
         for r in &inputs.revisions {
             db.revisions.append(r);
         }
-        db.rules.reserve_exact(&inputs.rules);
+        db.rules.reserve(&inputs.rules);
         for j in &inputs.rules {
             db.rules.append(j);
         }
-        db.logicals.reserve_exact(&inputs.logicals);
+        db.logicals.reserve(&inputs.logicals);
         for l in &inputs.logicals {
             db.logicals.append(l);
         }
@@ -352,14 +352,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(error);
             }
         };
-        // Exact growth: this path already copies the inputs, so avoiding
-        // doubling slack does not change its asymptotic cost.
-        self.revisions
-            .reserve_exact(working.revisions.len() - rev_mark);
+        // Amortized growth (exact from empty): per-commit exact reservations
+        // would copy the arenas on every structural commit.
+        self.revisions.reserve(working.revisions.len() - rev_mark);
         for r in &working.revisions[rev_mark..] {
             self.revisions.append(r);
         }
-        self.rules.reserve_exact(&working.rules[rule_mark..]);
+        self.rules.reserve(&working.rules[rule_mark..]);
         for j in &working.rules[rule_mark..] {
             self.rules.append(j);
         }
@@ -427,7 +426,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.memo = RefCell::new(memo);
         self.epoch = epoch;
         let new_logicals = &working.logicals[self.logicals.len()..];
-        self.logicals.reserve_exact(new_logicals);
+        self.logicals.reserve(new_logicals);
         for l in new_logicals {
             self.logicals.append(l);
         }

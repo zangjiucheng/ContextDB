@@ -3,8 +3,7 @@
 P1 functionality is implemented, and every local P1 gate layer passes. After
 storage compaction, memory is 181.15 / 188.87 B/incidence of live heap. It is within
 the per-scope budgets of ADR 0005, which the owner chose to calibrate per scope.
-Gate closure awaits remote Linux/macOS CI and the nightly workflow on the
-compaction commit.
+**Gate P1 passed** (CI run 39436790664, nightly run 39436822063).
 See [P1 report](gates/P1-report.md), [gate matrix](gates/P1.md) and
 [memory ADR](adr/0005-p1-memory-budget.md).
 

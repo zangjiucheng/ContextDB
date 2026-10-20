@@ -35,14 +35,32 @@ pub trait Durability: Send + Sync {
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>>;
 }
 
-/// Production filesystem. `sync` is `sync_all` (F_FULLFSYNC on Apple targets).
-#[derive(Clone, Debug, Default)]
-pub struct StdDisk;
+/// Production filesystem. With `full_sync` (the default), `sync` is `sync_all`,
+/// i.e. F_FULLFSYNC on Apple targets. `full_sync: false` uses plain fsync(2) and
+/// exists for the "fullfsync off" measurement only (ADR 0006 §10).
+#[derive(Clone, Debug)]
+pub struct StdDisk {
+    pub full_sync: bool,
+}
+impl Default for StdDisk {
+    fn default() -> Self {
+        Self { full_sync: true }
+    }
+}
+impl StdDisk {
+    fn sync_file(&self, file: &std::fs::File) -> io::Result<()> {
+        if self.full_sync {
+            file.sync_all()
+        } else {
+            nix::unistd::fsync(file).map_err(io::Error::from)
+        }
+    }
+}
 struct StdLock(#[allow(dead_code)] std::fs::File);
 impl LockGuard for StdLock {}
 impl Durability for StdDisk {
     fn instance(&self) -> String {
-        "std".into()
+        format!("std-{}", std::process::id())
     }
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(dir)
@@ -87,10 +105,10 @@ impl Durability for StdDisk {
         std::fs::rename(from, to)
     }
     fn sync(&self, path: &Path) -> io::Result<()> {
-        std::fs::File::open(path)?.sync_all()
+        self.sync_file(&std::fs::File::open(path)?)
     }
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
-        std::fs::File::open(dir)?.sync_all()
+        self.sync_file(&std::fs::File::open(dir)?)
     }
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>> {
         let file = std::fs::OpenOptions::new()

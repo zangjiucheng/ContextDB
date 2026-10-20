@@ -63,16 +63,15 @@ impl LogicalArena {
             .position(|n| self.key(n) == key)
             .map(|n| LogicalId(n as u32))
     }
-    pub fn reserve_exact(&mut self, new: &[Logical]) {
+    pub fn reserve(&mut self, new: &[Logical]) {
         let n = new.len();
-        self.keys
-            .reserve_exact(new.iter().map(|l| l.key.len()).sum());
-        self.key_end.reserve_exact(n);
-        self.kind.reserve_exact(n);
-        self.scope.reserve_exact(n);
-        self.owner.reserve_exact(n);
-        self.branch.reserve_exact(n);
-        self.epoch.reserve_exact(n);
+        self.keys.reserve(new.iter().map(|l| l.key.len()).sum());
+        self.key_end.reserve(n);
+        self.kind.reserve(n);
+        self.scope.reserve(n);
+        self.owner.reserve(n);
+        self.branch.reserve(n);
+        self.epoch.reserve(n);
     }
     pub fn append(&mut self, l: &Logical) {
         self.keys.push_str(&l.key);
@@ -145,12 +144,12 @@ impl RevisionArena {
     pub fn len(&self) -> usize {
         self.logical.len()
     }
-    pub fn reserve_exact(&mut self, n: usize) {
-        self.logical.reserve_exact(n);
-        self.content.reserve_exact(n);
-        self.author.reserve_exact(n);
-        self.branch.reserve_exact(n);
-        self.epoch.reserve_exact(n);
+    pub fn reserve(&mut self, n: usize) {
+        self.logical.reserve(n);
+        self.content.reserve(n);
+        self.author.reserve(n);
+        self.branch.reserve(n);
+        self.epoch.reserve(n);
     }
     pub fn append(&mut self, r: &Revision) {
         self.logical.push(r.logical);
@@ -233,19 +232,19 @@ impl RuleArena {
     pub fn len(&self) -> usize {
         self.conclusion.len()
     }
-    pub fn reserve_exact(&mut self, new: &[Rule]) {
+    pub fn reserve(&mut self, new: &[Rule]) {
         let n = new.len();
         let premises = new.iter().map(|j| j.premises.len()).sum();
         let refs = new.iter().map(|j| j.references.len()).sum();
-        self.conclusion.reserve_exact(n);
-        self.start.reserve_exact(n);
-        self.premise.reserve_exact(premises);
-        self.kind.reserve_exact(premises);
-        self.ref_start.reserve_exact(n);
-        self.refs.reserve_exact(refs);
-        self.enabled.reserve_exact(n);
-        self.branch.reserve_exact(n);
-        self.epoch.reserve_exact(n);
+        self.conclusion.reserve(n);
+        self.start.reserve(n);
+        self.premise.reserve(premises);
+        self.kind.reserve(premises);
+        self.ref_start.reserve(n);
+        self.refs.reserve(refs);
+        self.enabled.reserve(n);
+        self.branch.reserve(n);
+        self.epoch.reserve(n);
     }
     pub fn append(&mut self, j: &Rule) {
         self.conclusion.push(j.conclusion);
