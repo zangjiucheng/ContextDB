@@ -53,6 +53,15 @@ pub fn create(key: &str, kind: RecordKind, base: bool, content: u8) -> Op {
 /// PROP1 bounds: 6 logicals, 14 revisions, 10 rules, 12 batches, 1–5 Ops.
 /// Seeds use ChaCha8, never thread_rng. Generation is adaptive to accepted inputs.
 pub fn generate(seed: u64) -> EventLog {
+    generate_inner(seed, false)
+}
+
+/// Stratified PROP1 cases include the six required event families in every seed.
+/// The random tail uses the same weighted Op/edge generator as P0.
+pub fn generate_p1(seed: u64) -> EventLog {
+    generate_inner(seed, true)
+}
+fn generate_inner(seed: u64, p1: bool) -> EventLog {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut model = InputModel::default();
     let mut batches = Vec::new();
@@ -75,7 +84,68 @@ pub fn generate(seed: u64) -> EventLog {
     );
     model.apply(&init).expect("valid initial state");
     batches.push(init);
-    for tx in 1..12 {
+    if p1 {
+        // Replace the initial sample with a bounded fixture: Evidence + Summary,
+        // two alternatives, a backward-rank insertion, and a new Sem premise.
+        model = InputModel::default();
+        batches.clear();
+        let r = |n| RevRef::Existing(RevisionId(n));
+        let add = |c, p, kind| Op::AddRule {
+            conclusion: r(c),
+            incidences: vec![(r(p), kind)],
+            enabled: true,
+        };
+        let head = |expected, new| Op::SetHead {
+            logical: LogicalId(0).into(),
+            expected: r(expected),
+            new: r(new),
+        };
+        let prefix = vec![
+            Batch::new(
+                (0..5)
+                    .map(|n| {
+                        create(
+                            &format!("n{n}"),
+                            match n {
+                                3 => RecordKind::Evidence,
+                                4 => RecordKind::Summary,
+                                _ => RecordKind::Fact,
+                            },
+                            n != 2 && n != 4,
+                            n as u8,
+                        )
+                    })
+                    .collect(),
+            ),
+            Batch::new(vec![
+                Op::AddRevision {
+                    logical: LogicalId(0).into(),
+                    content: [90; 32],
+                    adopt_as_base: true,
+                },
+                add(2, 0, EdgeKind::Cur),
+                add(2, 1, EdgeKind::Pin),
+                add(1, 3, EdgeKind::Pin),
+                add(4, 5, EdgeKind::Sem),
+            ]),
+            Batch::new(vec![head(0, 5), Op::RetractBase { rev: r(0) }]),
+            Batch::new(vec![head(5, 0), Op::AssertBase { rev: r(0) }]),
+            Batch::new(vec![add(0, 2, EdgeKind::Pin)]),
+            Batch::new(vec![head(5, 5)]),
+            Batch::new(vec![
+                Op::SetRuleEnabled {
+                    rule: RuleId(0).into(),
+                    enabled: false,
+                },
+                Op::RetractBase { rev: r(0) },
+            ]),
+        ];
+        for batch in prefix {
+            let _ = model.apply(&batch);
+            batches.push(batch);
+        }
+    }
+    for tx in batches.len()..12 {
         let count = 1 + (rng.next_u32() % 5) as usize;
         let mut batch = Batch::new(Vec::new());
         let mut preview = model.clone();
@@ -199,3 +269,6 @@ pub fn generate(seed: u64) -> EventLog {
     }
     EventLog { batches }
 }
+
+pub mod shapes;
+pub use shapes::{Shape, ShapeStats, Shaped, shape};

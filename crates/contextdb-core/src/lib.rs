@@ -1,37 +1,112 @@
-//! Sequential transaction front-end with oracle-backed P0 queries.
+//! Sequential transactions with exact incremental L0 and memoized L1/L2 queries.
 //! Inputs are exported by value; callers cannot mutate stored inputs or derived state.
 //! ```compile_fail
 //! let mut db = contextdb_core::Db::default();
 //! db.inputs_mut().heads.clear();
 //! ```
+// Keep diagnostic assertions active in optimized paranoid builds as well.
+macro_rules! invariant_assert { ($($arg:tt)*) => { if cfg!(any(debug_assertions, feature="paranoid")) { assert!($($arg)*); } }; }
+pub(crate) use invariant_assert;
 mod arena;
+mod fast;
+mod history;
+mod memory;
+pub use history::{EpochDiff, Impact, NodeChange};
+pub use memory::MemoryFootprint;
+pub mod engine;
+mod layers;
+mod query;
+pub use query::Proof;
+use std::{cell::RefCell, sync::OnceLock};
+mod pk;
+mod stats;
 mod topo;
+pub use engine::{Counting, FullRecompute, Maintainer};
+pub use pk::PearceKelly;
+pub use stats::{CommitStats, NoStats, StatsSink};
 mod txn;
-pub use arena::Indexes;
+mod view;
+pub use arena::{Adjacency, Indexes};
 use arena::{RevisionArena, RuleArena};
 use contextdb_model::*;
 pub use topo::NaiveTopo;
+pub use view::InputView;
 
-#[derive(Clone, Debug, Default)]
-pub struct Db {
+/// Nondeterministic wall time, excluded from CommitStats, digest and history.
+#[cfg(feature = "timing")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitTiming {
+    pub total_nanos: u128,
+}
+#[derive(Clone, Debug)]
+pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
+    maintainer: M,
+    stats: S,
+    pk: PearceKelly,
     tables: Inputs,
     revisions: RevisionArena,
     rules: RuleArena,
     epoch: Epoch,
-    derived: DerivedSnapshot,
+    derived: OnceLock<DerivedSnapshot>,
+    memo: RefCell<layers::LayerMemo>,
     indexes: Indexes,
     topo: NaiveTopo,
+    history: Vec<history::Transition>,
+    initial_epoch: Epoch,
+    #[cfg(feature = "timing")]
+    timing: Option<CommitTiming>,
 }
-impl DerivedView for Db {
+impl<M: Maintainer, S: StatsSink> DerivedView for Db<M, S> {
     fn derived(&self) -> &DerivedSnapshot {
-        &self.derived
+        self.derived.get_or_init(|| {
+            self.memo.borrow_mut().snapshot(
+                &self.view(),
+                self.maintainer.state(),
+                &self.indexes,
+                self.epoch,
+            )
+        })
     }
 }
-impl Db {
+impl Default for Db<Counting, NoStats> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<M: Maintainer, S: StatsSink> Db<M, S> {
+    pub fn new() -> Self {
+        Self {
+            tables: Inputs::default(),
+            revisions: RevisionArena::default(),
+            rules: RuleArena::default(),
+            epoch: Epoch(0),
+            derived: OnceLock::new(),
+            memo: RefCell::default(),
+            indexes: Indexes::default(),
+            topo: NaiveTopo::default(),
+            pk: PearceKelly::default(),
+            maintainer: M::default(),
+            stats: S::default(),
+            history: Vec::new(),
+            initial_epoch: Epoch(0),
+            #[cfg(feature = "timing")]
+            timing: None,
+        }
+    }
+    pub fn stats(&self) -> &S {
+        &self.stats
+    }
+    pub fn counting_state(&self) -> &engine::CountingState {
+        self.maintainer.state()
+    }
+    pub fn dynamic_topo(&self) -> &PearceKelly {
+        &self.pk
+    }
     pub fn at_epoch(epoch: Epoch) -> Self {
         Self {
             epoch,
-            ..Self::default()
+            initial_epoch: epoch,
+            ..Self::new()
         }
     }
     pub fn epoch(&self) -> Epoch {
@@ -52,53 +127,123 @@ impl Db {
     pub fn digest(&self) -> ContentHash {
         let mut h = blake3::Hasher::new();
         h.update(&self.inputs().canonical_bytes());
-        h.update(&self.derived.canonical_bytes());
+        h.update(&self.derived().canonical_bytes());
         *h.finalize().as_bytes()
     }
     pub fn derived_digest(&self) -> ContentHash {
-        *blake3::hash(&self.derived.canonical_bytes()).as_bytes()
+        *blake3::hash(&self.derived().canonical_bytes()).as_bytes()
+    }
+    fn view(&self) -> view::StoredView<'_> {
+        view::StoredView {
+            tables: &self.tables,
+            revisions: &self.revisions,
+            rules: &self.rules,
+        }
+    }
+    pub fn node(&self, r: RevisionId) -> Result<NodeState, TxError> {
+        self.memo.borrow_mut().node(
+            &self.view(),
+            self.maintainer.state(),
+            &self.indexes,
+            r,
+            self.epoch,
+        )
+    }
+    pub fn current(&self, l: LogicalId) -> Result<(RevisionId, NodeState), TxError> {
+        let r = *self
+            .tables
+            .heads
+            .get(l.index())
+            .ok_or(TxError::UnknownRef)?;
+        Ok((r, self.node(r)?))
+    }
+    pub fn current_l0(&self, l: LogicalId) -> Result<(RevisionId, bool), TxError> {
+        let r = *self
+            .tables
+            .heads
+            .get(l.index())
+            .ok_or(TxError::UnknownRef)?;
+        Ok((r, self.maintainer.state().s[r.index()]))
     }
     pub fn status(&self, r: RevisionId) -> Result<Summary, TxError> {
-        self.derived
-            .nodes
-            .get(r.index())
-            .map(|n| contextdb_oracle::summarize(&n.dimensions))
-            .ok_or(TxError::UnknownRef)
+        Ok(contextdb_oracle::summarize(&self.node(r)?.dimensions))
     }
     pub fn why(&self, r: RevisionId) -> Result<Explanation, TxError> {
-        contextdb_oracle::why(&self.inputs(), &self.derived, r)
+        query::why(&self.view(), self.maintainer.state(), &self.indexes, r)
+    }
+    pub fn why_depth(&self, r: RevisionId, depth: usize) -> Result<Proof, TxError> {
+        query::proof(
+            &self.view(),
+            self.maintainer.state(),
+            &self.indexes,
+            r,
+            depth,
+        )
     }
     pub fn why_not(&self, r: RevisionId, depth: usize) -> Result<WhyNot, TxError> {
-        contextdb_oracle::why_not(&self.inputs(), &self.derived, r, depth)
+        query::why_not(
+            &self.view(),
+            self.maintainer.state(),
+            &self.indexes,
+            &mut self.memo.borrow_mut(),
+            r,
+            depth,
+            self.epoch,
+        )
+    }
+    #[cfg(feature = "timing")]
+    pub fn timing(&self) -> Option<&CommitTiming> {
+        self.timing.as_ref()
     }
     pub fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        #[cfg(feature = "timing")]
+        let start = std::time::Instant::now();
+        let result = self.commit_inner(b);
+        #[cfg(feature = "timing")]
+        if result.is_ok() {
+            self.timing = Some(CommitTiming {
+                total_nanos: start.elapsed().as_nanos(),
+            });
+        }
+        result
+    }
+    fn commit_inner(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         if b.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
+        if fast::eligible(b) {
+            return self.commit_mutable(b);
+        }
+        let mut pk = self.pk.clone();
+        let mut stats = S::default();
         let before = self.inputs();
+        let before_snapshot = self.derived().clone();
         let rev_mark = self.revisions.len();
         let rule_mark = self.rules.len();
         // Mutable-column undo; other input tables stay staged until publication.
         let enabled_undo = self.rules.enabled.clone();
         let mut working = before.clone();
         let mut allocations = Allocations::default();
+        let mut context = txn::Context::new(&working);
         let next = Epoch(self.epoch.0.saturating_add(1));
         let result =
             (|| {
                 for (n, op) in b.ops.iter().enumerate() {
-                    txn::apply(&mut working, &mut allocations, b, op, n, next)?;
-                    for r in &working.revisions[self.revisions.len()..] {
-                        self.revisions.append(r);
-                    }
-                    for j in &working.rules[self.rules.len()..] {
-                        self.rules.append(j);
-                    }
-                    for (n, j) in working.rules.iter().enumerate() {
-                        self.rules.enabled[n] = j.enabled;
-                    }
+                    txn::apply(
+                        &mut working,
+                        &mut allocations,
+                        b,
+                        op,
+                        n,
+                        next,
+                        &mut pk,
+                        &mut stats,
+                        &mut context,
+                    )?;
                 }
                 txn::final_policy(&working, rev_mark)?;
-                let topo = NaiveTopo::build(&working, b.ops.len().saturating_sub(1))?;
+                pk.sync(&working, b.ops.len().saturating_sub(1), &mut stats)?;
+                let topo = pk.diagnostic_order();
                 let epoch = Epoch(self.epoch.0.checked_add(1).ok_or(
                     TxError::CapacityExceeded {
                         kind: CapacityKind::Epoch,
@@ -115,21 +260,15 @@ impl Db {
                 return Err(error);
             }
         };
-        let derived = contextdb_oracle::jacobi(&working);
-        let l0_flips = derived
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(n, v)| v.l0 != self.derived.nodes.get(*n).is_some_and(|old| old.l0))
-            .map(|(n, _)| RevisionId(n as u32))
-            .collect();
-        let status_diff = derived
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(n, v)| self.derived.nodes.get(*n) != Some(*v))
-            .map(|(n, _)| RevisionId(n as u32))
-            .collect();
+        for r in &working.revisions[rev_mark..] {
+            self.revisions.append(r);
+        }
+        for j in &working.rules[rule_mark..] {
+            self.rules.append(j);
+        }
+        for (n, j) in working.rules.iter().enumerate() {
+            self.rules.enabled[n] = j.enabled;
+        }
         let net_delta = NetDelta {
             base_flips: working
                 .base
@@ -157,9 +296,39 @@ impl Db {
                 .map(|n| RuleId(n as u32))
                 .collect(),
         };
-        self.indexes = Indexes::build(&working);
+        let indexes = Indexes::build(&working);
+        let l0_flips = self
+            .maintainer
+            .update(&working, &indexes, &pk, &net_delta, &mut stats)
+            .flips;
+        let mut memo = layers::LayerMemo::default();
+        let derived = memo.snapshot(&working, self.maintainer.state(), &indexes, epoch);
+        #[cfg(feature = "paranoid")]
+        assert_eq!(derived, contextdb_oracle::jacobi(&working));
+        let status_diff: Vec<_> = derived
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(n, v)| before_snapshot.nodes.get(*n) != Some(*v))
+            .map(|(n, _)| RevisionId(n as u32))
+            .collect();
+        self.history.push(history::Transition {
+            epoch,
+            changes: status_diff
+                .iter()
+                .map(|r| NodeChange {
+                    revision: *r,
+                    before: before_snapshot.nodes.get(r.index()).cloned(),
+                    after: Some(derived.nodes[r.index()].clone()),
+                })
+                .collect(),
+        });
+        self.stats = stats;
+        self.pk = pk;
+        self.indexes = indexes;
         self.topo = topo;
-        self.derived = derived;
+        self.derived = OnceLock::from(derived);
+        self.memo = RefCell::new(memo);
         self.epoch = epoch;
         working.revisions.clear();
         working.rules.clear();
@@ -168,6 +337,122 @@ impl Db {
             epoch,
             allocations,
             net_delta,
+            l0_flips,
+            status_diff,
+        })
+    }
+    fn commit_mutable(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        let undo = fast::Undo::stage(
+            &mut self.tables,
+            &self.revisions,
+            &mut self.rules,
+            b,
+            self.epoch,
+        )?;
+        let delta = undo.delta(&self.tables, &self.rules);
+        let mut seeds = fast::status_seeds(&self.view(), &self.indexes, &delta);
+        let epoch = Epoch(self.epoch.0 + 1); // checked by stage
+        let mut stats = S::default();
+        let view = view::StoredView {
+            tables: &self.tables,
+            revisions: &self.revisions,
+            rules: &self.rules,
+        };
+        let update = self
+            .maintainer
+            .update(&view, &self.indexes, &self.pk, &delta, &mut stats);
+        // Counter/witness-only changes must be reported, even without S flips.
+        seeds.extend(update.before.keys().copied());
+        let before_view = fast::Before {
+            view: view::StoredView {
+                tables: &self.tables,
+                revisions: &self.revisions,
+                rules: &self.rules,
+            },
+            undo: &undo,
+        };
+        use std::{cmp::Reverse, collections::BinaryHeap};
+        let mut heap = BinaryHeap::new();
+        for r in &seeds {
+            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(*r)), *r)));
+        }
+        let mut changes = Vec::new();
+        let mut memo = self.memo.borrow_mut();
+        while let Some(Reverse((_, r))) = heap.pop() {
+            stats.record(stats::Work::Status(r));
+            let old = update
+                .before
+                .get(&r)
+                .copied()
+                .unwrap_or_else(|| self.maintainer.state().row(r));
+            let before = memo.cached_node(&before_view, r, old);
+            memo.invalidate(&[r]);
+            let after = memo
+                .node(&view, self.maintainer.state(), &self.indexes, r, epoch)
+                .expect("status revision");
+            let propagates = before.l0 != after.l0
+                || before.l1 != after.l1
+                || before.l2 != after.l2
+                || before.dimensions.stale_reason != after.dimensions.stale_reason;
+            if propagates {
+                for id in &self.indexes.rules_by_premise[r.index()] {
+                    let c = view.conclusion(self.indexes.inc_rule[id.index()]);
+                    if seeds.insert(c) {
+                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
+                    }
+                }
+                let logical = view.revision_logical(r);
+                if view.head(logical) == r {
+                    for id in &self.indexes.sem_by_logical[logical.index()] {
+                        let c = view.conclusion(self.indexes.inc_rule[id.index()]);
+                        if seeds.insert(c) {
+                            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
+                        }
+                    }
+                }
+            }
+            if before != after {
+                changes.push(NodeChange {
+                    revision: r,
+                    before: Some(before),
+                    after: Some(after),
+                });
+            }
+        }
+        drop(memo);
+        // Preserve an already materialized public snapshot by patching changed
+        // rows. Dropping its N nodes / per-rule sat allocations here is O(N).
+        if let Some(snapshot) = self.derived.get_mut() {
+            for change in &changes {
+                snapshot.nodes[change.revision.index()] =
+                    change.after.as_ref().expect("existing revision").clone();
+            }
+            let mut memo = self.memo.borrow_mut();
+            for r in &seeds {
+                for j in &self.indexes.rules_by_concl[r.index()] {
+                    memo.refresh_rule(
+                        &view,
+                        self.maintainer.state(),
+                        &self.indexes,
+                        *j,
+                        epoch,
+                        snapshot,
+                    );
+                }
+            }
+        }
+        changes.sort_by_key(|c| c.revision);
+        let l0_flips = update.flips;
+        let status_diff = changes.iter().map(|c| c.revision).collect();
+        self.history.push(history::Transition { epoch, changes });
+        self.epoch = epoch;
+        self.stats = stats;
+        #[cfg(feature = "paranoid")]
+        assert_eq!(self.derived(), &contextdb_oracle::jacobi(&self.inputs()));
+        Ok(CommitResult {
+            epoch,
+            allocations: Allocations::default(),
+            net_delta: delta,
             l0_flips,
             status_diff,
         })
@@ -193,6 +478,48 @@ pub fn policy_hash(p: &PolicyDoc) -> ContentHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn maintenance_journal_has_old_rows_without_inventing_new_prestate() {
+        let create = |key: &str, content, base| Op::CreateLogical {
+            key: key.into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: [content; 32],
+            adopt_as_base: base,
+        };
+        let mut db = Db::default();
+        db.commit(&Batch::new(vec![create("source", 0, true)]))
+            .unwrap();
+        let mut previous = db.maintainer.clone();
+        let result = db
+            .commit(&Batch::new(vec![
+                create("conclusion", 1, false),
+                Op::AddRule {
+                    conclusion: RevRef::New(0),
+                    incidences: vec![(RevisionId(0).into(), EdgeKind::Pin)],
+                    enabled: true,
+                },
+                Op::RetractBase {
+                    rev: RevisionId(0).into(),
+                },
+            ]))
+            .unwrap();
+        let journal = previous.update(
+            &db.inputs(),
+            &db.indexes,
+            &db.pk,
+            &result.net_delta,
+            &mut NoStats,
+        );
+        assert_eq!(journal.flips, vec![RevisionId(0)]);
+        assert_eq!(journal.before.len(), 1);
+        let source = journal.before.get(&RevisionId(0)).unwrap();
+        assert!(source.s);
+        assert_eq!(source.support, 0);
+        assert_eq!(source.witness, Some(Witness::Base));
+        assert!(!journal.before.contains_key(&RevisionId(1)));
+        assert_eq!(previous.state(), db.maintainer.state());
+    }
     #[test]
     fn policy_json_is_canonical_by_kind_name() {
         let policy = PolicyDoc {

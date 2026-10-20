@@ -10,6 +10,13 @@ pub(crate) struct RevisionArena {
     epoch: Vec<Epoch>,
 }
 impl RevisionArena {
+    pub fn retained_bytes(&self) -> usize {
+        use crate::memory::vec_bytes as b;
+        b(&self.logical) + b(&self.content) + b(&self.author) + b(&self.branch) + b(&self.epoch)
+    }
+    pub fn logical(&self, r: RevisionId) -> LogicalId {
+        self.logical[r.index()]
+    }
     pub fn len(&self) -> usize {
         self.logical.len()
     }
@@ -53,6 +60,33 @@ pub(crate) struct RuleArena {
     epoch: Vec<Epoch>,
 }
 impl RuleArena {
+    pub fn retained_bytes(&self) -> usize {
+        use crate::memory::{bool_bytes, vec_bytes as b};
+        b(&self.conclusion)
+            + b(&self.offset)
+            + b(&self.len)
+            + b(&self.premise)
+            + b(&self.kind)
+            + b(&self.refs)
+            + self.refs.iter().map(b).sum::<usize>()
+            + bool_bytes(&self.enabled)
+            + b(&self.flags)
+            + b(&self.branch)
+            + b(&self.epoch)
+    }
+    pub fn conclusion(&self, j: RuleId) -> RevisionId {
+        self.conclusion[j.index()]
+    }
+    pub fn premises(&self, j: RuleId) -> impl Iterator<Item = Incidence> + '_ {
+        let n = j.index();
+        (self.offset[n]..self.offset[n] + self.len[n]).map(|p| Incidence {
+            premise: self.premise[p],
+            kind: self.kind[p],
+        })
+    }
+    pub fn references(&self, j: RuleId) -> &[RevisionId] {
+        &self.refs[j.index()]
+    }
     pub fn len(&self) -> usize {
         self.conclusion.len()
     }
@@ -104,48 +138,128 @@ impl RuleArena {
         self.epoch.truncate(n);
     }
 }
+/// Compact CSR reverse index; callers retain slice indexing by dense ID.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Adjacency<T> {
+    offsets: Vec<u32>,
+    items: Vec<T>,
+    building: Vec<Vec<T>>,
+}
+impl<T> Adjacency<T> {
+    fn retained_bytes(&self) -> usize {
+        crate::memory::vec_bytes(&self.offsets) + crate::memory::vec_bytes(&self.items)
+    }
+    fn rows(n: usize) -> Self {
+        Self {
+            offsets: Vec::new(),
+            items: Vec::new(),
+            building: (0..n).map(|_| Vec::new()).collect(),
+        }
+    }
+    fn push(&mut self, row: usize, value: T) {
+        self.building[row].push(value);
+    }
+    fn seal(&mut self) {
+        let n = self.building.iter().map(Vec::len).sum();
+        self.items = Vec::with_capacity(n);
+        self.offsets = Vec::with_capacity(self.building.len() + 1);
+        self.offsets.push(0);
+        for row in self.building.drain(..) {
+            self.items.extend(row);
+            self.offsets
+                .push(u32::try_from(self.items.len()).expect("bounded index"));
+        }
+        self.building = Vec::new();
+    }
+}
+impl<T> std::ops::Index<usize> for Adjacency<T> {
+    type Output = [T];
+    fn index(&self, n: usize) -> &[T] {
+        &self.items[self.offsets[n] as usize..self.offsets[n + 1] as usize]
+    }
+}
+impl<T: PartialEq> PartialEq<Vec<Vec<T>>> for Adjacency<T> {
+    fn eq(&self, other: &Vec<Vec<T>>) -> bool {
+        self.offsets.len() == other.len() + 1
+            && other.iter().enumerate().all(|(n, row)| self[n] == *row)
+    }
+}
 /// Stable incidence IDs enumerate CSR premises only; Ref never enters support indexes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Indexes {
-    pub rules_by_premise: Vec<Vec<IncId>>,
-    pub rules_by_concl: Vec<Vec<RuleId>>,
-    pub exact_by_rev: Vec<Vec<IncId>>,
-    pub pin_by_rev: Vec<Vec<IncId>>,
-    pub sem_by_logical: Vec<Vec<IncId>>,
-    pub refs_by_target: Vec<Vec<RuleId>>,
+    pub rules_by_premise: Adjacency<IncId>,
+    pub rules_by_concl: Adjacency<RuleId>,
+    pub exact_by_rev: Adjacency<IncId>,
+    pub pin_by_rev: Adjacency<IncId>,
+    pub sem_by_logical: Adjacency<IncId>,
+    pub refs_by_target: Adjacency<RuleId>,
+    pub(crate) inc_rule: Vec<RuleId>,
+    pub(crate) inc_premise: Vec<RevisionId>,
+    pub(crate) inc_kind: Vec<EdgeKind>,
+    pub(crate) rule_offset: Vec<usize>,
+    pub(crate) rule_len: Vec<usize>,
 }
 impl Indexes {
+    pub fn retained_bytes(&self) -> usize {
+        use crate::memory::vec_bytes as b;
+        self.rules_by_premise.retained_bytes()
+            + self.rules_by_concl.retained_bytes()
+            + self.exact_by_rev.retained_bytes()
+            + self.pin_by_rev.retained_bytes()
+            + self.sem_by_logical.retained_bytes()
+            + self.refs_by_target.retained_bytes()
+            + b(&self.inc_rule)
+            + b(&self.inc_premise)
+            + b(&self.inc_kind)
+            + b(&self.rule_offset)
+            + b(&self.rule_len)
+    }
     pub(crate) fn build(i: &Inputs) -> Self {
-        let empty = vec![Vec::new(); i.revisions.len()];
         let mut out = Self {
-            rules_by_premise: empty.clone(),
-            rules_by_concl: vec![Vec::new(); i.revisions.len()],
-            exact_by_rev: empty.clone(),
-            pin_by_rev: empty.clone(),
-            sem_by_logical: vec![Vec::new(); i.logicals.len()],
-            refs_by_target: vec![Vec::new(); i.revisions.len()],
+            rules_by_premise: Adjacency::rows(i.revisions.len()),
+            rules_by_concl: Adjacency::rows(i.revisions.len()),
+            exact_by_rev: Adjacency::rows(i.revisions.len()),
+            pin_by_rev: Adjacency::rows(i.revisions.len()),
+            sem_by_logical: Adjacency::rows(i.logicals.len()),
+            refs_by_target: Adjacency::rows(i.revisions.len()),
+            inc_rule: Vec::new(),
+            inc_premise: Vec::new(),
+            inc_kind: Vec::new(),
+            rule_offset: Vec::new(),
+            rule_len: Vec::new(),
         };
         let mut inc = 0;
         for (n, j) in i.rules.iter().enumerate() {
             let id = RuleId(n as u32);
-            out.rules_by_concl[j.conclusion.index()].push(id);
+            out.rule_offset.push(out.inc_rule.len());
+            out.rule_len.push(j.premises.len());
+            out.rules_by_concl.push(j.conclusion.index(), id);
             for p in &j.premises {
+                out.inc_rule.push(id);
+                out.inc_premise.push(p.premise);
+                out.inc_kind.push(p.kind);
                 let id = IncId(inc);
                 inc += 1;
-                out.rules_by_premise[p.premise.index()].push(id);
+                out.rules_by_premise.push(p.premise.index(), id);
                 match p.kind {
-                    EdgeKind::Cur => out.exact_by_rev[p.premise.index()].push(id),
-                    EdgeKind::Pin => out.pin_by_rev[p.premise.index()].push(id),
-                    EdgeKind::Sem => {
-                        out.sem_by_logical[i.revisions[p.premise.index()].logical.index()].push(id)
-                    }
+                    EdgeKind::Cur => out.exact_by_rev.push(p.premise.index(), id),
+                    EdgeKind::Pin => out.pin_by_rev.push(p.premise.index(), id),
+                    EdgeKind::Sem => out
+                        .sem_by_logical
+                        .push(i.revisions[p.premise.index()].logical.index(), id),
                     EdgeKind::Ref => unreachable!("canonical premises"),
                 }
             }
             for r in &j.references {
-                out.refs_by_target[r.index()].push(id);
+                out.refs_by_target.push(r.index(), id);
             }
         }
+        out.rules_by_premise.seal();
+        out.rules_by_concl.seal();
+        out.exact_by_rev.seal();
+        out.pin_by_rev.seal();
+        out.sem_by_logical.seal();
+        out.refs_by_target.seal();
         out
     }
 }

@@ -6,7 +6,7 @@ pub struct NaiveTopo {
     pub order: Vec<CycleNode>,
 }
 impl NaiveTopo {
-    pub(crate) fn build(i: &Inputs, op_index: usize) -> Result<Self, TxError> {
+    pub fn build(i: &Inputs, op_index: usize) -> Result<Self, TxError> {
         let mut edges: BTreeMap<CycleNode, BTreeSet<CycleNode>> = (0..i.revisions.len())
             .map(|n| (CycleNode::Revision(RevisionId(n as u32)), BTreeSet::new()))
             .collect();

@@ -924,7 +924,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T07d | P1 | IMPACT 中 Ref 来源列为 reference_only |
 | T07e | P3 | CertifiedCurrent 永不返回 DB@v1 |
 | T08 | P1/P3 | 一个事务替换多个相关 head：只发布 net flip；P3 中 reader 看不到混合 epoch |
-| T08b | P1 | `J1:A→C, J2:B→C, J3:C→D` 同一 tx 撤销 A、assert B：C、D 不在 diff 中，计数器 == oracle |
+| T08b | P1 | `J1:A→C, J2:B→C, J3:C→D` 同一 tx 撤销 A、assert B：C、D 不在 `l0_flips` 中；C 的 canonical witness 改变，故在 `status_diff` 中，D 不在；计数器 == oracle（SD8.4） |
 | T09a–d | P0 | 重复 premise 规范化；Pin+Cur 保留 Cur；同 logical 两个不同 revision（Cur/Cur、Pin/Pin、Pin/Cur）被拒 `ConflictingVersions`；重复规则 `DuplicateRule` |
 | T09e | P0 | 空 premise → `EmptyPremises` |
 | T09f | P0 | self premise → `SelfPremise` |

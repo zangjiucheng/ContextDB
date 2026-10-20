@@ -3,22 +3,22 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0（形式契约与 oracle）Gate 已通过，本地验证、独立复核及 Linux/macOS CI 全部通过。见 [`docs/gates/P0.md`](docs/gates/P0.md)
+- **当前阶段**：P1 增量内核已实现，Gate 尚未通过：100K 图内存预算超标，P1 远程 CI 待验证。见 [`docs/gates/P1.md`](docs/gates/P1.md)；P0 Gate 已通过。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
 
-## 已实现的 P0 语义
+## 已实现的语义
 
-Rust API 已提供 `Db::commit`、状态、WHY / WHY_NOT 与确定性 digest。每次成功提交由独立 oracle 全量重建派生快照，查询读取该快照；`ctx` 目前仍只支持 `--help` / `--version`。
+Rust API 提供 `Db<Counting, NoStats>` / `Db<FullRecompute, CommitStats>`、原子事务、CURRENT、WHY / WHY_NOT、Reachable / Exact IMPACT、跨 epoch DIFF 和确定性 digest。Counting 增量维护 L0，L1/L2 使用 memo DFS；`paranoid` 在提交后与独立 oracle 全量交叉检查。`ctx` 目前仍只支持 `--help` / `--version`。
 
 - 不可变 revision 和 logical head，强制 CAS
-- 正向、无环的 AND/OR justification，精确 set support / unsat / witness；增量传播在 P1 实现
+- 正向、无环的 AND/OR justification，精确增量 set support / unsat / witness，Pearce–Kelly 动态拓扑与 NaiveTopo 参考
 - 四种边：`Pin`、`Cur`、`Sem`、`Ref`；结构支持和语义 PENDING 互相独立
 - **Pin-strict**：`Pin` 指向已被替换的 revision（Evidence 除外）时判为 STALE。需要历史引用就用 Evidence 或 `Ref`，需要跟随新版本就用 `Rebind` 或 `Sem`
 - 事务原子发布，瞬态对读者不可见
 - L0 / L1 / L2 传递认证、语义向量与验证 CAS、输入级 CodeAnchor 通道限制
-- 独立 InputModel、Jacobi / Kahn、EventLog v0、手写 golden 和 1,000 个 ChaCha8 种子验证
+- 独立 InputModel、Jacobi / Kahn、EventLog v0、双 exact mode golden、10,000 个 ChaCha8 种子验证及 nightly 穷举
 - P0 的 certificate 纯函数只验证 required vector 条目并证明 epoch 无关；完整证书签发和校验在 P3，实现 filesystem code anchors 在 P5
 
 ## 不支持（当前）
@@ -46,7 +46,14 @@ bash scripts/check.sh
 cargo run --locked -p contextdb-cli --bin ctx -- --help
 ```
 
-检查覆盖格式、lint、构建、26 组 golden、3 个 wire 测试、1 个 policy hash 测试、3 个 compile-fail、1,000 seed / 12,000 事务验证、许可证与依赖边界。报告见 [`docs/gates/P0-report.md`](docs/gates/P0-report.md)。远程 Linux/macOS [CI 均已通过](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)。
+检查包括双模式 P0/P1 golden、10,000 seed / 120,000 事务、PROP7、shape 校验、lint、许可证与依赖边界。P1 结果与未通过项见 [`docs/gates/P1-report.md`](docs/gates/P1-report.md)。远程 Linux/macOS [P0 CI 已通过](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)，该结果不代表当前 P1。
+
+```sh
+cargo test --release --locked -p contextdb-testkit --test exhaustive -- --ignored --nocapture
+cargo install cargo-mutants --version 27.1.0 --locked
+bash scripts/mutation.sh
+cargo run --release --locked -p contextdb-bench -- multi_support 100000 1000
+```
 
 运行 Rust API 示例：
 

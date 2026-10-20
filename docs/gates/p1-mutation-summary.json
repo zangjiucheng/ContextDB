@@ -1,0 +1,27 @@
+{
+  "tool": "cargo-mutants 27.1.0",
+  "rust": "1.95.0",
+  "date": "2026-10-20",
+  "mutants": 150,
+  "outcomes": {
+    "Success": 1,
+    "Unviable": 8,
+    "CaughtMutant": 142
+  },
+  "scope": {
+    "crates/contextdb-core/src/engine/counting.rs": "dab7a81d2f55ab5cde6c4d967863e1dcfc73084d38fc70ece4e1fe5cda1f41a6",
+    "crates/contextdb-core/src/txn.rs": "fa9e95b03a7c755b1145555c26ffb0f07764c3ad4f2a00d0395645ed467af4f0"
+  },
+  "excluded_diagnostic": "Counting::retained_bytes; 8 diagnostic survivors in prior unfiltered audit, see P1-mutations.md",
+  "tests": "core/testkit --lib --test p0 --test p1 --locked",
+  "unviable": [
+    "crates/contextdb-core/src/txn.rs:51:9: replace Resolver<'_>::r -> Result<RevRef, TxError> with Ok(Default::default())",
+    "crates/contextdb-core/src/txn.rs:65:9: replace Resolver<'_>::l -> Result<LogicalRef, TxError> with Ok(Default::default())",
+    "crates/contextdb-core/src/txn.rs:86:9: replace Resolver<'_>::j -> Result<RuleRef, TxError> with Ok(Default::default())",
+    "crates/contextdb-core/src/txn.rs:100:9: replace Resolver<'_>::a -> Result<ArtifactRef, TxError> with Ok(Default::default())",
+    "crates/contextdb-core/src/txn.rs:114:9: replace Resolver<'_>::op -> Result<Op, TxError> with Ok(Default::default())",
+    "crates/contextdb-core/src/txn.rs:224:5: replace kind -> RecordKind with Default::default()",
+    "crates/contextdb-core/src/txn.rs:275:5: replace canonical -> Result<(Vec<Incidence>, Vec<RevisionId>), TxError> with Ok((vec![Default::default()], vec![]))",
+    "crates/contextdb-core/src/txn.rs:275:5: replace canonical -> Result<(Vec<Incidence>, Vec<RevisionId>), TxError> with Ok((vec![Default::default()], vec![Default::default()]))"
+  ]
+}

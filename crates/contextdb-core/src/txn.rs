@@ -1,6 +1,46 @@
-use crate::topo::NaiveTopo;
+use crate::{PearceKelly, StatsSink};
 use contextdb_model::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+type RuleKey = (RevisionId, Vec<(RevisionId, u8)>, Vec<RevisionId>);
+fn rule_key(c: RevisionId, p: &[Incidence], refs: &[RevisionId]) -> RuleKey {
+    (
+        c,
+        p.iter().map(|p| (p.premise, p.kind as u8)).collect(),
+        refs.to_vec(),
+    )
+}
+/// Per-transaction indexes avoid quadratic validation of bulk input batches.
+pub(crate) struct Context {
+    keys: BTreeSet<String>,
+    revisions: BTreeMap<(LogicalId, ContentHash), RevisionId>,
+    rules: BTreeMap<RuleKey, RuleId>,
+    incidences: u64,
+}
+impl Context {
+    pub fn new(i: &Inputs) -> Self {
+        Self {
+            keys: i.logicals.iter().map(|l| l.key.clone()).collect(),
+            revisions: i
+                .revisions
+                .iter()
+                .enumerate()
+                .map(|(n, r)| ((r.logical, r.content), RevisionId(n as u32)))
+                .collect(),
+            rules: i
+                .rules
+                .iter()
+                .enumerate()
+                .map(|(n, j)| {
+                    (
+                        rule_key(j.conclusion, &j.premises, &j.references),
+                        RuleId(n as u32),
+                    )
+                })
+                .collect(),
+            incidences: i.rules.iter().map(|j| j.premises.len() as u64).sum(),
+        }
+    }
+}
 
 struct Resolver<'a> {
     i: &'a Inputs,
@@ -283,7 +323,7 @@ fn canonical(
     Ok((premises, refs))
 }
 #[allow(clippy::too_many_arguments)]
-fn add(
+fn add<S: StatsSink>(
     i: &mut Inputs,
     ids: &mut Allocations,
     b: &Batch,
@@ -292,25 +332,22 @@ fn add(
     raw: &[(RevRef, EdgeKind)],
     enabled: bool,
     op_index: usize,
+    topo: &mut PearceKelly,
+    stats: &mut S,
+    context: &mut Context,
 ) -> Result<(), TxError> {
     let (premises, references) = canonical(i, conclusion, raw)?;
-    for (n, old) in i.rules.iter().enumerate() {
-        if old.conclusion == conclusion && old.premises == premises && old.references == references
-        {
-            return Err(TxError::DuplicateRule {
-                existing: RuleId(n as u32),
-                enabled: old.enabled,
-            });
-        }
-    }
-    let n = id(i.rules.len(), CapacityKind::Rule)?;
-    let count =
-        i.rules.iter().map(|j| j.premises.len() as u64).sum::<u64>() + premises.len() as u64;
-    if count > u32::MAX as u64 {
-        return Err(TxError::CapacityExceeded {
-            kind: CapacityKind::Incidence,
+    let key = rule_key(conclusion, &premises, &references);
+    if let Some(existing) = context.rules.get(&key) {
+        return Err(TxError::DuplicateRule {
+            existing: *existing,
+            enabled: i.rules[existing.index()].enabled,
         });
     }
+    let n = id(i.rules.len(), CapacityKind::Rule)?;
+    let count = incidence_count(context.incidences, premises.len())?;
+    context.incidences = count;
+    context.rules.insert(key, RuleId(n));
     i.rules.push(Rule {
         conclusion,
         premises,
@@ -319,17 +356,21 @@ fn add(
         origin_branch: b.branch,
         origin_epoch: epoch,
     });
-    NaiveTopo::build(i, op_index)?;
+    topo.sync(i, op_index, stats)?;
     ids.new_rules.push(RuleId(n));
     Ok(())
 }
-pub(crate) fn apply(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply<S: StatsSink>(
     i: &mut Inputs,
     ids: &mut Allocations,
     b: &Batch,
     op: &Op,
     index: usize,
     epoch: Epoch,
+    topo: &mut PearceKelly,
+    stats: &mut S,
+    context: &mut Context,
 ) -> Result<(), TxError> {
     let op = Resolver { i, a: ids }.op(op)?;
     channel(i, &op, b.channel)?;
@@ -353,11 +394,13 @@ pub(crate) fn apply(
             {
                 return Err(TxError::InvalidKey { key });
             }
-            if i.logicals.iter().any(|v| v.key == key) {
+            if context.keys.contains(&key) {
                 return Err(TxError::LogicalExists { key });
             }
             let logical = LogicalId(id(i.logicals.len(), CapacityKind::Logical)?);
             let revision = RevisionId(id(i.revisions.len(), CapacityKind::Revision)?);
+            context.keys.insert(key.clone());
+            context.revisions.insert((logical, content), revision);
             i.logicals.push(Logical {
                 key,
                 kind,
@@ -388,16 +431,12 @@ pub(crate) fn apply(
             if i.logicals[logical.index()].kind == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
-            let existing = i
-                .revisions
-                .iter()
-                .enumerate()
-                .find(|(_, v)| v.logical == logical && v.content == content)
-                .map(|(n, _)| RevisionId(n as u32));
+            let existing = context.revisions.get(&(logical, content)).copied();
             let revision = match existing {
                 Some(v) => v,
                 None => {
                     let v = RevisionId(id(i.revisions.len(), CapacityKind::Revision)?);
+                    context.revisions.insert((logical, content), v);
                     i.revisions.push(Revision {
                         logical,
                         content,
@@ -445,7 +484,19 @@ pub(crate) fn apply(
             conclusion,
             incidences,
             enabled,
-        } => add(i, ids, b, epoch, r(conclusion), &incidences, enabled, index)?,
+        } => add(
+            i,
+            ids,
+            b,
+            epoch,
+            r(conclusion),
+            &incidences,
+            enabled,
+            index,
+            topo,
+            stats,
+            context,
+        )?,
         Op::SetRuleEnabled { rule, enabled } => i.rules[j(rule).index()].enabled = enabled,
         Op::Rebind { rule, from, to } => {
             let rule = j(rule);
@@ -476,7 +527,19 @@ pub(crate) fn apply(
                 })
                 .chain(old.references.iter().map(|p| ((*p).into(), EdgeKind::Ref)))
                 .collect();
-            add(i, ids, b, epoch, old.conclusion, &raw, old.enabled, index)?;
+            add(
+                i,
+                ids,
+                b,
+                epoch,
+                old.conclusion,
+                &raw,
+                old.enabled,
+                index,
+                topo,
+                stats,
+                context,
+            )?;
             i.rules[rule.index()].enabled = false;
         }
         Op::RecordValidation {
@@ -624,4 +687,30 @@ pub(crate) fn final_policy(i: &Inputs, old_revisions: usize) -> Result<(), TxErr
         }
     }
     Ok(())
+}
+
+fn incidence_count(old: u64, extra: usize) -> Result<u64, TxError> {
+    let count = old + extra as u64;
+    if count > u32::MAX as u64 {
+        return Err(TxError::CapacityExceeded {
+            kind: CapacityKind::Incidence,
+        });
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn incidence_capacity_inclusive_limit() {
+        let max = u32::MAX as u64;
+        assert_eq!(incidence_count(0, 3), Ok(3));
+        assert_eq!(incidence_count(max - 1, 1), Ok(max));
+        assert_eq!(
+            incidence_count(max, 2),
+            Err(TxError::CapacityExceeded {
+                kind: CapacityKind::Incidence
+            })
+        );
+    }
 }

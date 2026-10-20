@@ -50,6 +50,11 @@ version = "0.1.0"
 [[package]]
 name = "contextdb-bench"
 version = "0.1.0"
+dependencies = [
+ "contextdb-core",
+ "contextdb-model",
+ "contextdb-testkit",
+]
 
 [[package]]
 name = "contextdb-cli"

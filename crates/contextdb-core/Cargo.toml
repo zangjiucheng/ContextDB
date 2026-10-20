@@ -10,6 +10,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+paranoid = []
+timing = []
+
 [dependencies]
 contextdb-model.workspace = true
 contextdb-oracle.workspace = true

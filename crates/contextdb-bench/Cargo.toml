@@ -9,3 +9,8 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+contextdb-core.workspace = true
+contextdb-model.workspace = true
+contextdb-testkit.workspace = true

@@ -1,9 +1,10 @@
 # Executable semantics
 
 SPEC v1.4.1 is normative. This guide maps every semantic decision to executable
-P0 evidence and explicitly identifies future behavior. P0 exposes a Rust API:
+P0/P1 evidence and explicitly identifies future behavior. The Rust API:
 `Db::commit(Batch)` returns allocations, epoch, NetDelta, l0_flips and status_diff;
-all derived reads go through `DerivedView`. CLI database commands are not exposed.
+`DerivedView` exposes an exact full snapshot; point queries use local state/memo.
+CLI database commands are not exposed.
 
 ## Input and transaction contract
 
@@ -57,7 +58,8 @@ Conflict gate. Rejected affects L1/L2, never L0. Pending propagates through L2.
 The cycle graph includes all revisions, all supporting premise-to-conclusion
 edges, and for each Sem logical l a virtual V_l with every revision h of l -> V_l
 and V_l -> each Sem conclusion. Disabled rules remain in this graph. Core uses
-NaiveTopo/Kahn detection, oracle input validation uses DFS. Sorted DFS determines
+Pearce–Kelly dynamic ordering with NaiveTopo/Kahn as an independent reference;
+oracle input validation uses DFS. Sorted DFS determines
 the public diagnostic path. Jacobi accepts raw cyclic fixtures to compute least
 fixed points; production transactions reject cycles. Kahn is a second independent
 rank-ordered evaluator for legal DAGs. Their final snapshots include every counter,
@@ -66,8 +68,9 @@ layer, semantic state, currency and canonical witness.
 ## Summaries and explanations
 
 Summary priority: Unavailable > Conflicted > Stale > Pending > Certified.
-Stale reason: non-current -> HeadSuperseded; no L0 -> Unsupported; L0 but not L1
-uses the canonical L0 witness. A Rejected gate wins; otherwise inspect the first
+The stored stale-reason dimension is computed even when an alternate support makes
+L1 true: non-current -> HeadSuperseded; no L0 -> Unsupported; otherwise it uses
+the canonical L0 witness. A Stale summary consumes this reason when appropriate. A Rejected gate wins; otherwise inspect the first
 failed incidence by RevisionId. A superseded non-Evidence Pin produces
 SupersededPinnedPremise(p); failing Sem current-head L1 inherits the current head's
 reason; otherwise inherit the premise's reason. This recursion follows the DAG.
@@ -109,7 +112,8 @@ See [EVENTLOG.md](EVENTLOG.md) for the dependency-free versioned trace format.
 
 ## Complete SD to test mapping
 
-All test functions live in `crates/contextdb-testkit/tests/p0.rs` unless indicated.
+P0 cases live in `crates/contextdb-testkit/tests/common/p0_cases.rs`, included by
+`p0.rs` under both exact modes; P1 cases follow the same structure in `p1.rs`.
 Grouped names intentionally cover several T IDs, each with explicit expectations.
 
 | Decision | Contract and current phase | Evidence |
@@ -140,12 +144,21 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 `properties.rs` runs exactly 1,000 ChaCha8 seeds, 12,000 transactions: input equality,
 exact errors, atomic rejection, full Jacobi/Kahn snapshot equality, layer inclusion,
 canonical wire round trips and both diff sets. Coverage counters are descriptive in
-P0; P1 adds the required mix/alternative/cycle/CAS/PK thresholds.
+P0; P1 adds the required mix/alternative/cycle/CAS/PK thresholds in
+`p1_properties.rs` (10,000 seeds / 120,000 transactions), plus a separate
+1,000-seed canonical identity/metamorphic suite.
+
+P1 queries include O(1) CURRENT L0, memoized CURRENT L1/L2, depth-bounded WHY
+and WHY_NOT, conservative support/Ref reachability, undo-based Exact IMPACT,
+and endpoint DIFF including changes that cancel across intermediate epochs.
+The diff walker stops when premise truth and inherited stale reasons stabilize;
+support/witness-only changes are reported locally. Memory and CI limits are
+recorded in the P1 gate report.
 
 ## Prior art and claim boundaries
 
 Counting and truth maintenance originate in Gupta et al. (1993) and Forbus & de
-Kleer (1993), not this implementation. Motik et al. (2019) Example 5 is represented
+Kleer (1993), Example 7.5, not this implementation. Motik et al. (2019) Example 5 is represented
 by the two ground R(a,b)/R(b,a) rules in T11 to prevent cyclic self-support after
 base retraction. This project evaluates the combination and implementation; it
 does not claim invention of counting, fixed-point evaluation or CAS. Bibliographic
