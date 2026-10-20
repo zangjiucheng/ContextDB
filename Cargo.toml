@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/contextdb-model",
+    "crates/contextdb-core",
+    "crates/contextdb-oracle",
+    "crates/contextdb-testkit",
+    "crates/contextdb-store",
+    "crates/contextdb-daemon",
+    "crates/contextdb-mcp",
+    "crates/contextdb-hooks",
+    "crates/contextdb-anchors",
+    "crates/contextdb-cli",
+    "crates/contextdb-workload",
+    "crates/contextdb-harness",
+    "crates/contextdb-bench",
+]
+default-members = [
+    "crates/contextdb-model",
+    "crates/contextdb-core",
+    "crates/contextdb-oracle",
+    "crates/contextdb-testkit",
+]
+exclude = [
+    "crates/contextdb-dd",
+    "docs/research/prototypes/ddproto",
+    "docs/research/prototypes/dbspproto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+contextdb-model = { path = "crates/contextdb-model", version = "=0.1.0" }
+contextdb-core = { path = "crates/contextdb-core", version = "=0.1.0" }
+contextdb-oracle = { path = "crates/contextdb-oracle", version = "=0.1.0" }
+contextdb-testkit = { path = "crates/contextdb-testkit", version = "=0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

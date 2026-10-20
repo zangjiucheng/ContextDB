@@ -1,0 +1,23 @@
+diff -ruN -x target -x .cargo-ok -x .cargo_vcs_info.json a/src/operator/dynamic/join.rs b/src/operator/dynamic/join.rs
+--- a/src/operator/dynamic/join.rs	2006-07-23 21:21:28
++++ b/src/operator/dynamic/join.rs	2026-10-19 19:53:50
+@@ -1772,11 +1772,14 @@
+ 
+                     start += run_length;
+ 
+-                    if let Entry::Vacant(vacant) = self.future_outputs.borrow_mut().entry(batch_time) {
+-                        let mut spine = <Spine<Z> as Trace>::new(&self.output_factories, self.name.get());
+-                        spine.insert(Z::dyn_from_tuples(&self.output_factories, (), &mut batch)).await;
+-                        vacant.insert(spine);
+-                    };
++                    let updates = Z::dyn_from_tuples(&self.output_factories, (), &mut batch);
++                    let _unused: Option<Entry<'_, (), ()>> = None;
++                    self.future_outputs
++                        .borrow_mut()
++                        .entry(batch_time)
++                        .or_insert_with(|| <Spine<Z> as Trace>::new(&self.output_factories, self.name.get()))
++                        .insert(updates)
++                        .await;
+                     batch.clear();
+                 }
+ 

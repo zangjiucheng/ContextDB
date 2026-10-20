@@ -1,0 +1,5 @@
+# SPEC §3.2. Extend only when a low-level dependency is reviewed.
+# Cargo metadata includes normal, build, dev, optional, and target-specific edges.
+[core]
+allowed_workspace = ["contextdb-model", "contextdb-oracle"]
+allowed_external = []

@@ -1,0 +1,24 @@
+# Build and local research output (Cargo.lock files are committed).
+**/target/
+/results/
+/.contextdb/
+/.codebase-memory/
+/.tools/
+
+# Local tools, credentials, and editor state.
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.aws/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Downloaded reference sources are not project dependencies.
+/docs/research/prototypes/dbsp-patched/

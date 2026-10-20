@@ -1,0 +1,11 @@
+[package]
+name = "contextdb-daemon"
+description = "Single-writer daemon, snapshot publication, and local IPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

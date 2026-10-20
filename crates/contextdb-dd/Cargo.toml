@@ -1,0 +1,11 @@
+[package]
+name = "contextdb-dd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+publish = false
+
+# R2 is a separate workspace so baseline dependencies/toolchains stay isolated.
+[workspace]
+resolver = "3"

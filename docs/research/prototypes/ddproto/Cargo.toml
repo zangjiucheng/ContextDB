@@ -1,0 +1,11 @@
+[package]
+name = "ddproto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+differential-dataflow = "=0.25.1"
+timely = "=0.31.0"
+
+[profile.release]
+debug = false

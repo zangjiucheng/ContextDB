@@ -1,0 +1,11 @@
+[package]
+name = "dbspproto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbsp = "=0.349.0"
+anyhow = "1"
+
+[patch.crates-io]
+dbsp = { path = "../dbsp-patched" }
