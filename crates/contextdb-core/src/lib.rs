@@ -27,7 +27,7 @@ pub use stats::{CommitStats, NoStats, StatsSink};
 mod txn;
 mod view;
 pub use arena::{Adjacency, Indexes};
-use arena::{RevisionArena, RuleArena};
+use arena::{LogicalArena, RevisionArena, RuleArena};
 use contextdb_model::*;
 pub use topo::NaiveTopo;
 pub use view::InputView;
@@ -44,13 +44,13 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     stats: S,
     pk: PearceKelly,
     tables: Inputs,
+    logicals: LogicalArena,
     revisions: RevisionArena,
     rules: RuleArena,
     epoch: Epoch,
     derived: OnceLock<DerivedSnapshot>,
     memo: RefCell<layers::LayerMemo>,
     indexes: Indexes,
-    topo: NaiveTopo,
     history: Vec<history::Transition>,
     initial_epoch: Epoch,
     #[cfg(feature = "timing")]
@@ -77,13 +77,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn new() -> Self {
         Self {
             tables: Inputs::default(),
+            logicals: LogicalArena::default(),
             revisions: RevisionArena::default(),
             rules: RuleArena::default(),
             epoch: Epoch(0),
             derived: OnceLock::new(),
             memo: RefCell::default(),
             indexes: Indexes::default(),
-            topo: NaiveTopo::default(),
             pk: PearceKelly::default(),
             maintainer: M::default(),
             stats: S::default(),
@@ -114,6 +114,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     }
     pub fn inputs(&self) -> Inputs {
         let mut i = self.tables.clone();
+        (i.logicals, i.metadata) = self.logicals.export();
         i.revisions = self.revisions.export();
         i.rules = self.rules.export();
         i
@@ -121,8 +122,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn indexes(&self) -> &Indexes {
         &self.indexes
     }
-    pub fn topo(&self) -> &NaiveTopo {
-        &self.topo
+    /// Reference order derived from the dynamic topology; not retained separately.
+    pub fn topo(&self) -> NaiveTopo {
+        self.pk.diagnostic_order()
     }
     pub fn digest(&self) -> ContentHash {
         let mut h = blake3::Hasher::new();
@@ -136,6 +138,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     fn view(&self) -> view::StoredView<'_> {
         view::StoredView {
             tables: &self.tables,
+            logicals: &self.logicals,
             revisions: &self.revisions,
             rules: &self.rules,
         }
@@ -243,15 +246,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 }
                 txn::final_policy(&working, rev_mark)?;
                 pk.sync(&working, b.ops.len().saturating_sub(1), &mut stats)?;
-                let topo = pk.diagnostic_order();
                 let epoch = Epoch(self.epoch.0.checked_add(1).ok_or(
                     TxError::CapacityExceeded {
                         kind: CapacityKind::Epoch,
                     },
                 )?);
-                Ok((topo, epoch))
+                Ok(epoch)
             })();
-        let (topo, epoch) = match result {
+        let epoch = match result {
             Ok(v) => v,
             Err(error) => {
                 self.revisions.truncate(rev_mark);
@@ -260,9 +262,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(error);
             }
         };
+        // Exact growth: this path already copies the inputs, so avoiding
+        // doubling slack does not change its asymptotic cost.
+        self.revisions
+            .reserve_exact(working.revisions.len() - rev_mark);
         for r in &working.revisions[rev_mark..] {
             self.revisions.append(r);
         }
+        self.rules.reserve_exact(&working.rules[rule_mark..]);
         for j in &working.rules[rule_mark..] {
             self.rules.append(j);
         }
@@ -312,9 +319,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .filter(|(n, v)| before_snapshot.nodes.get(*n) != Some(*v))
             .map(|(n, _)| RevisionId(n as u32))
             .collect();
-        self.history.push(history::Transition {
+        self.record(
             epoch,
-            changes: status_diff
+            status_diff
                 .iter()
                 .map(|r| NodeChange {
                     revision: *r,
@@ -322,16 +329,23 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     after: Some(derived.nodes[r.index()].clone()),
                 })
                 .collect(),
-        });
+        );
         self.stats = stats;
         self.pk = pk;
         self.indexes = indexes;
-        self.topo = topo;
         self.derived = OnceLock::from(derived);
         self.memo = RefCell::new(memo);
         self.epoch = epoch;
-        working.revisions.clear();
-        working.rules.clear();
+        let new_logicals = &working.logicals[self.logicals.len()..];
+        self.logicals.reserve_exact(new_logicals);
+        for l in new_logicals {
+            self.logicals.append(l);
+        }
+        self.logicals.set_metadata(&working.metadata);
+        working.logicals = Vec::new();
+        working.metadata = Vec::new();
+        working.revisions = Vec::new();
+        working.rules = Vec::new();
         self.tables = working;
         Ok(CommitResult {
             epoch,
@@ -344,6 +358,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     fn commit_mutable(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
             &mut self.tables,
+            &self.logicals,
             &self.revisions,
             &mut self.rules,
             b,
@@ -355,6 +370,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut stats = S::default();
         let view = view::StoredView {
             tables: &self.tables,
+            logicals: &self.logicals,
             revisions: &self.revisions,
             rules: &self.rules,
         };
@@ -366,6 +382,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let before_view = fast::Before {
             view: view::StoredView {
                 tables: &self.tables,
+                logicals: &self.logicals,
                 revisions: &self.revisions,
                 rules: &self.rules,
             },
@@ -444,7 +461,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         changes.sort_by_key(|c| c.revision);
         let l0_flips = update.flips;
         let status_diff = changes.iter().map(|c| c.revision).collect();
-        self.history.push(history::Transition { epoch, changes });
+        self.record(epoch, changes);
         self.epoch = epoch;
         self.stats = stats;
         #[cfg(feature = "paranoid")]
@@ -519,6 +536,87 @@ mod tests {
         assert_eq!(source.witness, Some(Witness::Base));
         assert!(!journal.before.contains_key(&RevisionId(1)));
         assert_eq!(previous.state(), db.maintainer.state());
+    }
+    fn logical(key: &str, lane: &str, content: u8) -> Op {
+        Op::CreateLogical {
+            key: key.into(),
+            kind: RecordKind::Fact,
+            scope_lane: lane.into(),
+            content: [content; 32],
+            adopt_as_base: true,
+        }
+    }
+    #[test]
+    fn fast_path_resolves_logical_keys_exactly() {
+        let mut db = Db::default();
+        db.commit(&Batch::new(vec![
+            logical("a", "x", 0),
+            logical("b", "y", 1),
+            logical("c", "x", 2),
+        ]))
+        .unwrap();
+        db.commit(&Batch::new(vec![Op::AddRevision {
+            logical: LogicalRef::Existing(LogicalId(1)),
+            content: [9; 32],
+            adopt_as_base: false,
+        }]))
+        .unwrap();
+        // SetHead is fast-path eligible; the key must select logical 1, not 0 or 2.
+        db.commit(&Batch::new(vec![Op::SetHead {
+            logical: LogicalRef::Key("b".into()),
+            expected: RevisionId(1).into(),
+            new: RevisionId(3).into(),
+        }]))
+        .unwrap();
+        assert_eq!(db.current_l0(LogicalId(1)).unwrap().0, RevisionId(3));
+        assert_eq!(db.current_l0(LogicalId(0)).unwrap().0, RevisionId(0));
+        assert_eq!(
+            db.commit(&Batch::new(vec![Op::SetHead {
+                logical: LogicalRef::Key("missing".into()),
+                expected: RevisionId(0).into(),
+                new: RevisionId(0).into(),
+            }])),
+            Err(TxError::UnknownRef)
+        );
+        // Lanes are interned, but each logical exports its own lane.
+        let lanes: Vec<_> = db
+            .inputs()
+            .logicals
+            .into_iter()
+            .map(|l| l.scope_lane)
+            .collect();
+        assert_eq!(lanes, ["x", "y", "x"]);
+    }
+    #[test]
+    fn exact_impact_restores_structural_state_completely() {
+        let mut db = Db::default();
+        db.commit(&Batch::new(vec![logical("a", "x", 0)])).unwrap();
+        let (inputs, digest) = (db.inputs(), db.digest());
+        let (pk, topo, indexes) = (db.pk.clone(), db.topo(), db.indexes.clone());
+        let preview = db
+            .impact_exact(&Batch::new(vec![
+                logical("b", "z", 1),
+                Op::AddRule {
+                    conclusion: RevRef::New(0),
+                    incidences: vec![(RevisionId(0).into(), EdgeKind::Pin)],
+                    enabled: true,
+                },
+                Op::SetMetadata {
+                    logical: LogicalRef::Existing(LogicalId(0)),
+                    tags: ["t".to_string()].into(),
+                    dirs: Default::default(),
+                },
+            ]))
+            .unwrap();
+        assert_eq!(preview.allocations.new_revisions, vec![RevisionId(1)]);
+        assert_eq!(db.inputs(), inputs);
+        assert_eq!(db.digest(), digest);
+        assert_eq!(
+            (db.pk.clone(), db.topo(), db.indexes.clone()),
+            (pk, topo, indexes)
+        );
+        assert_eq!(db.revisions.len(), 1);
+        assert_eq!(db.rules.len(), 0);
     }
     #[test]
     fn policy_json_is_canonical_by_kind_name() {

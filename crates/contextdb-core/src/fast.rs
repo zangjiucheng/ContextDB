@@ -1,7 +1,7 @@
 //! Mutable-table transactions: ordered staging with a write-set undo log.
 use crate::{
     InputView,
-    arena::{RevisionArena, RuleArena},
+    arena::{LogicalArena, RevisionArena, RuleArena},
     view::StoredView,
 };
 use contextdb_model::*;
@@ -33,18 +33,13 @@ fn r(r: RevRef, revisions: &RevisionArena) -> Result<RevisionId, TxError> {
     }
     Ok(r)
 }
-fn l(l: &LogicalRef, i: &Inputs) -> Result<LogicalId, TxError> {
+fn l(l: &LogicalRef, logicals: &LogicalArena) -> Result<LogicalId, TxError> {
     let id = match l {
         LogicalRef::Existing(l) => *l,
         LogicalRef::New(_) => return Err(TxError::UnknownRef),
-        LogicalRef::Key(k) => LogicalId(
-            i.logicals
-                .iter()
-                .position(|l| l.key == *k)
-                .ok_or(TxError::UnknownRef)? as u32,
-        ),
+        LogicalRef::Key(k) => logicals.find_key(k).ok_or(TxError::UnknownRef)?,
     };
-    if id.index() >= i.logicals.len() {
+    if id.index() >= logicals.len() {
         return Err(TxError::UnknownRef);
     }
     Ok(id)
@@ -98,6 +93,7 @@ impl Undo {
     }
     pub fn stage(
         i: &mut Inputs,
+        logicals: &LogicalArena,
         revisions: &RevisionArena,
         rules: &mut RuleArena,
         b: &Batch,
@@ -109,7 +105,7 @@ impl Undo {
                 match op {
                     Op::AssertBase { rev } | Op::RetractBase { rev } => {
                         let r = r(*rev, revisions)?;
-                        let kind = i.logicals[revisions.logical(r).index()].kind;
+                        let kind = logicals.kind(revisions.logical(r));
                         channel(b, op, kind == RecordKind::CodeAnchor)?;
                         undo.base.entry(r).or_insert(i.base[r.index()]);
                         i.base[r.index()] = matches!(op, Op::AssertBase { .. });
@@ -119,10 +115,10 @@ impl Undo {
                         expected,
                         new,
                     } => {
-                        let logical = l(logical, i)?;
+                        let logical = l(logical, logicals)?;
                         let expected = r(*expected, revisions)?;
                         let new = r(*new, revisions)?;
-                        let kind = i.logicals[logical.index()].kind;
+                        let kind = logicals.kind(logical);
                         channel(b, op, kind == RecordKind::CodeAnchor)?;
                         if kind == RecordKind::Evidence {
                             return Err(TxError::ImmutableKind);
@@ -159,7 +155,7 @@ impl Undo {
             }
             for r in undo.base.keys() {
                 let logical = revisions.logical(*r);
-                let kind = i.logicals[logical.index()].kind;
+                let kind = logicals.kind(logical);
                 if i.base[r.index()]
                     && i.policy.require_deps.contains(&kind)
                     && !matches!(kind, RecordKind::Evidence | RecordKind::CodeAnchor)
@@ -224,8 +220,8 @@ impl InputView for Before<'_> {
     fn rule_count(&self) -> usize {
         self.view.rule_count()
     }
-    fn logical(&self, id: LogicalId) -> &Logical {
-        self.view.logical(id)
+    fn logical_kind(&self, id: LogicalId) -> RecordKind {
+        self.view.logical_kind(id)
     }
     fn revision_logical(&self, id: RevisionId) -> LogicalId {
         self.view.revision_logical(id)
@@ -256,6 +252,9 @@ impl InputView for Before<'_> {
     }
     fn premises(&self, id: RuleId) -> impl Iterator<Item = Incidence> {
         self.view.premises(id)
+    }
+    fn premise_at(&self, id: RuleId, k: usize) -> Incidence {
+        self.view.premise_at(id, k)
     }
     fn references(&self, id: RuleId) -> &[RevisionId] {
         self.view.references(id)

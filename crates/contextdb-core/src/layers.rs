@@ -67,7 +67,7 @@ impl LayerMemo {
             && (p.kind != EdgeKind::Cur || head == p.premise)
             && (p.kind != EdgeKind::Pin
                 || head == p.premise
-                || i.logical(logical).kind == RecordKind::Evidence)
+                || i.logical_kind(logical) == RecordKind::Evidence)
             && (p.kind != EdgeKind::Sem || self.entries[head.index()].truth[level])
     }
     fn ensure(
@@ -144,7 +144,7 @@ impl LayerMemo {
                     let head = i.head(logical);
                     reason = if p.kind == EdgeKind::Pin
                         && head != p.premise
-                        && i.logical(logical).kind != RecordKind::Evidence
+                        && i.logical_kind(logical) != RecordKind::Evidence
                     {
                         StaleReason::SupersededPinnedPremise(p.premise)
                     } else if p.kind == EdgeKind::Sem
@@ -237,9 +237,7 @@ impl LayerMemo {
         d: &mut DerivedSnapshot,
     ) {
         let n = j.index();
-        let offset = index.rule_offset[n];
-        let len = index.rule_len[n];
-        d.sat[n].copy_from_slice(&c.sat[offset..offset + len]);
+        d.sat[n].copy_from_slice(&c.sat[index.rule_incidences(j)]);
         d.unsat[n] = c.unsat[n];
         d.active[n] = c.counted[n];
         let sem = semantic(i, j);
@@ -303,10 +301,9 @@ impl LayerMemo {
             sem,
             layer_active,
             sat: index
-                .rule_offset
-                .iter()
-                .zip(&index.rule_len)
-                .map(|(a, n)| c.sat[*a..*a + *n].to_vec())
+                .rule_start
+                .windows(2)
+                .map(|w| c.sat[w[0] as usize..w[1] as usize].to_vec())
                 .collect(),
             unsat: c.unsat.clone(),
             active: c.counted.clone(),

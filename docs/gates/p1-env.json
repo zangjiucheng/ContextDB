@@ -8,7 +8,7 @@
   "features": [],
   "threads": 1,
   "warmup": "initial full load; complete derived snapshot populated before each early-revision commit, outside timing; p99 over 1000 changes per probe",
-  "memory": "retained allocation lower bound plus RSS; no payload bodies stored",
+  "memory": "live heap via stats_alloc counting allocator (requested bytes; allocator metadata excluded); category lower bounds checked by tests/memory_accounting.rs; per-scope upper bound = lower + untracked; RSS reported only; no payload bodies stored",
   "machdep.cpu.brand_string": "Apple M1 Pro",
   "hw.memsize": "17179869184"
 }

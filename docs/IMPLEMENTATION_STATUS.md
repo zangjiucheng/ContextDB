@@ -1,8 +1,10 @@
 # Implementation status
 
-P1 functionality is implemented; **Gate P1 is not complete**. Local semantic and
-latency checks pass, but the whole-database memory lower bound is 292.53–314.32
-B/incidence against the unchanged 64-byte target. P1 Linux/macOS CI remains pending.
+P1 functionality is implemented, and every local P1 gate layer passes. After
+storage compaction, memory is 181.15 / 188.87 B/incidence of live heap. It is within
+the per-scope budgets of ADR 0005, which the owner chose to calibrate per scope.
+Gate closure awaits remote Linux/macOS CI and the nightly workflow on the
+compaction commit.
 See [P1 report](gates/P1-report.md), [gate matrix](gates/P1.md) and
 [memory ADR](adr/0005-p1-memory-budget.md).
 
@@ -35,7 +37,8 @@ That run does not validate the current P1 changes.
 
 ## Boundaries
 
-- P1 Gate remains open. No P2 persistence/acknowledgement/recovery work has begun.
+- P1 Gate closes on remote CI. P2 persistence has not begun; its G0 ADR
+  ([0006](adr/0006-p2-durable-log.md)) is proposed.
   client_txn_id is carried but not deduplicated. Content hashes have no blob store.
 - L1/L2 use memoized evaluation; full incremental layer maintenance is P3.
   Structural insertion is not covered by mutable-commit latency measurements.

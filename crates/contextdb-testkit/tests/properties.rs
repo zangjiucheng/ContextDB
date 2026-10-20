@@ -20,7 +20,7 @@ fn prop8_i1_error_equivalence_1000_chacha8_seeds() {
             let digest = db.digest();
             let epoch = db.epoch();
             let indexes = db.indexes().clone();
-            let topo = db.topo().clone();
+            let topo = db.topo();
             let want = reference.apply(b);
             let actual = db.commit(b);
             coverage.record(b, &want);
@@ -79,7 +79,7 @@ fn prop8_i1_error_equivalence_1000_chacha8_seeds() {
                 assert_eq!(db.digest(), digest);
                 assert_eq!(db.epoch(), epoch);
                 assert_eq!(db.indexes(), &indexes);
-                assert_eq!(db.topo(), &topo);
+                assert_eq!(db.topo(), topo);
                 assert_eq!(db.derived(), &before);
             }
             let i = db.inputs();

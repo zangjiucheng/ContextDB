@@ -1,7 +1,17 @@
 use contextdb_core::{CommitStats, Counting, Db};
 use contextdb_model::*;
 use contextdb_testkit::{Shape, shape};
-use std::{hint::black_box, time::Instant};
+use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
+use std::{alloc::System, hint::black_box, time::Instant};
+/// Counts live requested heap bytes (all containers, B-tree nodes included;
+/// allocator-internal metadata excluded). Single-threaded measurement.
+#[global_allocator]
+static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+fn live_heap() -> isize {
+    let s = ALLOCATOR.stats();
+    // stats_alloc already folds realloc growth/shrink into these two counters.
+    s.bytes_allocated as isize - s.bytes_deallocated as isize
+}
 fn percentile(values: &mut [u128]) -> u128 {
     values.sort_unstable();
     values[(values.len() * 99).div_ceil(100).saturating_sub(1)]
@@ -30,6 +40,7 @@ fn main() {
         _ => panic!("shape must be hub or multi_support"),
     };
     let baseline = rss();
+    let baseline_heap = live_heap();
     let generated = shape(kind, n, 42);
     let stats = generated.stats.clone();
     let mut db = Db::<Counting, CommitStats>::new();
@@ -86,6 +97,8 @@ fn main() {
         why.push(begin.elapsed().as_nanos());
     }
     let live_rss = rss();
+    // Probe sample vectors are still alive; they are counted against the database.
+    let live_heap = (live_heap() - baseline_heap) as usize;
     let memory = db.memory_footprint();
     println!(
         "retained_allocation_lower_bound={memory:?} lower_bound_B_per_incidence={:.2}",
@@ -99,19 +112,58 @@ fn main() {
         "samples={samples} load_ms={load_ms} E_visited_max={max_visited} commit_p99_ns={commit} current_l0_p99_ns={current} why_depth3_p99_ns={why} baseline_rss_bytes={baseline} loaded_rss_bytes={live_rss} rss_delta_B_per_incidence={:.2}",
         (live_rss.saturating_sub(baseline)) as f64 / stats.incidences as f64
     );
-    println!(
-        "time_budgets_pass={} memory_budget={}",
-        max_visited <= 100
-            && early <= 1_000_000
-            && commit <= 1_000_000
-            && current <= 50_000
-            && why <= 200_000,
-        if memory.lower_bound_bytes() > 64 * stats.incidences {
-            "FAIL_LOWER_BOUND"
+    // ADR 0005 scopes (initial, M1 Pro; budget = ceil(1.10 x max measured upper)).
+    // Category accounting is a
+    // lower bound (tests/memory_accounting.rs checks it never over-counts); live
+    // heap minus that sum is attributed to every scope as its upper bound.
+    let inc = stats.incidences as f64;
+    let lower_total = memory.lower_bound_bytes();
+    // Over-counting would shrink `untracked` and hide another scope's bytes.
+    let accounting_valid = lower_total <= live_heap;
+    let untracked = live_heap.saturating_sub(lower_total);
+    let changes = memory.history_changes.max(1) as f64;
+    let scopes = [
+        ("hot", memory.hot_bytes(), inc, 72.0),
+        ("inputs", memory.inputs, inc, 50.0),
+        ("query_cache", memory.query_cache, inc, 49.0),
+        ("history_per_change", memory.history, changes, 58.0),
+    ];
+    let mut scopes_pass = accounting_valid;
+    for (name, bytes, unit, budget) in scopes {
+        let low = bytes as f64 / unit;
+        let high = (bytes + untracked) as f64 / unit;
+        let verdict = if !accounting_valid {
+            "INVALID"
+        } else if low > budget {
+            "FAIL"
+        } else if high <= budget {
+            "PASS"
         } else {
-            "UNVERIFIED_LOWER_BOUND_ONLY"
-        }
+            "UNVERIFIED"
+        };
+        scopes_pass &= verdict == "PASS";
+        println!("memory_{name} lower={low:.2} upper={high:.2} budget={budget} {verdict}");
+    }
+    let total_budget: f64 = scopes
+        .iter()
+        .map(|(_, _, unit, budget)| unit * budget)
+        .sum();
+    let total_pass = live_heap as f64 <= total_budget;
+    let time_pass = max_visited <= 100
+        && early <= 1_000_000
+        && commit <= 1_000_000
+        && current <= 50_000
+        && why <= 200_000;
+    println!(
+        "live_heap_bytes={live_heap} live_heap_B_per_incidence={:.2} total_budget_bytes={total_budget:.0} untracked_bytes={untracked} accounting_valid={accounting_valid}",
+        live_heap as f64 / inc
+    );
+    println!(
+        "time_budgets_pass={time_pass} memory_scopes_pass={scopes_pass} live_heap_within_total_budget={total_pass}"
     );
     // Keep db alive until all measurements are printed.
     black_box(&db);
+    if !(time_pass && scopes_pass && total_pass) {
+        std::process::exit(1);
+    }
 }

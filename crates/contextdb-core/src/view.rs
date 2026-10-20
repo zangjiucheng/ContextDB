@@ -1,17 +1,19 @@
-use crate::arena::{RevisionArena, RuleArena};
+use crate::arena::{LogicalArena, RevisionArena, RuleArena};
 use contextdb_model::*;
 
 /// Read-only columns consumed by maintainers and queries, never validation logic.
 pub trait InputView {
     fn revision_count(&self) -> usize;
     fn rule_count(&self) -> usize;
-    fn logical(&self, id: LogicalId) -> &Logical;
+    fn logical_kind(&self, id: LogicalId) -> RecordKind;
     fn revision_logical(&self, id: RevisionId) -> LogicalId;
     fn head(&self, id: LogicalId) -> RevisionId;
     fn base(&self, id: RevisionId) -> bool;
     fn enabled(&self, id: RuleId) -> bool;
     fn conclusion(&self, id: RuleId) -> RevisionId;
     fn premises(&self, id: RuleId) -> impl Iterator<Item = Incidence>;
+    /// The `k`th canonical premise of rule `id`.
+    fn premise_at(&self, id: RuleId, k: usize) -> Incidence;
     fn references(&self, id: RuleId) -> &[RevisionId];
     fn validation(&self, id: RuleId, vector: &HeadVector) -> Option<&ValidationRecord>;
 }
@@ -22,8 +24,8 @@ impl InputView for Inputs {
     fn rule_count(&self) -> usize {
         self.rules.len()
     }
-    fn logical(&self, id: LogicalId) -> &Logical {
-        &self.logicals[id.index()]
+    fn logical_kind(&self, id: LogicalId) -> RecordKind {
+        self.logicals[id.index()].kind
     }
     fn revision_logical(&self, id: RevisionId) -> LogicalId {
         self.revisions[id.index()].logical
@@ -43,6 +45,9 @@ impl InputView for Inputs {
     fn premises(&self, id: RuleId) -> impl Iterator<Item = Incidence> {
         self.rules[id.index()].premises.iter().copied()
     }
+    fn premise_at(&self, id: RuleId, k: usize) -> Incidence {
+        self.rules[id.index()].premises[k]
+    }
     fn references(&self, id: RuleId) -> &[RevisionId] {
         &self.rules[id.index()].references
     }
@@ -52,6 +57,7 @@ impl InputView for Inputs {
 }
 pub(crate) struct StoredView<'a> {
     pub tables: &'a Inputs,
+    pub logicals: &'a LogicalArena,
     pub revisions: &'a RevisionArena,
     pub rules: &'a RuleArena,
 }
@@ -62,8 +68,8 @@ impl InputView for StoredView<'_> {
     fn rule_count(&self) -> usize {
         self.rules.len()
     }
-    fn logical(&self, id: LogicalId) -> &Logical {
-        &self.tables.logicals[id.index()]
+    fn logical_kind(&self, id: LogicalId) -> RecordKind {
+        self.logicals.kind(id)
     }
     fn revision_logical(&self, id: RevisionId) -> LogicalId {
         self.revisions.logical(id)
@@ -82,6 +88,9 @@ impl InputView for StoredView<'_> {
     }
     fn premises(&self, id: RuleId) -> impl Iterator<Item = Incidence> {
         self.rules.premises(id)
+    }
+    fn premise_at(&self, id: RuleId, k: usize) -> Incidence {
+        self.rules.premise_at(id, k)
     }
     fn references(&self, id: RuleId) -> &[RevisionId] {
         self.rules.references(id)

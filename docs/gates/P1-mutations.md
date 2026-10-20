@@ -1,6 +1,7 @@
 # P1 mutation audit
 
-Tool: cargo-mutants 27.1.0, Rust 1.95.0. Scope: `engine/counting.rs`, `txn.rs`.
+Tool: cargo-mutants 27.1.0, Rust 1.95.0. Scope (current): `engine/counting.rs`, `txn.rs`,
+`arena.rs`, `memory.rs`. The first three rounds below covered counting/txn only.
 Tests: both exact modes of P0/P1 golden plus core unit boundary tests.
 
 The first audit tested 146 mutants: 122 caught, 8 unviable, 16 survivors. Survivors
@@ -31,3 +32,28 @@ remain explicit, excluded rather than misreported as caught. Machine-readable
 counts, source hashes and unviable mutations: [p1-mutation-summary.json](p1-mutation-summary.json).
 Raw final output was `/tmp/contextdb-p1-mutation-closed/mutants.out` for this run;
 future runs write ignored `results/p1-mutation`.
+
+## Compaction round (ADR 0005)
+
+ADR 0005 uses the category accounting to certify memory scopes. The diagnostic
+waiver above therefore no longer applies and has been removed.
+`tests/memory_accounting.rs` now does three things:
+- checks the accounting against a counting allocator (no over-count, ≤ 1–2 %
+  untracked);
+- pins exact category values for two deterministic scenarios;
+- exercises references, validations, artifacts, metadata and interned lanes.
+
+The scope grew to include `arena.rs` and `memory.rs`.
+
+The first extended run had 52 survivors. They were accounting terms that were
+zero or below the tolerance, plus three real test gaps:
+- the fast path's key lookup;
+- structural `impact_exact` rollback of arenas;
+- CSR equality only ever checked positively.
+
+All three now have tests. A dead `RuleArena.flags` column was removed. An
+intermediate run left 11 survivors, all on empty artifact/validation/reference
+paths; the scenario was extended to cover them.
+
+Final: **394 mutants, 361 caught, 33 unviable, 0 survivors, no exclusions**.
+Source hashes and the unviable list: [p1-mutation-summary.json](p1-mutation-summary.json).

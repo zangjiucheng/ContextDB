@@ -60,7 +60,7 @@ impl Rig {
         let epoch = self.db.epoch();
         let original = self.db.inputs();
         let indexes = self.db.indexes().clone();
-        let topo = self.db.topo().clone();
+        let topo = self.db.topo();
         let reference = self.oracle.apply(&b);
         let result = self.db.commit(&b);
         assert_eq!(
@@ -78,7 +78,7 @@ impl Rig {
             assert_eq!(self.db.epoch(), epoch);
             assert_eq!(self.db.inputs(), original);
             assert_eq!(self.db.indexes(), &indexes);
-            assert_eq!(self.db.topo(), &topo);
+            assert_eq!(self.db.topo(), topo);
         }
         result
     }
@@ -1008,6 +1008,15 @@ fn t10_cycle_path_and_csr_index_ids_are_exact() {
     assert_eq!(
         x.db.indexes().rules_by_premise,
         vec![vec![IncId(0)], vec![IncId(1)], vec![], vec![]]
+    );
+    // The CSR comparison must discriminate both row contents and row count.
+    assert_ne!(
+        x.db.indexes().rules_by_premise,
+        vec![vec![IncId(1)], vec![IncId(0)], vec![], vec![]]
+    );
+    assert_ne!(
+        x.db.indexes().rules_by_premise,
+        vec![vec![IncId(0)], vec![IncId(1)], vec![]]
     );
     assert_eq!(x.db.indexes().pin_by_rev[0], vec![IncId(0)]);
     assert_eq!(x.db.indexes().exact_by_rev[1], vec![IncId(1)]);

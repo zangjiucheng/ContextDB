@@ -14,10 +14,12 @@ pub struct EpochDiff {
     pub to: Epoch,
     pub changes: Vec<NodeChange>,
 }
+/// Only post-states are retained: a change's pre-state is the revision's
+/// previous post-state, or absent for a revision created in that epoch.
 #[derive(Clone, Debug)]
 pub(crate) struct Transition {
     pub epoch: Epoch,
-    pub changes: Vec<NodeChange>,
+    pub changes: Vec<(RevisionId, NodeState)>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Impact {
@@ -25,6 +27,29 @@ pub struct Impact {
     pub reference_only: Vec<RevisionId>,
 }
 impl<M: Maintainer, S: StatsSink> Db<M, S> {
+    pub(crate) fn record(&mut self, epoch: Epoch, changes: Vec<NodeChange>) {
+        crate::invariant_assert!(changes.iter().all(|c| {
+            let previous = self
+                .history
+                .iter()
+                .rev()
+                .find_map(|t| t.changes.iter().find(|(r, _)| *r == c.revision))
+                .map(|(_, s)| s);
+            c.before.as_ref() == previous && c.after.is_some()
+        }));
+        // A fresh exact-size buffer: in-place collect would keep the larger
+        // NodeChange allocation alive.
+        let mut retained = Vec::with_capacity(changes.len());
+        retained.extend(
+            changes
+                .into_iter()
+                .map(|c| (c.revision, c.after.expect("post-state"))),
+        );
+        self.history.push(Transition {
+            epoch,
+            changes: retained,
+        });
+    }
     /// Exact endpoint comparison: changes which cancel between epochs disappear.
     pub fn diff(&self, from: Epoch, to: Epoch) -> Result<EpochDiff, TxError> {
         if from < self.initial_epoch
@@ -41,11 +66,22 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .iter()
             .filter(|s| s.epoch > low && s.epoch <= high)
         {
-            for c in &step.changes {
+            for (r, after) in &step.changes {
                 changes
-                    .entry(c.revision)
-                    .and_modify(|old| old.after = c.after.clone())
-                    .or_insert_with(|| c.clone());
+                    .entry(*r)
+                    .and_modify(|old| old.after = Some(after.clone()))
+                    .or_insert_with(|| NodeChange {
+                        revision: *r,
+                        before: None,
+                        after: Some(after.clone()),
+                    });
+            }
+        }
+        for step in self.history.iter().take_while(|s| s.epoch <= low) {
+            for (r, state) in &step.changes {
+                if let Some(c) = changes.get_mut(r) {
+                    c.before = Some(state.clone());
+                }
             }
         }
         let changes = changes
@@ -102,10 +138,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let rules = self.rules.len();
         let enabled = self.rules.enabled.clone();
         let tables = self.tables.clone();
+        let logicals = self.logicals.clone();
         let maintainer = self.maintainer.clone();
         let stats = self.stats.clone();
         let pk = self.pk.clone();
-        let topo = self.topo.clone();
         let indexes = self.indexes.clone();
         let epoch = self.epoch;
         let derived = self.derived.clone();
@@ -118,10 +154,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.rules.truncate(rules);
         self.rules.enabled = enabled;
         self.tables = tables;
+        self.logicals = logicals;
         self.maintainer = maintainer;
         self.stats = stats;
         self.pk = pk;
-        self.topo = topo;
         self.indexes = indexes;
         self.epoch = epoch;
         self.derived = derived;

@@ -14,3 +14,4 @@ workspace = true
 contextdb-core.workspace = true
 contextdb-model.workspace = true
 contextdb-testkit.workspace = true
+stats_alloc = "=0.1.10"

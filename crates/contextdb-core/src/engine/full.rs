@@ -46,14 +46,11 @@ impl Maintainer for FullRecompute {
             for j in &index.rules_by_concl[r.index()] {
                 stats.record(Work::Rule);
 
-                for n in index.rule_offset[j.index()]
-                    ..index.rule_offset[j.index()] + index.rule_len[j.index()]
-                {
+                for n in index.rule_incidences(*j) {
                     stats.record(Work::Incidence);
-                    let p = index.inc_premise[n];
+                    let Incidence { premise: p, kind } = index.incidence(i, n);
                     let yes = next.s[p.index()]
-                        && (index.inc_kind[n] != EdgeKind::Cur
-                            || i.head(i.revision_logical(p)) == p);
+                        && (kind != EdgeKind::Cur || i.head(i.revision_logical(p)) == p);
                     next.sat[n] = yes;
                     next.unsat[j.index()] += u32::from(!yes);
                 }

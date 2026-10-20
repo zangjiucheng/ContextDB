@@ -61,7 +61,7 @@ pub(crate) fn why_not(
             }
             if p.kind == EdgeKind::Pin
                 && head != p.premise
-                && i.logical(logical).kind != RecordKind::Evidence
+                && i.logical_kind(logical) != RecordKind::Evidence
             {
                 incidences.push(IncidenceFailure::SupersededPinned {
                     premise: p.premise,

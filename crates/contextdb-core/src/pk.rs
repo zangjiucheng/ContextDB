@@ -3,58 +3,83 @@ use crate::{
     stats::{StatsSink, Work},
 };
 use contextdb_model::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+
+const NONE: u32 = u32::MAX;
 
 /// Pearce–Kelly (2006): bounded bidirectional discovery, stable reassignment.
 /// Graph edges include disabled rules and Sem virtual logical nodes.
+/// Node handles are dense u32; revision/logical lookups are direct columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PearceKelly {
-    ids: BTreeMap<CycleNode, usize>,
+    rev_node: Vec<u32>,
+    // NONE until the logical first gains a Sem incidence.
+    logical_node: Vec<u32>,
     nodes: Vec<CycleNode>,
-    out: Vec<Vec<usize>>,
-    incoming: Vec<Vec<usize>>,
-    order: Vec<usize>,
-    rank: Vec<usize>,
+    out: Vec<Vec<u32>>,
+    incoming: Vec<Vec<u32>>,
+    order: Vec<u32>,
+    rank: Vec<u32>,
     seen_revisions: usize,
     seen_rules: usize,
-    sem_logicals: BTreeSet<LogicalId>,
 }
 impl PearceKelly {
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::vec_bytes as b;
-        b(&self.nodes)
+        b(&self.rev_node)
+            + b(&self.logical_node)
+            + b(&self.nodes)
             + b(&self.out)
             + b(&self.incoming)
             + self.out.iter().chain(&self.incoming).map(b).sum::<usize>()
             + b(&self.order)
             + b(&self.rank)
-            + self.ids.len() * std::mem::size_of::<(CycleNode, usize)>()
-            + self.sem_logicals.len() * std::mem::size_of::<LogicalId>()
+    }
+    fn lookup(&self, n: &CycleNode) -> Option<usize> {
+        let id = match n {
+            CycleNode::Revision(r) => self.rev_node.get(r.index()),
+            CycleNode::Logical(l) => self.logical_node.get(l.index()),
+        };
+        id.copied().filter(|id| *id != NONE).map(|id| id as usize)
     }
     fn node(&mut self, n: CycleNode) -> usize {
-        if let Some(id) = self.ids.get(&n) {
-            return *id;
+        if let Some(id) = self.lookup(&n) {
+            return id;
         }
         let id = self.nodes.len();
-        self.ids.insert(n.clone(), id);
+        let handle = u32::try_from(id)
+            .ok()
+            .filter(|h| *h < NONE)
+            .expect("bounded node count");
+        let (column, index) = match n {
+            CycleNode::Revision(r) => (&mut self.rev_node, r.index()),
+            CycleNode::Logical(l) => (&mut self.logical_node, l.index()),
+        };
+        if column.len() <= index {
+            column.resize(index + 1, NONE);
+        }
+        column[index] = handle;
         self.nodes.push(n);
         self.out.push(Vec::new());
         self.incoming.push(Vec::new());
-        self.rank.push(self.order.len());
-        self.order.push(id);
+        self.rank.push(handle);
+        self.order.push(handle);
         id
     }
+    fn is_sem_logical(&self, l: LogicalId) -> bool {
+        self.lookup(&CycleNode::Logical(l)).is_some()
+    }
     pub fn rank(&self, n: &CycleNode) -> usize {
-        self.rank[self.ids[n]]
+        self.rank[self.lookup(n).expect("known cycle node")] as usize
     }
     pub fn order(&self) -> impl Iterator<Item = &CycleNode> {
-        self.order.iter().map(|n| &self.nodes[*n])
+        self.order.iter().map(|n| &self.nodes[*n as usize])
     }
     pub fn valid(&self) -> bool {
         self.out
             .iter()
             .enumerate()
-            .all(|(n, edges)| edges.iter().all(|v| self.rank[n] < self.rank[*v]))
+            .all(|(n, edges)| edges.iter().all(|v| self.rank[n] < self.rank[*v as usize]))
     }
     pub(crate) fn diagnostic_order(&self) -> NaiveTopo {
         NaiveTopo {
@@ -69,7 +94,8 @@ impl PearceKelly {
     ) -> Result<(), ()> {
         let u = self.node(from);
         let v = self.node(to);
-        if self.out[u].binary_search(&v).is_ok() {
+        let (uh, vh) = (u as u32, v as u32);
+        if self.out[u].binary_search(&vh).is_ok() {
             return Ok(());
         }
         stats.record(Work::PkEdge);
@@ -88,8 +114,8 @@ impl PearceKelly {
                     return Err(());
                 }
                 for next in &self.out[n] {
-                    if self.rank[*next] <= high {
-                        stack.push(*next);
+                    if self.rank[*next as usize] <= high {
+                        stack.push(*next as usize);
                     }
                 }
             }
@@ -101,8 +127,8 @@ impl PearceKelly {
                 }
                 stats.record(Work::PkBackward);
                 for prev in &self.incoming[n] {
-                    if self.rank[*prev] >= low {
-                        stack.push(*prev);
+                    if self.rank[*prev as usize] >= low {
+                        stack.push(*prev as usize);
                     }
                 }
             }
@@ -114,15 +140,15 @@ impl PearceKelly {
             let mut positions: Vec<_> = b.iter().chain(&f).map(|n| self.rank[*n]).collect();
             positions.sort_unstable();
             for (pos, n) in positions.into_iter().zip(b.into_iter().chain(f)) {
-                self.order[pos] = n;
+                self.order[pos as usize] = n as u32;
                 self.rank[n] = pos;
                 stats.record(Work::PkReorder);
             }
         }
-        let pos = self.out[u].binary_search(&v).unwrap_err();
-        self.out[u].insert(pos, v);
-        let pos = self.incoming[v].binary_search(&u).unwrap_err();
-        self.incoming[v].insert(pos, u);
+        let pos = self.out[u].binary_search(&vh).unwrap_err();
+        self.out[u].insert(pos, vh);
+        let pos = self.incoming[v].binary_search(&uh).unwrap_err();
+        self.incoming[v].insert(pos, uh);
         crate::invariant_assert!(self.rank[u] < self.rank[v]);
         Ok(())
     }
@@ -138,7 +164,7 @@ impl PearceKelly {
                 let r = RevisionId(n as u32);
                 self.node(CycleNode::Revision(r));
                 let logical = i.revisions[n].logical;
-                if self.sem_logicals.contains(&logical) {
+                if self.is_sem_logical(logical) {
                     self.edge(CycleNode::Revision(r), CycleNode::Logical(logical), stats)?;
                 }
             }
@@ -152,7 +178,7 @@ impl PearceKelly {
                     )?;
                     if p.kind == EdgeKind::Sem {
                         let logical = i.revisions[p.premise.index()].logical;
-                        if self.sem_logicals.insert(logical) {
+                        if !self.is_sem_logical(logical) {
                             self.node(CycleNode::Logical(logical));
                             for (n, r) in i
                                 .revisions

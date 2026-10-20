@@ -116,11 +116,9 @@ impl Maintainer for Counting {
         for j in &delta.new_rules {
             crate::invariant_assert!(j.index() >= old_rules);
             self.state.unsat[j.index()] =
-                u32::try_from(index.rule_len[j.index()]).expect("canonical premise bound");
+                u32::try_from(index.rule_incidences(*j).len()).expect("canonical premise bound");
             self.rule(*j, i);
-            for id in index.rule_offset[j.index()]
-                ..index.rule_offset[j.index()] + index.rule_len[j.index()]
-            {
+            for id in index.rule_incidences(*j) {
                 self.incidence(IncId(id as u32), index, i, topo, &mut heap, stats, true);
             }
         }
@@ -145,10 +143,9 @@ impl Maintainer for Counting {
                 self.dirty_inc[id.index()] = false;
                 stats.record(Work::Incidence);
                 let j = index.inc_rule[id.index()];
-                let p = index.inc_premise[id.index()];
+                let Incidence { premise: p, kind } = index.incidence(i, id.index());
                 let now = self.state.s[p.index()]
-                    && (index.inc_kind[id.index()] != EdgeKind::Cur
-                        || i.head(i.revision_logical(p)) == p);
+                    && (kind != EdgeKind::Cur || i.head(i.revision_logical(p)) == p);
                 let stored = self.state.sat[id.index()];
                 // DA4: adjust counters only on a stored-bit transition.
                 if now != stored {

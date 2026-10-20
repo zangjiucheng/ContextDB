@@ -6,6 +6,11 @@ use std::mem::size_of;
 pub(crate) fn vec_bytes<T>(v: &Vec<T>) -> usize {
     v.capacity() * size_of::<T>()
 }
+/// std B-trees allocate whole nodes of 11 slots; ⌈n/11⌉ full leaves never
+/// exceed the real allocation, so this remains a lower bound.
+pub(crate) fn btree_slots(n: usize) -> usize {
+    n.div_ceil(11) * 11
+}
 pub(crate) fn bool_bytes(v: &Vec<bool>) -> usize {
     v.capacity()
 }
@@ -17,8 +22,14 @@ pub struct MemoryFootprint {
     pub topology: usize,
     pub query_cache: usize,
     pub history: usize,
+    /// Retained status post-states; history is budgeted per change, not per incidence.
+    pub history_changes: usize,
 }
 impl MemoryFootprint {
+    /// ADR 0005 hot maintenance scope: support indexes, counters and topology.
+    pub fn hot_bytes(&self) -> usize {
+        self.indexes + self.maintenance + self.topology
+    }
     pub fn lower_bound_bytes(&self) -> usize {
         self.inputs
             + self.indexes
@@ -33,34 +44,16 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let i = &self.tables;
         let inputs = self.revisions.retained_bytes()
             + self.rules.retained_bytes()
-            + vec_bytes(&i.logicals)
-            + i.logicals
-                .iter()
-                .map(|l| l.key.capacity() + l.scope_lane.capacity())
-                .sum::<usize>()
+            + self.logicals.retained_bytes()
             + vec_bytes(&i.heads)
             + bool_bytes(&i.base)
-            + vec_bytes(&i.metadata)
             + vec_bytes(&i.artifacts)
-            + i.metadata
-                .iter()
-                .map(|m| {
-                    m.tags
-                        .iter()
-                        .chain(&m.dirs)
-                        .map(|s| size_of::<String>() + s.capacity())
-                        .sum::<usize>()
-                })
-                .sum::<usize>()
+            + btree_slots(i.validations.len())
+                * (size_of::<(contextdb_model::RuleId, contextdb_model::HeadVector)>()
+                    + size_of::<contextdb_model::ValidationRecord>())
             + i.validations
                 .iter()
-                .map(|((_, v), r)| {
-                    size_of::<(
-                        (contextdb_model::RuleId, contextdb_model::HeadVector),
-                        contextdb_model::ValidationRecord,
-                    )>() + vec_bytes(v)
-                        + r.validator.capacity()
-                })
+                .map(|((_, v), r)| vec_bytes(v) + r.validator.capacity())
                 .sum::<usize>();
         let history = vec_bytes(&self.history)
             + self
@@ -82,9 +75,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             inputs,
             indexes: self.indexes.retained_bytes(),
             maintenance: self.maintainer.retained_bytes(),
-            topology: self.pk.retained_bytes() + vec_bytes(&self.topo.order),
+            topology: self.pk.retained_bytes(),
             query_cache,
             history,
+            history_changes: self.history.iter().map(|t| t.changes.len()).sum(),
         }
     }
 }

@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.4.1 · Date: 2026-10-19 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.4.2 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -488,7 +488,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **Gate P1**
 - G2：P0 全部 golden 迁移到引擎（每个 exact mode 各跑一次）；新增 T05、T06c（引擎）、T06d-cur、T07d、T08、T08b、T22、T23、T27、T30、T31。
 - G3：PROP1–PROP9（PROP2b 自 P3 起，届时 L1/L2 为增量列）；PROP1 **10,000 固定 seed**，每 epoch 精确计数器相等；coverage 门槛（§8.2）全部达到；bounded exhaustive（nightly）深度 6 为 gate（0 违例并报告状态/迁移数），深度 8 只报告；cargo-mutants 作用于 `counting.rs`、`txn.rs`，存活 mutant 全部杀死或书面说明。
-- G5（initial，经 ADR 校准）：在 `multi_support(p_alt=0.3)` 与 `hub` 两种形状、100K revisions / ~300K incidences、单线程下：局部更新（E_visited ≤ 100）commit p99 ≤ 1 ms；CURRENT（L0）p99 ≤ 50 µs；WHY(depth 3) p99 ≤ 200 µs；内存 ≤ 64 B / incidence（不含 payload）。报告附 ShapeStats。
+- G5（initial，经 ADR 校准）：在 `multi_support(p_alt=0.3)` 与 `hub` 两种形状、100K revisions / ~300K incidences、单线程下：局部更新（E_visited ≤ 100）commit p99 ≤ 1 ms；CURRENT（L0）p99 ≤ 50 µs；WHY(depth 3) p99 ≤ 200 µs；内存按 ADR 0005 分范围（不含 payload）：hot（支持索引 + 计数 + 拓扑）≤ 72 B/incidence，inputs ≤ 50 B/incidence，query cache ≤ 49 B/incidence，内存 history ≤ 58 B/每条状态变化，live heap 总量 ≤ 各范围之和；预算 = ⌈1.10 × 两形状实测上界较大者⌉；以计数分配器测得的 live heap 作上界，分类计数不得超过 live heap（否则 INVALID）；RSS 仅报告不设门槛。原 64 B/incidence 整库预算已由 ADR 0005 校准取代。报告附 ShapeStats。
 - G6：§1.2 的 MongoDB→PostgreSQL 场景以 Rust 集成测试形式通过（Cur 依赖的 D3 STALE、Sem 依赖的 D2 PENDING、有替代支持的结论保留）。
 - G8：`docs/SEMANTICS.md` 的 prior-art 一节写明 counting 算法来自 Gupta et al. 1993 / Forbus & de Kleer 1993 Ex 7.5，不作为本项目的主张。
 
@@ -1238,6 +1238,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.4.2 | 2026-10-20 | P1 G5 内存预算经 ADR 0005（项目所有者确认）校准：先压缩存储（下界 292.53 → live heap 181.15 B/incidence），再按 hot / inputs / query cache / history 分范围设预算（⌈1.10 × 实测上界⌉），并以计数分配器 live heap 作可证明的上界；不改变任何语义 |
 | 1.4.1 | 2026-10-19 | P0 执行契约补全：PolicyViolation reason 与 ArtifactNotOpen 检查序同步；明确 Rebind 保留 enabled、确定性 cycle path、PENDING 原因顺序、metadata 收窄及 InvalidMetadata、EventLog v0、MAIN-only、A5 多错排序。见 ADR 0003；不引入后续阶段能力 |
 | 1.4 | 2026-10-19 | 按 `docs/SPEC_REVIEW.md`（R06、R09–R11）与 `docs/SPEC_REVIEW_v1.3.md`（Q01–Q06）修订：Observer 可原子提交 AnchorBroken（输入契约 7，T09t）；Policy 改为按 branch，key 命名空间为唯一全局例外且不泄露信息，跨 branch 去重引入可见性（SD19、输入契约 5，T73、T75）；PROP7 改为读写集充分条件 + canonical 重命名比较口径；A2 Summary 表述与 SD2/3 一致；diff 拆为 l0_flips 与 status_diff（SD8.4、PROP2/2b）；ArtifactId / ArtifactRef / new_artifacts（T09u）；幂等键只记录已提交事务、TxnIdReuse、op_log 一行一 batch；op_log 不含 payload 正文、shred 后可重放（§7，P2 G0 ADR）；§3.5.13 改为禁止“宣称原子”；A5 改为强制约束（enabled 规则 + 禁止 base，T09v） |
 | 1.3 | 2026-10-19 | 第三轮复核 5 条：(1) SD11 增加 Sem-head 条件（Sem 字面量要求当前 head 在对应层成立），SD5 增加 `V_l` 虚拟节点使其可做环检查，O3 关闭，修复“锚点更新验证后再删除 Sem 下游仍 CERTIFIED”；(2) §6.4 证书校验改为逐条全映射 + 聚合 + 重算 vector，新增 Conflicted、ValidRecertified（取代 ValidViaAlternative），strict 检查先于重新认证；(3) SD19 改为“物理全局、逻辑按 branch”：rule 可见性、enabled、ValidationRecord、Artifact、watermark 按 branch，cycle 图按 branch，WHAT_IF 改为 undo 回滚的 dry-run；(4) I5 改为 durable 前缀契约 + `client_txn_id` 幂等与 `txn_status`；(5) §6.1 输入契约：New(k) 引用、ID 分配、revision 身份 (logical, content)、CreateLogical key 规则、通道规则、PolicyDoc 内联与规范 hash；新增 ChannelRestricted、InvalidKey、InvalidPolicy、MissingBlob；新增 T09p–s、T15d/e、T18b、T43b、T47、T72 |

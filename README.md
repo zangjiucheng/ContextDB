@@ -3,7 +3,7 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P1 增量内核已实现，Gate 尚未通过：100K 图内存预算超标，P1 远程 CI 待验证。见 [`docs/gates/P1.md`](docs/gates/P1.md)；P0 Gate 已通过。
+- **当前阶段**：P1 增量内核已实现，本地各层与独立复核通过；内存经压缩后按 ADR 0005 分范围预算通过（live heap 181–189 B/incidence），待远程 CI 确认后关闭 Gate。见 [`docs/gates/P1.md`](docs/gates/P1.md)；P0 Gate 已通过。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
@@ -46,7 +46,7 @@ bash scripts/check.sh
 cargo run --locked -p contextdb-cli --bin ctx -- --help
 ```
 
-检查包括双模式 P0/P1 golden、10,000 seed / 120,000 事务、PROP7、shape 校验、lint、许可证与依赖边界。P1 结果与未通过项见 [`docs/gates/P1-report.md`](docs/gates/P1-report.md)。远程 Linux/macOS [P0 CI 已通过](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)，该结果不代表当前 P1。
+检查包括双模式 P0/P1 golden、10,000 seed / 120,000 事务、PROP7、shape 校验、lint、许可证与依赖边界。P1 结果见 [`docs/gates/P1-report.md`](docs/gates/P1-report.md)。远程 Linux/macOS [P0 CI 已通过](https://github.com/zangjiucheng/ContextDB/actions/runs/39364257458)，该结果不代表当前 P1。
 
 ```sh
 cargo test --release --locked -p contextdb-testkit --test exhaustive -- --ignored --nocapture

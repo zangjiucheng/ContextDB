@@ -1,8 +1,8 @@
 # P1 implementation report — 2026-10-20
 
-**Gate remains open.** Functional implementation and local semantic checks pass.
-The unchanged G5 whole-database memory budget fails; P1 remote Linux/macOS CI is
-not yet available. P2 has not started. [Gate matrix](P1.md),
+**All local gate layers pass.** The G5 memory budget was calibrated per scope by
+ADR 0005 (owner decision) after storage compaction. Gate closure awaits remote
+Linux/macOS CI and the nightly exhaustive/mutation workflow on the compaction commit. [Gate matrix](P1.md),
 [maintenance ADR](../adr/0004-p1-maintenance.md),
 [memory ADR](../adr/0005-p1-memory-budget.md).
 
@@ -61,11 +61,10 @@ merging. This is bounded exploration of that declared universe, not all historie
 | 6 (gate) | 770 | 11275 | 6155 | 5120 | 2562 | 284 | 0 |
 | 8 (report) | 1711 | 30350 | 18104 | 12246 | 9174 | 2818 | 0 |
 
-Mutation history and precise waivers are recorded in [P1-mutations.md](P1-mutations.md).
-The final semantic audit tested 150 mutants: 142 caught, 8 unviable, zero survivors.
-Eight non-semantic retained-memory diagnostic mutants from the unfiltered audit
-are explicitly waived and excluded, not labelled caught. A journal boundary
-survivor was closed by a public Maintainer result-contract test.
+Mutation history is recorded in [P1-mutations.md](P1-mutations.md). The audit
+covers `counting.rs`, `txn.rs`, `arena.rs` and `memory.rs` against the P0, P1 and
+memory-accounting tests. It tested 394 mutants: 361 caught, 33 unviable,
+0 survivors, with no waivers or exclusions.
 
 ## Local G5 measurements
 
@@ -84,22 +83,33 @@ for every possible E_visited<=100 transaction, high-arity rule or structural ins
 
 | Shape | Revisions | Rules | Incidences | Early commit p99 | Tail commit p99 | Tail max E_visited | CURRENT p99 | WHY depth3 p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| multi_support(0.3) | 100000 | 129894 | 329888 | 3.917 us | 3.083 us | 2 | 0.042 us | 1.875 us |
-| hub | 100000 | 99997 | 299991 | 4.083 us | 2.875 us | 0 | 0.042 us | 0.209 us |
+| multi_support(0.3) | 100000 | 129894 | 329888 | 1.666 us | 1.875 us | 2 | 0.042 us | 1.958 us |
+| hub | 100000 | 99997 | 299991 | 1.708 us | 0.917 us | 0 | 0.042 us | 0.209 us |
 
 Both measured latency probes meet initial budgets (commit 1 ms, CURRENT 50 us,
-WHY 200 us). Load times were 290 ms / 254 ms respectively; these are informational.
+WHY 200 us). Load times were 267 ms / 216 ms respectively; these are informational.
 Multi_support has 3 bases / 29897 alternatives / max fanout 29901 / depth 16522;
 hub has 3 bases / 0 alternatives / max fanout 99997 / depth 1.
 
-**Memory FAIL:** retained allocation lower bounds are 292.53 B/incidence for
-multi_support and 314.32 for hub, including inputs, indexes, maintenance, topology,
-query caches and history, excluding payload bodies (none stored in core). The
-64-byte target is unchanged. Allocator/B-tree overhead is omitted, so this is a
-conclusive failure, not a pass estimate. Vec<bool> is correctly counted as byte
-storage in Rust. RSS deltas were 793.85 / 806.28 B/incidence and include freed
-staging pages; they are not used as live-heap accounting. Detailed categories and
-scope options are in ADR 0005; no budget adjustment has been approved.
+**Memory (ADR 0005).** The first P1 build failed the original 64 B/incidence
+whole-database target, with lower bounds of 292.53 (multi_support) and 314.32 (hub).
+The storage was compacted without semantic change; see the ADR for the table.
+The bench then measured live heap with a counting allocator. Category
+accounting is a tested lower bound that never over-counts
+(`tests/memory_accounting.rs`), and each scope's upper bound adds all untracked
+bytes (65,788 B, the probe sample arrays).
+
+| Scope (budget) | multi_support upper | hub upper | Verdict |
+|---|---:|---:|---|
+| hot: indexes + counting + PK (≤ 72 B/inc) | 62.61 | 64.80 | PASS |
+| inputs, no payload (≤ 50 B/inc) | 43.99 | 45.18 | PASS |
+| query cache: memo + full snapshot (≤ 49 B/inc) | 42.91 | 44.09 | PASS |
+| history (≤ 58 B per status change) | 52.65 | 52.65 | PASS |
+| total live heap (≤ Σ budgets) | 181.15 B/inc | 188.87 B/inc | PASS |
+
+RSS deltas are 620.47 and 630.64 B/inc. They include allocator retention after bulk
+staging and are reported only, not gated. The bench exits non-zero on any FAIL,
+UNVERIFIED or INVALID verdict.
 
 ## Independent review and remaining work
 
@@ -110,9 +120,34 @@ retested at 0–10 us. Final cache-patch review independently found no missing d
 24 P1 paranoid tests and 10,000 seeds / 120,000 transactions successfully, and
 recompiled the 100K complete-cache probe (0–22 us across 10 samples). No gate pass is claimed while memory/CI remains open.
 
-Required to close P1: meet the existing memory target through a storage redesign,
-or explicitly approve a revised budget scope/calibration; obtain P1 Linux/macOS CI;
-preserve review closure through any memory redesign. The implementation does not start P2 while these remain open.
+Compaction review (separate non-implementing reviewer; it ran all checks and
+added a 3,000-seed impact/diff cross-check covering 310,199 epoch pairs, with no
+mismatch). It found 0 blockers. Majors, all addressed:
+1. The ADR headroom claim was inaccurate. Budgets now follow ⌈1.10 × max upper⌉.
+2. The bench could mask over-counting. It now reports INVALID and exits non-zero.
+3. The `retained_bytes` mutation waiver had become unjustified. The waiver is
+   removed; an allocator-checked accounting test with fixed category values was
+   added; the mutation scope was extended to `arena.rs` and `memory.rs`.
+4. The gate docs were stale. They are updated here.
+
+Minors addressed:
+- RSS figures are disclosed.
+- The comparison metrics are labelled.
+- The calibration is reproducible through the test.
+- Reference and key offsets are u64, so no panic can occur mid-publication.
+- The PK sentinel is guarded.
+- Lane interning uses a map.
+
+The extended mutation audit also exposed test gaps, now closed:
+- the fast path's key lookup;
+- structural `impact_exact` rollback;
+- CSR equality discrimination.
+
+It also removed the dead `RuleArena.flags` column.
+
+Remaining to close P1: remote Linux/macOS CI and the nightly workflow on the
+compaction commit. (The nightly mutation job previously failed because
+`results/` did not exist; `scripts/mutation.sh` now creates it.)
 
 ## Reproduce
 
@@ -123,6 +158,7 @@ cargo test --release --locked -p contextdb-testkit --features contextdb-core/par
 CONTEXTDB_EXHAUSTIVE_DEPTH=8 cargo test --release --locked -p contextdb-testkit --features contextdb-core/paranoid --test exhaustive -- --ignored --nocapture
 cargo install cargo-mutants --version 27.1.0 --locked
 bash scripts/mutation.sh
+cargo test --locked -p contextdb-testkit --test memory_accounting
 cargo run --release --locked -p contextdb-bench -- multi_support 100000 1000
 cargo run --release --locked -p contextdb-bench -- hub 100000 1000
 ```
