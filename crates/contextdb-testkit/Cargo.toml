@@ -13,3 +13,8 @@ workspace = true
 [dependencies]
 contextdb-model.workspace = true
 contextdb-oracle.workspace = true
+rand_chacha = "=0.9.0"
+rand_core = "=0.9.5"
+
+[dev-dependencies]
+contextdb-core.workspace = true

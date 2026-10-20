@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 contextdb-model.workspace = true
 contextdb-oracle.workspace = true
+blake3 = "=1.8.7"

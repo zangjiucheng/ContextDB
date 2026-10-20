@@ -3,22 +3,23 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0（形式契约与 oracle），已建立 workspace 骨架；语义实现与 Gate 尚未完成。见 [`docs/gates/P0.md`](docs/gates/P0.md)
+- **当前阶段**：P0（形式契约与 oracle）已实现，本地验证及独立复核通过；远程 CI 尚未运行。见 [`docs/gates/P0.md`](docs/gates/P0.md)
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
 
-## 支持的语义（目标，按阶段落地）
+## 已实现的 P0 语义
 
-以下为 SPEC 的目标能力。当前 crate 仅预留边界，`ctx` 只支持 `--help` / `--version`，尚不提供数据库读写或认证。
+Rust API 已提供 `Db::commit`、状态、WHY / WHY_NOT 与确定性 digest。每次成功提交由独立 oracle 全量重建派生快照，查询读取该快照；`ctx` 目前仍只支持 `--help` / `--version`。
 
 - 不可变 revision 和 logical head，强制 CAS
-- 正向、无环的 AND/OR justification，set 语义下的 support counting，只在状态翻转时传播
+- 正向、无环的 AND/OR justification，精确 set support / unsat / witness；增量传播在 P1 实现
 - 四种边：`Pin`、`Cur`、`Sem`、`Ref`；结构支持和语义 PENDING 互相独立
 - **Pin-strict**：`Pin` 指向已被替换的 revision（Evidence 除外）时判为 STALE。需要历史引用就用 Evidence 或 `Ref`，需要跟随新版本就用 `Rebind` 或 `Sem`
 - 事务原子发布，瞬态对读者不可见
-- certified read 和行动前的 certificate 校验
-- code anchors（P5）
+- L0 / L1 / L2 传递认证、语义向量与验证 CAS、输入级 CodeAnchor 通道限制
+- 独立 InputModel、Jacobi / Kahn、EventLog v0、手写 golden 和 1,000 个 ChaCha8 种子验证
+- P0 的 certificate 纯函数只验证 required vector 条目并证明 epoch 无关；完整证书签发和校验在 P3，实现 filesystem code anchors 在 P5
 
 ## 不支持（当前）
 
@@ -45,8 +46,16 @@ bash scripts/check.sh
 cargo run --locked -p contextdb-cli --bin ctx -- --help
 ```
 
-基础检查覆盖格式、lint、构建、测试、许可证与依赖边界，不代表 P0 语义 Gate 通过。
-依赖政策的负例测试独立于未来的 T-matrix / PROP；目前没有已实现的语义测试。
+检查覆盖格式、lint、构建、26 组 golden、3 个 wire 测试、1 个 policy hash 测试、3 个 compile-fail、1,000 seed / 12,000 事务验证、许可证与依赖边界。报告见 [`docs/gates/P0-report.md`](docs/gates/P0-report.md)。远程 Linux/macOS CI 的结果仍待实际运行。
+
+运行 Rust API 示例：
+
+```sh
+cargo run --locked -p contextdb-core --example basic
+```
+
+示例建立 source → derived 规则，撤回 source 后断言两节点翻转和 derived STALE。
+当前状态仅保存在内存；持久化与恢复属于 P2。
 
 研究原型与 `crates/contextdb-dd` 已从主 workspace 排除。R2 的 workspace 独立保留；
 归档的 DBSP 原型需要研究 README 所述补丁源码，主项目构建不依赖它。

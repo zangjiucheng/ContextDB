@@ -2,4 +2,5 @@
 # Cargo metadata includes normal, build, dev, optional, and target-specific edges.
 [core]
 allowed_workspace = ["contextdb-model", "contextdb-oracle"]
-allowed_external = []
+# BLAKE3 runtime/platform dependencies and its C/assembly build helpers.
+allowed_external = ["blake3", "arrayvec", "cfg-if", "constant_time_eq", "cpufeatures", "libc", "cc", "find-msvc-tools", "shlex"]

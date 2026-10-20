@@ -1,4 +1,16 @@
-//! Dependency-free vocabulary for the ContextDB transaction contract.
-//!
-//! Planned phase: P0. This crate currently reserves its workspace boundary.
-//! No database behavior or verification gate is implemented here yet.
+//! Dependency-free transaction vocabulary and versioned interchange records.
+mod contract;
+/// Revision content is immutable: there is no payload replacement operation.
+/// ```compile_fail
+/// let op = contextdb_model::Op::UpdatePayload { rev: contextdb_model::RevisionId(0), content: [0;32] };
+/// ```
+/// Rule conclusions are revisions, never logical heads.
+/// ```compile_fail
+/// let op = contextdb_model::Op::AddRule { conclusion: contextdb_model::LogicalId(0), incidences: vec![], enabled: true };
+/// ```
+pub struct Contract;
+mod status;
+mod wire;
+pub use contract::*;
+pub use status::*;
+pub use wire::*;

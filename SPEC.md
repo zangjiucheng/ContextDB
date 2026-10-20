@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.4 · Date: 2026-10-19 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.4.1 · Date: 2026-10-19 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -149,6 +149,8 @@ S(r)             = base(r) ∨ support_count(r) > 0
 
 **SD9 per-revision 与 Rebind。** S、计数器、各层状态均按 RevisionId 维护；`CURRENT(l)` 报告 `head(l)` 的状态。新 revision 不继承旧 revision 的 justification。`Cur` 依赖失效后的修复：`Rebind(j, from, to)`——前置条件：`from` 是 j 的 premise；`to` 与 `from` 同 logical 且 `to ≠ from`；kind 保持；效果为原子地 `SetRuleEnabled(j,false)` + `AddRule(j 的 premise 中 from→to)`；若新规则与已有规则相同返回 `DuplicateRule`，整个事务拒绝。`Sem` 依赖的修复：提交 ValidationRecord。
 
+Rebind 的新规则继承原规则执行 Rebind 前的 enabled 值；重绑定 disabled 规则不会意外启用它。CycleDetected 的 path 采用按 `Revision(id)`、`Logical(id)`（revision 优先，各自 ID 升序）访问节点及后继的 DFS 首个闭环路径；path 首尾相同。
+
 **SD10 stateless 语义验证（per-rule 键）。** 若规则 j 有 Sem incidence，写入时隐含证明了 `A(j) = sorted[(l(p), p)]`（范围：j 的 Sem premise）。`curvec(j) = [(l, head(l))]`（同一组 logical）。
 
 ```
@@ -213,6 +215,8 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD、outbox 中未投递的 PostToolUse 事件）。若读取结果或 certificate 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。
 
 两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，若闭包内任一 scope 的 watermark 自签发后推进，判为 `Invalid`。
+
+多个 PENDING 原因同时成立时，汇总原因依次为 ObservationLag、StructuralUnknown、Semantic；仍服从 SD13 的 UNAVAILABLE / CONFLICTED / STALE 优先级。P0 的 observation 恒为 N_A；未来维度只在纯函数 golden 中合成。
 
 **SD15 WHY / WHY_NOT 与 witness。** WHY 返回 base 标记与**全部** active 规则；`Ref` 单独列为 non-supporting references。canonical witness：base 优先，否则 RuleId 最小的 active 规则；L1/L2 各用对应层 active 集。WHY_NOT 对每条规则列出：disabled、gate（附 A(j) 与 curvec）、每个失败 incidence（`Unsupported(p)`、`NotCurrent{p, head}`、`SupersededPinned{p, head}`），按深度上限递归。对 principal 未授权的 premise / 规则，仅输出 `Redacted{count}`，不输出 id、payload、witness。
 
@@ -753,6 +757,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
    - 违反以上规则 → `ChannelRestricted{op, channel}`；非 Observer 通道对 CodeAnchor logical 的写操作 → `KindRestricted`。
 8. **Policy**：`SetPolicy{policy: PolicyDoc}` 内联正文，`PolicyDoc{version: 1, require_deps: BTreeSet<RecordKind>}`。content_hash = blake3(规范 JSON：键排序、无空白、kind 以名称字符串升序排列)。未知 version 或非法字段 → `InvalidPolicy`。Policy 按 branch 存储（SD19：fork 时继承，merge 时按三方差分合入）。A5 的检查在 batch 末尾执行，使用最终 staged policy；所谓“新 revision”只指本 batch **新分配**的 RevisionId（去重命中不算），且 Evidence 与 CodeAnchor 不受 A5 约束。
 9. **ObserverWatermark**：`scope: String`（≤ 256 字节），`position: Bytes`（≤ 64 字节，只比较相等），`expected: Option<Bytes>`（`None` 表示该 scope 尚无 watermark）。
+10. **SetMetadata**：dirs 是相对目录路径集合；空集合表示未收窄。目录非空，不能包含空分段、`.`、`..` 或 `*`。已有 dirs 非空时，后续每个目录必须等于或位于某个已有目录之下，且不能恢复为空集合。非法或扩大范围返回 `InvalidMetadata`；tags 不参与派生状态。该错误在引用与通道检查之后、CAS 之前检查。
+11. **P0 EventLog v0**：每行规范 JSON 为 `{"version":0,"batch_hex":"..."}`；batch_hex 是 model 的规范小端二进制编码的十六进制。规范键顺序固定，支持空行，未知 version 拒绝。二进制按声明字段顺序编码，枚举 tag、集合长度与字节边界详见 `docs/EVENTLOG.md`。这是 P0 的测试 trace 格式，P2 durable op_log 另行版本化。P0 仅接受 MAIN branch，其他 branch 返回 UnknownRef。
 
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
@@ -772,7 +778,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `CurvecMoved{rule, seen, current}` | RecordValidation CAS（SD10） | 同名 |
 | `UnknownRef` | 引用不存在的 id / handle | `InvalidArgument` |
 | `InvalidDep` | deps 引用非本会话证书 handle 且非显式 `logical@rev`（P3） | 同名 |
-| `PolicyViolation{kind, logical}` | §2.5 A5（batch 末尾检查） | 同名 |
+| `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}` | §2.5 A5（batch 末尾检查） | 同名 |
+| `InvalidMetadata` | §6.1 输入契约 10 | `InvalidArgument` |
 | `InvalidRebind{reason: NotPremise \| SameRevision}` | SD9 前置条件（不同 logical 为 `LogicalMismatch`） | 同名 |
 | `LogicalExists{key}` | `CreateLogical` 的 key 已存在（任一 branch；不透露其他信息） | `PreconditionFailed` |
 | `ArtifactNotOpen{id}` | Resolve 非 open 的 artifact | 同名 |
@@ -784,7 +791,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `MergeNotCertified{logical, status}` | SD19 `require_certified` merge | 同名 |
 
 **单个 Op 的检查顺序**（规范性；oracle 与 front-end 相同，PROP1 / P0 G3 的错误等价按此判定）：
-`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。一个 batch 返回第一个失败 Op 的第一个失败检查。
+`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
 
 ### 6.3 MCP 工具（`ctx-mcp`）
 
@@ -1231,6 +1238,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.4.1 | 2026-10-19 | P0 执行契约补全：PolicyViolation reason 与 ArtifactNotOpen 检查序同步；明确 Rebind 保留 enabled、确定性 cycle path、PENDING 原因顺序、metadata 收窄及 InvalidMetadata、EventLog v0、MAIN-only、A5 多错排序。见 ADR 0003；不引入后续阶段能力 |
 | 1.4 | 2026-10-19 | 按 `docs/SPEC_REVIEW.md`（R06、R09–R11）与 `docs/SPEC_REVIEW_v1.3.md`（Q01–Q06）修订：Observer 可原子提交 AnchorBroken（输入契约 7，T09t）；Policy 改为按 branch，key 命名空间为唯一全局例外且不泄露信息，跨 branch 去重引入可见性（SD19、输入契约 5，T73、T75）；PROP7 改为读写集充分条件 + canonical 重命名比较口径；A2 Summary 表述与 SD2/3 一致；diff 拆为 l0_flips 与 status_diff（SD8.4、PROP2/2b）；ArtifactId / ArtifactRef / new_artifacts（T09u）；幂等键只记录已提交事务、TxnIdReuse、op_log 一行一 batch；op_log 不含 payload 正文、shred 后可重放（§7，P2 G0 ADR）；§3.5.13 改为禁止“宣称原子”；A5 改为强制约束（enabled 规则 + 禁止 base，T09v） |
 | 1.3 | 2026-10-19 | 第三轮复核 5 条：(1) SD11 增加 Sem-head 条件（Sem 字面量要求当前 head 在对应层成立），SD5 增加 `V_l` 虚拟节点使其可做环检查，O3 关闭，修复“锚点更新验证后再删除 Sem 下游仍 CERTIFIED”；(2) §6.4 证书校验改为逐条全映射 + 聚合 + 重算 vector，新增 Conflicted、ValidRecertified（取代 ValidViaAlternative），strict 检查先于重新认证；(3) SD19 改为“物理全局、逻辑按 branch”：rule 可见性、enabled、ValidationRecord、Artifact、watermark 按 branch，cycle 图按 branch，WHAT_IF 改为 undo 回滚的 dry-run；(4) I5 改为 durable 前缀契约 + `client_txn_id` 幂等与 `txn_status`；(5) §6.1 输入契约：New(k) 引用、ID 分配、revision 身份 (logical, content)、CreateLogical key 规则、通道规则、PolicyDoc 内联与规范 hash；新增 ChannelRestricted、InvalidKey、InvalidPolicy、MissingBlob；新增 T09p–s、T15d/e、T18b、T43b、T47、T72 |
 | 1.2 | 2026-10-19 | 第二轮独立复核 22 条：§6.1 冻结 Op 全集（SetMetadata / OpenArtifact / ResolveArtifact / ObserverWatermark CAS）；§6.2 单 Op 检查顺序与新增错误（InvalidRebind、LogicalExists、WatermarkConflict、NoSemIncidence、CapacityExceeded、MergeNotCertified）；SD13 STALE reason 递归规则与 semantic 维度 N_A；§2.5 A3–A5 可执行化，PolicyViolation 改为纯事务错误；§3.3 digest 定义；§3.4 seed 补 push(conclusion)；Batch 带 channel（P0 起）；SD7 输入层含全部 artifact 与 metadata；T62 oracle/引擎拆分；新增 T09n、T09o；Motik Ex.5 内联；P0 gate 与 docs/gates/P0.md 对齐 |
