@@ -49,6 +49,7 @@ impl Rng {
         self.0
     }
 }
+type CasStep = (LogicalId, RevisionId, RevisionId, Epoch);
 fn session(c: &mut Client) -> SessionId {
     let r = c.call(&Request::SessionStart {
         harness: "stress".into(),
@@ -78,10 +79,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let clients: usize = args.first().and_then(|v| v.parse().ok()).unwrap_or(8);
     let seconds: u64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(10);
-    let dir = args
-        .get(2)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("ctxd-stress-{}", std::process::id())));
+    let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("ctxd-stress-{}", std::process::id()))
+    });
     let _ = std::fs::remove_dir_all(&dir);
     let daemon = Daemon::start(&dir, &Options::default()).expect("start");
     let agent_path = daemon.socket(Channel::Agent).to_path_buf();
@@ -104,11 +104,14 @@ fn main() -> ExitCode {
             adopt_as_base: true,
             client_txn_id: None,
         });
-        assert!(matches!(r.map(|e| e.response), Ok(Response::Committed { .. })));
+        assert!(matches!(
+            r.map(|e| e.response),
+            Ok(Response::Committed { .. })
+        ));
     }
     let counts = Arc::new(Counts::default());
     // (logical, expected, new, epoch) per successful CAS.
-    let chain: Arc<Mutex<Vec<(LogicalId, RevisionId, RevisionId, Epoch)>>> = Arc::default();
+    let chain: Arc<Mutex<Vec<CasStep>>> = Arc::default();
     // (epoch, revision, state) samples for the replay check.
     let samples: Arc<Mutex<Vec<(Epoch, RevisionId, NodeState)>>> = Arc::default();
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -157,8 +160,11 @@ fn main() -> ExitCode {
                                 counts.other.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             };
-                            if n % 16 == 0 {
-                                samples.lock().unwrap().push((epoch, head.rev, head.state.clone()));
+                            if n.is_multiple_of(16) {
+                                samples
+                                    .lock()
+                                    .unwrap()
+                                    .push((epoch, head.rev, head.state.clone()));
                             }
                             counts.attempts.fetch_add(1, Ordering::Relaxed);
                             let r = c.call(&Request::Record {
@@ -199,10 +205,15 @@ fn main() -> ExitCode {
                         _ => {
                             // Coupled move: one batch adds a revision to both and
                             // moves both heads (CAS on both).
-                            let (Some((_, a)), Some((_, b))) = (read(&mut c, s, "pair-a"), read(&mut c, s, "pair-b")) else {
+                            let (Some((_, a)), Some((_, b))) =
+                                (read(&mut c, s, "pair-a"), read(&mut c, s, "pair-b"))
+                            else {
                                 continue;
                             };
-                            let (ba, bb) = (format!("a {t} {n}").into_bytes(), format!("b {t} {n}").into_bytes());
+                            let (ba, bb) = (
+                                format!("a {t} {n}").into_bytes(),
+                                format!("b {t} {n}").into_bytes(),
+                            );
                             let batch = Batch::new(vec![
                                 Op::AddRevision {
                                     logical: a.logical.into(),
@@ -225,7 +236,13 @@ fn main() -> ExitCode {
                                     new: RevRef::New(1),
                                 },
                             ]);
-                            match admin.call(&Request::Raw { blobs: vec![ba, bb], batch }).map(|e| e.response) {
+                            match admin
+                                .call(&Request::Raw {
+                                    blobs: vec![ba, bb],
+                                    batch,
+                                })
+                                .map(|e| e.response)
+                            {
                                 Ok(Response::Committed { .. }) => {
                                     counts.coupled_moves.fetch_add(1, Ordering::Relaxed);
                                 }
@@ -258,7 +275,8 @@ fn main() -> ExitCode {
         }
     }
     // Replay check against the durable log (offline open after shutdown).
-    let (store, _) = Store::open(StdDisk::default(), Path::new(&dir), &OpenOptions::default()).expect("reopen");
+    let (store, _) =
+        Store::open(StdDisk::default(), Path::new(&dir), &OpenOptions::default()).expect("reopen");
     let reader = store.log_reader();
     let mut samples = samples.lock().unwrap().clone();
     samples.sort_by_key(|(e, _, _)| *e);
@@ -278,7 +296,8 @@ fn main() -> ExitCode {
         c.conflicts.load(Ordering::Relaxed),
         c.other.load(Ordering::Relaxed),
     );
-    let outcome_gap = attempts.saturating_sub(successes + conflicts) as i64 - other.min(attempts) as i64;
+    let outcome_gap =
+        attempts.saturating_sub(successes + conflicts) as i64 - other.min(attempts) as i64;
     let violations = c.violations.load(Ordering::Relaxed) + chain_breaks + replay_mismatch;
     let writes = successes + c.coupled_moves.load(Ordering::Relaxed);
     println!(

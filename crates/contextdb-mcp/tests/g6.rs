@@ -12,10 +12,7 @@ use contextdb_mcp::{Backend, Server};
 use contextdb_model::*;
 use contextdb_store::{OpenOptions, SimDisk, Store, session::SessionLog};
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 const AGENT: Identity = Identity {
     channel: Channel::Agent,
@@ -32,13 +29,7 @@ fn service() -> Arc<Service<SimDisk>> {
     let dir = Path::new("/db");
     let (store, _) = Store::open(disk.clone(), dir, &OpenOptions::default()).unwrap();
     let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
-    Arc::new(Service::new(
-        actor::spawn(store).unwrap(),
-        disk,
-        PathBuf::from(dir),
-        log,
-        events,
-    ))
+    Arc::new(Service::new(actor::spawn(store).unwrap(), log, events))
 }
 struct Agent {
     server: Server<InProcess>,

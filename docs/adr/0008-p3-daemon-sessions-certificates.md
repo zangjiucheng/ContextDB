@@ -1,6 +1,6 @@
 # ADR 0008 — P3 daemon, sessions, certificates and MCP
 
-Status: **Accepted (revision 3.2)**, 2026-10-20, for P3 G0. A non-implementing reviewer found 5 blockers, 14 majors and 12 minors in revision 1 (§14 maps them). In revision 2 it found 1 blocker, 7 majors and 9 minors, N1–N17 (§15 maps them). Revision 3 drew no blockers and four text-level majors, R1–R4, which revision 3.1 resolves (§16). The reviewer's confirmation closed R1–R4 and raised one more major, N-R3a, now amended. The reviewer stated that G0 is acceptable with that amendment and that no blockers remain.
+Status: **Accepted (revision 3.2)**, 2026-10-20, for P3 G0; **revision 3.3** adds the §17 G5 amendment (payload packs, ordered syncs), pending the independent P3 review. A non-implementing reviewer found 5 blockers, 14 majors and 12 minors in revision 1 (§14 maps them). In revision 2 it found 1 blocker, 7 majors and 9 minors, N1–N17 (§15 maps them). Revision 3 drew no blockers and four text-level majors, R1–R4, which revision 3.1 resolves (§16). The reviewer's confirmation closed R1–R4 and raised one more major, N-R3a, now amended. The reviewer stated that G0 is acceptable with that amendment and that no blockers remain.
 
 ## 0. Owner decisions (2026-10-20)
 
@@ -483,3 +483,51 @@ Each milestone keeps G1 green and lands its tests.
 - m5 → §8.5 supersession diffs. The "uncertifiable logical stays at warn" case is flagged for P4, where `deny` exists.
 - m6 → §11 G4 loom scope.
 - N-R3a (confirmation round) → §8.5 step 1: superseded entries are skipped and reported. The strict window of a shared vector item starts at the earliest `since_epoch` (§8.5 step 2).
+
+## 17. Amendment: payload packs and ordered syncs (revision 3.3, G5)
+
+The first G5 measurements (fullfsync on) showed that the write path paid far more than the one op_log sync per group that §3.2 intends. With 8 clients, write p50 was 98 ms and only 81 tx/s went through. Three causes were measured and fixed; none changes a semantic or durability promise.
+
+1. **Writers pinned replicas.** A write request held its snapshot while waiting for its group, so the actor could never reclaim the standby replica and cloned the Db on every group. Write paths now resolve deps and then drop the snapshot before waiting (§3.3). The indexer likewise drops its snapshot before it touches SQLite. Clone fallbacks fell from one per group to 1 per run.
+2. **The session-log writer synced every batch.** It now follows §4 as written: it syncs at once when a flush is requested or a durable event (`SessionStart`, `CertIssued`, `SessionEnd`) is pending, and otherwise within 100 ms. Read events had been forcing an F_FULLFSYNC that stalled the op_log.
+3. **Payloads cost two full syncs each, plus file creation.** On APFS, creating and renaming one file per payload costs about 2–3 ms while another sync is in flight (scratch microbenchmark: 7 payload files ≈ 67 ms under contention versus ≈ 7 ms appended to one file).
+
+**Payload packs (supersedes the file-per-blob layout of ADR 0006 §5 for new writes).**
+- New payloads are appended to `blobs/pack-NNNNNNNN` as records `"CXBP" | len u32 LE | blake3(bytes) | bytes`.
+- A record is valid exactly when its hash matches its bytes. The open-time scan therefore trusts no length: after an invalid header or a mismatching hash it resyncs at the next magic. Torn tails, garbage and media damage cost only the damaged records, which read as `Missing` or `Corrupt`. Nothing is ever truncated.
+- A process appends only to segments it created, starting a new one after `segment_target` bytes.
+- Presence (ADR 0006 §5, review n1) is unchanged in meaning: a hash counts as present only after the put that wrote it returned, or, at open, when a verifying record or a legacy file exists.
+- Legacy per-file blobs remain readable and present. A corrupt payload is replaced by the next put of the same bytes, and the newest verifying record wins at open.
+- Readers locate payloads through a shared index, the counterpart of `LogIndex`, so they never touch the actor.
+- The index costs about 48 B per payload (hash plus location) plus HashMap overhead. Like the presence set, it sits in the store, outside the Db scopes of ADR 0009.
+
+**Ordered syncs.** `Durability` gains `sync_weak` and `sync_dir_weak`.
+- On macOS they are `F_BARRIERFSYNC`, which costs about 0.4 ms against about 5 ms for `F_FULLFSYNC`. The bytes reach media no later than anything written after the call. Elsewhere they are fsync(2), which is at least as strong.
+- `Store::stage_blobs` appends a group's new payloads to the active pack, issues one ordered sync, and issues an ordered `sync_dir` when the segment is new. The actor then runs `commit_group`, whose op_log `F_FULLFSYNC` flushes the whole drive cache.
+- So a frame can never reach media ahead of its payloads, and the payloads are durable before any reply is sent (I5).
+- `put_blob`/`put_blobs` (non-daemon callers) add a full sync and stay durable on return.
+- A group whose batches are all rejected leaves staged payloads that no frame references, which is harmless.
+
+**Model and tests.**
+- SimDisk tracks ordered state separately. A full sync anywhere promotes it.
+- On a crash, either the ordered state reached media, or it did not, and then neither did any unsynced byte written after it. That is a subset of real outcomes.
+- `g4_staged_blobs_never_trail_their_frame` crashes at every step: ordered sync, ordered dir sync, append and op_log sync, under all four tail fates. A surviving frame always finds its payloads.
+- `g4_staged_harness_detects_a_missing_barrier` shows the harness fails when payload bytes are left unsynced.
+- `g4_blob_write` covers each pack step. `parse_skips_damage_and_resyncs` covers damage, garbage, torn tails and a payload containing the magic.
+
+**Result (local M-series Mac, `mcp_bench`, 20 s per cell).**
+
+| clients | fullfsync | read p95 ms | write p50 ms | write p95 ms | write tx/s |
+|---:|---|---:|---:|---:|---:|
+| 1 | on | 0.59 | 5.62 | 10.93 | 153 |
+| 8 | on | 2.47 | 11.99 | 19.06 | 597 |
+| 32 | on | 0.67 | 13.69 | 18.96 | 2,193 |
+| 128 | on | 1.69 | 26.52 | 40.17 | 4,521 |
+| 1 | off | 0.09 | 0.56 | 0.91 | 1,539 |
+| 8 | off | 0.19 | 2.83 | 4.55 | 2,767 |
+| 32 | off | 0.61 | 6.74 | 10.88 | 4,466 |
+| 128 | off | 0.99 | 18.68 | 27.35 | 6,533 |
+
+Before the amendment the 8-client fullfsync-on cell was 98 / 121 ms at 81 tx/s, and the 128-client cell was 1,343 / 1,438 ms at 95 tx/s.
+
+**Remaining misses (reported, §11).** Write p95 misses 15 ms with fullfsync on at 8, 32 and 128 clients, and with it off at 128 clients. In this closed-loop benchmark, latency at N clients is N divided by throughput (Little's law). A 15 ms p95 at 128 clients would need over 8,500 tx/s, four times the throughput target. With one ~5 ms drive flush per group, a write waits for the in-flight group and then its own. Any calibration of these cells needs the owner's decision and the independent P3 review (SPEC §4.2).

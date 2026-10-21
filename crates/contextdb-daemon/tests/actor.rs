@@ -108,3 +108,20 @@ fn rejected_batches_publish_nothing_and_shutdown_stops_the_actor() {
     let (blobs, b) = create("late", b"late");
     assert_eq!(h.write(blobs, b).err(), Some(SubmitError::Stopped));
 }
+#[test]
+fn sequential_writes_reclaim_replicas_without_clones() {
+    let h = actor::spawn(store()).unwrap();
+    for n in 0..30 {
+        let (blobs, b) = create(&format!("s{n}"), format!("s {n}").as_bytes());
+        h.write(blobs, b).unwrap().unwrap();
+    }
+    let clones = h
+        .stats
+        .clone_fallbacks
+        .load(std::sync::atomic::Ordering::Relaxed);
+    // Only the first group (no spare yet) may clone.
+    assert!(
+        clones <= 1,
+        "{clones} clone fallbacks for 30 sequential writes"
+    );
+}

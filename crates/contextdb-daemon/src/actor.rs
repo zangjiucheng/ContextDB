@@ -113,6 +113,9 @@ struct Actor<D: Durability> {
     store: Store<D>,
     published: Arc<ArcSwap<Snapshot<D>>>,
     spare: Option<Arc<Snapshot<D>>>,
+    /// Newly applied batches of the previous group, with their results: the
+    /// spare is two groups behind the store and must replay them too.
+    previous: Vec<(Batch, CommitResult)>,
     stats: Arc<ActorStats>,
 }
 /// Starts the actor thread over an opened store.
@@ -132,6 +135,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         store,
         published: published.clone(),
         spare: None,
+        previous: Vec::new(),
         stats: stats.clone(),
     };
     std::thread::Builder::new()
@@ -198,14 +202,13 @@ impl<D: Durability + Clone> Actor<D> {
     }
     fn commit(&mut self, writes: Vec<WriteRequest>) {
         // Payloads first: a blob failure poisons the store, which fails the group.
-        let mut blob_error = None;
-        for w in &writes {
-            for b in &w.blobs {
-                if let Err(e) = self.store.put_blob(b) {
-                    blob_error = Some(e);
-                }
-            }
-        }
+        // Ordered, not flushed: the group's op_log sync makes them durable
+        // (ADR 0008 §17).
+        let blobs: Vec<&[u8]> = writes
+            .iter()
+            .flat_map(|w| w.blobs.iter().map(Vec::as_slice))
+            .collect();
+        let blob_error = self.store.stage_blobs(&blobs).err();
         let batches: Vec<Batch> = writes.iter().map(|w| w.batch.clone()).collect();
         let before = self.store.epoch();
         let results = match blob_error {
@@ -240,15 +243,23 @@ impl<D: Durability + Clone> Actor<D> {
             .collect();
         fresh.sort_by_key(|(e, _, _)| *e);
         fresh.dedup_by_key(|(e, _, _)| *e);
+        let current: Vec<(Batch, CommitResult)> = fresh
+            .iter()
+            .map(|(_, b, r)| ((*b).clone(), (*r).clone()))
+            .collect();
+        // The spare was published one group ago, so it is at the state before
+        // the previous group: replay the previous group, then this one.
+        let previous = std::mem::take(&mut self.previous);
         let replica = self.reclaim().and_then(|mut db| {
-            for (_, b, r) in &fresh {
+            for (b, r) in previous.iter().chain(&current) {
                 let replayed = db.commit_with(b, &AllPresent).ok()?;
-                if replayed != **r {
+                if replayed != *r {
                     return None;
                 }
             }
             Some(db)
         });
+        self.previous = current;
         let replica = match replica {
             Some(db) => db,
             None => {

@@ -34,6 +34,17 @@ pub trait Durability: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn sync(&self, path: &Path) -> io::Result<()>;
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
+    /// Ordered sync (F_BARRIERFSYNC on macOS): the file's bytes reach media
+    /// no later than anything written after this call, and are durable once
+    /// a later full `sync`/`sync_dir` completes, since F_FULLFSYNC flushes the
+    /// whole drive cache (ADR 0006 §5 as amended by ADR 0008 §17).
+    fn sync_weak(&self, path: &Path) -> io::Result<()> {
+        self.sync(path)
+    }
+    /// Ordered `sync_dir`, with the same guarantee as `sync_weak`.
+    fn sync_dir_weak(&self, dir: &Path) -> io::Result<()> {
+        self.sync_dir(dir)
+    }
     /// Renames a directory; durable after `sync_dir` of its parent.
     fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>>;
@@ -58,6 +69,17 @@ impl StdDisk {
         } else {
             nix::unistd::fsync(file).map_err(io::Error::from)
         }
+    }
+    /// F_BARRIERFSYNC where available; elsewhere fsync(2), which is at least
+    /// as strong.
+    fn barrier_file(&self, file: &std::fs::File) -> io::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        if self.full_sync {
+            return nix::fcntl::fcntl(file, nix::fcntl::FcntlArg::F_BARRIERFSYNC)
+                .map(drop)
+                .map_err(io::Error::from);
+        }
+        nix::unistd::fsync(file).map_err(io::Error::from)
     }
 }
 struct StdLock(#[allow(dead_code)] std::fs::File);
@@ -120,6 +142,12 @@ impl Durability for StdDisk {
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         self.sync_file(&std::fs::File::open(dir)?)
     }
+    fn sync_weak(&self, path: &Path) -> io::Result<()> {
+        self.barrier_file(&std::fs::File::open(path)?)
+    }
+    fn sync_dir_weak(&self, dir: &Path) -> io::Result<()> {
+        self.barrier_file(&std::fs::File::open(dir)?)
+    }
     fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
     }
@@ -165,6 +193,10 @@ struct SimState {
     durable: BTreeMap<PathBuf, BTreeMap<String, usize>>,
     dirs: BTreeSet<PathBuf>,
     locks: BTreeSet<PathBuf>,
+    /// Bytes ordered by `sync_weak`, per inode, and namespaces ordered by
+    /// `sync_dir_weak`, awaiting the next full sync anywhere on the disk.
+    weak: BTreeMap<usize, Vec<u8>>,
+    weak_dirs: BTreeMap<PathBuf, BTreeMap<String, usize>>,
     /// Test fault: every `sync` and `sync_dir` becomes a no-op.
     syncs_disabled: bool,
     /// Test fault: the next mutating call fails with an I/O error.
@@ -225,6 +257,15 @@ impl SimDisk {
     pub fn fail_next(&self, op: &'static str) {
         self.state().fail_next = Some(op);
     }
+    /// A full sync flushes the drive cache: every weakly synced file becomes
+    /// durable with the bytes it had when it was weakly synced.
+    fn barrier(s: &mut SimState) {
+        for (i, data) in std::mem::take(&mut s.weak) {
+            s.inodes[i].synced = data;
+        }
+        let dirs = std::mem::take(&mut s.weak_dirs);
+        s.durable.extend(dirs);
+    }
     fn check_fault(s: &mut SimState, op: &'static str) -> io::Result<()> {
         if s.fail_next == Some(op) {
             s.fail_next = None;
@@ -234,8 +275,11 @@ impl SimDisk {
     }
     /// Durable state after a crash. `seed` drives the fate of each unsynced
     /// region deterministically.
+    ///
+    /// Ordered (`sync_weak`) state either reached media, or did not and then,
+    /// by the barrier, nothing written after it did either: all unsynced
+    /// tails are dropped too (a subset of real outcomes, ADR 0008 §17).
     pub fn crash(&self, fate: TailFate, seed: u64) -> SimDisk {
-        let s = self.state();
         let mut rng = seed ^ 0x9E37_79B9_7F4A_7C15;
         let mut next = move || {
             rng ^= rng << 13;
@@ -243,6 +287,15 @@ impl SimDisk {
             rng ^= rng << 17;
             rng
         };
+        let mut s = self.state();
+        let mut keep_tails = true;
+        if !s.weak.is_empty() || !s.weak_dirs.is_empty() {
+            if next() % 2 == 0 {
+                Self::barrier(&mut s);
+            } else {
+                keep_tails = false;
+            }
+        }
         let mut out = SimState {
             dirs: s.dirs.clone(),
             durable: s.durable.clone(),
@@ -255,7 +308,7 @@ impl SimDisk {
                     let node = &s.inodes[*inode];
                     let mut data = node.synced.clone();
                     // Unsynced suffix of an append-only extension.
-                    if node.data.len() > data.len() && node.data.starts_with(&data) {
+                    if keep_tails && node.data.len() > data.len() && node.data.starts_with(&data) {
                         let tail = &node.data[data.len()..];
                         match fate {
                             TailFate::Torn => {
@@ -425,9 +478,36 @@ impl Durability for SimDisk {
             return Ok(());
         }
         let i = *s.live.get(path).ok_or_else(|| not_found(path))?;
+        Self::barrier(&mut s);
         // The file's bytes become durable; its name needs `sync_dir`.
         let node = &mut s.inodes[i];
         node.synced = node.data.clone();
+        Ok(())
+    }
+    fn sync_weak(&self, path: &Path) -> io::Result<()> {
+        let mut s = self.state();
+        Self::check_fault(&mut s, "sync_weak")?;
+        if s.syncs_disabled {
+            return Ok(());
+        }
+        let i = *s.live.get(path).ok_or_else(|| not_found(path))?;
+        let data = s.inodes[i].data.clone();
+        s.weak.insert(i, data);
+        Ok(())
+    }
+    fn sync_dir_weak(&self, dir: &Path) -> io::Result<()> {
+        let mut s = self.state();
+        Self::check_fault(&mut s, "sync_dir_weak")?;
+        if s.syncs_disabled {
+            return Ok(());
+        }
+        let entries = s
+            .live
+            .iter()
+            .filter(|(p, _)| parent(p) == dir)
+            .map(|(p, i)| (name(p), *i))
+            .collect();
+        s.weak_dirs.insert(dir.to_path_buf(), entries);
         Ok(())
     }
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
@@ -442,6 +522,7 @@ impl Durability for SimDisk {
             .filter(|(p, _)| parent(p) == dir)
             .map(|(p, i)| (name(p), *i))
             .collect();
+        Self::barrier(&mut s);
         s.durable.insert(dir.to_path_buf(), entries);
         Ok(())
     }

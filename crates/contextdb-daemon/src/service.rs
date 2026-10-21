@@ -16,7 +16,6 @@ use contextdb_store::{
 };
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -56,8 +55,6 @@ enum Writer {
 }
 pub struct Service<D: Durability> {
     pub actor: ActorHandle<D>,
-    dir: PathBuf,
-    disk: D,
     sessions: Mutex<BTreeMap<SessionId, Arc<Mutex<Session>>>>,
     writer: Mutex<mpsc::Sender<Writer>>,
     recall: Arc<Mutex<RecallIndex>>,
@@ -125,20 +122,12 @@ fn handle_of(cert: &Certificate, index: usize) -> String {
 }
 impl<D: Durability + Clone + 'static> Service<D> {
     /// Starts the session-log writer and replays the session log into memory.
-    pub fn new(
-        actor: ActorHandle<D>,
-        disk: D,
-        dir: PathBuf,
-        log: SessionLog<D>,
-        events: Vec<SessionEvent>,
-    ) -> Self {
-        Self::with_recall(actor, disk, dir, log, events, None)
+    pub fn new(actor: ActorHandle<D>, log: SessionLog<D>, events: Vec<SessionEvent>) -> Self {
+        Self::with_recall(actor, log, events, None)
     }
     /// As `new`, with the FTS5 recall projection in `recall_path` (memory if None).
     pub fn with_recall(
         actor: ActorHandle<D>,
-        disk: D,
-        dir: PathBuf,
         log: SessionLog<D>,
         events: Vec<SessionEvent>,
         recall_path: Option<&std::path::Path>,
@@ -150,16 +139,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         ));
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let (actor, disk, dir, recall, stop) = (
-                actor.clone(),
-                disk.clone(),
-                dir.clone(),
-                recall.clone(),
-                stop.clone(),
-            );
+            let (actor, recall, stop) = (actor.clone(), recall.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("ctxd-indexer".into())
-                .spawn(move || indexer(actor, disk, dir, recall, stop))
+                .spawn(move || indexer(actor, recall, stop))
                 .expect("indexer thread");
         }
         let (tx, rx) = mpsc::channel();
@@ -169,8 +152,6 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .expect("session writer thread");
         let service = Self {
             actor,
-            dir,
-            disk,
             sessions: Mutex::new(BTreeMap::new()),
             writer: Mutex::new(tx),
             recall,
@@ -255,13 +236,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// Handles one request on the given snapshot-consistent view.
     pub fn handle(&self, id: Identity, req: Request) -> Envelope {
         let snap = self.actor.snapshot();
-        let response = self.dispatch(id, req, &snap);
-        Envelope {
-            epoch: snap.epoch,
-            response,
-        }
+        let epoch = snap.epoch;
+        let response = self.dispatch(id, req, snap);
+        Envelope { epoch, response }
     }
-    fn dispatch(&self, id: Identity, req: Request, snap: &Arc<Snapshot<D>>) -> Response {
+    /// Takes the snapshot by value: write paths release it before waiting for
+    /// their group, so a queued writer never pins a replica the actor wants
+    /// to reclaim (ADR 0008 §3.3).
+    fn dispatch(&self, id: Identity, req: Request, snap: Arc<Snapshot<D>>) -> Response {
         let db = &snap.db;
         match req {
             Request::SessionStart {
@@ -322,12 +304,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 scope,
                 mode,
                 limit,
-            } => self.recall(session, &query, &scope, mode, limit as usize, snap),
+            } => self.recall(session, &query, &scope, mode, limit as usize, &snap),
             Request::Read {
                 session,
                 target,
                 mode,
-            } => self.read(session, &target, mode, snap),
+            } => self.read(session, &target, mode, &snap),
             Request::Record {
                 session,
                 kind,
@@ -366,7 +348,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 carry_rules,
                 reason,
                 client_txn_id,
-                db,
+                snap,
             ),
             Request::Why { target, depth } => match self.resolve_plain(&target, db) {
                 Ok((_, r)) => match db.why_depth(r, depth as usize) {
@@ -390,6 +372,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => r,
             },
             Request::ImpactBatch { batch } => {
+                drop(snap);
                 let mut batch = batch;
                 batch.channel = id.channel;
                 batch.principal = id.principal;
@@ -409,7 +392,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 session,
                 cert_id,
                 live_pos,
-            } => self.check(session, cert_id, live_pos.into_iter().collect(), snap),
+            } => self.check(session, cert_id, live_pos.into_iter().collect(), &snap),
             Request::Diff { from, to } => {
                 let result = if from.min(to) >= db.initial_epoch() {
                     db.diff(from, to)
@@ -456,6 +439,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 curvec_seen,
                 validator,
             } => {
+                drop(snap);
                 // Human validation only (ADR 0008 §0.4).
                 if id.channel != Channel::Admin {
                     return err(
@@ -472,6 +456,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 self.commit(id, Vec::new(), batch, None)
             }
             Request::Raw { blobs, batch } => {
+                drop(snap);
                 if id.channel == Channel::Agent {
                     return err(
                         "ChannelRestricted",
@@ -756,7 +741,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return err("NotCertified", format!("{:?} {:?}", l, summary));
         }
         let content = db.revision_content(r).expect("existing revision");
-        let payload = match contextdb_store::read_blob(&self.disk, &self.dir, &content) {
+        let payload = match snap.log.read_blob(&content) {
             Payload::Available(bytes) => Some(bytes),
             Payload::Unavailable(_) => None,
         };
@@ -825,7 +810,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         deps: Vec<Dep>,
         adopt_as_base: bool,
         txn: Option<[u8; 16]>,
-        snap: &Arc<Snapshot<D>>,
+        snap: Arc<Snapshot<D>>,
     ) -> Response {
         let Some(s) = self.session(&session) else {
             return err("UnknownSession", "unknown session");
@@ -834,6 +819,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(v) => v,
             Err(r) => return r,
         };
+        drop(snap);
         let content = *blake3::hash(&body).as_bytes();
         let mut ops = match target {
             WriteTarget::Create { key, scope_lane } => vec![Op::CreateLogical {
@@ -880,7 +866,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         carry_rules: bool,
         reason: String,
         txn: Option<[u8; 16]>,
-        db: &Db,
+        snap: Arc<Snapshot<D>>,
     ) -> Response {
         if self.session(&session).is_none() {
             return err("UnknownSession", "unknown session");
@@ -901,7 +887,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if carry_rules {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
-            for (_, enabled, premises, _) in db.rules_concluding(expected_head) {
+            for (_, enabled, premises, _) in snap.db.rules_concluding(expected_head) {
                 if enabled {
                     ops.push(Op::AddRule {
                         conclusion: RevRef::New(0),
@@ -914,6 +900,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
             }
         }
+        drop(snap);
         let txn = txn.unwrap_or_else(random_id);
         let response = self.commit(id, vec![body], Batch::new(ops), Some(txn));
         if let Response::Committed { result } = &response {
@@ -1140,39 +1127,72 @@ fn read_event(session: SessionId, e: &LedgerEntry) -> SessionEvent {
 }
 /// The session-log writer: one FIFO queue, one synced group per drain, so at
 /// most one group is ever unsynced (ADR 0008 §4).
+/// Session-log writer (ADR 0008 §5): syncs at once when a durable event
+/// (`SessionStart`, `CertIssued`, `SessionEnd`) or a flush is pending, and
+/// otherwise at most every [`LAZY_SYNC`], so read events never put a full
+/// sync in the way of the op_log.
 fn writer<D: Durability>(mut log: SessionLog<D>, rx: mpsc::Receiver<Writer>) {
-    while let Ok(first) = rx.recv() {
-        let mut events = Vec::new();
-        let mut waiters = Vec::new();
-        let mut take = |m: Writer| match m {
-            Writer::Events(e) => events.extend(e),
-            Writer::Flush(w) => waiters.push(w),
+    let mut events = Vec::new();
+    let mut waiters = Vec::new();
+    let mut since: Option<std::time::Instant> = None;
+    loop {
+        let urgent = !waiters.is_empty()
+            || events.iter().any(|e| {
+                matches!(
+                    e,
+                    SessionEvent::Start { .. }
+                        | SessionEvent::CertIssued { .. }
+                        | SessionEvent::End { .. }
+                )
+            });
+        let message = match since {
+            _ if urgent => rx.try_recv().map_err(|e| match e {
+                mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+                mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+            }),
+            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            Some(t) => rx.recv_timeout(LAZY_SYNC.saturating_sub(t.elapsed())),
         };
-        take(first);
-        while let Ok(m) = rx.try_recv() {
-            take(m);
+        match message {
+            Ok(Writer::Events(e)) => {
+                since.get_or_insert_with(std::time::Instant::now);
+                events.extend(e);
+                continue;
+            }
+            Ok(Writer::Flush(w)) => {
+                waiters.push(w);
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = log.append_group(&events);
+                return;
+            }
         }
-        let result = log.append_group(&events);
-        for w in waiters {
+        let result = log.append_group(&std::mem::take(&mut events));
+        since = None;
+        for w in waiters.drain(..) {
             let _ = w.send(result.clone());
         }
     }
 }
+const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Keeps the recall projection up to date with published snapshots: the
 /// logicals whose heads moved since the indexed epoch are reindexed (full
 /// rebuild when the projection is ahead of the log or empty).
 fn indexer<D: Durability>(
     actor: ActorHandle<D>,
-    disk: D,
-    dir: PathBuf,
     recall: Arc<Mutex<RecallIndex>>,
     stop: Arc<AtomicBool>,
 ) {
-    let text = |db: &Db, l: LogicalId| -> Option<(LogicalId, String, RecordKind, String, String)> {
+    let text = |snap: &Snapshot<D>,
+                l: LogicalId|
+     -> Option<(LogicalId, String, RecordKind, String, String)> {
+        let db = &snap.db;
         let (key, kind, scope) = db.logical_info(l)?;
         let content = db.revision_content(db.head(l)?).ok()?;
-        let body = match contextdb_store::read_blob(&disk, &dir, &content) {
+        let body = match snap.log.read_blob(&content) {
             Payload::Available(b) => {
                 let mut s = String::from_utf8_lossy(&b).into_owned();
                 s.truncate(64 * 1024);
@@ -1190,6 +1210,9 @@ fn indexer<D: Durability>(
             .watermark()
             .unwrap_or(Epoch(0));
         if indexed == snap.epoch {
+            // Never hold a snapshot while idle: it would keep the actor from
+            // reclaiming that replica (forcing a clone per group, ADR 0008 §3.3).
+            drop(snap);
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
@@ -1208,7 +1231,9 @@ fn indexer<D: Durability>(
             }
             t.into_iter().collect()
         };
-        let entries: Vec<_> = touched.into_iter().filter_map(|l| text(db, l)).collect();
-        let _ = recall.lock().expect("recall").update(snap.epoch, &entries);
+        let entries: Vec<_> = touched.into_iter().filter_map(|l| text(&snap, l)).collect();
+        let epoch = snap.epoch;
+        drop(snap);
+        let _ = recall.lock().expect("recall").update(epoch, &entries);
     }
 }

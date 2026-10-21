@@ -8,7 +8,7 @@ use contextdb_daemon::{
 };
 use contextdb_model::*;
 use contextdb_store::{OpenOptions, SimDisk, Store, session::SessionLog};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const AGENT: Identity = Identity {
     channel: Channel::Agent,
@@ -27,7 +27,7 @@ fn service(disk: &SimDisk) -> Service<SimDisk> {
     let (store, _) = Store::open(disk.clone(), dir, &OpenOptions::default()).unwrap();
     let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
     let actor = actor::spawn(store).unwrap();
-    Service::new(actor, disk.clone(), PathBuf::from(dir), log, events)
+    Service::new(actor, log, events)
 }
 fn call(s: &Service<SimDisk>, id: Identity, req: Request) -> Response {
     s.handle(id, req).response

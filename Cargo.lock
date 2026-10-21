@@ -85,9 +85,12 @@ name = "contextdb-bench"
 version = "0.1.0"
 dependencies = [
  "contextdb-core",
+ "contextdb-daemon",
+ "contextdb-mcp",
  "contextdb-model",
  "contextdb-store",
  "contextdb-testkit",
+ "serde_json",
  "stats_alloc",
 ]
 

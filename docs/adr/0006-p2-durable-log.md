@@ -110,6 +110,8 @@ Open performs these steps:
 
 ## 5. Blobs
 
+> **Amended by ADR 0008 §17 (2026-10-20):** new payloads go to append-only, self-verifying pack segments with ordered syncs, and the group's op_log full sync makes them durable. The per-file layout below stays readable.
+
 **Write** (`put`): temp file in the same directory → write → `sync` → rename → `sync_dir`, after which the put returns. If the target hash already exists, the put is a no-op (T35).
 
 **Existing but corrupt (review R4).** If the target hash already exists, `put` verifies the existing bytes. A corrupt file is replaced through the temp-then-rename path. T35 still holds: a valid identical file is not duplicated.

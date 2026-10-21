@@ -15,6 +15,8 @@ pub trait Backend {
 pub struct Server<B: Backend> {
     backend: B,
     session: Option<SessionId>,
+    /// key → logical id seen in responses (keys and ids are immutable).
+    logicals: std::collections::HashMap<String, LogicalId>,
     harness: String,
     repo: String,
     head_sha: String,
@@ -207,6 +209,7 @@ impl<B: Backend> Server<B> {
         Self {
             backend,
             session: None,
+            logicals: std::collections::HashMap::new(),
             harness: harness.into(),
             repo: repo.into(),
             head_sha: head_sha.into(),
@@ -293,8 +296,19 @@ impl<B: Backend> Server<B> {
     }
     fn call(&mut self, request: Request) -> Result<Envelope, String> {
         let env = self.backend.call(request)?;
-        if let Response::Error { code, detail } = &env.response {
-            return Err(format!("{code}: {detail}"));
+        match &env.response {
+            Response::Error { code, detail } => return Err(format!("{code}: {detail}")),
+            Response::Read { item, .. } => {
+                self.logicals.insert(item.key.clone(), item.logical);
+            }
+            Response::Recall {
+                items, withheld, ..
+            } => {
+                for i in items.iter().chain(withheld) {
+                    self.logicals.insert(i.key.clone(), i.logical);
+                }
+            }
+            _ => {}
         }
         Ok(env)
     }
@@ -507,6 +521,13 @@ impl<B: Backend> Server<B> {
         let Target::KeyRev { key, rev } = parse_target(head)? else {
             return Err("expected_head must be key@rev".into());
         };
+        // Keys are immutable: a cached id needs no lookup (the CAS still decides).
+        if let Some(l) = self.logicals.get(&key) {
+            return Ok(WriteTarget::Revise {
+                logical: *l,
+                expected_head: rev,
+            });
+        }
         let env = self.call(Request::Read {
             session,
             target: Target::KeyRev { key, rev },

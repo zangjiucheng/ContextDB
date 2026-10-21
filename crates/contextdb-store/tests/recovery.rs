@@ -137,11 +137,10 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         store.commit(&Batch::new(vec![create])),
         Err(StoreError::Tx(TxError::MissingBlob { content: missing }))
     );
-    // A corrupt blob is reported and replaced by the next put.
-    let path = Path::new(DIR)
-        .join("blobs")
-        .join(h.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    disk.corrupt(&path, 0, b'X');
+    // A corrupt blob is reported and replaced by the next put (its packed
+    // bytes start after the 40-byte record header, ADR 0008 §17).
+    let path = Path::new(DIR).join("blobs").join("pack-00000001");
+    disk.corrupt(&path, 40, b'X');
     assert_eq!(
         store.get_blob(&h).unwrap(),
         Payload::Unavailable(Unavailable::Corrupt)
@@ -151,6 +150,34 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         store.get_blob(&h).unwrap(),
         Payload::Available(b"same".to_vec())
     );
+    // The replacement record wins after a restart too.
+    drop(store);
+    let (store, _) = open(&disk).unwrap();
+    assert_eq!(
+        store.get_blob(&h).unwrap(),
+        Payload::Available(b"same".to_vec())
+    );
+    // Per-file blobs written before packs stay readable and present.
+    drop(store);
+    let legacy = *blake3::hash(b"legacy").as_bytes();
+    let name: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
+    let blobs = Path::new(DIR).join("blobs");
+    disk.write_new(&blobs.join(&name), b"legacy").unwrap();
+    disk.sync(&blobs.join(name)).unwrap();
+    disk.sync_dir(&blobs).unwrap();
+    let (mut store, _) = open(&disk).unwrap();
+    assert_eq!(
+        store.get_blob(&legacy).unwrap(),
+        Payload::Available(b"legacy".to_vec())
+    );
+    let create = Op::CreateLogical {
+        key: "legacy".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: legacy,
+        adopt_as_base: true,
+    };
+    store.commit(&Batch::new(vec![create])).unwrap();
 }
 #[test]
 fn lock_poison_and_restart() {
@@ -722,13 +749,15 @@ fn doctor_truncate_before_repairs_broken_chain_t33() {
 /// survives open.
 #[test]
 fn g4_blob_write() {
-    for (n, step) in ["write", "sync", "rename", "sync_dir"]
+    for (n, step) in ["append", "sync_weak", "sync_dir_weak", "sync"]
         .into_iter()
         .enumerate()
     {
         for seed in 0..(runs() / 4 + 1) {
             let disk = SimDisk::new();
-            let mut store = populated(&disk, 1 + seed as usize % 4);
+            drop(populated(&disk, 1 + seed as usize % 4));
+            // Reopened, so the put starts a new pack segment (every step fires).
+            let (mut store, _) = open(&disk).unwrap();
             let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
             let payload = format!("blob-{seed}").into_bytes();
             disk.fail_next(step);
@@ -1489,5 +1518,164 @@ fn doctor_cut_inside_a_group_moves_to_the_group_start() {
     assert!(
         report.truncated_tail.is_none(),
         "no partial group left behind"
+    );
+}
+/// ADR 0008 §17: ordered state reaches media at the next full sync; on a
+/// crash before one it either survived, or it did not and neither did
+/// anything written after it.
+#[test]
+fn weak_sync_is_ordered_and_durable_after_a_full_sync() {
+    let disk = SimDisk::new();
+    disk.create_dir_all(Path::new("/d")).unwrap();
+    disk.write_new(Path::new("/d/a"), b"weak").unwrap();
+    disk.sync_weak(Path::new("/d/a")).unwrap();
+    disk.write_new(Path::new("/d/b"), b"x").unwrap();
+    disk.sync_dir(Path::new("/d")).unwrap();
+    // sync_dir was the barrier for a; b was never synced, so its byte is
+    // only a zero-filled unsynced tail.
+    let after = disk.crash(TailFate::ZeroFill, 0);
+    assert_eq!(after.read(Path::new("/d/a")).unwrap(), b"weak");
+    assert_eq!(after.read(Path::new("/d/b")).unwrap(), b"\0");
+    disk.append(Path::new("/d/a"), b"-more").unwrap();
+    disk.sync_weak(Path::new("/d/a")).unwrap();
+    disk.append(Path::new("/d/b"), b"y").unwrap();
+    let mut outcomes = std::collections::BTreeSet::new();
+    for seed in 0..16 {
+        let c = disk.crash(TailFate::Torn, seed);
+        let (a, b) = (
+            c.read(Path::new("/d/a")).unwrap(),
+            c.read(Path::new("/d/b")).unwrap(),
+        );
+        // b's later bytes never survive without a's ordered ones.
+        assert!(a == b"weak-more" || b.is_empty(), "{a:?} {b:?}");
+        outcomes.insert(a == b"weak-more");
+    }
+    assert_eq!(outcomes.len(), 2, "both outcomes are modelled");
+    disk.sync(Path::new("/d/b")).unwrap();
+    for seed in 0..4 {
+        let c = disk.crash(TailFate::ZeroFill, seed);
+        assert_eq!(c.read(Path::new("/d/a")).unwrap(), b"weak-more");
+    }
+}
+/// The daemon path: staged payloads, then the group's frame. Whatever the
+/// crash point and fate, a frame that survives finds its payloads.
+#[test]
+fn g4_staged_blobs_never_trail_their_frame() {
+    for (n, step) in [
+        None,
+        Some("sync_weak"),
+        Some("sync_dir_weak"),
+        Some("append"),
+        Some("sync"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for seed in 0..(runs() / 4 + 1) {
+            let disk = SimDisk::new();
+            let mut store = populated(&disk, 1 + seed as usize % 4);
+            let before = store.epoch();
+            let payloads: Vec<Vec<u8>> = (0..3)
+                .map(|i| format!("staged-{seed}-{i}").into_bytes())
+                .collect();
+            let batches: Vec<Batch> = payloads
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    Batch::new(vec![Op::CreateLogical {
+                        key: format!("staged-{seed}-{i}"),
+                        kind: RecordKind::Fact,
+                        scope_lane: "repo".into(),
+                        content: *blake3::hash(p).as_bytes(),
+                        adopt_as_base: true,
+                    }])
+                })
+                .collect();
+            if let Some(step) = step {
+                disk.fail_next(step);
+            }
+            let refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+            if store.stage_blobs(&refs).is_ok() {
+                let _ = store.commit_group(&batches);
+            }
+            drop(store);
+            let crashed = disk.crash(FATES[(seed as usize + n) % 4], seed);
+            let (store, _) = open(&crashed).unwrap();
+            let landed = store.epoch().0 - before.0;
+            assert!(landed == 0 || landed == 3, "{step:?} {seed}: {landed}");
+            if landed > 0 {
+                for p in &payloads {
+                    let h = *blake3::hash(p).as_bytes();
+                    assert_eq!(
+                        store.get_blob(&h).unwrap(),
+                        Payload::Available(p.clone()),
+                        "{step:?} {seed}: frame survived without its payload"
+                    );
+                }
+            }
+        }
+    }
+}
+/// Without the barrier the same harness finds frames whose payloads are gone.
+#[test]
+fn g4_staged_harness_detects_a_missing_barrier() {
+    let detected = (0..200).any(|seed| {
+        let disk = SimDisk::new();
+        let store = populated(&disk, 1);
+        let p = format!("unordered-{seed}").into_bytes();
+        let h = *blake3::hash(&p).as_bytes();
+        // Write the payload with no sync at all, then commit a frame using it.
+        let blobs = Path::new(DIR).join("blobs");
+        let name: String = h.iter().map(|b| format!("{b:02x}")).collect();
+        disk.write_new(&blobs.join(name), &p).unwrap();
+        disk.sync_dir(&blobs).unwrap();
+        // Reopen so the store registers the unsynced payload.
+        drop(store);
+        let (mut store, _) = open(&disk).unwrap();
+        let b = Batch::new(vec![Op::CreateLogical {
+            key: format!("u{seed}"),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: h,
+            adopt_as_base: true,
+        }]);
+        let before = store.epoch();
+        disk.fail_next("sync");
+        let _ = store.commit(&b);
+        drop(store);
+        let crashed = disk.crash(TailFate::Torn, seed);
+        let (store, _) = open(&crashed).unwrap();
+
+        store.epoch() > before && store.get_blob(&h).unwrap() != Payload::Available(p)
+    });
+    assert!(detected, "harness cannot see a frame outrun its payload");
+}
+/// Batched payloads: durable once `put_blobs` returns, with one full sync;
+/// a failed barrier poisons the store and nothing it wrote is relied on.
+#[test]
+fn put_blobs_is_durable_on_return_and_poisons_on_failed_barrier() {
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    store.put_blobs(&[b"one", b"two", b"one"]).unwrap();
+    let crashed = disk.crash(TailFate::Garbage, 3);
+    drop(store);
+    let (store, _) = open(&crashed).unwrap();
+    for b in [&b"one"[..], b"two"] {
+        let h = *blake3::hash(b).as_bytes();
+        assert_eq!(store.get_blob(&h).unwrap(), Payload::Available(b.to_vec()));
+    }
+    drop(store);
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    disk.fail_next("sync");
+    assert!(store.put_blobs(&[b"three"]).is_err());
+    assert!(matches!(store.put_blob(b"four"), Err(StoreError::Poisoned)));
+    let crashed = disk.crash(TailFate::Garbage, 4);
+    drop(store);
+    let (store, _) = open(&crashed).unwrap();
+    let h = *blake3::hash(b"three").as_bytes();
+    assert_eq!(
+        store.get_blob(&h).unwrap(),
+        Payload::Unavailable(Unavailable::Missing)
     );
 }

@@ -4,6 +4,7 @@
 use crate::{
     durability::{Durability, LockGuard},
     log::{self, FrameFault, LogRow},
+    pack::{self, PackIndex},
     projection::{EpochRows, ProjectionFile, Projections},
 };
 use contextdb_core::Db;
@@ -220,6 +221,9 @@ pub struct Store<D: Durability> {
     index: Arc<RwLock<LogIndex>>,
     ids: BTreeMap<[u8; 16], (Epoch, ContentHash)>,
     blobs: BTreeSet<ContentHash>,
+    packs: Arc<RwLock<PackIndex>>,
+    /// Active pack segment (created by this process) and its size.
+    pack_tail: Option<(usize, u64)>,
     tail: Option<Tail>,
     proj: Projections,
     /// Set across apply/append; still true after a panic, which poisons.
@@ -325,14 +329,19 @@ impl<D: Durability> Store<D> {
             disk.sync_dir(parent).map_err(io)?;
         }
         let mut report = OpenReport::default();
-        // Blob presence: durable names only, leftovers removed (ADR 0006 §5).
+        // Blob presence: durable names only, leftovers removed (ADR 0006 §5);
+        // packed payloads are present when their record verifies (§17).
         disk.sync_dir(&blob_dir).map_err(io)?;
         let mut blobs = BTreeSet::new();
-        for name in disk.list(&blob_dir).map_err(io)? {
+        let names = disk.list(&blob_dir).map_err(io)?;
+        let packs = pack::scan(&disk, &blob_dir, &names).map_err(io)?;
+        blobs.extend(packs.map.keys().copied());
+        for name in names {
             match unhex(&name) {
                 Some(h) => {
                     blobs.insert(h);
                 }
+                None if pack::is_pack(&name) => {}
                 None => {
                     disk.remove(&blob_dir.join(&name)).map_err(io)?;
                     report.removed_temp_blobs += 1;
@@ -389,6 +398,8 @@ impl<D: Durability> Store<D> {
             })),
             ids: BTreeMap::new(),
             blobs,
+            packs: Arc::new(RwLock::new(packs)),
+            pack_tail: None,
             tail: None,
             proj,
             in_flight: false,
@@ -578,7 +589,9 @@ impl<D: Durability> Store<D> {
     {
         LogReader {
             disk: self.disk.clone(),
+            dir: self.dir.clone(),
             index: self.index.clone(),
+            packs: self.packs.clone(),
             tail: self.epoch(),
         }
     }
@@ -783,41 +796,101 @@ impl<D: Durability> Store<D> {
     }
     /// Stores a payload; returns only after it is durable (ADR 0006 §5).
     pub fn put_blob(&mut self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
-        self.usable()?;
-        let hash = *blake3::hash(bytes).as_bytes();
-        let dir = self.blob_dir();
-        let path = dir.join(hex(&hash));
-        if self.disk.exists(&path)
-            && self
-                .disk
-                .read(&path)
-                .is_ok_and(|b| *blake3::hash(&b).as_bytes() == hash)
-        {
-            self.blobs.insert(hash);
-            return Ok(hash);
+        self.put_blobs(&[bytes])?;
+        Ok(*blake3::hash(bytes).as_bytes())
+    }
+    /// Stores payloads; returns only after all are durable.
+    pub fn put_blobs(&mut self, blobs: &[&[u8]]) -> Result<(), StoreError> {
+        self.stage_blobs(blobs)?;
+        let synced = match self.pack_tail {
+            Some((segment, _)) => {
+                let path = self.packs.read().expect("pack index").segments[segment].clone();
+                self.disk.sync(&path)
+            }
+            None => self.disk.sync_dir(&self.blob_dir()),
+        };
+        if synced.is_err() {
+            return Err(self.poison());
         }
-        let tmp = dir.join(format!("{}.tmp", hex(&hash)));
+        Ok(())
+    }
+    /// Stores payloads ordered before every later write, with no drive-cache
+    /// flush: the group's new payloads are appended to the active pack with
+    /// one ordered sync (plus an ordered `sync_dir` for a new segment). They
+    /// become durable with the next full sync, which for the daemon is the
+    /// op_log sync of the group that references them, and a frame can never
+    /// reach media ahead of them (ADR 0008 §17).
+    pub fn stage_blobs(&mut self, blobs: &[&[u8]]) -> Result<(), StoreError> {
+        self.usable()?;
+        let mut fresh: Vec<(ContentHash, Vec<u8>)> = Vec::new();
+        for bytes in blobs {
+            let hash = *blake3::hash(bytes).as_bytes();
+            let present = fresh.iter().any(|(h, _)| *h == hash)
+                || self.blobs.contains(&hash)
+                    && matches!(self.get_blob(&hash), Ok(Payload::Available(_)));
+            if !present {
+                let (_, rec) = pack::record(bytes)
+                    .ok_or_else(|| StoreError::Io("payload too large".into()))?;
+                fresh.push((hash, rec));
+            }
+        }
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let dir = self.blob_dir();
+        let size: u64 = fresh.iter().map(|(_, r)| r.len() as u64).sum();
+        let (segment, start, created) = match self.pack_tail {
+            Some((segment, at)) if at == 0 || at + size <= self.segment_target as u64 => {
+                (segment, at, false)
+            }
+            _ => {
+                let mut packs = self.packs.write().expect("pack index");
+                let next = packs
+                    .segments
+                    .iter()
+                    .filter_map(|p| p.file_name()?.to_str()?.get(5..)?.parse::<usize>().ok())
+                    .max()
+                    .map_or(1, |n| n + 1);
+                packs.segments.push(dir.join(pack::segment_name(next)));
+                (packs.segments.len() - 1, 0, true)
+            }
+        };
+        let path = self.packs.read().expect("pack index").segments[segment].clone();
+        let bytes: Vec<u8> = fresh.iter().flat_map(|(_, r)| r.iter().copied()).collect();
         let written = self
             .disk
-            .write_new(&tmp, bytes)
-            .and_then(|()| self.disk.sync(&tmp))
-            .and_then(|()| self.disk.rename(&tmp, &path))
-            .and_then(|()| self.disk.sync_dir(&dir));
+            .append(&path, &bytes)
+            .and_then(|()| self.disk.sync_weak(&path))
+            .and_then(|()| {
+                if created {
+                    self.disk.sync_dir_weak(&dir)
+                } else {
+                    Ok(())
+                }
+            });
         if written.is_err() {
             return Err(self.poison());
         }
-        self.blobs.insert(hash);
-        Ok(hash)
+        let mut packs = self.packs.write().expect("pack index");
+        let mut at = start;
+        for (hash, rec) in fresh {
+            packs.insert(
+                hash,
+                segment,
+                at + pack::HEADER as u64,
+                (rec.len() - pack::HEADER) as u32,
+            );
+            at += rec.len() as u64;
+            self.blobs.insert(hash);
+        }
+        self.pack_tail = Some((segment, at));
+        Ok(())
     }
     /// Poisoned stores refuse: a blob whose put failed may be visible now
     /// and gone after restart (review N4).
     pub fn get_blob(&self, hash: &ContentHash) -> Result<Payload, StoreError> {
         self.readable()?;
-        Ok(match self.disk.read(&self.blob_dir().join(hex(hash))) {
-            Ok(bytes) if *blake3::hash(&bytes).as_bytes() == *hash => Payload::Available(bytes),
-            Ok(_) => Payload::Unavailable(Unavailable::Corrupt),
-            Err(_) => Payload::Unavailable(Unavailable::Missing),
-        })
+        Ok(read_payload(&self.disk, &self.dir, &self.packs, hash))
     }
     /// The last durable epoch. After poisoning, the in-memory Db may be one
     /// epoch ahead; this never is.
@@ -1012,10 +1085,20 @@ impl<D: Durability> Store<D> {
     }
 }
 
-/// Reads a payload from `<dir>/blobs` without a `Store` (reader threads,
-/// ADR 0008 §3.3): blobs are immutable once their put returned.
-pub fn read_blob(disk: &dyn Durability, dir: &Path, hash: &ContentHash) -> Payload {
-    match disk.read(&dir.join("blobs").join(hex(hash))) {
+/// A payload from the packs, else from a legacy per-file blob (format ≤ 2
+/// stores written before ADR 0008 §17).
+fn read_payload(
+    disk: &dyn Durability,
+    dir: &Path,
+    packs: &RwLock<PackIndex>,
+    hash: &ContentHash,
+) -> Payload {
+    let located = packs.read().expect("pack index").locate(hash);
+    let read = match located {
+        Some((path, offset, len)) => disk.read_range(&path, offset, len),
+        None => disk.read(&dir.join("blobs").join(hex(hash))),
+    };
+    match read {
         Ok(bytes) if *blake3::hash(&bytes).as_bytes() == *hash => Payload::Available(bytes),
         Ok(_) => Payload::Unavailable(Unavailable::Corrupt),
         Err(_) => Payload::Unavailable(Unavailable::Missing),
@@ -1054,10 +1137,17 @@ fn read_frame(
 #[derive(Clone)]
 pub struct LogReader<D: Durability> {
     disk: D,
+    dir: PathBuf,
     index: Arc<RwLock<LogIndex>>,
+    packs: Arc<RwLock<PackIndex>>,
     tail: Epoch,
 }
 impl<D: Durability> LogReader<D> {
+    /// Reads a payload without the actor (ADR 0008 §3.3): payloads are
+    /// immutable once staged, and content-addressed.
+    pub fn read_blob(&self, hash: &ContentHash) -> Payload {
+        read_payload(&self.disk, &self.dir, &self.packs, hash)
+    }
     pub fn tail(&self) -> Epoch {
         self.tail
     }

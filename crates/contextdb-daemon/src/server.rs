@@ -30,12 +30,15 @@ pub struct Options {
     pub allow_fs: Vec<String>,
     /// Principals bound to the channels (single-principal mode, P3–P8).
     pub principals: [PrincipalId; 3],
+    /// F_FULLFSYNC on macOS (default); `false` is for G5 measurement only.
+    pub full_sync: bool,
 }
 impl Default for Options {
     fn default() -> Self {
         Self {
             allow_fs: Vec::new(),
             principals: [PrincipalId(1), PrincipalId(2), PrincipalId(0)],
+            full_sync: true,
         }
     }
 }
@@ -93,23 +96,19 @@ impl Daemon {
         let dir = dir.canonicalize()?;
         lease::check_filesystem(&lease::filesystem_of(&dir)?, &options.allow_fs)
             .map_err(StartError::UnsupportedFilesystem)?;
+        let disk = StdDisk {
+            full_sync: options.full_sync,
+        };
         let open = OpenOptions {
             projections: ProjectionFile::Path(dir.join("projections.sqlite")),
             ..OpenOptions::default()
         };
-        let (store, _) = Store::open(StdDisk::default(), &dir, &open)?;
+        let (store, _) = Store::open(disk.clone(), &dir, &open)?;
         lease::probe_flock(&dir.join("LOCK"))?;
-        let (log, events, _) = SessionLog::open(StdDisk::default(), &dir, false, 64 << 20)?;
+        let (log, events, _) = SessionLog::open(disk.clone(), &dir, false, 64 << 20)?;
         let actor = actor::spawn(store)?;
         let recall = dir.join("recall.sqlite");
-        let service = Arc::new(Service::with_recall(
-            actor,
-            StdDisk::default(),
-            dir.clone(),
-            log,
-            events,
-            Some(&recall),
-        ));
+        let service = Arc::new(Service::with_recall(actor, log, events, Some(&recall)));
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;

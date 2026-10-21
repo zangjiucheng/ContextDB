@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod durability;
 pub mod log;
 pub mod migrate;
+mod pack;
 pub mod projection;
 pub mod recall;
 pub mod session;
@@ -16,5 +17,5 @@ pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::ProjectionFile;
 pub use store::{
     LogReader, OpenOptions, OpenReport, Payload, Store, StoreError, TruncatedTail, TxnStatus,
-    Unavailable, read_blob,
+    Unavailable,
 };
