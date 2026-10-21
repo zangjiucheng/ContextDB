@@ -135,8 +135,10 @@ pub enum Request {
         curvec_seen: HeadVector,
         validator: String,
     },
-    /// Observer and admin only; kernel channel rules still apply.
+    /// Observer and admin only; kernel channel rules still apply. `blobs`
+    /// are stored before the batch (e.g. anchor contents).
     Raw {
+        blobs: Vec<Vec<u8>>,
         batch: Batch,
     },
     /// Admin only.
@@ -453,8 +455,9 @@ impl Wire for Request {
                 curvec_seen.encode(o);
                 validator.encode(o);
             }
-            Self::Raw { batch } => {
+            Self::Raw { blobs, batch } => {
                 15u8.encode(o);
+                blobs.encode(o);
                 batch.encode(o);
             }
             Self::Shutdown => 16u8.encode(o),
@@ -536,6 +539,7 @@ impl Wire for Request {
                 validator: Wire::decode(i)?,
             },
             15 => Self::Raw {
+                blobs: Wire::decode(i)?,
                 batch: Wire::decode(i)?,
             },
             16 => Self::Shutdown,
@@ -840,6 +844,7 @@ mod tests {
                 validator: "human".into(),
             },
             Request::Raw {
+                blobs: vec![b"x".to_vec()],
                 batch: Batch::new(Vec::new()),
             },
             Request::Shutdown,

@@ -124,6 +124,7 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
     );
     assert_eq!(code(&r), "KindRestricted");
     let raw = Request::Raw {
+        blobs: Vec::new(),
         batch: Batch::new(Vec::new()),
     };
     assert_eq!(code(&call(&s, AGENT, raw.clone())), "ChannelRestricted");
@@ -136,7 +137,8 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
     assert_eq!(code(&call(&s, AGENT, validate)), "ChannelRestricted");
     // The observer channel may write anchors through raw batches.
     let content = *blake3::hash(b"").as_bytes();
-    let anchor = Request::Raw {
+    let anchor = |blobs: Vec<Vec<u8>>| Request::Raw {
+        blobs,
         batch: Batch::new(vec![Op::CreateLogical {
             key: "code:repo/b.rs".into(),
             kind: RecordKind::CodeAnchor,
@@ -145,9 +147,9 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
             adopt_as_base: true,
         }]),
     };
-    // The payload must exist first: an agent record stores its own body; a raw
-    // observer batch without a stored blob is MissingBlob.
-    assert_eq!(code(&call(&s, OBSERVER, anchor)), "MissingBlob");
+    // The payload must exist first: without it the batch is MissingBlob.
+    assert_eq!(code(&call(&s, OBSERVER, anchor(Vec::new()))), "MissingBlob");
+    assert_eq!(code(&call(&s, OBSERVER, anchor(vec![Vec::new()]))), "ok");
 }
 #[test]
 fn t36_deps_must_be_this_sessions_required_handles_or_explicit_revisions() {

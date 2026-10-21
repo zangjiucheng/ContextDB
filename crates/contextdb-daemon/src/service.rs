@@ -427,14 +427,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }]);
                 self.commit(id, Vec::new(), batch, None)
             }
-            Request::Raw { batch } => {
+            Request::Raw { blobs, batch } => {
                 if id.channel == Channel::Agent {
                     return err(
                         "ChannelRestricted",
                         "raw batches require the observer or admin socket",
                     );
                 }
-                self.commit(id, Vec::new(), batch, None)
+                self.commit(id, blobs, batch, None)
             }
             Request::Shutdown => {
                 if id.channel != Channel::Admin {

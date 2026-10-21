@@ -136,7 +136,14 @@ pub fn spawn<D: Durability + Clone + 'static>(
     };
     std::thread::Builder::new()
         .name("ctxd-actor".into())
-        .spawn(move || actor.run(rx))
+        .spawn(move || {
+            let reply = actor.run(rx);
+            // Release the store (and its lock) before confirming the shutdown.
+            drop(actor);
+            if let Some(reply) = reply {
+                let _ = reply.send(());
+            }
+        })
         .map_err(|e| StoreError::Io(e.to_string()))?;
     Ok(ActorHandle {
         tx,
@@ -145,7 +152,8 @@ pub fn spawn<D: Durability + Clone + 'static>(
     })
 }
 impl<D: Durability + Clone> Actor<D> {
-    fn run(&mut self, rx: mpsc::Receiver<Message>) {
+    /// Returns the shutdown reply, sent after the store is dropped.
+    fn run(&mut self, rx: mpsc::Receiver<Message>) -> Option<mpsc::Sender<()>> {
         while let Ok(first) = rx.recv() {
             let mut writes = Vec::new();
             let mut others = Vec::new();
@@ -166,16 +174,17 @@ impl<D: Durability + Clone> Actor<D> {
                 self.commit(writes);
             }
             for m in others {
-                if self.handle(m) {
-                    return;
+                if let Message::Shutdown { reply } = m {
+                    return Some(reply);
                 }
+                self.handle(m);
             }
         }
+        None
     }
-    /// Returns true on shutdown.
-    fn handle(&mut self, m: Message) -> bool {
+    fn handle(&mut self, m: Message) {
         match m {
-            Message::Write(_) => unreachable!("writes are grouped"),
+            Message::Write(_) | Message::Shutdown { .. } => unreachable!("handled by run"),
             Message::ImpactExact { batch, reply } => {
                 let _ = reply.send(self.store.impact_exact(&batch));
             }
@@ -185,12 +194,7 @@ impl<D: Durability + Clone> Actor<D> {
             Message::Checksum { epoch, reply } => {
                 let _ = reply.send(self.store.checksum_at(epoch));
             }
-            Message::Shutdown { reply } => {
-                let _ = reply.send(());
-                return true;
-            }
         }
-        false
     }
     fn commit(&mut self, writes: Vec<WriteRequest>) {
         // Payloads first: a blob failure poisons the store, which fails the group.

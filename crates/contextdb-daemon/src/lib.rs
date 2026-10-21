@@ -3,4 +3,5 @@
 pub mod actor;
 pub mod lease;
 pub mod proto;
+pub mod server;
 pub mod service;
