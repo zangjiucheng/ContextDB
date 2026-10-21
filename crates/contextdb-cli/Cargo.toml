@@ -14,9 +14,11 @@ workspace = true
 contextdb-model.workspace = true
 contextdb-oracle.workspace = true
 contextdb-store.workspace = true
+contextdb-daemon.workspace = true
 
 [dev-dependencies]
 contextdb-testkit.workspace = true
+contextdb-daemon.workspace = true
 
 [[bin]]
 name = "ctx"

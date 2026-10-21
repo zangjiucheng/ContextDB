@@ -529,3 +529,44 @@ fn sessions_and_handles_survive_a_daemon_restart() {
         "handle resolves after restart"
     );
 }
+#[test]
+fn recall_finds_records_by_payload_text_after_indexing() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let a = start(&s);
+    record(
+        &s,
+        a,
+        "d1-db",
+        "Use MongoDB for the document store",
+        Vec::new(),
+    );
+    let find = |q: &str| {
+        for _ in 0..200 {
+            let (items, withheld) = recall(&s, a, q);
+            if !items.is_empty() || !withheld.is_empty() {
+                return (items, withheld);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{q} never indexed")
+    };
+    let (items, _) = find("mongodb");
+    assert_eq!(items[0].key, "d1-db");
+    let sup = Request::Supersede {
+        session: a,
+        logical: LogicalId(0),
+        body: b"Use PostgreSQL".to_vec(),
+        expected_head: RevisionId(0),
+        adopt_as_base: true,
+        carry_rules: false,
+        reason: "switch".into(),
+        client_txn_id: None,
+    };
+    assert_eq!(code(&call(&s, AGENT, sup)), "ok");
+    let (items, _) = find("postgresql");
+    assert_eq!(
+        (items[0].key.as_str(), items[0].rev),
+        ("d1-db", RevisionId(1))
+    );
+}

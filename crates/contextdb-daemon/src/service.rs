@@ -9,6 +9,7 @@ use crate::{
 };
 use contextdb_core::{Db, IssueRequest, LogLink};
 use contextdb_model::*;
+use contextdb_store::recall::RecallIndex;
 use contextdb_store::{
     Durability, Payload, StoreError,
     session::{Layer, SessionEvent, SessionLog},
@@ -16,7 +17,11 @@ use contextdb_store::{
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 /// Transport-bound identity of a connection.
@@ -55,6 +60,13 @@ pub struct Service<D: Durability> {
     disk: D,
     sessions: Mutex<BTreeMap<SessionId, Arc<Mutex<Session>>>>,
     writer: Mutex<mpsc::Sender<Writer>>,
+    recall: Arc<Mutex<RecallIndex>>,
+    stop: Arc<AtomicBool>,
+}
+impl<D: Durability> Drop for Service<D> {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
 }
 fn random_id() -> [u8; 16] {
     use std::io::Read;
@@ -120,6 +132,36 @@ impl<D: Durability + Clone + 'static> Service<D> {
         log: SessionLog<D>,
         events: Vec<SessionEvent>,
     ) -> Self {
+        Self::with_recall(actor, disk, dir, log, events, None)
+    }
+    /// As `new`, with the FTS5 recall projection in `recall_path` (memory if None).
+    pub fn with_recall(
+        actor: ActorHandle<D>,
+        disk: D,
+        dir: PathBuf,
+        log: SessionLog<D>,
+        events: Vec<SessionEvent>,
+        recall_path: Option<&std::path::Path>,
+    ) -> Self {
+        let recall = Arc::new(Mutex::new(
+            RecallIndex::open(recall_path)
+                .or_else(|_| RecallIndex::open(None))
+                .expect("recall index"),
+        ));
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let (actor, disk, dir, recall, stop) = (
+                actor.clone(),
+                disk.clone(),
+                dir.clone(),
+                recall.clone(),
+                stop.clone(),
+            );
+            std::thread::Builder::new()
+                .name("ctxd-indexer".into())
+                .spawn(move || indexer(actor, disk, dir, recall, stop))
+                .expect("indexer thread");
+        }
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("ctxd-session-log".into())
@@ -131,6 +173,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             disk,
             sessions: Mutex::new(BTreeMap::new()),
             writer: Mutex::new(tx),
+            recall,
+            stop,
         };
         service.replay(events);
         service
@@ -567,6 +611,20 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Some((rank, l))
             })
             .collect();
+        // Full-text candidates after key matches; the index may lag the
+        // snapshot, but every candidate's status comes from the snapshot.
+        if let Ok(hits) = self
+            .recall
+            .lock()
+            .expect("recall")
+            .search(query, scope, limit.max(1))
+        {
+            for (n, l) in hits.into_iter().enumerate() {
+                if l.index() < db.logical_count() && !found.iter().any(|(_, f)| *f == l) {
+                    found.push((3 + n.min(250) as u8, l));
+                }
+            }
+        }
         found.sort();
         found.truncate(limit.max(1));
         let mut items = Vec::new();
@@ -1098,5 +1156,59 @@ fn writer<D: Durability>(mut log: SessionLog<D>, rx: mpsc::Receiver<Writer>) {
         for w in waiters {
             let _ = w.send(result.clone());
         }
+    }
+}
+
+/// Keeps the recall projection up to date with published snapshots: the
+/// logicals whose heads moved since the indexed epoch are reindexed (full
+/// rebuild when the projection is ahead of the log or empty).
+fn indexer<D: Durability>(
+    actor: ActorHandle<D>,
+    disk: D,
+    dir: PathBuf,
+    recall: Arc<Mutex<RecallIndex>>,
+    stop: Arc<AtomicBool>,
+) {
+    let text = |db: &Db, l: LogicalId| -> Option<(LogicalId, String, RecordKind, String, String)> {
+        let (key, kind, scope) = db.logical_info(l)?;
+        let content = db.revision_content(db.head(l)?).ok()?;
+        let body = match contextdb_store::read_blob(&disk, &dir, &content) {
+            Payload::Available(b) => {
+                let mut s = String::from_utf8_lossy(&b).into_owned();
+                s.truncate(64 * 1024);
+                s
+            }
+            Payload::Unavailable(_) => String::new(),
+        };
+        Some((l, key, kind, scope, body))
+    };
+    while !stop.load(Ordering::Acquire) {
+        let snap = actor.snapshot();
+        let indexed = recall
+            .lock()
+            .expect("recall")
+            .watermark()
+            .unwrap_or(Epoch(0));
+        if indexed == snap.epoch {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
+        let db = &snap.db;
+        let touched: Vec<LogicalId> = if indexed > snap.epoch || indexed.0 == 0 {
+            let _ = recall.lock().expect("recall").clear();
+            (0..db.logical_count() as u32).map(LogicalId).collect()
+        } else {
+            let mut t = std::collections::BTreeSet::new();
+            for e in indexed.0 + 1..=snap.epoch.0 {
+                if let Ok(row) = snap.log.read_row(Epoch(e))
+                    && let Ok(result) = row.result()
+                {
+                    t.extend(result.net_delta.head_moves.iter().map(|(l, _, _)| *l));
+                }
+            }
+            t.into_iter().collect()
+        };
+        let entries: Vec<_> = touched.into_iter().filter_map(|l| text(db, l)).collect();
+        let _ = recall.lock().expect("recall").update(snap.epoch, &entries);
     }
 }

@@ -7,6 +7,7 @@ pub mod durability;
 pub mod log;
 pub mod migrate;
 pub mod projection;
+pub mod recall;
 pub mod session;
 #[doc(hidden)]
 pub mod snapshot;

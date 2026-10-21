@@ -101,12 +101,14 @@ impl Daemon {
         lease::probe_flock(&dir.join("LOCK"))?;
         let (log, events, _) = SessionLog::open(StdDisk::default(), &dir, false, 64 << 20)?;
         let actor = actor::spawn(store)?;
-        let service = Arc::new(Service::new(
+        let recall = dir.join("recall.sqlite");
+        let service = Arc::new(Service::with_recall(
             actor,
             StdDisk::default(),
             dir.clone(),
             log,
             events,
+            Some(&recall),
         ));
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);

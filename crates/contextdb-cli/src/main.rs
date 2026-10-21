@@ -1,13 +1,14 @@
-//! `ctx`: P2 operator commands over a durable store (SPEC §5 P2, ADR 0006).
-//! Agent-facing commands arrive with the daemon/MCP in P3.
+//! `ctx`: operator commands over a durable store (SPEC §5 P2, ADR 0006) and,
+//! with a running `ctxd`, admin commands over its socket (ADR 0008 §8.3).
+mod daemon;
 
 use contextdb_model::*;
 use contextdb_store::{OpenOptions, ProjectionFile, StdDisk, Store, doctor, migrate};
 use std::{path::Path, process::ExitCode};
 
-const HELP: &str = "ContextDB operator CLI (P2)
+const HELP: &str = "ContextDB CLI
 
-Usage:
+Usage (offline; refused while ctxd runs):
   ctx replay <dir>                     open the store, replay, print the open report
   ctx doctor <dir> [--rebuild]         verify chain, replay, full oracle check, blobs;
                                        --rebuild discards and rebuilds projections
@@ -17,6 +18,17 @@ Usage:
   ctx snapshot <dir>                   write an input-layer snapshot
   ctx migrate <dir>                    migrate an older op_log format (keeps a backup)
   ctx export <dir>                     print the op_log as EventLog v0 JSONL
+
+Usage (via a running ctxd, admin socket):
+  ctx status <dir>                     epoch, logicals, revisions, sessions
+  ctx why <dir> <key[@rev]>            base, active rules, premises
+  ctx why-not <dir> <key[@rev]>        failing incidences per rule
+  ctx impact <dir> <key[@rev]>         dependents (reachable impact)
+  ctx diff <dir> <from> <to>           status changes between epochs
+  ctx validate <dir> <key@rev> verified|rejected [--yes]
+                                       human validation of Sem rules (shows the
+                                       vectors, records exactly what was shown)
+  ctx shutdown <dir>                   stop ctxd
   ctx --help | --version
 
 Specification: SPEC.md; durability: docs/adr/0006-p2-durable-log.md";
@@ -130,6 +142,9 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
 fn run(args: &[String]) -> Result<(), String> {
     let dir = |n: usize| args.get(n).map(Path::new).ok_or("missing <dir>");
     match args.first().map(String::as_str) {
+        Some(
+            cmd @ ("status" | "why" | "why-not" | "impact" | "diff" | "validate" | "shutdown"),
+        ) => daemon::run(cmd, dir(1)?, &args[2..]),
         Some("replay") => open(dir(1)?).map(|_| ()),
         Some("snapshot") => {
             let mut store = open(dir(1)?)?;
