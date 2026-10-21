@@ -62,3 +62,23 @@
   - **`LogReader`** for reader threads.
   - **`watermark_history` projection.**
   - **Doctor:** cuts at group boundaries.
+- P3 milestone 3 (daemon, `contextdb-daemon`):
+  - **IPC protocol** (`proto.rs`): length-prefixed, versioned Wire frames with `DecodeLimits::IPC`. A version mismatch gets `ProtocolVersion`, and the rest of the rejected frame is drained so Linux does not reset the client.
+  - **Startup** (`ctxd`): filesystem refusal list (`--allow-fs`), store lock (T37), flock probe, lease file, three Unix sockets (agent/observer/admin, 0600, peer-uid check) whose path fixes the channel.
+  - **Commit actor:** natural group commit (queue of 1,024, `Busy` when full), two-replica publication through arc-swap with replica reclaim, a counted clone fallback, and a 30 s request `Timeout` resolvable through `TxnStatus`.
+  - **Service:** sessions with a durable session log, handles bound to synced certificates, `ctx_check` (validate first, re-issue only uncovered reads), `carry_rules=copy`, admin-only `ctx validate`, ledger supersession diffs, FTS5 recall with a background indexer.
+- P3 milestone 4: `ctx-mcp`, hand-rolled JSON-RPC 2.0 over stdio with nine agent tools, and a G6 scenario of three simulated agents. `ctx status | why | why-not | impact | diff | validate | shutdown` go through the admin socket.
+- P3 milestone 5 (verification):
+  - `ctxd-stress` G4 tool (coupled heads, CAS chains, replay check).
+  - cargo-fuzz targets for the IPC decoder and MCP JSON.
+  - loom model of the publication and reclaim handshake (`publish.rs`, `cfg(loom)`).
+  - `mcp_bench` G5 matrix.
+  - Nightly P3 stress and fuzz jobs.
+  - `scripts/remote.sh` runs mutation, stress, fuzz and the Linux check leg on a 48-core host.
+- G5 write path (ADR 0008 §17):
+  - write requests release their snapshot before waiting;
+  - the actor replays the previous group onto the reclaimed replica;
+  - the session-log writer syncs only for durable events or flushes (otherwise within 100 ms);
+  - payloads go to append-only, self-verifying blob packs staged with `F_BARRIERFSYNC`, so the group's op_log `F_FULLFSYNC` makes them durable.
+
+  With 8 clients and fullfsync on, write p50 went from 98 to 12 ms and throughput from 81 to 597 tx/s. With 128 clients it went from 95 to 4,521 tx/s, and to 6,533 tx/s with fullfsync off.

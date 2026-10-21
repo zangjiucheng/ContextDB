@@ -1,5 +1,9 @@
 # Implementation status
 
+**P3 is implemented and under gate verification** ([P3 gate](gates/P3.md),
+[ADR 0008](adr/0008-p3-daemon-sessions-certificates.md) rev 3.3,
+[ADR 0009](adr/0009-p3-memory-scopes-after-maintained-layers.md)).
+
 **Gate P2 passed** (2026-10-20, commit `de80aa6`) after independent review and two closure
 checks, with CI run 39497969575 and nightly run 39498455621.
 See [P2 gate](gates/P2.md), [P2 report](gates/P2-report.md),
@@ -31,7 +35,7 @@ That run does not validate the current P1 changes.
   retained snapshot patching, allocations, exact flips/diffs and deterministic digests.
   Structural changes validate against a staging overlay and publish incrementally
   (appendable CSR adjacency, key table, PK undo journal; ADR 0007).
-- O(1) CURRENT L0; independent memoized L1/L2; WHY with bounded canonical proof,
+- O(1) CURRENT L0; counter-maintained L1/L2 columns (ADR 0008 §7, rebuilt independently in FullRecompute); WHY with bounded canonical proof,
   WHY_NOT; Reachable and undo-restored Exact IMPACT; endpoint-folded in-memory DIFF.
 - Debug/paranoid DA1–DA6 checks, release-paranoid oracle cross-checks, separate timing
   feature, conservative memory categories, deterministic shape generators and stats.
@@ -51,6 +55,17 @@ That run does not validate the current P1 changes.
   - format-0 → 1 migration;
   - doctor truncation.
 - `ctx replay | doctor | snapshot | migrate | export`.
+- P3 store additions: op_log format 2 with group framing and one sync per group
+  (`commit_group`), the session log, `LogReader`, `watermark_history`, FTS5 recall,
+  and self-verifying blob packs with ordered syncs (ADR 0008 §17).
+- Certificates: `issue_certificate` / `validate_certificate` with an independent
+  oracle (PROP11).
+- `ctxd` (`contextdb-daemon`): commit actor with group commit, two-replica
+  snapshot publication (loom-modelled), three channel sockets with peer-uid checks,
+  sessions, handles, `ctx_check`, `Busy` / 30 s `Timeout`.
+- `ctx-mcp` (`contextdb-mcp`): nine agent tools over JSON-RPC 2.0 on stdio.
+- `ctx status | why | why-not | impact | diff | validate | shutdown` through the
+  admin socket.
 
 ## Boundaries
 
@@ -58,15 +73,15 @@ That run does not validate the current P1 changes.
 - No erasure: blobs are never deleted before P9.
 - No `inputs_at` cache.
 - In-memory history is not bounded after open.
-- L1/L2 use memoized evaluation; full incremental layer maintenance is P3.
 - MAIN only, one subject, positive DAG, transaction time only. No branch-isolation
   product API, ACL, negation, recursive production rules, erasure or replication.
-- Certificate closure issuance, daemon/MCP/hooks and transport binding are P3+.
+- Hooks and action gating (deny) are P4; until then `ctx_check` allows or warns.
   CodeAnchor input/channel rules exist, but no filesystem observer before P5.
+- The P3 trust boundary is cooperative: a same-user agent with a shell can reach
+  the observer and admin sockets (hard separation with principals and ACL in P9).
 - Conflict remains None before P7, visibility Authorized before P9; structural
   Unknown/freshness are summary-function fixtures.
-- `ctx` has operator commands only; agent-facing commands arrive with the daemon
-  in P3. Other product crates remain placeholders. Research DD/DBSP workspaces stay excluded.
+- Hooks and anchors crates remain placeholders (P4, P5). Research DD/DBSP workspaces stay excluded.
 
 ## Dependency policy
 
