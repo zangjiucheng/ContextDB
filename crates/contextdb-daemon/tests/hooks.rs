@@ -449,12 +449,18 @@ fn facts_apply_in_order_once_with_gaps_and_skips_and_survive_restart() {
     };
     assert_eq!(
         send(&s, vec![p(1, action("a.rs")), p(2, action("b.rs"))], None),
-        Response::Facts { applied_through: 2 }
+        Response::Facts {
+            applied_through: 2,
+            drift: Vec::new()
+        }
     );
     // Duplicates are skipped; a gap is refused.
     assert_eq!(
         send(&s, vec![p(1, action("a.rs")), p(2, action("b.rs"))], None),
-        Response::Facts { applied_through: 2 }
+        Response::Facts {
+            applied_through: 2,
+            drift: Vec::new()
+        }
     );
     assert_eq!(
         send(&s, vec![p(4, Fact::StreamEnd)], None),
@@ -464,12 +470,18 @@ fn facts_apply_in_order_once_with_gaps_and_skips_and_survive_restart() {
     let s = restart(s, &disk);
     assert_eq!(
         send(&s, vec![p(2, action("b.rs"))], None),
-        Response::Facts { applied_through: 2 }
+        Response::Facts {
+            applied_through: 2,
+            drift: Vec::new()
+        }
     );
     // A range the client cannot resend is skipped and counted.
     assert_eq!(
         send(&s, vec![p(5, Fact::StreamEnd)], Some((3, 4))),
-        Response::Facts { applied_through: 5 }
+        Response::Facts {
+            applied_through: 5,
+            drift: Vec::new()
+        }
     );
     assert!(
         telemetry(&s)

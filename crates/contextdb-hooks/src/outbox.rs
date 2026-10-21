@@ -88,6 +88,8 @@ pub struct StreamState {
     pub harness_session: String,
     /// The ctxd session the hooks attached, if known.
     pub session: Option<[u8; 16]>,
+    /// git HEAD at SessionStart: drift compares against it (§5.4).
+    pub head_sha: String,
     /// Cached repository roots per `cwd` (§3.2).
     pub roots: Vec<(String, String)>,
     /// Unacknowledged `context_update` token per agent (§4.4).
@@ -104,6 +106,7 @@ impl Wire for StreamState {
         self.harness.encode(o);
         self.harness_session.encode(o);
         self.session.encode(o);
+        self.head_sha.encode(o);
         self.roots.encode(o);
         self.tokens.encode(o);
         self.empty_warned.encode(o);
@@ -115,6 +118,7 @@ impl Wire for StreamState {
             harness: Wire::decode(i)?,
             harness_session: Wire::decode(i)?,
             session: Wire::decode(i)?,
+            head_sha: Wire::decode(i)?,
             roots: Wire::decode(i)?,
             tokens: Wire::decode(i)?,
             empty_warned: Wire::decode(i)?,

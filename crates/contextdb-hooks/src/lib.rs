@@ -5,6 +5,7 @@
 //! each pinned harness accepts, and the outbox keeps facts until the daemon
 //! has made them durable. The binary wires these to `ctxd`.
 pub mod adapter;
+pub mod hook;
 pub mod outbox;
 pub mod patch;
 pub mod paths;

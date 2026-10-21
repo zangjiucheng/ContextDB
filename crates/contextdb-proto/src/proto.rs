@@ -340,8 +340,11 @@ pub enum Response {
         items: Vec<UpdateItem>,
         more: bool,
     },
+    /// `drift`: the reports computed from `Drift` facts of this batch, so
+    /// the Stop hook can show them (ADR 0010 §5.4).
     Facts {
         applied_through: u64,
+        drift: Vec<DriftReport>,
     },
     /// The batch does not continue the stream: resend from `expected`, or
     /// skip what cannot be resent (ADR 0010 §5.3).
@@ -1026,9 +1029,13 @@ impl Wire for Response {
                 items.encode(o);
                 more.encode(o);
             }
-            Self::Facts { applied_through } => {
+            Self::Facts {
+                applied_through,
+                drift,
+            } => {
                 16u8.encode(o);
                 applied_through.encode(o);
+                drift.encode(o);
             }
             Self::Gap { expected } => {
                 17u8.encode(o);
@@ -1117,6 +1124,7 @@ impl Wire for Response {
             },
             16 => Self::Facts {
                 applied_through: Wire::decode(i)?,
+                drift: Wire::decode(i)?,
             },
             17 => Self::Gap {
                 expected: Wire::decode(i)?,
@@ -1379,7 +1387,10 @@ mod tests {
                 }],
                 more: false,
             },
-            Response::Facts { applied_through: 9 },
+            Response::Facts {
+                applied_through: 9,
+                drift: vec![DriftReport::default()],
+            },
             Response::Gap { expected: 4 },
             Response::Briefing {
                 stale: 1,

@@ -1885,6 +1885,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         let mut events = Vec::new();
         let mut telemetry = Vec::new();
+        let mut drift = Vec::new();
         for p in packets {
             if p.seq <= through {
                 continue;
@@ -1900,6 +1901,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             match &p.fact {
                 Fact::Drift { done } => {
                     let report = self.drift(session, &s, &p.agent, done.as_deref());
+                    drift.push(report.clone());
                     telemetry.push(TelemetryEntry::Drift {
                         session,
                         agent: p.agent.clone(),
@@ -1956,6 +1958,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         hooks.telemetry.extend(telemetry);
         Response::Facts {
             applied_through: through,
+            drift,
         }
     }
     /// Declared-vs-done drift of one agent (ADR 0010 §5.4). Paths declared by
