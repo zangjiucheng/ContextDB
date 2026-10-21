@@ -41,7 +41,7 @@ case ${1:-} in
       curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain 1.95.0 --profile minimal && \
       $rust/cargo/bin/rustup toolchain install nightly-2026-10-01 --profile minimal && \
       $rust/cargo/bin/cargo +1.95.0 install cargo-mutants --version 27.1.0 --locked && \
-      $rust/cargo/bin/cargo +nightly-2026-10-01 install cargo-fuzz --locked"
+      $rust/cargo/bin/cargo +nightly-2026-10-01 install cargo-fuzz --version 0.13.2 --locked"
     ;;
   run)
     name=$2; shift 2

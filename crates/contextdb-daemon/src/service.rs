@@ -111,6 +111,10 @@ fn submit_err(e: SubmitError) -> Response {
     match e {
         SubmitError::Busy => err("Busy", "write queue full"),
         SubmitError::Stopped => err("Unavailable", "daemon stopping"),
+        SubmitError::Timeout => err(
+            "Timeout",
+            "no reply within the request timeout; a write may still commit (resolve with TxnStatus)",
+        ),
     }
 }
 fn handle_of(cert: &Certificate, index: usize) -> String {

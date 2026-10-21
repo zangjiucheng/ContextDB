@@ -125,3 +125,33 @@ fn sequential_writes_reclaim_replicas_without_clones() {
         "{clones} clone fallbacks for 30 sequential writes"
     );
 }
+/// ADR 0008 §5: a request past its timeout gets `Timeout`; a timed-out write
+/// may still commit, and its outcome is resolved through `TxnStatus`.
+#[test]
+fn timed_out_write_is_resolved_through_txn_status() {
+    let mut h = actor::spawn(store()).unwrap();
+    assert_eq!(h.timeout, actor::REQUEST_TIMEOUT);
+    h.timeout = std::time::Duration::ZERO;
+    let (blobs, mut b) = create("slow", b"slow");
+    let id = [9; 16];
+    b.client_txn_id = Some(id);
+    assert_eq!(h.write(blobs, b), Err(SubmitError::Timeout));
+    h.timeout = actor::REQUEST_TIMEOUT;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match h
+            .request(|reply| actor::Message::TxnStatus { id, reply })
+            .unwrap()
+            .unwrap()
+        {
+            contextdb_store::TxnStatus::Committed { epoch, .. } => {
+                assert_eq!(epoch, Epoch(1));
+                break;
+            }
+            contextdb_store::TxnStatus::NotCommitted => {
+                assert!(std::time::Instant::now() < deadline, "write never landed");
+                std::thread::yield_now();
+            }
+        }
+    }
+}

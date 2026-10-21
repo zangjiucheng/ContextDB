@@ -7,7 +7,7 @@
 //! must match) and is swapped into the store; the store's database becomes the
 //! new published snapshot. A replica still held by a reader after a bounded
 //! wait is replaced by a clone (counted; the fallback trigger of §3.3).
-use arc_swap::ArcSwap;
+use crate::publish::{self, Published};
 use contextdb_core::Db;
 use contextdb_model::*;
 use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus};
@@ -23,6 +23,8 @@ use std::{
 pub const QUEUE: usize = 1024;
 pub const MAX_GROUP: usize = 64;
 const RECLAIM_WAIT: Duration = Duration::from_millis(5);
+/// A request runs for at most this long (ADR 0008 §5).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What readers see: one epoch, its database and a log reader bounded by it.
 pub struct Snapshot<D: Durability> {
@@ -65,8 +67,10 @@ pub struct ActorStats {
 #[derive(Clone)]
 pub struct ActorHandle<D: Durability> {
     tx: mpsc::SyncSender<Message>,
-    published: Arc<ArcSwap<Snapshot<D>>>,
+    published: Arc<Published<Snapshot<D>>>,
     pub stats: Arc<ActorStats>,
+    /// How long a caller waits for its reply ([`REQUEST_TIMEOUT`]).
+    pub timeout: Duration,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum SubmitError {
@@ -74,11 +78,14 @@ pub enum SubmitError {
     Busy,
     /// The actor has stopped.
     Stopped,
+    /// No reply within the request timeout. A write may still commit: its
+    /// outcome is resolved through `TxnStatus` with its client_txn_id.
+    Timeout,
 }
 impl<D: Durability> ActorHandle<D> {
     /// The current snapshot; readers hold it for the whole request (I4).
     pub fn snapshot(&self) -> Arc<Snapshot<D>> {
-        self.published.load_full()
+        self.published.load()
     }
     pub fn submit(&self, m: Message) -> Result<(), SubmitError> {
         self.tx.try_send(m).map_err(|e| match e {
@@ -98,7 +105,13 @@ impl<D: Durability> ActorHandle<D> {
             batch,
             reply,
         }))?;
-        rx.recv().map_err(|_| SubmitError::Stopped)
+        self.wait(rx)
+    }
+    fn wait<T>(&self, rx: mpsc::Receiver<T>) -> Result<T, SubmitError> {
+        rx.recv_timeout(self.timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => SubmitError::Timeout,
+            mpsc::RecvTimeoutError::Disconnected => SubmitError::Stopped,
+        })
     }
     pub fn request<T>(
         &self,
@@ -106,12 +119,12 @@ impl<D: Durability> ActorHandle<D> {
     ) -> Result<T, SubmitError> {
         let (reply, rx) = mpsc::channel();
         self.submit(make(reply))?;
-        rx.recv().map_err(|_| SubmitError::Stopped)
+        self.wait(rx)
     }
 }
 struct Actor<D: Durability> {
     store: Store<D>,
-    published: Arc<ArcSwap<Snapshot<D>>>,
+    published: Arc<Published<Snapshot<D>>>,
     spare: Option<Arc<Snapshot<D>>>,
     /// Newly applied batches of the previous group, with their results: the
     /// spare is two groups behind the store and must replay them too.
@@ -128,7 +141,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         db,
         log: store.log_reader(),
     };
-    let published = Arc::new(ArcSwap::from_pointee(snapshot));
+    let published = Arc::new(Published::new(snapshot));
     let stats = Arc::new(ActorStats::default());
     let (tx, rx) = mpsc::sync_channel(QUEUE);
     let mut actor = Actor {
@@ -153,6 +166,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         tx,
         published,
         stats,
+        timeout: REQUEST_TIMEOUT,
     })
 }
 impl<D: Durability + Clone> Actor<D> {
@@ -284,20 +298,11 @@ impl<D: Durability + Clone> Actor<D> {
     fn reclaim(&mut self) -> Option<Db> {
         let mut spare = self.spare.take()?;
         let start = Instant::now();
-        loop {
-            // arc-swap settles outstanding guards on swap, so a unique Arc
-            // means no reader can still observe this snapshot.
-            if let Some(s) = Arc::get_mut(&mut spare) {
-                let waited = start.elapsed().as_micros() as u64;
-                self.stats
-                    .reclaim_wait_micros
-                    .fetch_add(waited, Ordering::Relaxed);
-                return Some(std::mem::take(&mut s.db));
-            }
-            if start.elapsed() >= RECLAIM_WAIT {
-                return None;
-            }
-            std::thread::yield_now();
-        }
+        let s = publish::reclaim(&mut spare, || start.elapsed() >= RECLAIM_WAIT)?;
+        let waited = start.elapsed().as_micros() as u64;
+        self.stats
+            .reclaim_wait_micros
+            .fetch_add(waited, Ordering::Relaxed);
+        Some(std::mem::take(&mut s.db))
     }
 }

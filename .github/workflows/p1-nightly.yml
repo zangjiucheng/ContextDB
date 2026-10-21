@@ -1,4 +1,4 @@
-name: Nightly exhaustive, mutation and durability gates
+name: Nightly exhaustive, mutation, durability, stress and fuzz gates
 on:
   workflow_dispatch:
   schedule:
@@ -50,3 +50,30 @@ jobs:
         run: cargo test --release --locked -p contextdb-store
       - name: P2 rebuild == incremental and read modes
         run: cargo test --release --locked -p contextdb-testkit --test p2_rebuild
+  p3-stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - name: P3 G4 stress, 1/8/32/128 clients x 10 min
+        run: bash scripts/stress.sh
+      - name: P3 G4 crash injection incl. staged payloads and session log (1,000 per point)
+        env:
+          CONTEXTDB_G4_RUNS: '1000'
+        run: cargo test --release --locked -p contextdb-store -p contextdb-daemon
+  p3-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly-2026-10-01 --profile minimal
+      - run: cargo +nightly-2026-10-01 install cargo-fuzz --version 0.13.2 --locked
+      - name: P3 G4 fuzzing, IPC decoder and MCP JSON (1 h each, in parallel)
+        env:
+          FUZZ_JOBS: '2'
+        run: bash scripts/fuzz.sh

@@ -45,3 +45,5 @@ contextdb-daemon = { path = "crates/contextdb-daemon", version = "=0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# ADR 0008 §11 G4: the publication handshake is model-checked under cfg(loom).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
