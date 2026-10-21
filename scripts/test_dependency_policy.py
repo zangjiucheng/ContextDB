@@ -74,5 +74,20 @@ class DependencyPolicyTests(unittest.TestCase):
         self.assertTrue(any("external" in error for error in check(data, POLICY)))
 
 
+    def test_daemon_may_only_declare_reviewed_externals(self):
+        policy = dict(POLICY, daemon={"reviewed_external": ["nix"]})
+        data = metadata({"core": ["model"], "daemon": ["core"]})
+        daemon = next(package for package in data["packages"] if package["id"] == "daemon")
+        daemon["dependencies"] = [
+            {"name": "contextdb-core", "path": "/x"},
+            {"name": "nix"},
+            {"name": "criterion", "kind": "dev"},
+        ]
+        self.assertEqual(check(data, policy), [])
+        daemon["dependencies"].append({"name": "tokio"})
+        errors = check(data, policy)
+        self.assertTrue(any("contextdb-daemon declares unreviewed external crate: tokio" in e for e in errors))
+
+
 if __name__ == "__main__":
     unittest.main()

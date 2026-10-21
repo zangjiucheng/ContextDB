@@ -223,3 +223,43 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         result
     }
 }
+impl Wire for NodeChange {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.revision.encode(o);
+        self.before.encode(o);
+        self.after.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            revision: Wire::decode(i)?,
+            before: Wire::decode(i)?,
+            after: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for EpochDiff {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.from.encode(o);
+        self.to.encode(o);
+        self.changes.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            from: Wire::decode(i)?,
+            to: Wire::decode(i)?,
+            changes: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for Impact {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.supported.encode(o);
+        self.reference_only.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            supported: Wire::decode(i)?,
+            reference_only: Wire::decode(i)?,
+        })
+    }
+}

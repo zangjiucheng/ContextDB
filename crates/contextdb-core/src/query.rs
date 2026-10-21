@@ -131,3 +131,17 @@ pub(crate) fn proof(
         truncated,
     })
 }
+impl Wire for Proof {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.explanation.encode(o);
+        self.premises.encode(o);
+        self.truncated.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            explanation: Wire::decode(i)?,
+            premises: Wire::decode(i)?,
+            truncated: Wire::decode(i)?,
+        })
+    }
+}

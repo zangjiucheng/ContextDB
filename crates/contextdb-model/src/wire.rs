@@ -29,6 +29,11 @@ impl DecodeLimits {
         max_bytes: MAX_BYTES,
         max_elements: 1_000_000,
     };
+    /// Daemon IPC messages (ADR 0008 §5): one frame is at most 16 MiB.
+    pub const IPC: Self = Self {
+        max_bytes: 16 << 20,
+        max_elements: 1_000_000,
+    };
     /// Durable frames and snapshots: no fixed caps beyond the input itself.
     pub const DURABLE: Self = Self {
         max_bytes: usize::MAX,
@@ -1114,5 +1119,96 @@ impl EventLog {
             batches.push(Batch::from_bytes(&bytes)?)
         }
         Ok(Self { batches })
+    }
+}
+impl Wire for Explanation {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.revision.encode(o);
+        self.base.encode(o);
+        self.active_rules.encode(o);
+        self.witness.encode(o);
+        self.references.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            revision: Wire::decode(i)?,
+            base: Wire::decode(i)?,
+            active_rules: Wire::decode(i)?,
+            witness: Wire::decode(i)?,
+            references: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for IncidenceFailure {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Unsupported(p) => {
+                0u8.encode(o);
+                p.encode(o);
+            }
+            Self::NotCurrent { premise, head } => {
+                1u8.encode(o);
+                premise.encode(o);
+                head.encode(o);
+            }
+            Self::SupersededPinned { premise, head } => {
+                2u8.encode(o);
+                premise.encode(o);
+                head.encode(o);
+            }
+            Self::SemanticHeadUnsupported(h) => {
+                3u8.encode(o);
+                h.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Unsupported(Wire::decode(i)?),
+            1 => Self::NotCurrent {
+                premise: Wire::decode(i)?,
+                head: Wire::decode(i)?,
+            },
+            2 => Self::SupersededPinned {
+                premise: Wire::decode(i)?,
+                head: Wire::decode(i)?,
+            },
+            3 => Self::SemanticHeadUnsupported(Wire::decode(i)?),
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+impl Wire for RuleFailure {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.rule.encode(o);
+        self.disabled.encode(o);
+        self.gate.encode(o);
+        self.asserted.encode(o);
+        self.current.encode(o);
+        self.incidences.encode(o);
+        self.upstream.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            rule: Wire::decode(i)?,
+            disabled: Wire::decode(i)?,
+            gate: Wire::decode(i)?,
+            asserted: Wire::decode(i)?,
+            current: Wire::decode(i)?,
+            incidences: Wire::decode(i)?,
+            upstream: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for WhyNot {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.revision.encode(o);
+        self.rules.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            revision: Wire::decode(i)?,
+            rules: Wire::decode(i)?,
+        })
     }
 }

@@ -222,3 +222,130 @@ impl Wire for Summary {
         })
     }
 }
+impl Wire for IssueFailure {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::NotCertified {
+                logical,
+                rev,
+                summary,
+            } => {
+                0u8.encode(o);
+                logical.encode(o);
+                rev.encode(o);
+                summary.encode(o);
+            }
+            Self::Ambiguous { logical } => {
+                1u8.encode(o);
+                logical.encode(o);
+            }
+            Self::Empty => 2u8.encode(o),
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::NotCertified {
+                logical: Wire::decode(i)?,
+                rev: Wire::decode(i)?,
+                summary: Wire::decode(i)?,
+            },
+            1 => Self::Ambiguous {
+                logical: Wire::decode(i)?,
+            },
+            2 => Self::Empty,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+impl Wire for CertDiff {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.logical.encode(o);
+        self.cert_rev.encode(o);
+        self.current.encode(o);
+        self.summary.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            logical: Wire::decode(i)?,
+            cert_rev: Wire::decode(i)?,
+            current: Wire::decode(i)?,
+            summary: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for InvalidReason {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o)
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        match u8::decode(i)? {
+            0 => Ok(Self::Changed),
+            1 => Ok(Self::StrictChange),
+            2 => Ok(Self::LogMismatch),
+            _ => Err(WireError::InvalidEncoding),
+        }
+    }
+}
+impl Wire for Validation {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Denied => 0u8.encode(o),
+            Self::Invalid { reason, diffs } => {
+                1u8.encode(o);
+                reason.encode(o);
+                diffs.encode(o);
+            }
+            Self::Conflicted { entries } => {
+                2u8.encode(o);
+                entries.encode(o);
+            }
+            Self::Ambiguous { logical } => {
+                3u8.encode(o);
+                logical.encode(o);
+            }
+            Self::Unknown { lag } => {
+                4u8.encode(o);
+                lag.encode(o);
+            }
+            Self::Pending { rules } => {
+                5u8.encode(o);
+                rules.encode(o);
+            }
+            Self::Empty => 6u8.encode(o),
+            Self::Valid => 7u8.encode(o),
+            Self::ValidRecertified { new_cert, diffs } => {
+                8u8.encode(o);
+                new_cert.encode(o);
+                diffs.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Denied,
+            1 => Self::Invalid {
+                reason: Wire::decode(i)?,
+                diffs: Wire::decode(i)?,
+            },
+            2 => Self::Conflicted {
+                entries: Wire::decode(i)?,
+            },
+            3 => Self::Ambiguous {
+                logical: Wire::decode(i)?,
+            },
+            4 => Self::Unknown {
+                lag: Wire::decode(i)?,
+            },
+            5 => Self::Pending {
+                rules: Wire::decode(i)?,
+            },
+            6 => Self::Empty,
+            7 => Self::Valid,
+            8 => Self::ValidRecertified {
+                new_cert: Box::new(Wire::decode(i)?),
+                diffs: Wire::decode(i)?,
+            },
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}

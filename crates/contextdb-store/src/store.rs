@@ -958,6 +958,37 @@ impl<D: Durability> Store<D> {
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
     }
+    /// Replaces the live database with `replica`, which must be at the same
+    /// epoch and state (ADR 0008 §3.3 two-replica publication); returns the
+    /// previous database. Debug builds compare digests.
+    pub fn replace_db(&mut self, replica: Db) -> Result<Db, StoreError> {
+        self.readable()?;
+        if replica.epoch() != self.db.epoch() {
+            return Err(StoreError::Io(format!(
+                "replica at {:?}, store at {:?}",
+                replica.epoch(),
+                self.db.epoch()
+            )));
+        }
+        if cfg!(debug_assertions) {
+            assert_eq!(replica.digest(), self.db.digest(), "replica diverged");
+        }
+        Ok(std::mem::replace(&mut self.db, replica))
+    }
+    /// Exact IMPACT of a hypothetical batch on the live database, restored
+    /// afterwards (P1 `impact_exact`; ADR 0008 §3.3 runs it on the actor).
+    pub fn impact_exact(&mut self, batch: &Batch) -> Result<CommitResult, StoreError> {
+        self.readable()?;
+        self.db.impact_exact(batch).map_err(StoreError::Tx)
+    }
+    /// The op_log frame checksum at `epoch` (genesis at 0): certificate log
+    /// linkage (ADR 0008 §4).
+    pub fn checksum_at(&self, epoch: Epoch) -> Result<ContentHash, StoreError> {
+        if epoch.0 == 0 {
+            return Ok(log::GENESIS);
+        }
+        Ok(log::checksum(&self.read_row(epoch)?.encode_body()))
+    }
     /// G4 fault injection: the next commit syncs its frame, then fails before
     /// publishing or acking (post-sync-pre-publish), poisoning the store.
     #[doc(hidden)]
@@ -1020,6 +1051,13 @@ pub struct LogReader<D: Durability> {
 impl<D: Durability> LogReader<D> {
     pub fn tail(&self) -> Epoch {
         self.tail
+    }
+    /// The op_log frame checksum at `epoch` (genesis at 0).
+    pub fn checksum_at(&self, epoch: Epoch) -> Result<ContentHash, StoreError> {
+        if epoch.0 == 0 {
+            return Ok(log::GENESIS);
+        }
+        Ok(log::checksum(&self.read_row(epoch)?.encode_body()))
     }
     pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
         if epoch > self.tail {

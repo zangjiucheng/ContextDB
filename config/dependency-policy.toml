@@ -11,3 +11,14 @@ allowed_external = ["blake3", "arrayvec", "cfg-if", "constant_time_eq", "cpufeat
 # fsync(2) for the "fullfsync off" measurement mode (ADR 0006 §10).
 [store]
 reviewed_external = ["rusqlite", "blake3", "nix"]
+
+# ADR 0008 §1: ctxd uses std threads (no async runtime), nix for sockets, peer
+# credentials, statfs and process checks, arc-swap for lock-free snapshot
+# publication, and blake3 for payload hashes. IPC uses the model's Wire
+# encoding, so serde stays out of the daemon.
+[daemon]
+reviewed_external = ["nix", "arc-swap", "blake3"]
+
+# ADR 0008 §10: hand-rolled JSON-RPC over stdio (owner decision).
+[mcp]
+reviewed_external = ["serde", "serde_json"]

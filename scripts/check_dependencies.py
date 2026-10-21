@@ -59,6 +59,18 @@ def check(metadata: dict, policy: dict) -> list[str]:
                 errors.append(f"contextdb-core reaches forbidden workspace crate: {name}")
         elif name not in policy["core"]["allowed_external"]:
             errors.append(f"contextdb-core reaches unreviewed external crate: {name}")
+
+    # ADR 0006 §1, ADR 0008 §1: crates with a reviewed list may only declare
+    # reviewed external dependencies directly (normal and build edges).
+    for section, crate in (("store", "contextdb-store"), ("daemon", "contextdb-daemon"), ("mcp", "contextdb-mcp")):
+        reviewed = set(policy.get(section, {}).get("reviewed_external", []))
+        if crate not in members:
+            continue
+        for dependency in packages[members[crate]]["dependencies"]:
+            if dependency.get("kind") == "dev" or dependency.get("path"):
+                continue
+            if dependency["name"] not in reviewed:
+                errors.append(f"{crate} declares unreviewed external crate: {dependency['name']}")
     return errors
 
 
