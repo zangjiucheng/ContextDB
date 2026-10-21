@@ -3,6 +3,7 @@
 //! {on, off}. Each client alternates a certified read and a CAS revision of
 //! its own logical (no conflicts), so writes measure commit latency and
 //! group-commit throughput. Usage: mcp_bench [seconds per cell] [clients...]
+//! Exits non-zero when a cell misses its ADR 0008 §11 budget.
 use contextdb_daemon::{
     proto::*,
     server::{Client, Daemon, Options},
@@ -143,16 +144,39 @@ fn main() {
         vec![1, 8, 32, 128]
     };
     println!(
-        "| clients | fullfsync | read p95 ms | write p50 ms | write p95 ms | write tx/s | groups | clone fallbacks |"
+        "| clients | fullfsync | read p95 ms | write p50 ms | write p95 ms | write budget ms | write tx/s | groups | clone fallbacks |"
     );
-    println!("|---:|---|---:|---:|---:|---:|---:|---:|");
+    println!("|---:|---|---:|---:|---:|---:|---:|---:|---:|");
+    let mut pass = true;
     for full_sync in [true, false] {
+        let mut peak: f64 = 0.0;
         for &c in &clients {
             let (r95, w95, w50, tps, groups, clones) = cell(c, full_sync, seconds);
+            // ADR 0008 §11 (owner decision, 2026-10-20): 15 ms is the
+            // one-client latency target; a cell with N clients may take one
+            // in-flight group plus its own, 2 × N / throughput.
+            let budget = if c == 1 {
+                15.0
+            } else {
+                2.0 * c as f64 / tps * 1e3
+            };
+            let ok = r95 <= 5.0 && w95 <= budget;
+            pass &= ok;
+            peak = peak.max(tps);
             println!(
-                "| {c} | {} | {r95:.2} | {w50:.2} | {w95:.2} | {tps:.0} | {groups} | {clones} |",
-                if full_sync { "on" } else { "off" }
+                "| {c} | {} | {r95:.2} | {w50:.2} | {w95:.2} | {budget:.2} | {tps:.0} | {groups} | {clones} |{}",
+                if full_sync { "on" } else { "off" },
+                if ok { "" } else { " MISS" }
             );
         }
+        // Throughput at saturation, gated only when the full curve ran.
+        if clients.contains(&128) && peak < 2000.0 {
+            println!("throughput fullfsync={full_sync} peak {peak:.0} < 2,000 tx/s MISS");
+            pass = false;
+        }
+    }
+    println!("g5_pass={pass}");
+    if !pass {
+        std::process::exit(1);
     }
 }

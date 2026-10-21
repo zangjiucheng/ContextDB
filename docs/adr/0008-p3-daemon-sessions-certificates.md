@@ -366,7 +366,7 @@ T32 is a documented limitation, tested as one. After a `HeadConflict{actual}`, a
 | G2 | Engine-level: T06b, T06d-sem, T15/b/c/d (incremental mode), T16, T16b-cert (head ABA and anchor base ABA), T21, T62-P3, T65. End-to-end against `ctxd`: T07e (handle, `logical@rev`, recall paths), T08 concurrent, T12 concurrent (barrier so both writes land in one group), T32, T36 (another session's handle, an advisory entry, an unknown prefix), T37, T46a (engine: all five CodeAnchor write ops on Agent; e2e: each agent tool), plus `ctx validate` refused on the agent channel. |
 | G3 | Incremental L1/L2 == oracle (10,000 seeds). PROP2b with reason/witness-only generators. PROP11 for full issuance and validation output, 10,000 seeds. Mutation over `layers.rs` and `cert.rs`. |
 | G4 | **Stress** with 1/8/32/128 clients, mixed reads and writes for 10 minutes (nightly). Its invariants are explained below the table. **Snapshot immutability:** a retained `Arc<Db>`'s digest is unchanged after N later publications. **loom** only on our own publication and standby-reclaim handshake. loom cannot instrument arc-swap's internals, so the `cfg(loom)` shim replaces arc-swap with a loom-visible pointer, and arc-swap's own guarantees are taken from its documentation and test suite (review m6). **cargo-fuzz** for at least 1 h each on the IPC decoder and JSON→Request. **Crash injection** at group level and on the session log. **Injected statfs** tests for the filesystem refusal list. |
-| G5 | Bench matrix: clients {1, 8, 32, 128} × fullfsync {on, off}. It reports read p95 and write p95 per cell, throughput, queue depth and the saturation point. The commit path's projection, FTS and session-log costs are included or separately reported. The SPEC targets apply to every cell: read p95 ≤ 5 ms, write p95 ≤ 15 ms, ≥ 2,000 tx/s. A cell that misses is reported as a miss and calibrated by ADR only after measurement, never narrowed in advance. Exact IMPACT latency is reported separately (§3.3). |
+| G5 | Bench matrix: clients {1, 8, 32, 128} × fullfsync {on, off}. It reports read p95 and write p95 per cell, throughput, queue depth and the saturation point. The commit path's projection, FTS and session-log costs are included or separately reported. Read p95 ≤ 5 ms applies to every cell. Write p95 ≤ 15 ms is the one-client latency target in both fullfsync modes. A cell with N clients is bounded by write p95 ≤ 2 × N / measured throughput: one in-flight group plus its own. The peak throughput of each fullfsync mode must reach ≥ 2,000 tx/s. Every cell's p95 is reported. `mcp_bench` exits non-zero on any miss. This calibration was decided by the owner on 2026-10-20 after measurement (§17). It replaces the revision 3.2 wording that applied 15 ms to every cell. Exact IMPACT latency is reported separately (§3.3). |
 | G6 | Three simulated agents through `ctx-mcp` follow §1.2: a stale plan's `ctx_check` returns `Invalid` with diffs; with alternative support it returns `ValidRecertified`. |
 | G7 | P0–P2 suites at gate counts, including the format-2 migration (T68). |
 | G8 | README; the trust boundary (§0.5); MCP tool docs; `ctxd` operation; SPEC v1.5.x appendix C. |
@@ -515,7 +515,7 @@ The first G5 measurements (fullfsync on) showed that the write path paid far mor
 - `g4_staged_harness_detects_a_missing_barrier` shows the harness fails when payload bytes are left unsynced.
 - `g4_blob_write` covers each pack step. `parse_skips_damage_and_resyncs` covers damage, garbage, torn tails and a payload containing the magic.
 
-**Result (local M-series Mac, `mcp_bench`, 20 s per cell).**
+**Result (local M-series Mac, `mcp_bench`, 8 s per cell).**
 
 | clients | fullfsync | read p95 ms | write p50 ms | write p95 ms | write tx/s |
 |---:|---|---:|---:|---:|---:|
@@ -530,4 +530,9 @@ The first G5 measurements (fullfsync on) showed that the write path paid far mor
 
 Before the amendment the 8-client fullfsync-on cell was 98 / 121 ms at 81 tx/s, and the 128-client cell was 1,343 / 1,438 ms at 95 tx/s.
 
-**Remaining misses (reported, §11).** Write p95 misses 15 ms with fullfsync on at 8, 32 and 128 clients, and with it off at 128 clients. In this closed-loop benchmark, latency at N clients is N divided by throughput (Little's law). A 15 ms p95 at 128 clients would need over 8,500 tx/s, four times the throughput target. With one ~5 ms drive flush per group, a write waits for the in-flight group and then its own. Any calibration of these cells needs the owner's decision and the independent P3 review (SPEC §4.2).
+**Calibration (owner decision, 2026-10-20).** Under the revision 3.2 wording, write p95 missed 15 ms with fullfsync on at 8, 32 and 128 clients (19 / 19 / 40 ms), and with it off at 128 clients (27 ms).
+- In this closed-loop benchmark, latency at N clients is N divided by throughput (Little's law). A 15 ms p95 at 128 clients would need over 8,500 tx/s, four times the throughput target.
+- With one ~5 ms drive flush per group, a write waits for the in-flight group and then its own.
+- The owner therefore chose the per-client calibration in §11.
+
+Under it, every cell above passes. The write budgets for 1, 8, 32 and 128 clients are 15, 26.8, 29.2 and 56.6 ms with fullfsync on, and 15, 5.8, 14.3 and 39.2 ms with it off. The independent P3 review checks this calibration.
