@@ -66,6 +66,8 @@ pub enum Fact {
         mode: GateMode,
         decision: Decision,
         harness_version: String,
+        /// When the hook decided (wall-clock seconds).
+        at: u64,
     },
 }
 /// A fact with its stream position and the agent that produced it.
@@ -184,12 +186,14 @@ impl Wire for Fact {
                 mode,
                 decision,
                 harness_version,
+                at,
             } => {
                 4u8.encode(o);
                 action.encode(o);
                 mode.encode(o);
                 decision.encode(o);
                 harness_version.encode(o);
+                at.encode(o);
             }
         }
     }
@@ -211,6 +215,7 @@ impl Wire for Fact {
                 mode: Wire::decode(i)?,
                 decision: Wire::decode(i)?,
                 harness_version: Wire::decode(i)?,
+                at: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -259,6 +264,7 @@ mod tests {
                 mode: GateMode::Enforce,
                 decision: Decision::Deny,
                 harness_version: "2.1.306".into(),
+                at: 1,
             },
         ] {
             let p = Packet {

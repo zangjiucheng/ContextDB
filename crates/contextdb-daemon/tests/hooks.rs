@@ -409,10 +409,11 @@ fn updates_peek_until_acknowledged_per_agent() {
     let (t2, again) = updates(None, None);
     assert_eq!(again, items);
     assert_ne!(t1, t2);
-    // A stale token acknowledges nothing; the current one does.
-    assert_eq!(updates(None, Some(t1)).1, items);
-    let (t3, _) = updates(None, None);
-    assert!(updates(None, Some(t3)).1.is_empty());
+    // An unknown token acknowledges nothing; an earlier, still-kept token
+    // does (another peek in between, e.g. ctx_check, must not void the
+    // prompt hook's acknowledgement: review minor 2).
+    assert_eq!(updates(None, Some(t2 ^ 0x5555)).1, items);
+    assert!(updates(None, Some(t1)).1.is_empty());
     // The child sees the root's read in its view and has its own state.
     assert_eq!(updates(Some("c1"), None).1.len(), 1);
 }
@@ -570,7 +571,7 @@ fn briefing_is_advisory_and_records_writes_for_coverage() {
     match call(
         &s,
         Request::Briefing {
-            binding: at(session, None),
+            binding: Some(at(session, None)),
             budget_chars: 1500,
         },
     ) {
@@ -657,4 +658,63 @@ fn facts_survive_a_daemon_crash_at_either_side_of_the_sync() {
         } if drift.is_empty()
     ));
     assert_eq!(drifts(&s), 1, "applied once across the crash");
+}
+
+/// Review B1 and M1: many threads attaching (new and shared keys), ending
+/// sessions, delivering drift and checking at once never deadlock, and
+/// concurrent attaches of one key start exactly one session.
+#[test]
+fn concurrent_attach_end_facts_and_check_neither_deadlock_nor_split() {
+    use std::sync::{Arc, mpsc};
+    let disk = SimDisk::new();
+    let s = Arc::new(service(&disk));
+    let (done_tx, done_rx) = mpsc::channel();
+    let shared: Vec<_> = (0..8)
+        .map(|t| {
+            let (s, done) = (s.clone(), done_tx.clone());
+            std::thread::spawn(move || {
+                let mut ids = Vec::new();
+                for i in 0..200 {
+                    // Every thread attaches the same per-round key...
+                    ids.push(attach(&s, &format!("shared-{i}")).0);
+                    // ...and its own, which it then uses and ends.
+                    let (own, _) = attach(&s, &format!("own-{t}-{i}"));
+                    let _ = s.handle(
+                        AGENT,
+                        Request::Facts {
+                            harness: "claude".into(),
+                            harness_session: format!("own-{t}-{i}"),
+                            stream: [t as u8; 16],
+                            packets: vec![Packet {
+                                seq: i as u64 + 1,
+                                agent: None,
+                                fact: Fact::Drift {
+                                    done: Some(vec!["x".into()]),
+                                },
+                            }],
+                            skip: None,
+                        },
+                    );
+                    let _ = check(&s, at(own, None), Some(GateMode::Warn));
+                    let _ = s.handle(AGENT, Request::SessionEnd { session: own });
+                }
+                done.send(()).unwrap();
+                ids
+            })
+        })
+        .collect();
+    drop(done_tx);
+    for _ in 0..8 {
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("deadlock: a worker did not finish");
+    }
+    let all: Vec<Vec<SessionId>> = shared.into_iter().map(|h| h.join().unwrap()).collect();
+    for i in 0..200 {
+        let first = all[0][i];
+        assert!(
+            all.iter().all(|ids| ids[i] == first),
+            "key shared-{i} split"
+        );
+    }
 }

@@ -1,20 +1,20 @@
 # P4 G5 hook latency (ctx-hook spawn → exit, ms)
 fullfsync sessions ledger n p50 p95 p99 reissue_p95 budget
-on 1 10 200 3.73 8.85 11.96 12.19 PASS
-on 8 10 1600 3.63 10.63 15.32 15.18 PASS
-on 1 100 200 3.45 7.91 8.67 8.69 PASS
-on 8 100 1600 3.91 10.65 15.05 14.44 PASS
-on 1 1000 200 4.25 9.62 12.88 12.88 PASS
-on 8 1000 1600 4.75 10.76 13.58 14.80 PASS
-off 1 10 200 3.29 4.26 5.47 4.26 PASS
-off 8 10 1600 3.89 6.53 9.41 6.80 PASS
-off 1 100 200 3.73 6.54 10.38 4.88 PASS
-off 8 100 1600 4.96 9.60 12.25 10.21 PASS
-off 1 1000 200 4.19 5.78 6.91 6.24 PASS
-off 8 1000 1600 5.09 9.65 15.99 7.60 PASS
+on 1 10 200 2.58 6.47 7.00 7.00 PASS
+on 8 10 1600 3.18 7.82 10.64 11.01 PASS
+on 1 100 200 2.53 6.57 7.44 8.21 PASS
+on 8 100 1600 3.37 7.28 9.16 10.04 PASS
+on 1 1000 200 3.35 7.29 8.50 8.60 PASS
+on 8 1000 1600 5.23 12.01 37.96 20.22 PASS
+off 1 10 200 2.78 3.34 4.46 3.68 PASS
+off 8 10 1600 3.33 4.49 6.85 4.94 PASS
+off 1 100 200 2.50 2.90 3.06 3.06 PASS
+off 8 100 1600 3.41 4.94 7.17 4.90 PASS
+off 1 1000 200 3.38 3.94 4.30 4.30 PASS
+off 8 1000 1600 4.71 6.52 8.84 6.52 PASS
 # other hooks (fullfsync on, 1 session): name p50 p95
-PreToolUse claim (Claude MCP call): 3.12 4.22
-PostToolUse (outbox append + delivery): 8.90 13.87
-UserPromptSubmit (context_update): 2.90 4.24
-# Codex launch overhead: /bin/zsh -lc true: p50 5.30 p95 21.41 (harness cost, not gated)
+PreToolUse claim (Claude MCP call): 2.39 3.02
+PostToolUse (outbox append + delivery): 8.06 12.40
+UserPromptSubmit (context_update): 3.17 9.38
+# Codex launch overhead: /bin/zsh -lc true: p50 4.70 p95 5.29 (harness cost, not gated)
 g5_pass=true

@@ -29,6 +29,9 @@ const HEADER: usize = 4 + 4 + 32;
 pub const LOG_CAP: u64 = 16 << 20;
 /// Most packets per `Facts` request.
 pub const BATCH: usize = 256;
+/// Most record bytes per `Facts` request, well under the 16 MiB frame
+/// (review minor 7).
+pub const BATCH_BYTES: usize = 4 << 20;
 
 pub type Stream = [u8; 16];
 
@@ -328,7 +331,15 @@ impl Outbox {
             if start.elapsed() > budget {
                 break;
             }
-            let n = queue.len().min(BATCH);
+            let mut n = 0;
+            let mut bytes = 0;
+            while n < queue.len().min(BATCH) {
+                bytes += queue[n].canonical_bytes().len();
+                if n > 0 && bytes > BATCH_BYTES {
+                    break;
+                }
+                n += 1;
+            }
             let reply = send(&queue[..n], skip);
             crash_point("deliver:before-ack");
             match reply {

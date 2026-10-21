@@ -46,7 +46,7 @@ fn main() -> ExitCode {
     let repo = std::env::current_dir()
         .map(|d| d.display().to_string())
         .unwrap_or_default();
-    let mut server = Server::new(Socket(client), "mcp", &repo, &head);
+    let mut server = Server::new(Socket(client), "mcp", &repo, &head).with_data_dir(&dir);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {

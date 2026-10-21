@@ -229,6 +229,9 @@ fn b_seqs_are_never_reused_and_every_fact_is_applied_once_or_skipped() {
 /// outbox step. A fact whose record reached the file is applied exactly
 /// once after recovery; one that never did is not; seqs are never reused.
 /// The child is this test binary re-run with `CTX_OUTBOX_CHILD` set.
+// The crash points exist only in debug builds (they are compiled out of
+// release), so this runs in `check.sh`, not in release regression runs.
+#[cfg(debug_assertions)]
 #[test]
 fn g4_hook_killed_at_every_outbox_step() {
     if let Ok(dir) = std::env::var("CTX_OUTBOX_CHILD") {

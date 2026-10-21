@@ -11,8 +11,9 @@ pub fn paths(text: &str) -> Vec<String> {
         "*** Move to: ",
     ];
     let mut out: Vec<String> = Vec::new();
+    // Headers start at column 0; an indented line (hunk context) is not one
+    // (review minor 4).
     for line in text.lines() {
-        let line = line.trim_start();
         for h in HEADERS {
             if let Some(p) = line.strip_prefix(h) {
                 let p = p.trim_end();
@@ -40,6 +41,10 @@ mod tests {
         assert_eq!(paths(&cmd), paths(patch));
         assert!(paths("echo hi").is_empty());
         assert!(paths("*** Add File: \n").is_empty());
+        assert!(
+            paths(" *** Update File: ctx.rs\n").is_empty(),
+            "hunk context"
+        );
         // A body line that merely contains a header is not one.
         assert!(paths("+let s = \"x *** Add File: y\";").is_empty());
         assert!(!is_patch_command("cargo test"));

@@ -1,0 +1,24 @@
+RC=0
+  batches/group=1.0
+| 1 | off | 0.06 | 0.55 | 0.84 | 15.00 | 1644 | 13150 | 1 |
+  batches/group=4.0
+| 8 | off | 0.13 | 2.61 | 4.23 | 5.42 | 2952 | 5909 | 1 |
+  batches/group=16.0
+| 32 | off | 0.42 | 6.29 | 10.39 | 13.33 | 4800 | 2406 | 1 |
+  batches/group=63.8
+| 128 | off | 0.99 | 18.47 | 28.03 | 39.37 | 6503 | 821 | 1 |
+
+With handle deps (certified recall, then a write depending on its handle):
+
+| clients | fullfsync | recall p95 ms | write p50 ms | write p95 ms | write tx/s | groups | clone fallbacks |
+|---:|---|---:|---:|---:|---:|---:|---:|
+  batches/group=1.0
+| 1 | on | 2.28 | 10.88 | 16.53 | 82 | 656 | 1 |
+  batches/group=4.2
+| 8 | on | 4.11 | 21.42 | 33.34 | 330 | 634 | 1 |
+  batches/group=1.0
+| 1 | off | 0.16 | 1.25 | 2.27 | 712 | 5701 | 1 |
+  batches/group=4.0
+| 8 | off | 0.47 | 2.61 | 4.39 | 2722 | 5468 | 1 |
+g5_pass=true
+

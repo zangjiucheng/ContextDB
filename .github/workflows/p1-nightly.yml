@@ -1,4 +1,4 @@
-name: Nightly exhaustive, mutation, durability, stress and fuzz gates
+name: Nightly exhaustive, mutation, durability, stress and fuzz gates (P1–P4)
 on:
   workflow_dispatch:
   schedule:
@@ -73,7 +73,32 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install nightly-2026-10-01 --profile minimal
       - run: cargo +nightly-2026-10-01 install cargo-fuzz --version 0.13.2 --locked
-      - name: P3 G4 fuzzing, IPC decoder and MCP JSON (1 h each, in parallel)
+      - name: P3/P4 G4 fuzzing, IPC, MCP JSON and the P4 parsers (1 h each, in parallel)
         env:
           FUZZ_JOBS: '2'
         run: bash scripts/fuzz.sh
+  p4-hook-stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - name: P4 G4 outbox stress, 8 streams x 16 ctx-hook processes x 10 min
+        run: bash scripts/hook-stress.sh
+  p4-mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: P4 mutations (shard ${{ matrix.shard }}/4)
+        run: bash scripts/mutation-p4.sh --shard ${{ matrix.shard }}/4

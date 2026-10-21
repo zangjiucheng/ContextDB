@@ -20,6 +20,8 @@ pub struct Server<B: Backend> {
     harness: String,
     repo: String,
     head_sha: String,
+    /// The data directory, for `gating.wire` (`ctx_check`'s gate decision).
+    data_dir: Option<std::path::PathBuf>,
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -258,7 +260,20 @@ impl<B: Backend> Server<B> {
             harness: harness.into(),
             repo: repo.into(),
             head_sha: head_sha.into(),
+            data_dir: None,
         }
+    }
+    /// `ctx_check` decides with the gating configuration in `dir`.
+    pub fn with_data_dir(mut self, dir: &std::path::Path) -> Self {
+        self.data_dir = Some(dir.to_path_buf());
+        self
+    }
+    fn gate_config(&self) -> contextdb_proto::gate::GateConfig {
+        self.data_dir
+            .as_ref()
+            .and_then(|d| std::fs::read(d.join("gating.wire")).ok())
+            .and_then(|b| contextdb_proto::gate::GateConfig::from_bytes(&b).ok())
+            .unwrap_or_default()
     }
     fn session(&mut self) -> Result<SessionId, String> {
         if let Some(s) = self.session {
@@ -562,6 +577,13 @@ impl<B: Backend> Server<B> {
                     None => None,
                 };
                 let action = args.get("action").map(action_of).transpose()?;
+                // The gate decision with the same predicate and configuration
+                // as the PreToolUse hook (ADR 0010 §6.5, review M4), computed
+                // here so an agent's own check is not logged as a gated action.
+                let cfg = self.gate_config();
+                let mode = action
+                    .as_ref()
+                    .map_or(cfg.mode, |a| contextdb_proto::gate::resolve_mode(&cfg, a));
                 let env = self.call(Request::Check {
                     binding: binding.clone(),
                     cert_id,
@@ -572,10 +594,10 @@ impl<B: Backend> Server<B> {
                     strict: false,
                 })?;
                 let Response::Check {
-                    decision,
                     validation: v,
                     cert,
                     superseded,
+                    named,
                     ..
                 } = env.response
                 else {
@@ -596,8 +618,13 @@ impl<B: Backend> Server<B> {
                 };
                 Ok(json!({
                     "epoch": env.epoch.0,
-                    "decision": format!("{decision:?}").to_lowercase(),
+                    "decision": format!("{:?}", contextdb_proto::gate::gate(mode, &v)).to_lowercase(),
+                    "mode": format!("{mode:?}").to_lowercase(),
                     "verdict": verdict,
+                    "changed": named.iter().map(|n| json!({
+                        "key": n.key, "read": n.read.0, "current": n.current.map(|r| r.0),
+                        "summary": summary_text(&n.summary), "read_by": n.agent,
+                    })).collect::<Vec<_>>(),
                     "diffs": diffs,
                     "superseded": superseded.iter().map(diff).collect::<Vec<_>>(),
                     "cert_id": cert.map(|c| hex(&c.cert_id)),

@@ -63,6 +63,16 @@ pub struct UpdateItem {
     pub current: Option<RevisionId>,
     pub summary: Summary,
 }
+/// A read in the checked agent's view that is no longer certified at its
+/// head, with the agent whose read put it there (ADR 0010 §6.1 reasons).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedRead {
+    pub key: String,
+    pub agent: Option<String>,
+    pub read: RevisionId,
+    pub current: Option<RevisionId>,
+    pub summary: Summary,
+}
 /// One report input (ADR 0010 §10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TelemetryEntry {
@@ -258,9 +268,10 @@ pub enum Request {
         packets: Vec<Packet>,
         skip: Option<(u64, u64)>,
     },
-    /// Advisory SessionStart briefing; adds nothing to the ledger (ADR 0010 §4.5).
+    /// Advisory SessionStart briefing; adds nothing to the ledger (ADR 0010
+    /// §4.5). No binding: repository-wide counts only (`ctx check --all`).
     Briefing {
-        binding: Binding,
+        binding: Option<Binding>,
         budget_chars: u32,
     },
     /// Admin only: report inputs from index `since` (ADR 0010 §10).
@@ -323,6 +334,8 @@ pub enum Response {
         gate: Option<Decision>,
         /// `context_update` items waiting for this agent (not consumed).
         updates_pending: u32,
+        /// The view's reads that changed (for warn/deny reasons).
+        named: Vec<NamedRead>,
     },
     Diff {
         diff: EpochDiff,
@@ -384,6 +397,13 @@ wire_struct!(Item {
     handle
 });
 wire_struct!(Envelope { epoch, response });
+wire_struct!(NamedRead {
+    key,
+    agent,
+    read,
+    current,
+    summary
+});
 wire_struct!(UpdateItem {
     logical,
     key,
@@ -1001,6 +1021,7 @@ impl Wire for Response {
                 superseded,
                 gate,
                 updates_pending,
+                named,
             } => {
                 10u8.encode(o);
                 decision.encode(o);
@@ -1009,6 +1030,7 @@ impl Wire for Response {
                 superseded.encode(o);
                 gate.encode(o);
                 updates_pending.encode(o);
+                named.encode(o);
             }
             Self::Diff { diff } => {
                 11u8.encode(o);
@@ -1111,6 +1133,7 @@ impl Wire for Response {
                 superseded: Wire::decode(i)?,
                 gate: Wire::decode(i)?,
                 updates_pending: Wire::decode(i)?,
+                named: Wire::decode(i)?,
             },
             11 => Self::Diff {
                 diff: Wire::decode(i)?,
@@ -1364,7 +1387,7 @@ mod tests {
                 skip: Some((2, 5)),
             },
             Request::Briefing {
-                binding: Binding::root(s),
+                binding: Some(Binding::root(s)),
                 budget_chars: 1500,
             },
             Request::Telemetry {
@@ -1382,6 +1405,13 @@ mod tests {
                 superseded: Vec::new(),
                 gate: Some(Decision::Deny),
                 updates_pending: 2,
+                named: vec![NamedRead {
+                    key: "db".into(),
+                    agent: Some("c1".into()),
+                    read: RevisionId(1),
+                    current: Some(RevisionId(2)),
+                    summary: Summary::Certified,
+                }],
             },
             Response::Attached {
                 session: [1; 16],

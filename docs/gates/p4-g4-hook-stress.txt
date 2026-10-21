@@ -1,0 +1,11 @@
+# P4 G4 outbox stress (hook_stress), remote Linux (Ubuntu 24.04), 8 streams x 16 concurrent ctx-hook processes x 600 s
+stream 0: runs 24806 applied_through 24806 OK
+stream 1: runs 24806 applied_through 24806 OK
+stream 2: runs 89013 applied_through 89013 OK
+stream 3: runs 62192 applied_through 62192 OK
+stream 4: runs 56791 applied_through 56791 OK
+stream 5: runs 72969 applied_through 72969 OK
+stream 6: runs 44256 applied_through 44256 OK
+stream 7: runs 38889 applied_through 38889 OK
+hook runs 413722 in 601 s (689/s), failures 0, latency p50 117.4 p99 802.6 max 1123.5 ms
+G4 PASS

@@ -90,9 +90,17 @@ fn git_with_input(
 fn line(bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).trim().to_owned()
 }
-/// The main worktree root of the repository containing `cwd` (ADR 0010
-/// §3.2): worktrees share it; inside a submodule, the superproject's.
-pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
+/// Where a working directory lives in its repository (ADR 0010 §3.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Roots {
+    /// The main worktree root (the superproject's, inside a submodule):
+    /// locates the data directory and names the repository.
+    pub main: PathBuf,
+    /// This checkout's top level (a linked worktree's, or the submodule's):
+    /// the base of action paths and where git runs (review M2).
+    pub top: PathBuf,
+}
+pub fn repo_roots(cwd: &Path) -> Option<Roots> {
     let out = git(
         cwd,
         &[
@@ -112,38 +120,69 @@ pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
         [c, t] => (*c, None, *t),
         _ => return None,
     };
+    let top = PathBuf::from(top);
     if let Some(sp) = superproject.filter(|s| !s.is_empty()) {
-        return repo_root(Path::new(sp));
+        let outer = repo_roots(Path::new(sp))?;
+        return Some(Roots {
+            main: outer.main,
+            top,
+        });
     }
     let common = Path::new(common);
-    match (common.file_name(), common.parent()) {
-        (Some(n), Some(parent)) if n == ".git" => Some(parent.to_path_buf()),
-        _ => Some(PathBuf::from(top)),
+    let main = match (common.file_name(), common.parent()) {
+        (Some(n), Some(parent)) if n == ".git" => parent.to_path_buf(),
+        _ => top.clone(),
+    };
+    Some(Roots { main, top })
+}
+/// The per-user cache directory for repository roots.
+fn cache_dir() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h).join(".cache/contextdb/roots"),
+        None => std::env::temp_dir().join(format!(
+            "ctx-hook-{}",
+            std::env::var("USER").unwrap_or_default()
+        )),
     }
 }
-/// [`repo_root`], cached per working directory (ADR 0010 §3.2): `git
-/// rev-parse` costs ~15 ms, more than the rest of a PreToolUse hook. A cached
-/// root is used only while it still holds `.git` and still contains `cwd`.
-pub fn repo_root_cached(cwd: &Path) -> Option<PathBuf> {
-    let uid = std::env::var("USER").unwrap_or_default();
-    let dir = std::env::temp_dir().join(format!("ctx-hook-{uid}"));
+/// Whether `top` is still the innermost checkout containing `cwd`: it holds
+/// `.git`, contains `cwd`, and no `.git` appeared in between (a new nested
+/// repository; review minor 11).
+fn still_innermost(cwd: &Path, top: &Path) -> bool {
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if !top.join(".git").exists() || !cwd.starts_with(top) {
+        return false;
+    }
+    cwd.ancestors()
+        .take_while(|a| *a != top)
+        .all(|a| !a.join(".git").exists())
+}
+/// [`repo_roots`], cached per working directory: `git rev-parse` costs
+/// ~15 ms, more than the rest of a PreToolUse hook (ADR 0010 G5).
+pub fn repo_roots_cached(cwd: &Path) -> Option<Roots> {
+    let dir = cache_dir();
     let key = blake3::hash(cwd.as_os_str().as_encoded_bytes()).to_hex();
     let file = dir.join(&key[..32]);
-    if let Ok(text) = std::fs::read_to_string(&file) {
-        let root = PathBuf::from(text.trim_end());
-        let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-        if root.join(".git").exists() && (canon.starts_with(&root) || cwd.starts_with(&root)) {
-            return Some(root);
+    if let Ok(text) = std::fs::read_to_string(&file)
+        && let Some((main, top)) = text.split_once('\n')
+    {
+        let roots = Roots {
+            main: PathBuf::from(main),
+            top: PathBuf::from(top.trim_end()),
+        };
+        if still_innermost(cwd, &roots.top) {
+            return Some(roots);
         }
     }
-    let root = repo_root(cwd)?;
+    let roots = repo_roots(cwd)?;
     if std::fs::create_dir_all(&dir).is_ok() {
         let tmp = file.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, root.to_string_lossy().as_bytes()).is_ok() {
+        let text = format!("{}\n{}", roots.main.display(), roots.top.display());
+        if std::fs::write(&tmp, text).is_ok() {
             let _ = std::fs::rename(&tmp, &file);
         }
     }
-    Some(root)
+    Some(roots)
 }
 /// The data directory for a repository (ADR 0010 §6.2): `CTX_DIR`, else the
 /// path in `<root>/.contextdb/dir.wire`, else `<root>/.contextdb/db`.
@@ -196,9 +235,13 @@ fn update_line(u: &UpdateItem) -> String {
 }
 struct Daemon {
     client: Client,
+    /// Every call shares this deadline (review minor 6: `timeout_ms` bounds
+    /// the whole check, not each read).
+    deadline: Instant,
 }
 impl Daemon {
     fn connect(data: &Path, timeout: Duration) -> Result<Self, String> {
+        let deadline = Instant::now() + timeout;
         let l = lease::read_lease(&data.join("ctxd.lease")).ok_or("no ctxd lease")?;
         let sock = l
             .sockets
@@ -206,9 +249,14 @@ impl Daemon {
             .find(|s| s.ends_with("agent.sock"))
             .ok_or("lease has no agent socket")?;
         let client = Client::connect_timeout(sock, timeout).map_err(|e| e.to_string())?;
-        Ok(Self { client })
+        Ok(Self { client, deadline })
     }
     fn call(&mut self, r: Request) -> Result<Envelope, String> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("deadline passed".into());
+        }
+        self.client.set_timeout(left).map_err(|e| e.to_string())?;
         let env = self.client.call(&r).map_err(|e| format!("{e:?}"))?;
         match &env.response {
             Response::Error { code, detail } => Err(format!("{code}: {detail}")),
@@ -221,7 +269,10 @@ pub struct Hook {
     pub harness: Harness,
     pub event: EventName,
     pub data: PathBuf,
+    /// Base of action paths and where git runs (this checkout).
     pub root: PathBuf,
+    /// The main worktree root: names the repository.
+    pub main: PathBuf,
     pub cfg: GateConfig,
     pub outbox: Outbox,
     pub stream: Stream,
@@ -235,7 +286,7 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
             // Unparsed input follows on_unavailable and is always reported
             // (ADR 0010 §3.1, review M11).
             let cwd = std::env::current_dir().ok()?;
-            let data = data_dir(repo_root_cached(&cwd).as_deref())?;
+            let data = data_dir(repo_roots_cached(&cwd).map(|r| r.main).as_deref())?;
             if !data.exists() {
                 return None;
             }
@@ -248,9 +299,12 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
         }
     };
     let cwd = PathBuf::from(&ev.cwd);
-    let root = repo_root_cached(&cwd).unwrap_or_else(|| cwd.clone());
+    let roots = repo_roots_cached(&cwd).unwrap_or_else(|| Roots {
+        main: cwd.clone(),
+        top: cwd.clone(),
+    });
     // Not a ContextDB repository: nothing, in every mode (§6.3).
-    let data = data_dir(Some(&root))?;
+    let data = data_dir(Some(&roots.main))?;
     if !data.exists() {
         return None;
     }
@@ -260,7 +314,8 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
         cfg: gate_config(&data),
         outbox: Outbox::new(&data),
         stream: outbox::stream_id(harness.name(), &ev.session),
-        root,
+        root: roots.top,
+        main: roots.main,
         data,
         ev,
     };
@@ -335,7 +390,7 @@ impl Hook {
         let env = d.call(Request::SessionAttach {
             harness: self.harness.name().into(),
             harness_session: self.ev.session.clone(),
-            repo: self.root.to_string_lossy().into_owned(),
+            repo: self.main.to_string_lossy().into_owned(),
             head_sha: String::new(),
         })?;
         match env.response {
@@ -364,7 +419,21 @@ impl Hook {
                 self.deliver(Duration::from_millis(50), false);
                 Output::default()
             }
-            Kind::OtherTool { .. } | Kind::SubagentStart => Output::default(),
+            Kind::SubagentStart => {
+                // Report the child before it calls MCP tools, so Codex
+                // `_meta` calls with its thread id count as its own (minor 9).
+                if self.agent().is_some()
+                    && let Ok((mut d, session)) = self.attach()
+                {
+                    let _ = d.call(Request::Updates {
+                        binding: self.binding(session),
+                        ack: None,
+                        max_items: 0,
+                    });
+                }
+                Output::default()
+            }
+            Kind::OtherTool { .. } => Output::default(),
             Kind::SubagentStop | Kind::Stop | Kind::PreCompact => {
                 self.drift(Duration::from_millis(500))
             }
@@ -372,6 +441,11 @@ impl Hook {
         }
     }
     fn append(&self, fact: Fact) {
+        // The stream must name its harness session, or no one else (sweeper,
+        // other hooks) can deliver it (review minor 1).
+        if self.outbox.state(&self.stream).harness.is_empty() {
+            self.remember_stream(None, None);
+        }
         // An outbox that cannot be written is reported by the next delivery
         // (dropped count); the hook itself never fails the harness.
         let _ = self.outbox.append(&self.stream, self.agent(), fact);
@@ -449,10 +523,15 @@ impl Hook {
         });
     }
     fn session_start(&self) -> Output {
-        let head = git(&self.root, &["rev-parse", "HEAD"], GIT_LIMIT).map(line);
-        let baseline = self.baseline();
-        self.remember_stream(head.clone(), Some(baseline.clone()));
-        self.append(Fact::Baseline { dirty: baseline });
+        // Claude fires SessionStart again on compact and resume with the same
+        // session id: the baseline and HEAD are taken once per stream, else
+        // the session's own earlier edits would turn into "baseline" (M5).
+        if self.outbox.state(&self.stream).head_sha.is_empty() {
+            let head = git(&self.root, &["rev-parse", "HEAD"], GIT_LIMIT).map(line);
+            let baseline = self.baseline();
+            self.remember_stream(head, Some(baseline.clone()));
+            self.append(Fact::Baseline { dirty: baseline });
+        }
         let mut out = Output::default();
         match self.attach() {
             Ok((mut d, session)) => {
@@ -466,7 +545,7 @@ impl Hook {
                             items,
                         },
                 }) = d.call(Request::Briefing {
-                    binding: self.binding(session),
+                    binding: Some(self.binding(session)),
                     budget_chars: 1_500,
                 }) {
                     let mut text = format!(
@@ -499,7 +578,7 @@ impl Hook {
         out
     }
     fn gating_file_changed(&self) -> bool {
-        match std::fs::read(self.root.join(".contextdb/gating.toml")) {
+        match std::fs::read(self.main.join(".contextdb/gating.toml")) {
             Ok(src) => *blake3::hash(&src).as_bytes() != self.cfg.source_hash,
             Err(_) => false,
         }
@@ -584,12 +663,15 @@ impl Hook {
             })?;
             match env.response {
                 Response::Check {
-                    validation, gate, ..
-                } => Ok((d, session, validation, gate.unwrap_or(Decision::Warn))),
+                    validation,
+                    gate,
+                    named,
+                    ..
+                } => Ok((validation, gate.unwrap_or(Decision::Warn), named)),
                 other => Err(format!("unexpected {other:?}")),
             }
         });
-        let (mut d, session, validation, decision) = match checked {
+        let (validation, decision, named) = match checked {
             Ok(v) => v,
             Err(e) => {
                 let out = unavailable_output(
@@ -602,6 +684,7 @@ impl Hook {
                     mode,
                     decision: out.decision.unwrap_or(Decision::Allow),
                     harness_version: self.harness_version(),
+                    at: now(),
                 });
                 return out;
             }
@@ -634,27 +717,44 @@ impl Hook {
                 system: "ContextDB: no certified reads back this edit".into(),
             };
         }
-        // Name the changed reads (peek; UserPromptSubmit acknowledges).
-        let changed: Vec<String> = match d.call(Request::Updates {
-            binding: self.binding(session),
-            ack: None,
-            max_items: 8,
-        }) {
-            Ok(Envelope {
-                response: Response::Updates { items, .. },
-                ..
-            }) => items.iter().map(update_line).collect(),
-            _ => Vec::new(),
-        };
+        // Name the changed reads from the check itself, with the agent whose
+        // read it was (review M3; ADR 0010 §6.1).
         let verdict = gate::verdict_code(&validation);
         let mut reason = format!("ContextDB {verdict}");
+        let changed: Vec<String> = named
+            .iter()
+            .take(8)
+            .map(|n| {
+                let who = match &n.agent {
+                    Some(a) if Some(a) != self.agent().as_ref() => {
+                        format!(" (read by subagent {a})")
+                    }
+                    None if self.agent().is_some() => " (read by the main agent)".into(),
+                    _ => String::new(),
+                };
+                match n.current {
+                    Some(c) if c != n.read => format!(
+                        "{}: read r{}, now r{} {}{who}",
+                        n.key,
+                        n.read.0,
+                        c.0,
+                        summary(&n.summary)
+                    ),
+                    _ => format!("{}: r{} {}{who}", n.key, n.read.0, summary(&n.summary)),
+                }
+            })
+            .collect();
         if !changed.is_empty() {
             reason.push_str(": ");
             reason.push_str(&changed.join("; "));
         }
-        reason.push_str(
-            ". Re-read them (ctx_read/ctx_recall, certified) or supersede before editing.",
-        );
+        reason.push_str(match &validation {
+            Validation::Invalid {
+                reason: InvalidReason::LogMismatch,
+                ..
+            } => ". The session log was cut under this session: start a new session.",
+            _ => ". Re-read them (ctx_read/ctx_recall, certified) or supersede before editing.",
+        });
         let system = match decision {
             Decision::Deny => format!("ContextDB denied {:?} ({verdict})", action.tool),
             _ => format!("ContextDB warning: {verdict}"),

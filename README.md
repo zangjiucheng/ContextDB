@@ -3,7 +3,7 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0–P3 Gate 已通过。P3（守护进程、MCP 与 certified read）见 [`docs/gates/P3.md`](docs/gates/P3.md)，下一阶段是 P4（hooks 与 action gating）。
+- **当前阶段**：P0–P3 Gate 已通过。P4（hooks 与 action gating）已实现，正在走 Gate 验证；G6 dogfood（≥ 2 周真实使用）由项目所有者进行，见 [`docs/gates/P4.md`](docs/gates/P4.md)。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
@@ -98,7 +98,7 @@ ctx export <dir>        # 导出为 EventLog v0 JSONL
 | `ctx_record` | 新建（`create_only` + `key`）或按 CAS 修订（`expected_head = key@rev`），deps 用 handle 或 `key@rev` |
 | `ctx_supersede` | 替换 head；`carry_rules=copy` 只复制旧 head 自己的 justification，下游规则从不自动改绑 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | 解释成立 / 不成立的原因，列出依赖它的记录 |
-| `ctx_check` | 校验本会话证书：`Valid` / `ValidRecertified` 放行，其余给出 warn 和 diff（P4 才有 deny） |
+| `ctx_check` | 校验本会话（本 agent 视图）的证书，给出判定、diff 和自上次确认以来变化的读取（`context_update`，只 peek 不消费）；可带 `action{tool, paths, command}` |
 | `ctx_txn_status` | 按 `client_txn_id` 查询 `Committed{epoch}` 或 `NotCommitted` |
 
 P3 不向 agent 提供 `ctx_validate`。
@@ -114,6 +114,32 @@ ctx validate <dir> <key@rev> verified|rejected [--yes]
                                  # 人工验证：先列出当前语义向量并确认，是唯一能提交 RecordValidation 的入口
 ctx shutdown <dir>
 ```
+
+## Hooks 与 action gating（P4）
+
+`ctx-hook <claude|codex> <event>` 是 Claude Code（2.1.306）与 Codex CLI（0.163.0）的 hook 命令：从 stdin 读一个 hook 事件，最多输出一个 JSON 对象，总是以 0 退出（ADR 0010）。
+
+- **安装**：`ctx hooks install --harness claude|codex --project <repo> --dir <data dir>` 把 hook 合并进 `.claude/settings.json` 或 `.codex/hooks.json`，保留已有的其他 hook；重复安装不变，`uninstall` 只删除 ContextDB 的条目。**Codex 只在你信任新 hook 后才运行它们**（Codex 中打开 `/hooks`，或在启动审查时确认），之后每次修改都要重新信任。
+- **会话绑定**：每个 hook 事件按 harness 的 `session_id` 绑定到一个 ctxd 会话。MCP 调用按 harness 在 `_meta` 中给出的 tool-call id 绑定：Codex 直接带 `sessionId` / `threadId`；Claude Code 由 PreToolUse hook 先 claim `tool_use_id`。没有 id 的调用使用 `ctx-mcp` 自己的会话并标记 `unclaimed`，从不按内容猜测。
+- **Subagent**：子 agent 与根共用会话，按 agent 分视图：子 agent 继承根的读取；子 agent 的读取进入根的视图；根自己读过的 logical 以根的条目为准。
+- **PreToolUse**：Edit / Write / MultiEdit / NotebookEdit / Bash（Claude）与 `apply_patch` / Bash（Codex）在执行前校验本会话证书。`warn` 模式加一段上下文说明哪些读取变了；`enforce` 模式对 Invalid / Conflicted / Denied / Ambiguous 拒绝，理由不超过 480 字节；放行时不输出（不会绕过 harness 自己的权限提示）。没有任何 certified 读取（`Empty`）永远不算通过，只警告（每 10 分钟最多提示一次，但每次都记录）。
+- **门控配置**：`.contextdb/gating.toml`（`mode = off|warn|enforce`、`shell_mode`、`on_unavailable = open|closed`、`timeout_ms`、按 tool / 路径 glob 的 `[[rule]]`），用 `ctx gating apply <dir>` 编译后生效。默认 `warn`、fail-open、150 ms。daemon 不可达、超时或输入无法解析时，open 只提示、closed 则拒绝；不是 ContextDB 仓库时什么都不做。
+- **context_update**：UserPromptSubmit 把自上次确认以来变化的读取以 `<context_update epoch=…>` 追加到新 prompt，不改写已有前缀（保 prompt cache）；下一次 prompt 才确认，输出丢失会重发。
+- **Outbox 与 drift**：PostToolUse 把写入事实先写入本地 outbox（`<data dir>/outbox/`，自校验记录、每流单调 seq），再投递；daemon 按 `(stream, seq)` 幂等应用，ctxd 启动时及每 30 s 补投遗留的流。Stop / SubagentStop / PreCompact 对比 git 的实际变化与记录的编辑，用 `systemMessage` 报告“没有记录就被改的文件”（如经 Bash 的副作用）。drift 只报告不门控，且是上界：人或没装 hook 的 agent 的修改也会出现在里面。
+- **Policy**：`.contextdb/policy.toml`（如 `version = 1`、`require_deps = ["Decision", "Plan"]`）由 `ctx policy apply <dir>` 经 admin 提交；它在内核事务中执行，任何通道都绕不过，与 hook 是否安装、git `--no-verify` 无关。
+- **记录内容**：行动事实（含完整 Bash 命令）写入 session log 用于 drift 与 dogfood 报告；命令里若含密钥，也会被记录。
+- **剩余窗口（TOCTOU）**：PreToolUse 校验与真正写文件之间仍有时间窗口；它缩小但不消除风险。Bash 的副作用无法在执行前按路径解析，只能事后由 drift 发现。信任边界仍是协作式的：agent 可以卸载 hook 或直连 admin socket（P9 才有硬隔离）。
+
+```sh
+ctx check <dir> --harness claude --key <session_id> [--strict] [--dry-run --action-tool edit --action-path src/a.rs]
+                                 # 退出码：0 放行（warn 也是 0，除非 --fail-on-warn）、1 拒绝、2 错误、3 daemon 不可达
+ctx check <dir> --all            # 任何 head 为 STALE / CONFLICTED 时退出 1（可选，默认不安装）
+ctx hooks flush <dir>            # 立即投递所有遗留 outbox 事实
+ctx gate-report P4 <dir> [--out docs/gates/p4-dogfood.md]
+ctx dogfood review <dir>         # 人工标注 warn/deny 与抽样的放行，供 false-deny 率使用
+```
+
+**升级说明**：P4 把 IPC 协议升到版本 2，P3 的 `ctx-mcp` 进程会收到 `ProtocolVersion` 错误，harness 重启它后恢复。P4 的 session log 增加了新事件，P3 二进制无法打开（不支持降级）；P3 的 session log 在 P4 下照常重放。
 
 研究原型与 `crates/contextdb-dd` 已从主 workspace 排除。R2 的 workspace 独立保留；
 归档的 DBSP 原型需要研究 README 所述补丁源码，主项目构建不依赖它。

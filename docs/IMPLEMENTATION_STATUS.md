@@ -1,5 +1,7 @@
 # Implementation status
 
+**P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). G6 dogfood (≥ 2 weeks, ≥ 2 parallel agents) is run by the project owner; P4 passes only with that report.
+
 **Gate P3 passed** (2026-10-21) after independent review, a closure check and a closure confirmation ([P3 gate](gates/P3.md),
 [ADR 0008](adr/0008-p3-daemon-sessions-certificates.md) rev 3.3,
 [ADR 0009](adr/0009-p3-memory-scopes-after-maintained-layers.md)).

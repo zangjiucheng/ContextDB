@@ -218,7 +218,10 @@ fn ctx_check_exit_codes_dry_run_and_unavailable() {
         .iter()
         .filter(|e| matches!(e, TelemetryEntry::Gate { .. }))
         .count();
-    assert_eq!(gates, 4, "every real check logged, the dry run not");
+    assert_eq!(
+        gates, 0,
+        "ctx check decides locally and never logs a gated action"
+    );
     // --all: a stale head somewhere fails the whole-repository mode.
     let (rc, out) = ctx(&["check", &path, "--all"]);
     assert_eq!(rc, 1, "{out}");

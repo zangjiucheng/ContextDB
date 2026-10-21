@@ -166,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "contextdb-daemon",
  "contextdb-model",
+ "contextdb-proto",
  "contextdb-store",
  "serde_json",
 ]

@@ -92,3 +92,11 @@
   - Fuzz: IPC and MCP targets, 1 h each, 0 crashes.
   - G5 under the owner's per-client write budgets.
   - See `docs/gates/P3.md`.
+- P4 G0: ADR 0010 (hooks, outbox, action gating) accepted after four independent review rounds; SPEC v1.6.0 records amendments A1–A11. `contextdb-proto` split out of the daemon (protocol, lease, client, gate predicate, outbox).
+- P4 implementation (ADR 0010):
+  - Protocol v2: session binding by harness session key or tool-call claim, per-agent ledger views, gated `Check` (`strict`, action, mode), `Updates` peek/ack, `Facts` with stream marks and gap/skip, advisory `Briefing`, admin `Telemetry`.
+  - `ctx-hook` for Claude Code 2.1.306 and Codex 0.163.0: briefing, `context_update`, PreToolUse warn/deny (≤ 480 B reasons), MCP call claims, PostToolUse write sets, drift on Stop, fail-open/closed.
+  - Outbox: self-verifying records, per-stream seqs recovered after kills, at-least-once delivery with idempotent application; `ctxd` sweeps leftovers.
+  - `ctx check | policy | gating | hooks | gate-report P4 | dogfood review`.
+  - `ctx-mcp` binds each call from `_meta`; `ctx_check` takes an action and peeks `context_update`.
+- P4 verification so far: T38–T41b, T66, G6 scenario; G3 properties at 10,000 seeds (two outbox seq bugs found and fixed); G4 kill points, daemon crash windows, outbox stress; G5 PreToolUse p95 ≤ 10.8 ms (budget 50 ms) after caching the repository root and skipping the session-log sync on steady checks.

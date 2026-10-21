@@ -21,6 +21,12 @@ impl Client {
         stream.set_write_timeout(Some(timeout))?;
         Ok(Self { stream })
     }
+    /// Re-bounds reads and writes, e.g. to what is left of a deadline.
+    pub fn set_timeout(&self, timeout: Duration) -> io::Result<()> {
+        let t = Some(timeout.max(Duration::from_millis(1)));
+        self.stream.set_read_timeout(t)?;
+        self.stream.set_write_timeout(t)
+    }
     pub fn call(&mut self, request: &Request) -> Result<Envelope, FrameError> {
         proto::write_request(&mut self.stream, request)?;
         proto::read_response(&mut self.stream)

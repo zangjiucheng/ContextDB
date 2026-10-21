@@ -460,3 +460,190 @@ fn drift_and_outbox_recovery_after_the_daemon_was_down() {
     assert_eq!(repo.hook("claude", "session-end", &end), None);
     assert_eq!(count(&mut admin), 1);
 }
+
+/// Review M3: after a UserPromptSubmit acknowledged the update, a deny still
+/// names the stale read (from the check itself, not the update peek).
+#[test]
+fn deny_names_the_stale_read_after_the_update_was_acknowledged() {
+    let repo = Repo::new("named");
+    let d = repo.daemon();
+    let mut c = agent(&d);
+    let other = attach(&mut c, "claude", "other");
+    record(&mut c, other, "db", "postgres");
+    let s = attach(&mut c, "claude", "sess-n");
+    let (l, r) = read(&mut c, s, "db");
+    supersede(&mut c, other, l, r);
+    let prompt = input(
+        "UserPromptSubmit",
+        "sess-n",
+        &repo.root,
+        json!({ "prompt": "go" }),
+    );
+    assert!(repo.hook("claude", "user-prompt-submit", &prompt).is_some());
+    assert_eq!(
+        repo.hook("claude", "user-prompt-submit", &prompt),
+        None,
+        "acknowledged"
+    );
+    repo.gating(enforce());
+    let deny = repo
+        .hook("claude", "pre-tool-use", &edit(&repo, "sess-n"))
+        .unwrap();
+    let reason = deny["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap();
+    assert!(reason.contains("db: read r"), "{reason}");
+}
+
+/// Review M2: from a linked worktree, paths are relative to that worktree,
+/// git runs there, and the data directory is the main worktree's.
+#[test]
+fn linked_worktrees_share_the_data_directory_and_use_their_own_paths() {
+    let repo = Repo::new("wt");
+    let d = repo.daemon();
+    let wt = repo.root.with_file_name(format!(
+        "{}-wt",
+        repo.root.file_name().unwrap().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&wt);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args(["worktree", "add", "-q", "--detach"])
+            .arg(&wt)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    repo.gating(GateConfig {
+        rules: vec![contextdb_proto::gate::GateRule {
+            tool: None,
+            path: Some("src/**".into()),
+            mode: GateMode::Enforce,
+        }],
+        ..GateConfig::default()
+    });
+    let run = |event: &str, stdin: &Value| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ctx-hook"))
+            .args(["claude", event])
+            .current_dir(&wt)
+            .env_remove("CTX_DIR")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        (!text.trim().is_empty()).then(|| serde_json::from_str::<Value>(&text).unwrap())
+    };
+    let start = input(
+        "SessionStart",
+        "sess-wt",
+        &wt,
+        json!({ "source": "startup" }),
+    );
+    run("session-start", &start);
+    // An Edit in the worktree is `src/a.rs`: the enforce rule applies (Empty
+    // warns), and the daemon logged it with the relative path.
+    let e = input(
+        "PreToolUse",
+        "sess-wt",
+        &wt,
+        json!({ "tool_name": "Edit", "tool_use_id": "t",
+            "tool_input": { "file_path": wt.join("src/a.rs"), "old_string": "a", "new_string": "b" } }),
+    );
+    run("pre-tool-use", &e);
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    let Response::Telemetry { entries, .. } = admin
+        .call(&Request::Telemetry {
+            since: 0,
+            limit: 100,
+        })
+        .unwrap()
+        .response
+    else {
+        panic!()
+    };
+    assert!(
+        entries.iter().any(|x| matches!(x,
+            TelemetryEntry::Gate { action, mode: GateMode::Enforce, .. } if action.paths == ["src/a.rs"])),
+        "{entries:?}"
+    );
+    // Drift runs in the worktree: a file written there is seen.
+    std::fs::write(wt.join("wt-side.txt"), "x").unwrap();
+    let stop = input("Stop", "sess-wt", &wt, json!({ "stop_hook_active": false }));
+    let o = run("stop", &stop).unwrap();
+    assert!(
+        o["systemMessage"].as_str().unwrap().contains("wt-side.txt"),
+        "{o}"
+    );
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(&repo.root)
+        .args(["worktree", "remove", "--force"])
+        .arg(&wt)
+        .output();
+}
+
+/// Review M5: a SessionStart after compaction keeps the first baseline, so
+/// the session's own earlier edit is not reported as unrealised; and
+/// minor 1: facts appended with the daemon down and no SessionStart are
+/// swept by `ctxd` (the stream names its harness session).
+#[test]
+fn compaction_keeps_the_baseline_and_streams_without_session_start_are_swept() {
+    let repo = Repo::new("compact");
+    std::fs::create_dir_all(repo.data()).unwrap();
+    std::fs::create_dir_all(repo.root.join("src")).unwrap();
+    // No SessionStart, daemon down: the edit fact waits in the outbox.
+    std::fs::write(repo.root.join("src/lib.rs"), "a").unwrap();
+    let post = input(
+        "PostToolUse",
+        "sess-c",
+        &repo.root,
+        json!({ "tool_name": "Write", "tool_use_id": "w",
+            "tool_input": { "file_path": repo.root.join("src/lib.rs"), "content": "a" },
+            "tool_response": {} }),
+    );
+    repo.hook("claude", "post-tool-use", &post);
+    let d = repo.daemon();
+    let ob = contextdb_proto::outbox::Outbox::new(&repo.data());
+    let t = Instant::now();
+    while !ob.dirty().is_empty() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ob.dirty().is_empty(), "the sweeper delivered the stream");
+    // SessionStart (startup), then again (compact): the edit made before the
+    // compaction stays the session's own.
+    let start = |source: &str| {
+        input(
+            "SessionStart",
+            "sess-c",
+            &repo.root,
+            json!({ "source": source }),
+        )
+    };
+    repo.hook("claude", "session-start", &start("startup"));
+    std::fs::write(repo.root.join("src/lib.rs"), "b").unwrap();
+    repo.hook("claude", "post-tool-use", &post);
+    repo.hook("claude", "session-start", &start("compact"));
+    let stop = input(
+        "Stop",
+        "sess-c",
+        &repo.root,
+        json!({ "stop_hook_active": false }),
+    );
+    if let Some(o) = repo.hook("claude", "stop", &stop) {
+        let msg = o["systemMessage"].as_str().unwrap_or("");
+        assert!(!msg.contains("src/lib.rs"), "{msg}");
+    }
+    drop(d);
+}

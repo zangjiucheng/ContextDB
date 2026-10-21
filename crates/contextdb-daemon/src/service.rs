@@ -52,8 +52,9 @@ struct AgentState {
     session_cert: Option<Certificate>,
     /// Last `(head, summary)` reported per logical in this agent's view.
     reported: BTreeMap<LogicalId, (Option<RevisionId>, Summary)>,
-    /// The batch of the last `Updates` peek, until acknowledged.
-    pending: Option<(u64, Vec<UpdateItem>)>,
+    /// Recent `Updates` peeks, until acknowledged: several, so a peek by
+    /// `ctx_check` does not void the prompt hook's token (review minor 2).
+    pending: VecDeque<(u64, Vec<UpdateItem>)>,
     /// Paths of this agent's edit, write, notebook and patch actions.
     declared: BTreeSet<String>,
     shell_actions: u32,
@@ -96,6 +97,9 @@ struct Hooks {
     /// first beyond [`CLAIMS_KEPT`].
     claims: BTreeMap<String, (SessionId, Agent)>,
     claim_order: VecDeque<String>,
+    /// client_txn_ids already counted as writes: a retried (idempotent)
+    /// commit is not counted twice (review minor 12).
+    written: BTreeSet<[u8; 16]>,
     /// Outbox stream high-water marks.
     streams: BTreeMap<[u8; 16], u64>,
     /// Recently ended sessions, for late facts and concurrent-drift.
@@ -112,6 +116,9 @@ pub struct Service<D: Durability> {
     hooks: Mutex<Hooks>,
     /// Serialises outbox deliveries (stream marks) across sweeper and hooks.
     facts_lock: Mutex<()>,
+    /// Serialises session creation by key (review M1). Lock order: `facts_lock`,
+    /// `attach_lock`, then `sessions` or `hooks` one at a time, then a session.
+    attach_lock: Mutex<()>,
     tokens: AtomicU64,
     writer: Mutex<mpsc::Sender<Writer>>,
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -248,7 +255,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             sessions: Mutex::new(BTreeMap::new()),
             hooks: Mutex::new(Hooks::default()),
             facts_lock: Mutex::new(()),
-            tokens: AtomicU64::new(1),
+            attach_lock: Mutex::new(()),
+            // Random start: a token from before a restart never matches.
+            tokens: AtomicU64::new(
+                u64::from_le_bytes(random_id()[..8].try_into().expect("8")) >> 1,
+            ),
             writer: Mutex::new(tx),
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
@@ -383,8 +394,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     agent,
                     epoch,
                     with_deps,
+                    client_txn_id,
                     ..
                 } => {
+                    if !hooks.written.insert(client_txn_id) {
+                        continue;
+                    }
                     if let Some(s) = find(&map, &hooks, &session_id) {
                         s.lock().expect("session").count_write(&agent, with_deps);
                     }
@@ -413,6 +428,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         mode,
                         decision,
                         harness_version,
+                        at,
                     } = packet.fact
                     {
                         hooks.telemetry.push(TelemetryEntry::Gate {
@@ -425,7 +441,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             available: false,
                             harness_version,
                             epoch: tail,
-                            at: 0,
+                            at,
                         });
                     }
                 }
@@ -583,23 +599,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
             }
             Request::SessionEnd { session } => {
-                {
-                    let mut sessions = self.sessions.lock().expect("sessions");
-                    match sessions.get(&session) {
-                        None => return err("UnknownSession", "unknown session"),
-                        Some(s) if s.lock().expect("session").principal != id.principal => {
-                            return err("UnknownSession", "session of another principal");
-                        }
-                        Some(_) => {}
-                    }
-                    if let Some(s) = sessions.remove(&session) {
-                        s.lock().expect("session").ended_epoch = Some(snap.epoch);
-                        self.hooks.lock().expect("hooks").end(session, s);
-                    }
-                    self.log(vec![SessionEvent::End {
-                        session_id: session,
-                        epoch: snap.epoch,
-                    }]);
+                if let Err(r) = self.end_session(id, session, snap.epoch) {
+                    return r;
                 }
                 match self.flush() {
                     Ok(()) => Response::Done,
@@ -864,7 +865,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Request::Briefing {
                 binding,
                 budget_chars,
-            } => match self.bind(id, &binding, &snap) {
+            } => match binding.map(|b| self.bind(id, &b, &snap)).transpose() {
                 Ok(_) => self.briefing(budget_chars as usize, &snap),
                 Err(r) => r,
             },
@@ -884,6 +885,29 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
     }
+    /// Ends a live session: removed from `sessions`, then (with `sessions`
+    /// released, review B1) kept among the ended for late facts.
+    fn end_session(&self, id: Identity, session: SessionId, epoch: Epoch) -> Result<(), Response> {
+        let removed = {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            match sessions.get(&session) {
+                None => return Err(err("UnknownSession", "unknown session")),
+                Some(s) if s.lock().expect("session").principal != id.principal => {
+                    return Err(err("UnknownSession", "session of another principal"));
+                }
+                Some(_) => sessions.remove(&session),
+            }
+        };
+        if let Some(s) = removed {
+            s.lock().expect("session").ended_epoch = Some(epoch);
+            self.hooks.lock().expect("hooks").end(session, s);
+        }
+        self.log(vec![SessionEvent::End {
+            session_id: session,
+            epoch,
+        }]);
+        Ok(())
+    }
     /// The live session of a harness session key, started (durably, with
     /// its key) if there is none (ADR 0010 §2.1).
     fn attach(
@@ -896,28 +920,32 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Result<Bound, Response> {
         let key = (harness.clone(), harness_session.clone());
-        let session_id = {
-            // Held across lookup and insert so concurrent attaches of one key
-            // start one session.
-            let mut hooks = self.hooks.lock().expect("hooks");
-            if let Some(sid) = hooks.keys.get(&key).copied()
-                && let Some(s) = self.session(&sid)
-            {
-                // A session an MCP call started has no repository yet; the
-                // first hook supplies it (drift compares repositories).
-                {
-                    let mut st = s.lock().expect("session");
-                    if st.repo.is_empty() && !repo.is_empty() {
-                        st.repo = repo;
-                        st.head_sha = head_sha;
-                    }
-                }
-                return Ok((sid, s, None, false));
-            }
-            let session_id = random_id();
-            hooks.keys.insert(key.clone(), session_id);
-            session_id
+        // Lock order (review B1): `sessions` and `hooks` are never held
+        // together here; creation is serialised by `attach_lock` (review M1).
+        let live = |this: &Self| {
+            let sid = this.hooks.lock().expect("hooks").keys.get(&key).copied()?;
+            this.session(&sid).map(|s| (sid, s))
         };
+        let found = |(sid, s): (SessionId, Arc<Mutex<Session>>)| {
+            // A session an MCP call started has no repository yet; the
+            // first hook supplies it (drift compares repositories).
+            {
+                let mut st = s.lock().expect("session");
+                if st.repo.is_empty() && !repo.is_empty() {
+                    st.repo = repo.clone();
+                    st.head_sha = head_sha.clone();
+                }
+            }
+            Ok((sid, s, None, false))
+        };
+        if let Some(hit) = live(self) {
+            return found(hit);
+        }
+        let _create = self.attach_lock.lock().expect("attach");
+        if let Some(hit) = live(self) {
+            return found(hit);
+        }
+        let session_id = random_id();
         let undo = |this: &Self| {
             this.sessions.lock().expect("sessions").remove(&session_id);
             let mut hooks = this.hooks.lock().expect("hooks");
@@ -942,6 +970,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .lock()
             .expect("sessions")
             .insert(session_id, session.clone());
+        self.hooks
+            .lock()
+            .expect("hooks")
+            .keys
+            .insert(key.clone(), session_id);
         self.log(vec![
             SessionEvent::Start {
                 session_id,
@@ -1421,6 +1454,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         reason: String,
         with_deps: bool,
     ) {
+        if !self.hooks.lock().expect("hooks").written.insert(txn) {
+            return;
+        }
         s.lock().expect("session").count_write(agent, with_deps);
         self.hooks
             .lock()
@@ -1535,6 +1571,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     superseded: Vec::new(),
                     gate: None,
                     updates_pending: 0,
+                    named: Vec::new(),
                 },
                 Err(r) => r,
             };
@@ -1556,6 +1593,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 superseded: Vec::new(),
                 gate: None,
                 updates_pending: 0,
+                named: Vec::new(),
             };
         }
         let drained: Vec<_> = s.agent(&agent).superseded.drain(..).collect();
@@ -1602,6 +1640,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         superseded,
                         gate: None,
                         updates_pending: 0,
+                        named: Vec::new(),
                     };
                 }
                 // Adopt a recertified certificate as the session certificate.
@@ -1645,6 +1684,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         superseded,
                         gate: None,
                         updates_pending: 0,
+                        named: Vec::new(),
                     };
                 }
                 prior = Some(v);
@@ -1694,6 +1734,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     superseded,
                     gate: None,
                     updates_pending: 0,
+                    named: Vec::new(),
                 }
             }
             Err(IssueFailure::Empty) => Response::Check {
@@ -1703,6 +1744,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 superseded,
                 gate: None,
                 updates_pending: 0,
+                named: Vec::new(),
             },
             Err(_) => {
                 // 3. Failed issuance → §6.4 verdict over the same entries.
@@ -1727,6 +1769,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         superseded,
                         gate: None,
                         updates_pending: 0,
+                        named: Vec::new(),
                     },
                     Err(r) => r,
                 }
@@ -1755,13 +1798,20 @@ impl<D: Durability + Clone + 'static> Service<D> {
             validation,
             gate,
             updates_pending,
+            named,
             ..
         } = &mut response
         {
-            *updates_pending = {
+            {
                 let s = s.lock().expect("session");
-                update_items(&s, &agent, &snap.db).len() as u32
-            };
+                *updates_pending = update_items(&s, &agent, &snap.db).len() as u32;
+                if !matches!(
+                    validation,
+                    Validation::Valid | Validation::ValidRecertified { .. }
+                ) {
+                    *named = named_reads(&s, &agent, &snap.db);
+                }
+            }
             if let Some(mode) = mode {
                 let decision = contextdb_proto::gate::gate(mode, validation);
                 *gate = Some(decision);
@@ -1813,8 +1863,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut s = s.lock().expect("session");
         if let Some(token) = ack {
             let st = s.agent(&agent);
-            if st.pending.as_ref().is_some_and(|(t, _)| *t == token) {
-                let (_, items) = st.pending.take().expect("pending");
+            if let Some(at) = st.pending.iter().position(|(t, _)| *t == token) {
+                let (_, items) = st.pending.remove(at).expect("pending");
                 let items: Vec<_> = items
                     .into_iter()
                     .map(|i| (i.logical, (i.current, i.summary)))
@@ -1832,7 +1882,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let more = items.len() > max;
         items.truncate(max);
         let token = self.tokens.fetch_add(1, Ordering::Relaxed);
-        s.agent(&agent).pending = Some((token, items.clone()));
+        let pending = &mut s.agent(&agent).pending;
+        pending.push_back((token, items.clone()));
+        while pending.len() > 8 {
+            pending.pop_front();
+        }
         Response::Updates { token, items, more }
     }
     /// Outbox delivery (ADR 0010 §5.3): in seq order, idempotent per stream,
@@ -1849,24 +1903,27 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         // Facts of an ended session still apply to it (§5.3).
-        let known = {
-            let hooks = self.hooks.lock().expect("hooks");
-            hooks
-                .keys
-                .get(&(harness.clone(), harness_session.clone()))
-                .copied()
-                .and_then(|sid| {
-                    self.session(&sid)
-                        .or_else(|| {
-                            hooks
-                                .ended
-                                .iter()
-                                .find(|(e, _)| *e == sid)
-                                .map(|(_, s)| s.clone())
-                        })
-                        .map(|s| (sid, s))
+        // `hooks` and `sessions` one at a time (review B1).
+        let sid = self
+            .hooks
+            .lock()
+            .expect("hooks")
+            .keys
+            .get(&(harness.clone(), harness_session.clone()))
+            .copied();
+        let known = sid.and_then(|sid| {
+            self.session(&sid)
+                .or_else(|| {
+                    self.hooks
+                        .lock()
+                        .expect("hooks")
+                        .ended
+                        .iter()
+                        .find(|(e, _)| *e == sid)
+                        .map(|(_, s)| s.clone())
                 })
-        };
+                .map(|s| (sid, s))
+        });
         let (session, s) = match known {
             Some(v) => v,
             None => match self.attach(
@@ -1905,6 +1962,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut events = Vec::new();
         let mut telemetry = Vec::new();
         let mut drift = Vec::new();
+        let mut ended = false;
         for p in packets {
             if p.seq <= through {
                 continue;
@@ -1938,6 +1996,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     mode,
                     decision,
                     harness_version,
+                    at,
                 } => telemetry.push(TelemetryEntry::Gate {
                     session,
                     agent: p.agent.clone(),
@@ -1948,11 +2007,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     available: false,
                     harness_version: harness_version.clone(),
                     epoch: snap.epoch,
-                    at: unix_now(),
+                    at: *at,
                 }),
                 _ => {}
             }
             s.lock().expect("session").note_fact(&p);
+            ended |= p.fact == Fact::StreamEnd;
             through = p.seq;
             events.push(SessionEvent::Fact {
                 session_id: session,
@@ -1973,9 +2033,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if let Err(r) = self.flush() {
             return r;
         }
-        let mut hooks = self.hooks.lock().expect("hooks");
-        hooks.streams.insert(stream, through);
-        hooks.telemetry.extend(telemetry);
+        {
+            let mut hooks = self.hooks.lock().expect("hooks");
+            hooks.streams.insert(stream, through);
+            hooks.telemetry.extend(telemetry);
+        }
+        // A delivered StreamEnd ends a session still live (e.g. one that late
+        // facts re-created), so it never lingers (review minor 5).
+        if ended && self.session(&session).is_some() {
+            let _ = self.end_session(id, session, snap.epoch);
+            let _ = self.flush();
+        }
         Response::Facts {
             applied_through: through,
             drift,
@@ -1995,15 +2063,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
             let s = s.lock().expect("session");
             (s.repo.clone(), s.started_epoch)
         };
-        let others: Vec<Arc<Mutex<Session>>> = {
-            let live = self.sessions.lock().expect("sessions");
-            let hooks = self.hooks.lock().expect("hooks");
-            live.iter()
-                .chain(hooks.ended.iter().map(|(id, s)| (id, s)))
-                .filter(|(id, _)| **id != session)
-                .map(|(_, s)| s.clone())
-                .collect()
-        };
+        // `sessions` and `hooks` one at a time (review B1).
+        let mut others: Vec<Arc<Mutex<Session>>> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .iter()
+            .filter(|(id, _)| **id != session)
+            .map(|(_, s)| s.clone())
+            .collect();
+        others.extend(
+            self.hooks
+                .lock()
+                .expect("hooks")
+                .ended
+                .iter()
+                .filter(|(id, _)| *id != session)
+                .map(|(_, s)| s.clone()),
+        );
         let mut declared = BTreeSet::new();
         for o in others {
             let o = o.lock().expect("session");
@@ -2152,29 +2229,38 @@ impl Session {
     /// The ledger `agent` is checked against (ADR 0010 §7): its own entries;
     /// for other logicals the root's; else the newest read by any agent.
     fn view(&self, agent: &Agent) -> BTreeMap<LogicalId, LedgerEntry> {
-        let mut view: BTreeMap<LogicalId, LedgerEntry> = BTreeMap::new();
-        let own = self.agents.get(agent);
-        let root = self.agents.get(&None);
-        for e in own.into_iter().flat_map(|a| a.required.values()) {
-            view.insert(e.logical, e.clone());
+        self.view_with_agents(agent)
+            .into_iter()
+            .map(|(l, (_, e))| (l, e))
+            .collect()
+    }
+    /// As [`Self::view`], with the agent whose read each entry is.
+    fn view_with_agents(&self, agent: &Agent) -> BTreeMap<LogicalId, (Agent, LedgerEntry)> {
+        let mut view: BTreeMap<LogicalId, (Agent, LedgerEntry)> = BTreeMap::new();
+        if let Some(own) = self.agents.get(agent) {
+            for e in own.required.values() {
+                view.insert(e.logical, (agent.clone(), e.clone()));
+            }
         }
-        for e in root.into_iter().flat_map(|a| a.required.values()) {
-            view.entry(e.logical).or_insert_with(|| e.clone());
+        if let Some(root) = self.agents.get(&None) {
+            for e in root.required.values() {
+                view.entry(e.logical).or_insert_with(|| (None, e.clone()));
+            }
         }
-        let mut others: BTreeMap<LogicalId, &LedgerEntry> = BTreeMap::new();
+        let mut others: BTreeMap<LogicalId, (&Agent, &LedgerEntry)> = BTreeMap::new();
         for (a, st) in &self.agents {
             if a == agent || a.is_none() {
                 continue;
             }
             for e in st.required.values() {
-                let slot = others.entry(e.logical).or_insert(e);
-                if e.epoch > slot.epoch {
-                    *slot = e;
+                let slot = others.entry(e.logical).or_insert((a, e));
+                if e.epoch > slot.1.epoch {
+                    *slot = (a, e);
                 }
             }
         }
-        for (l, e) in others {
-            view.entry(l).or_insert_with(|| e.clone());
+        for (l, (a, e)) in others {
+            view.entry(l).or_insert_with(|| (a.clone(), e.clone()));
         }
         view
     }
@@ -2194,6 +2280,29 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+/// Reads in `agent`'s view that are no longer certified at their logical's
+/// head, with the agent that read each (warn/deny reasons, ADR 0010 §6.1).
+fn named_reads(s: &Session, agent: &Agent, db: &Db) -> Vec<NamedRead> {
+    s.view_with_agents(agent)
+        .into_values()
+        .filter_map(|(who, e)| {
+            let current = db.head(e.logical);
+            let summary = db
+                .summary_at(current.unwrap_or(e.rev), &BTreeMap::new())
+                .unwrap_or(Summary::Unavailable);
+            if current == Some(e.rev) && summary == Summary::Certified {
+                return None;
+            }
+            Some(NamedRead {
+                key: db.logical_info(e.logical).map(|i| i.0).unwrap_or_default(),
+                agent: who,
+                read: e.rev,
+                current,
+                summary,
+            })
+        })
+        .collect()
 }
 /// Entries of `agent`'s view whose head or status changed since they were
 /// last reported to it (ADR 0010 §4.4). A required read was certified at

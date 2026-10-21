@@ -112,10 +112,12 @@ pub fn glob(pattern: &str, path: &str) -> bool {
     fn go(p: &[char], s: &[char]) -> bool {
         match p {
             [] => s.is_empty(),
-            ['*', '*', rest @ ..] => {
-                let rest = rest.strip_prefix(&['/']).unwrap_or(rest);
-                (0..=s.len()).any(|k| go(rest, &s[k..]))
+            // `**/` spans whole segments only: `**/x.rs` matches `x.rs` and
+            // `a/x.rs`, never `abx.rs` (review minor 3).
+            ['*', '*', '/', rest @ ..] => {
+                (0..=s.len()).any(|k| (k == 0 || s[k - 1] == '/') && go(rest, &s[k..]))
             }
+            ['*', '*', rest @ ..] => (0..=s.len()).any(|k| go(rest, &s[k..])),
             ['*', rest @ ..] => (0..=s.len())
                 .take_while(|&k| k == 0 || s[k - 1] != '/')
                 .any(|k| go(rest, &s[k..])),
@@ -234,6 +236,9 @@ mod tests {
         assert!(glob("**", "a/b"));
         assert!(glob("a?c", "abc") && !glob("a?c", "a/c"));
         assert!(!glob("docs/**", "src/x"));
+        assert!(glob("**/x.rs", "x.rs") && glob("**/x.rs", "a/b/x.rs"));
+        assert!(!glob("**/x.rs", "src/abx.rs"));
+        assert!(glob("src/**/gen/*", "src/gen/a") && !glob("src/**/gen/*", "src/xgen/a"));
     }
     #[test]
     fn modes_resolve_per_path_and_take_the_most_severe() {

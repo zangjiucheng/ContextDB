@@ -257,11 +257,7 @@ pub fn check(dir: &Path, args: &[String]) -> Result<u8, String> {
         let env = call(
             &mut c,
             Request::Briefing {
-                binding: Binding::Key {
-                    harness: "ctx".into(),
-                    harness_session: "check-all".into(),
-                    agent: None,
-                },
+                binding: None,
                 budget_chars: 0,
             },
         )?;
@@ -318,22 +314,23 @@ pub fn check(dir: &Path, args: &[String]) -> Result<u8, String> {
             cert_id: None,
             live_pos: Vec::new(),
             action,
-            // A dry run evaluates the same predicate locally without logging.
-            mode: (!dry).then_some(resolved),
+            // The CLI decides locally with the same predicate and never logs a
+            // gated action (review minor 10); `--dry-run` says so explicitly.
+            mode: None,
             harness_version: "ctx".into(),
             strict: has(args, "--strict"),
         },
     )?;
     let Response::Check {
         validation,
-        gate: logged,
         superseded,
+        named,
         ..
     } = env.response
     else {
         return Err("unexpected response".into());
     };
-    let decision = logged.unwrap_or_else(|| gate::gate(resolved, &validation));
+    let decision = gate::gate(resolved, &validation);
     println!(
         "epoch={} verdict={} mode={resolved:?} decision={decision:?}{}",
         env.epoch.0,
@@ -347,6 +344,19 @@ pub fn check(dir: &Path, args: &[String]) -> Result<u8, String> {
                 d.logical.0, d.cert_rev, d.current, d.summary
             );
         }
+    }
+    for n in &named {
+        println!(
+            "  changed: {} read r{} now {:?} {:?}{}",
+            n.key,
+            n.read.0,
+            n.current.map(|r| r.0),
+            n.summary,
+            n.agent
+                .as_ref()
+                .map(|a| format!(" (read by {a})"))
+                .unwrap_or_default()
+        );
     }
     for d in &superseded {
         println!(
@@ -408,6 +418,7 @@ fn entries(
                     json!({}),
                 ),
                 ("PostToolUse", Some(tools), 5, json!({ "async": true })),
+                ("SubagentStart", None, 5, json!({})),
                 ("SubagentStop", None, 5, json!({})),
                 ("Stop", None, 5, json!({})),
                 ("PreCompact", None, 5, json!({})),
@@ -421,6 +432,7 @@ fn entries(
                 ("UserPromptSubmit", None, 2, json!({})),
                 ("PreToolUse", Some(tools.clone()), 2, json!({})),
                 ("PostToolUse", Some(tools), 5, json!({ "async": true })),
+                ("SubagentStart", None, 5, json!({})),
                 ("SubagentStop", None, 5, json!({ "async": true })),
                 ("Stop", None, 5, json!({ "async": true })),
                 ("PreCompact", None, 5, json!({ "async": true })),
@@ -678,17 +690,28 @@ fn telemetry(dir: &Path) -> Result<Vec<TelemetryEntry>, String> {
         since = next;
     }
 }
-/// Human labels (`ctx dogfood review`): telemetry index → "ok" | "false".
-fn labels(dir: &Path) -> BTreeMap<usize, String> {
+/// A stable identity of a telemetry entry: the hash of its encoding. Its
+/// position is not stable across daemon restarts (review M6).
+pub fn entry_id(e: &TelemetryEntry) -> String {
+    hex(&blake3::hash(&e.canonical_bytes()).as_bytes()[..12])
+}
+/// Human labels (`ctx dogfood review`): entry id → "ok" | "false".
+fn labels(dir: &Path) -> BTreeMap<String, String> {
     let text = std::fs::read_to_string(dir.join("reports/review.jsonl")).unwrap_or_default();
     text.lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter_map(|v| Some((v["i"].as_u64()? as usize, v["label"].as_str()?.to_owned())))
+        .filter_map(|v| {
+            Some((
+                v["id"].as_str()?.to_owned(),
+                v["label"].as_str()?.to_owned(),
+            ))
+        })
         .collect()
 }
-/// Allowed actions sampled for the legitimate-allow rate (1 in 20).
-fn sampled(i: usize) -> bool {
-    i.is_multiple_of(20)
+/// Allowed actions sampled for the legitimate-allow rate (1 in 20, by id so
+/// the sample is the same after a restart).
+fn sampled(id: &str) -> bool {
+    u8::from_str_radix(&id[..2], 16).is_ok_and(|b| b % 20 == 0)
 }
 #[derive(Debug, Default)]
 pub struct Report {
@@ -717,10 +740,11 @@ pub struct Report {
     pub harness_versions: BTreeMap<String, usize>,
 }
 /// The G6 dogfood numbers (ADR 0010 §10) from telemetry and labels.
-pub fn report(entries: &[TelemetryEntry], labels: &BTreeMap<usize, String>) -> Report {
+pub fn report(entries: &[TelemetryEntry], labels: &BTreeMap<String, String>) -> Report {
     let mut r = Report::default();
     let mut spans: BTreeMap<[u8; 16], (u64, u64)> = BTreeMap::new();
-    for (i, e) in entries.iter().enumerate() {
+    for e in entries {
+        let id = entry_id(e);
         match e {
             TelemetryEntry::Gate {
                 session,
@@ -753,9 +777,9 @@ pub fn report(entries: &[TelemetryEntry], labels: &BTreeMap<usize, String>) -> R
                     r.first = if r.first == 0 { *at } else { r.first.min(*at) };
                     r.last = r.last.max(*at);
                 }
-                let label = labels.get(&i).map(String::as_str);
+                let label = labels.get(&id).map(String::as_str);
                 if *decision == Decision::Allow {
-                    if sampled(i) && label.is_some() {
+                    if sampled(&id) && label.is_some() {
                         r.allows_sampled += 1;
                         r.allows_ok += usize::from(label == Some("ok"));
                     }
@@ -919,7 +943,8 @@ pub fn dogfood(args: &[String]) -> Result<u8, String> {
         .map_err(|e| e.to_string())?;
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
-    for (i, e) in entries.iter().enumerate() {
+    for e in &entries {
+        let id = entry_id(e);
         let TelemetryEntry::Gate {
             action,
             verdict,
@@ -930,7 +955,7 @@ pub fn dogfood(args: &[String]) -> Result<u8, String> {
         else {
             continue;
         };
-        if done.contains_key(&i) || (*decision == Decision::Allow && !sampled(i)) {
+        if done.contains_key(&id) || (*decision == Decision::Allow && !sampled(&id)) {
             continue;
         }
         let question = if *decision == Decision::Allow {
@@ -939,7 +964,7 @@ pub fn dogfood(args: &[String]) -> Result<u8, String> {
             "Should ContextDB have flagged it?"
         };
         println!(
-            "#{i} {decision:?} ({verdict}) {:?} {:?} — {question} [y/n/s/q]",
+            "{id} {decision:?} ({verdict}) {:?} {:?} — {question} [y/n/s/q]",
             action.tool, action.paths
         );
         let Some(Ok(answer)) = lines.next() else {
@@ -951,7 +976,7 @@ pub fn dogfood(args: &[String]) -> Result<u8, String> {
             "q" => break,
             _ => continue,
         };
-        writeln!(out, "{}", json!({ "i": i, "label": label })).map_err(|e| e.to_string())?;
+        writeln!(out, "{}", json!({ "id": id, "label": label })).map_err(|e| e.to_string())?;
     }
     Ok(0)
 }
@@ -1058,12 +1083,23 @@ mod tests {
             with_deps: n < 2,
             epoch: Epoch(2),
         }));
-        let labels: BTreeMap<usize, String> =
-            [(0, "ok".into()), (1, "ok".into()), (2, "false".into())].into();
+        let id = |i: usize| entry_id(&entries[i]);
+        let labels: BTreeMap<String, String> = [
+            (id(0), "ok".into()),
+            (id(1), "ok".into()),
+            (id(2), "false".into()),
+        ]
+        .into();
         let r = report(&entries, &labels);
         assert_eq!((r.gated, r.flagged, r.false_alarms), (4, 2, 1));
         assert_eq!((r.stale_intercepts, r.stale_true), (1, 1));
-        assert_eq!((r.allows_sampled, r.allows_ok), (1, 1));
+        // Allows count only when sampled (by id).
+        assert_eq!(r.allows_sampled, usize::from(sampled(&id(0))));
+        // Labels survive reordering (a restart rebuilds telemetry in log order).
+        let mut shuffled = entries.clone();
+        shuffled.reverse();
+        let r2 = report(&shuffled, &labels);
+        assert_eq!((r2.flagged, r2.false_alarms, r2.stale_true), (2, 1, 1));
         assert_eq!((r.writes, r.writes_with_deps), (3, 2));
         assert_eq!((r.sessions, r.max_parallel), (2, 2));
         let md = render_report(&r);

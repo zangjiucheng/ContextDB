@@ -1,6 +1,6 @@
 # ADR 0010 — P4 hooks, outbox and action gating
 
-Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0; **revision 3.3** records implementation notes from milestone 1 (§4: requests changed in place under protocol 2, final tag tables; §2.3: a claim serves every request of its tool call). The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
+Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0; **revision 3.4** records the independent implementation review (§18); **revision 3.3** records implementation notes from milestone 1 (§4: requests changed in place under protocol 2, final tag tables; §2.3: a claim serves every request of its tool call). The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
 
 Review history (non-implementing reviewer):
 
@@ -700,6 +700,23 @@ The dogfood row stays Pending (§0.1).
 | Closure minor: `--mcp-name` escaping | §2.3: normalised and regex-escaped |
 | Closure minor: Codex root rule | §2.2: `threadId == sessionId` is the root; unknown ids treated as root |
 | Closure answer: `claudecode/agentId` | §2.3: cross-check only |
+
+## 18. Implementation review (revision 3.4)
+
+A non-implementing reviewer reviewed `8131399..db559e8` plus the working tree: 1 blocker (reproduced), 7 majors, 12 minors.
+
+| Finding | Resolution |
+|---|---|
+| B1 deadlock: `attach`/`facts` took `hooks` then `sessions`, `SessionEnd`/`drift` the reverse | One order: `sessions` and `hooks` are never held together outside start-up replay; `end_session` releases `sessions` before `hooks`. Test: 8 threads × 200 rounds of shared and own attaches, Facts with drift, gated checks and SessionEnd, with a deadlock watchdog |
+| M1 concurrent attaches of one key started two sessions | Creation is serialised by `attach_lock` (double-checked); the session is in `sessions` before its key. The same test asserts one session per shared key |
+| M2 linked worktrees: paths absolute, git run in the main worktree | `Roots{main, top}`: `main` locates the data directory and names the repository; `top` is the path base and where git runs (also inside a submodule). e2e test from a linked worktree |
+| M3 reasons lost the stale reads after an acknowledged update | `Check` returns `named` reads (key, read, current, summary, reading agent) computed from the agent's view; reasons use them and name a subagent's read. T38 extended |
+| M4 MCP `ctx_check` never returned the gate decision | `ctx-mcp` resolves the mode from `gating.wire` and applies the shared predicate locally (no Gate entry is logged for an agent's own check); `ctx check` does the same |
+| M5 SessionStart on compact/resume reset the drift baseline | Baseline and HEAD are taken once per stream. e2e test |
+| M6 dogfood labels keyed by a telemetry index | Labels and the allow sample are keyed by a hash of the entry; unavailable-gate facts carry their own time. Test: labels survive reordering |
+| M7 the `_meta` contract was claimed but not captured | P4.md states the keys are verified from source and binary; the live check is the dogfood's unclaimed-call count (kit updated) |
+| Minors | (1) every append writes the stream's harness session, so the sweeper can deliver it (e2e test); (2) several pending `Updates` tokens per agent, random token start; (3) `**/` spans whole segments; (4) patch headers only at column 0; (5) a delivered `StreamEnd` ends a still-live session; (6) one deadline for all of a hook's daemon calls; (7) `Facts` batches capped at 4 MiB; (8) kept: on a gap the hook resends what it still holds (lost marks mean lost effects), and skips only what it no longer has (§5.3); (9) SubagentStart is installed and reports the child before its MCP calls; (10) `ctx check` never logs a gated action and `--all` needs no session; (11) the root cache lives in `~/.cache/contextdb/roots` and is revalidated against nested repositories; (12) a retried write (same `client_txn_id`) is counted once |
+| Notes | Full shell commands are recorded (README says so); a broken-log session's reason says to start a new session; telemetry and keys grow with use and are replayed at start (bounded by the dogfood's scale; compaction is P10 material) |
 
 ## 16. Risks and limitations
 
