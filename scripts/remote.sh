@@ -9,12 +9,14 @@
 #   scripts/remote.sh wait <name>         block until the job ends; exit with its code
 #   scripts/remote.sh fetch               copy remote results/ into results/remote/
 #
-# Environment: CTXDB_REMOTE (default remote), CTXDB_REMOTE_DIR (/tmp/remote-ctxdb),
+# Environment: CTXDB_REMOTE (default user@remote-host:
+# the `remote` alias is a load-balanced pool whose nodes have separate /tmp, so
+# one node is pinned), CTXDB_REMOTE_DIR (/tmp/remote-ctxdb),
 # CTXDB_REMOTE_RUST (/tmp/remote-rust), CTXDB_REMOTE_JOBS (48, exported as
 # MUTATION_JOBS and FUZZ_JOBS to the job).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-host=${CTXDB_REMOTE:-remote}
+host=${CTXDB_REMOTE:-user@remote-host}
 dir=${CTXDB_REMOTE_DIR:-/tmp/remote-ctxdb}
 rust=${CTXDB_REMOTE_RUST:-/tmp/remote-rust}
 jobs=${CTXDB_REMOTE_JOBS:-48}
