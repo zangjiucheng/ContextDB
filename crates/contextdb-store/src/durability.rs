@@ -349,6 +349,15 @@ impl SimDisk {
             state: Arc::new(Mutex::new(out)),
         }
     }
+    /// A process restart without power loss: same live and page-cache state,
+    /// new instance identity (so the in-process poison registry does not
+    /// apply), as a killed process would leave it.
+    pub fn restart(&self) -> SimDisk {
+        SimDisk {
+            id: SIM_INSTANCES.fetch_add(1, Ordering::Relaxed),
+            state: self.state.clone(),
+        }
+    }
     /// Live bytes of a file (test inspection).
     pub fn peek(&self, path: &Path) -> Option<Vec<u8>> {
         let s = self.state();

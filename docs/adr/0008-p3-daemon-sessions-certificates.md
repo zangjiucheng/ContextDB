@@ -1,6 +1,6 @@
 # ADR 0008 — P3 daemon, sessions, certificates and MCP
 
-Status: **Accepted (revision 3.2)**, 2026-10-20, for P3 G0; **revision 3.3** adds the §17 G5 amendment (payload packs, ordered syncs), pending the independent P3 review. A non-implementing reviewer found 5 blockers, 14 majors and 12 minors in revision 1 (§14 maps them). In revision 2 it found 1 blocker, 7 majors and 9 minors, N1–N17 (§15 maps them). Revision 3 drew no blockers and four text-level majors, R1–R4, which revision 3.1 resolves (§16). The reviewer's confirmation closed R1–R4 and raised one more major, N-R3a, now amended. The reviewer stated that G0 is acceptable with that amendment and that no blockers remain.
+Status: **Accepted (revision 3.2)**, 2026-10-20, for P3 G0; **revision 3.3** adds the §17 G5 amendment (payload packs, ordered syncs, G5 calibration) and the P3 review fixes (§18). A non-implementing reviewer found 5 blockers, 14 majors and 12 minors in revision 1 (§14 maps them). In revision 2 it found 1 blocker, 7 majors and 9 minors, N1–N17 (§15 maps them). Revision 3 drew no blockers and four text-level majors, R1–R4, which revision 3.1 resolves (§16). The reviewer's confirmation closed R1–R4 and raised one more major, N-R3a, now amended. The reviewer stated that G0 is acceptable with that amendment and that no blockers remain.
 
 ## 0. Owner decisions (2026-10-20)
 
@@ -191,7 +191,7 @@ The trust boundary is cooperative (§0.5).
   - the entry is `required=true`.
 
   Otherwise the result is `InvalidDep`. An unknown prefix, a certificate from another session and an advisory entry are all rejected (T36).
-- Handles are content-bound, because `cert_id` hashes the certificate, and durable, because `CertIssued` is synced before any handle is returned.
+- Handles are content-bound, because `cert_id` hashes the certificate. They are durable before they can be used: `ctx_check` syncs `CertIssued` before replying, and recall replies before its sync (§8.5, N8), so a write that uses a not-yet-durable handle forces the sync first.
 - This follows SPEC §5 P3 literally: deps reference "handles in this session's certificate" or an explicit `logical@rev`.
 
 ### 6.2 Issuance: `cert::issue(db, entries)`
@@ -488,7 +488,7 @@ Each milestone keeps G1 green and lands its tests.
 
 The first G5 measurements (fullfsync on) showed that the write path paid far more than the one op_log sync per group that §3.2 intends. With 8 clients, write p50 was 98 ms and only 81 tx/s went through. Three causes were measured and fixed; none changes a semantic or durability promise.
 
-1. **Writers pinned replicas.** A write request held its snapshot while waiting for its group, so the actor could never reclaim the standby replica and cloned the Db on every group. Write paths now resolve deps and then drop the snapshot before waiting (§3.3). The indexer likewise drops its snapshot before it touches SQLite. Clone fallbacks fell from one per group to 1 per run.
+1. **Writers pinned replicas.** A write request held its snapshot while waiting for its group, so the actor could never reclaim the standby replica and cloned the Db on every group. Write paths now resolve deps and then drop the snapshot before waiting (§3.3). The indexer likewise drops its snapshot before it touches SQLite. Clone fallbacks fell from one per group to 1 per run (the `clone fallbacks` column of `docs/gates/p3-g5-mcp.txt`).
 2. **The session-log writer synced every batch.** It now follows §4 as written: it syncs at once when a flush is requested or a durable event (`SessionStart`, `CertIssued`, `SessionEnd`) is pending, and otherwise within 100 ms. Read events had been forcing an F_FULLFSYNC that stalled the op_log.
 3. **Payloads cost two full syncs each, plus file creation.** On APFS, creating and renaming one file per payload costs about 2–3 ms while another sync is in flight (scratch microbenchmark: 7 payload files ≈ 67 ms under contention versus ≈ 7 ms appended to one file).
 
@@ -496,7 +496,10 @@ The first G5 measurements (fullfsync on) showed that the write path paid far mor
 - New payloads are appended to `blobs/pack-NNNNNNNN` as records `"CXBP" | len u32 LE | blake3(bytes) | bytes`.
 - A record is valid exactly when its hash matches its bytes. The open-time scan therefore trusts no length: after an invalid header or a mismatching hash it resyncs at the next magic. Torn tails, garbage and media damage cost only the damaged records, which read as `Missing` or `Corrupt`. Nothing is ever truncated.
 - A process appends only to segments it created, starting a new one after `segment_target` bytes.
-- Presence (ADR 0006 §5, review n1) is unchanged in meaning: a hash counts as present only after the put that wrote it returned, or, at open, when a verifying record or a legacy file exists.
+- **Presence means durable** (ADR 0006 §5, review n1). A hash counts as present only after the put that wrote it returned, or, at open, when a legacy file or a verifying record on a *synced* segment exists.
+  - Open fully syncs every pack segment before trusting it, and fails if a sync fails. A killed process can leave verifying records only in the page cache; without this, a retried write could dedup against one and lose it at the next power loss (P3 review finding 1, `g4_kill_restart_retry_never_loses_a_deduplicated_payload`).
+  - For the same reason, open syncs the op_log tail segment (`g4_kill_restart_makes_page_cache_frames_durable`).
+  - The open-time verification and syncs add about 120 ms for 100K payloads of 200 B: a snapshot open takes 289 ms with them and 172 ms without (`docs/gates/p3-g5-store.txt`).
 - Legacy per-file blobs remain readable and present. A corrupt payload is replaced by the next put of the same bytes, and the newest verifying record wins at open.
 - Readers locate payloads through a shared index, the counterpart of `LogIndex`, so they never touch the actor.
 - The index costs about 48 B per payload (hash plus location) plus HashMap overhead. Like the presence set, it sits in the store, outside the Db scopes of ADR 0009.
@@ -510,12 +513,17 @@ The first G5 measurements (fullfsync on) showed that the write path paid far mor
 
 **Model and tests.**
 - SimDisk tracks ordered state separately. A full sync anywhere promotes it.
-- On a crash, either the ordered state reached media, or it did not, and then neither did any unsynced byte written after it. That is a subset of real outcomes.
-- `g4_staged_blobs_never_trail_their_frame` crashes at every step: ordered sync, ordered dir sync, append and op_log sync, under all four tail fates. A surviving frame always finds its payloads.
+- On a crash, either the ordered state reached media, or it did not, and then neither did any unsynced byte written after it.
+  - This under-approximates real outcomes. It never produces partially persisted ordered state, an earlier ordered sync persisted with a later one lost, or another file's pre-barrier tail surviving alone.
+  - What it does produce is the hazard that matters: an unsynced frame persisting without its payload when the barrier is missing. The self-test below checks that the harness sees it.
+  - `SimDisk::restart` models a killed process: same page cache, no power loss.
+- `g4_staged_blobs_never_trail_their_frame` reopens first, so every step fires: ordered sync, ordered dir sync of the new segment, append and op_log sync. It crashes under all four tail fates. A surviving frame always finds its payloads.
+- `g4_dedup_on_a_payload_of_a_rejected_group` covers a payload staged by an all-rejected group and reused by a later one.
+- **fullfsync off** (measurement only) makes `sync_weak` a plain fsync, which orders nothing on macOS. That mode is not crash-safe, like the rest of the fullfsync-off configuration (ADR 0006 §10).
 - `g4_staged_harness_detects_a_missing_barrier` shows the harness fails when payload bytes are left unsynced.
 - `g4_blob_write` covers each pack step. `parse_skips_damage_and_resyncs` covers damage, garbage, torn tails and a payload containing the magic.
 
-**Result (local M-series Mac, `mcp_bench`, 8 s per cell).**
+**Result (local M-series Mac, `mcp_bench`, 8 s per cell; the final gate run is `docs/gates/p3-g5-mcp.txt`; microbenchmark `crates/contextdb-bench/c/apfs_sync.c`, output `docs/gates/p3-apfs-sync.txt`).**
 
 | clients | fullfsync | read p95 ms | write p50 ms | write p95 ms | write tx/s |
 |---:|---|---:|---:|---:|---:|
@@ -535,4 +543,51 @@ Before the amendment the 8-client fullfsync-on cell was 98 / 121 ms at 81 tx/s, 
 - With one ~5 ms drive flush per group, a write waits for the in-flight group and then its own.
 - The owner therefore chose the per-client calibration in §11.
 
-Under it, every cell above passes. The write budgets for 1, 8, 32 and 128 clients are 15, 26.8, 29.2 and 56.6 ms with fullfsync on, and 15, 5.8, 14.3 and 39.2 ms with it off. The independent P3 review checks this calibration.
+Under it, every cell above passes. Budgets for N > 1 depend on each run's measured throughput. For the gate run they are in the `write budget ms` column of `docs/gates/p3-g5-mcp.txt`. The independent P3 review checks this calibration.
+
+## 18. P3 review mapping (revision 3.3)
+
+The independent P3 review of `5b49800` found 1 blocker, 2 majors and 7 minors. All are fixed with regression tests unless stated otherwise.
+
+**Blocker**
+- **1** → §17 "presence means durable". Open syncs every pack segment and the op_log tail. `SimDisk::restart` models a killed process; two kill-restart G4 tests cover it.
+
+**Majors**
+- **2** → `SessionCert{session_id, cert_id}` in the session log restores the session certificate on replay, so `ctx_check` validates before it re-issues (§8.5 step 1).
+  - A session whose durable events name an epoch beyond the tail, or whose start checksum no longer matches, is marked log-broken. Its `ctx_check` returns `Invalid{LogMismatch}`, and its handles are refused.
+  - Test: `restart_restores_the_session_certificate_and_a_cut_log_breaks_the_session`.
+- **3** → a drain over u16::MAX events is split into several synced groups, so at most one group is unsynced. A failed append poisons the log, so later flushes fail instead of reporting Ok. Recall is capped at 1,000 items.
+  - Tests: `oversized_drain_is_split_into_synced_groups`, `recall_is_capped`.
+
+**Minors**
+- **4** → session events are queued under the session lock (N17 order).
+- **5** → `Service::stop_writer` writes the lazy events and joins the writer before the actor drops the store and its lock. Test: `clean_shutdown_writes_lazy_session_events`.
+- **6** → the writer syncs no later than 100 ms after the oldest unsynced event, however steady the stream (bounded drain). Test: `steady_reads_are_synced_within_the_lazy_bound`.
+- **7** → `g4_staged` covers every step; a rejected-group dedup test is added; the crash-model wording is fixed (§17).
+- **8** → a replica replay mismatch poisons the store (`fail_stop`) and is counted (`replay_mismatches`). Exact IMPACT runs at most once per actor loop iteration; the rest queue. Test: `queued_exact_impacts_are_paced_and_all_answered`.
+- **9** → session-log flushes wait at most the request timeout and return `Timeout`.
+- **10** → evidence and text:
+  - Committed artifacts: `docs/gates/p3-g5-mcp.txt`, `p3-g5-store.txt`, `p3-apfs-sync.txt` and the microbenchmark source.
+  - `mcp_bench` reports groups and clone fallbacks per cell, plus handle-dep cells (N8 forced sync).
+  - `store_bench` measures the open-time pack scan.
+  - The loom model asserts the two-groups-behind replay.
+  - §6.1 now agrees with §8.5.
+  - The G5 write-p95 misses were calibrated by the owner (§11).
+  - Busy cannot occur in a closed loop with at most 128 clients against a queue of 1,024, so the saturation curve is the throughput plateau across 1/8/32/128 clients.
+
+**Notes**
+- Socket directories, including the temp fallback's `ctxd-<uid>`, must be owned by the daemon's uid and are set to 0700.
+- `ctx-mcp` fails instead of using an all-zero `client_txn_id`.
+- `SessionEnd` checks the principal.
+- A failed `SessionStart` flush removes the session.
+- **Envelope epoch on writes:** it stays the pre-write snapshot's epoch. The commit's own epoch is in `CommitResult`.
+- **Accepted deviation (m3):** a write with a not-yet-durable handle runs the session-log sync and the op_log sync one after the other, not overlapped. Its cost is reported in the handle-dep cells (write p95 ≈ 36 ms with fullfsync on).
+
+**Closure check (of the fixes above).** Findings 1 and 3–10 and the notes were verified closed. Three more items were fixed:
+- **N1 (major)** → a detected log cut is persisted as `SessionEvent::LogBroken` before the daemon serves. Replay also marks a session broken when a `CertIssued` no longer matches the log checksum at its issue epoch. A cut session therefore stays broken across any number of restarts. Test: `a_cut_session_without_a_certificate_stays_broken_across_restarts`, which fails without the marker.
+- **N2** → `SessionLog::open` syncs the last segment, so groups a killed process left in the page cache cannot vanish after they are replayed. Test: `open_syncs_groups_a_killed_process_left_unsynced`.
+- **N3** → `stop_writer` holds its lock until the writer has exited, so concurrent shutdowns cannot release the store early.
+- **Residual notes, accepted:**
+  - A `SessionStart` that timed out may become durable later.
+  - Reads served after a poisoned session log, or after `Stop`, lose their lazy events.
+  - A retried `SessionEnd` gets `UnknownSession`; clients treat that as done.

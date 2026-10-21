@@ -62,6 +62,8 @@ pub struct ActorStats {
     pub groups: AtomicU64,
     pub batches: AtomicU64,
     pub clone_fallbacks: AtomicU64,
+    /// Replica replays that disagreed with the store (each poisons it).
+    pub replay_mismatches: AtomicU64,
     pub reclaim_wait_micros: AtomicU64,
 }
 #[derive(Clone)]
@@ -172,7 +174,18 @@ pub fn spawn<D: Durability + Clone + 'static>(
 impl<D: Durability + Clone> Actor<D> {
     /// Returns the shutdown reply, sent after the store is dropped.
     fn run(&mut self, rx: mpsc::Receiver<Message>) -> Option<mpsc::Sender<()>> {
-        while let Ok(first) = rx.recv() {
+        // Exact IMPACT clones the inputs (O(N)), so at most one runs per group
+        // interval; the rest wait their turn (ADR 0008 §3.3, review finding 8).
+        let mut impacts = std::collections::VecDeque::new();
+        loop {
+            let first = if impacts.is_empty() {
+                match rx.recv() {
+                    Ok(m) => Some(m),
+                    Err(_) => return None,
+                }
+            } else {
+                rx.try_recv().ok()
+            };
             let mut writes = Vec::new();
             let mut others = Vec::new();
             let take =
@@ -180,25 +193,30 @@ impl<D: Durability + Clone> Actor<D> {
                     Message::Write(w) => writes.push(w),
                     other => others.push(other),
                 };
-            take(first, &mut writes, &mut others);
-            // Natural batching: whatever is already queued, no waiting.
-            while writes.len() < MAX_GROUP {
-                match rx.try_recv() {
-                    Ok(m) => take(m, &mut writes, &mut others),
-                    Err(_) => break,
+            if let Some(first) = first {
+                take(first, &mut writes, &mut others);
+                // Natural batching: whatever is already queued, no waiting.
+                while writes.len() < MAX_GROUP {
+                    match rx.try_recv() {
+                        Ok(m) => take(m, &mut writes, &mut others),
+                        Err(_) => break,
+                    }
                 }
             }
             if !writes.is_empty() {
                 self.commit(writes);
             }
             for m in others {
-                if let Message::Shutdown { reply } = m {
-                    return Some(reply);
+                match m {
+                    Message::Shutdown { reply } => return Some(reply),
+                    m @ Message::ImpactExact { .. } => impacts.push_back(m),
+                    m => self.handle(m),
                 }
+            }
+            if let Some(m) = impacts.pop_front() {
                 self.handle(m);
             }
         }
-        None
     }
     fn handle(&mut self, m: Message) {
         match m {
@@ -264,15 +282,23 @@ impl<D: Durability + Clone> Actor<D> {
         // The spare was published one group ago, so it is at the state before
         // the previous group: replay the previous group, then this one.
         let previous = std::mem::take(&mut self.previous);
-        let replica = self.reclaim().and_then(|mut db| {
-            for (b, r) in previous.iter().chain(&current) {
-                let replayed = db.commit_with(b, &AllPresent).ok()?;
-                if replayed != *r {
-                    return None;
+        let replica = match self.reclaim() {
+            Some(mut db) => {
+                let agrees = previous
+                    .iter()
+                    .chain(&current)
+                    .all(|(b, r)| db.commit_with(b, &AllPresent).as_ref() == Ok(r));
+                if !agrees {
+                    // A replica that replays differently is a kernel bug:
+                    // fail stop, never publish either state (§3.3).
+                    self.stats.replay_mismatches.fetch_add(1, Ordering::Relaxed);
+                    let _ = self.store.fail_stop();
+                    return;
                 }
+                Some(db)
             }
-            Some(db)
-        });
+            None => None,
+        };
         self.previous = current;
         let replica = match replica {
             Some(db) => db,

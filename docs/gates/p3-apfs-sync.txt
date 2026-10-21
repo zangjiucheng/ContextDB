@@ -1,0 +1,5 @@
+append + fsync: 0.043 ms
+append + F_FULLFSYNC: 4.200 ms
+append + F_BARRIERFSYNC: 0.328 ms
+alone: 7 payloads per group: file per payload 12.22 ms, pack append 0.93 ms
+with a concurrent F_FULLFSYNC loop: 7 payloads per group: file per payload 75.86 ms, pack append 5.97 ms

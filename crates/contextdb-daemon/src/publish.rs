@@ -57,8 +57,10 @@ pub fn reclaim<T>(old: &mut Arc<T>, mut give_up: impl FnMut() -> bool) -> Option
 }
 /// `RUSTFLAGS="--cfg loom" cargo test -p contextdb-daemon --lib --release`:
 /// the actor's two-replica cycle against concurrent readers. A replica is
-/// reclaimed only when unique, rewritten to the next epoch (the replay) and
-/// published again; readers must only ever see whole, monotone snapshots.
+/// reclaimed only when unique, is exactly two groups behind, replays the
+/// previous and the current group and is published again; readers must only
+/// ever see whole, monotone snapshots. The replay itself (kernel commits) and
+/// arc-swap's internals are outside the model.
 #[cfg(all(test, loom))]
 mod loom_tests {
     use super::*;
@@ -99,9 +101,13 @@ mod loom_tests {
                 })
             }) {
                 Some(r) => {
-                    // Replay into the exclusively owned replica.
-                    r.epoch = epoch;
-                    r.check = epoch * 2;
+                    // The reclaimed replica was published two groups ago:
+                    // replay the previous group, then this one (actor.rs).
+                    assert_eq!(r.epoch + 2, epoch, "replica not two groups behind");
+                    for _ in 0..2 {
+                        r.epoch += 1;
+                        r.check = r.epoch * 2;
+                    }
                     reused += 1;
                     std::mem::take(r)
                 }

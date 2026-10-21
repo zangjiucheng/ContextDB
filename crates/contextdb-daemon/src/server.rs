@@ -112,7 +112,25 @@ impl Daemon {
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;
-        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
+        // Every directory this daemon may have created for its sockets (the
+        // run dir, and in the temp fallback also `ctxd-<uid>`) must be a real
+        // directory owned by this user and private: another user must not be
+        // able to swap the socket path (P3 review note).
+        let mut private = vec![run.clone()];
+        if !run.starts_with(&dir) {
+            private.extend(run.parent().map(Path::to_path_buf));
+        }
+        for d in &private {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::symlink_metadata(d)?;
+            if !m.is_dir() || m.uid() != uid {
+                return Err(StartError::Io(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{} is not a directory owned by uid {uid}", d.display()),
+                )));
+            }
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let mut sockets = Vec::new();
         for (n, (channel, name)) in CHANNELS.iter().enumerate() {
@@ -170,6 +188,8 @@ impl Daemon {
         if self.cleaned.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Session events first, then the store and its lock (review finding 5).
+        self.service.stop_writer();
         let _ = self
             .service
             .actor

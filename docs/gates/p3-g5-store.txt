@@ -1,0 +1,9 @@
+commit_p99_ns fullfsync_on=17235917 fullfsync_off=498833 fullfsync_on_file_projections=12942709 samples=1000
+built txns=100000 structural_every=1 build_ms=4835
+cold_open_full_replay_ms=558 replayed=100000
+cold_open_file_projections_ms first=608 current=297 watermark=100000
+cold_open_with_snapshot_ms=170 snapshot_epoch=Some(Epoch(100000)) replayed=0
+cold_open_with_snapshot_file_projections_ms=178
+cold_open_with_snapshot_and_packed_payloads_ms=289 payloads=100000
+historical_read_below_snapshot_ms replay=1016 projections=0
+g5_initial_pass=true

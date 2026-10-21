@@ -171,7 +171,14 @@ fn t36_deps_must_be_this_sessions_required_handles_or_explicit_revisions() {
         kind: RecordKind::Plan,
         body: b"migrate".to_vec(),
         target: WriteTarget::Create {
-            key: format!("plan-{}", session[0]),
+            // Whole session id: a one-byte key collided 1 time in 256.
+            key: format!(
+                "plan-{}",
+                session
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ),
             scope_lane: "repo".into(),
         },
         deps,
@@ -569,4 +576,241 @@ fn recall_finds_records_by_payload_text_after_indexing() {
         (items[0].key.as_str(), items[0].rev),
         ("d1-db", RevisionId(1))
     );
+}
+fn check(s: &Service<SimDisk>, session: SessionId) -> Response {
+    call(
+        s,
+        AGENT,
+        Request::Check {
+            session,
+            cert_id: None,
+            live_pos: Vec::new(),
+        },
+    )
+}
+/// P3 review finding 2: the session certificate survives a restart, so
+/// `ctx_check` validates it first instead of re-issuing; after the log is cut
+/// under the session (`doctor --truncate-before`) its ledger and handles may
+/// name reallocated ids, so check reports `LogMismatch` and handles refuse.
+#[test]
+fn restart_restores_the_session_certificate_and_a_cut_log_breaks_the_session() {
+    let disk = SimDisk::new();
+    let (a, c1, handle) = {
+        let s = service(&disk);
+        let a = start(&s);
+        record(&s, a, "db", "mongodb", Vec::new());
+        let (items, _) = recall(&s, a, "db");
+        let Response::Check {
+            cert: Some(c1),
+            decision: Decision::Allow,
+            ..
+        } = check(&s, a)
+        else {
+            panic!("first check")
+        };
+        call(&s, ADMIN, Request::Shutdown);
+        (a, c1, items[0].handle.clone().unwrap())
+    };
+    // Plain restart: the same certificate is validated, not re-issued.
+    {
+        let s = service(&disk);
+        match check(&s, a) {
+            Response::Check {
+                cert: Some(c),
+                decision: Decision::Allow,
+                validation: Validation::Valid,
+                ..
+            } => assert_eq!(c.cert_id, c1.cert_id, "validated, not re-issued"),
+            other => panic!("{other:?}"),
+        }
+        call(&s, ADMIN, Request::Shutdown);
+    }
+    // The operator cuts epoch 1 away; ids are then reallocated.
+    let dir = Path::new("/db");
+    let plan = contextdb_store::doctor::plan_truncate_before(&disk, dir, Epoch(1)).unwrap();
+    contextdb_store::doctor::truncate_before(&disk, dir, &plan).unwrap();
+    let s = service(&disk);
+    let b = start(&s);
+    record(&s, b, "db", "postgresql", Vec::new());
+    match check(&s, a) {
+        Response::Check {
+            decision: Decision::Warn,
+            validation:
+                Validation::Invalid {
+                    reason: InvalidReason::LogMismatch,
+                    ..
+                },
+            ..
+        } => {}
+        other => panic!("cut log must not be re-certified: {other:?}"),
+    }
+    let dep = Request::Record {
+        session: a,
+        kind: RecordKind::Plan,
+        body: b"p".to_vec(),
+        target: WriteTarget::Create {
+            key: "plan".into(),
+            scope_lane: "repo".into(),
+        },
+        deps: vec![Dep {
+            target: Target::Handle(handle),
+            kind: EdgeKind::Cur,
+        }],
+        adopt_as_base: false,
+        client_txn_id: None,
+    };
+    assert_eq!(code(&call(&s, AGENT, dep.clone())), "InvalidDep");
+    // A second restart, after new writes reallocated the cut epochs, still
+    // refuses: the break is durable (closure check N1).
+    call(&s, ADMIN, Request::Shutdown);
+    drop(s);
+    let s = service(&disk);
+    assert!(matches!(
+        check(&s, a),
+        Response::Check {
+            decision: Decision::Warn,
+            validation: Validation::Invalid {
+                reason: InvalidReason::LogMismatch,
+                ..
+            },
+            ..
+        }
+    ));
+    assert_eq!(code(&call(&s, AGENT, dep)), "InvalidDep");
+}
+/// Closure check N1: a session that read but never checked, cut under and
+/// restarted twice, is never re-certified over reallocated ids.
+#[test]
+fn a_cut_session_without_a_certificate_stays_broken_across_restarts() {
+    let disk = SimDisk::new();
+    let a = {
+        let s = service(&disk);
+        let a = start(&s);
+        record(&s, a, "db", "mongodb", Vec::new());
+        // A certified read issues no certificate, so only the durable
+        // `LogBroken` marker can carry the break past a second restart.
+        let read = Request::Read {
+            session: a,
+            target: Target::Key("db".into()),
+            mode: Mode::Certified,
+        };
+        assert_eq!(code(&call(&s, AGENT, read)), "ok");
+        call(&s, ADMIN, Request::Shutdown);
+        a
+    };
+    let dir = Path::new("/db");
+    let plan = contextdb_store::doctor::plan_truncate_before(&disk, dir, Epoch(1)).unwrap();
+    contextdb_store::doctor::truncate_before(&disk, dir, &plan).unwrap();
+    {
+        let s = service(&disk);
+        let b = start(&s);
+        record(&s, b, "db", "postgresql", Vec::new());
+        call(&s, ADMIN, Request::Shutdown);
+    }
+    let s = service(&disk);
+    match check(&s, a) {
+        Response::Check {
+            decision: Decision::Warn,
+            validation:
+                Validation::Invalid {
+                    reason: InvalidReason::LogMismatch,
+                    ..
+                },
+            ..
+        } => {}
+        other => panic!("re-certified over reallocated ids: {other:?}"),
+    }
+}
+/// Review finding 5: lazily synced read events are written on a clean
+/// shutdown, before the store lock is released.
+#[test]
+fn clean_shutdown_writes_lazy_session_events() {
+    let disk = SimDisk::new();
+    let a = {
+        let s = service(&disk);
+        let a = start(&s);
+        record(&s, a, "db", "pg", Vec::new());
+        recall(&s, a, "db");
+        call(&s, ADMIN, Request::Shutdown);
+        a
+    };
+    // Power loss right after the clean shutdown: the reads are durable.
+    let crashed = disk.crash(contextdb_store::TailFate::ZeroFill, 0);
+    let (_, events, _) = SessionLog::open(crashed, Path::new("/db"), false, 1 << 20).unwrap();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        contextdb_store::session::SessionEvent::Read { session_id, .. } if *session_id == a
+    )));
+}
+/// Review finding 6: under a steady stream of reads, events still become
+/// durable within the lazy-sync bound.
+#[test]
+fn steady_reads_are_synced_within_the_lazy_bound() {
+    let disk = SimDisk::new();
+    let s = std::sync::Arc::new(service(&disk));
+    let a = start(&s);
+    record(&s, a, "db", "pg", Vec::new());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (s, stop) = (s.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let read = Request::Read {
+                    session: a,
+                    target: Target::Key("db".into()),
+                    mode: Mode::Advisory,
+                };
+                call(&s, AGENT, read);
+            }
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let crashed = disk.crash(contextdb_store::TailFate::ZeroFill, 0);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    reader.join().unwrap();
+    let (_, events, _) = SessionLog::open(crashed, Path::new("/db"), false, 1 << 20).unwrap();
+    let reads = events
+        .iter()
+        .filter(|e| matches!(e, contextdb_store::session::SessionEvent::Read { .. }))
+        .count();
+    assert!(reads > 0, "no read event synced in 400 ms of steady reads");
+}
+/// Review finding 3: one recall is capped, so a single request cannot
+/// produce an unbounded session group.
+#[test]
+fn recall_is_capped() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let a = start(&s);
+    let body = b"x".to_vec();
+    let h = *blake3::hash(&body).as_bytes();
+    let ops = (0..1_500)
+        .map(|i| Op::CreateLogical {
+            key: format!("k{i:04}"),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: h,
+            adopt_as_base: true,
+        })
+        .collect();
+    let raw = Request::Raw {
+        blobs: vec![body],
+        batch: Batch::new(ops),
+    };
+    assert_eq!(code(&call(&s, ADMIN, raw)), "ok");
+    let r = call(
+        &s,
+        AGENT,
+        Request::Recall {
+            session: a,
+            query: "k".into(),
+            scope: "repo".into(),
+            mode: Mode::Advisory,
+            limit: 100_000,
+        },
+    );
+    let Response::Recall { items, .. } = r else {
+        panic!("{r:?}")
+    };
+    assert_eq!(items.len(), contextdb_daemon::service::MAX_RECALL);
 }

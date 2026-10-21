@@ -1573,7 +1573,10 @@ fn g4_staged_blobs_never_trail_their_frame() {
     {
         for seed in 0..(runs() / 4 + 1) {
             let disk = SimDisk::new();
-            let mut store = populated(&disk, 1 + seed as usize % 4);
+            drop(populated(&disk, 1 + seed as usize % 4));
+            // Reopened, so the group starts a new pack segment and every
+            // step (including the ordered dir sync) fires (review finding 7).
+            let (mut store, _) = open(&disk).unwrap();
             let before = store.epoch();
             let payloads: Vec<Vec<u8>> = (0..3)
                 .map(|i| format!("staged-{seed}-{i}").into_bytes())
@@ -1678,4 +1681,101 @@ fn put_blobs_is_durable_on_return_and_poisons_on_failed_barrier() {
         store.get_blob(&h).unwrap(),
         Payload::Unavailable(Unavailable::Missing)
     );
+}
+
+fn pack_record(bytes: &[u8]) -> Vec<u8> {
+    let mut r = b"CXBP".to_vec();
+    r.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    r.extend_from_slice(blake3::hash(bytes).as_bytes());
+    r.extend_from_slice(bytes);
+    r
+}
+fn create_with(key: &str, content: ContentHash) -> Batch {
+    Batch::new(vec![Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content,
+        adopt_as_base: true,
+    }])
+}
+/// P3 review finding 1: a killed process leaves a verifying pack record only
+/// in the page cache. After a restart (no power loss) a retried write dedups
+/// against it; a later power loss must not leave the acked frame without its
+/// payload. Open syncs every pack segment before trusting it.
+#[test]
+fn g4_kill_restart_retry_never_loses_a_deduplicated_payload() {
+    for seed in 0..(runs() / 2 + 1) {
+        let disk = SimDisk::new();
+        drop(populated(&disk, 1 + seed as usize % 3));
+        let p = format!("payload-{seed}").into_bytes();
+        let h = *blake3::hash(&p).as_bytes();
+        // The killed process: appended to a fresh segment, never synced.
+        let seg = Path::new(DIR).join("blobs").join("pack-00000099");
+        disk.append(&seg, &pack_record(&p)).unwrap();
+        // Restart; the client's retry carries the payload again.
+        let (mut store, _) = open(&disk).unwrap();
+        store.stage_blobs(&[&p]).unwrap();
+        let acked = store.commit(&create_with(&format!("k{seed}"), h)).unwrap();
+        drop(store);
+        let crashed = disk.crash(FATES[seed as usize % 4], seed);
+        let (store, _) = open(&crashed).unwrap();
+        assert!(store.epoch() >= acked.epoch, "{seed}: acked frame lost");
+        assert_eq!(
+            store.get_blob(&h).unwrap(),
+            Payload::Available(p),
+            "{seed}: acked frame without its payload"
+        );
+    }
+}
+/// A killed process's verified but unsynced op_log frames are made durable
+/// at open, so an epoch the restarted store reports never disappears.
+#[test]
+fn g4_kill_restart_makes_page_cache_frames_durable() {
+    for seed in 0..(runs() / 2 + 1) {
+        let disk = SimDisk::new();
+        let mut store = populated(&disk, 2);
+        store.put_blob(b"late").unwrap();
+        // The frame is appended, then the process dies before its sync.
+        disk.fail_next("sync");
+        let _ = store.commit(&create_with("late", *blake3::hash(b"late").as_bytes()));
+        drop(store);
+        let disk = disk.restart();
+        let (store, _) = open(&disk).unwrap();
+        let seen = store.epoch();
+        drop(store);
+        let crashed = disk.crash(FATES[seed as usize % 4], seed);
+        let (store, _) = open(&crashed).unwrap();
+        assert_eq!(
+            store.epoch(),
+            seen,
+            "{seed}: an epoch served after restart vanished"
+        );
+    }
+}
+/// A payload staged for an all-rejected group stays usable by a later group
+/// of the same process: the later op_log flush makes it durable.
+#[test]
+fn g4_dedup_on_a_payload_of_a_rejected_group() {
+    for seed in 0..(runs() / 4 + 1) {
+        let disk = SimDisk::new();
+        let mut store = populated(&disk, 1);
+        let p = format!("rejected-{seed}").into_bytes();
+        let h = *blake3::hash(&p).as_bytes();
+        store.stage_blobs(&[&p]).unwrap();
+        // Rejected: SetHead on a logical that does not exist.
+        let bad = Batch::new(vec![Op::SetHead {
+            logical: LogicalId(9_999).into(),
+            expected: RevisionId(0).into(),
+            new: RevisionId(0).into(),
+        }]);
+        assert!(store.commit_group(&[bad])[0].is_err());
+        store.stage_blobs(&[&p]).unwrap();
+        let acked = store.commit(&create_with(&format!("r{seed}"), h)).unwrap();
+        drop(store);
+        let crashed = disk.crash(FATES[seed as usize % 4], seed);
+        let (store, _) = open(&crashed).unwrap();
+        assert!(store.epoch() >= acked.epoch);
+        assert_eq!(store.get_blob(&h).unwrap(), Payload::Available(p));
+    }
 }

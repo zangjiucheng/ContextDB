@@ -179,6 +179,21 @@ fn main() {
     );
     let (snap_file, _) = cold_open_with(&dir, &file);
     println!("cold_open_with_snapshot_file_projections_ms={snap_file}");
+    // Open verifies (blake3) and syncs every pack segment (ADR 0008 §17):
+    // the same snapshot open with one ~200-byte payload per transaction.
+    {
+        let (mut store, _) =
+            Store::open(StdDisk { full_sync: false }, &dir, &OpenOptions::default()).unwrap();
+        let payloads: Vec<Vec<u8>> = (0..txns)
+            .map(|n| format!("payload {n:>8} {}", "x".repeat(180)).into_bytes())
+            .collect();
+        for chunk in payloads.chunks(1_000) {
+            let refs: Vec<&[u8]> = chunk.iter().map(Vec::as_slice).collect();
+            store.put_blobs(&refs).unwrap();
+        }
+    }
+    let (snap_packs, _) = cold_open(&dir);
+    println!("cold_open_with_snapshot_and_packed_payloads_ms={snap_packs} payloads={txns}");
     // Reads below the snapshot: log replay (memory projections) versus the
     // projection tables. Informational; no SPEC budget yet (P3 sets read budgets).
     let mid = Epoch(txns as u64 / 2);
@@ -193,7 +208,8 @@ fn main() {
         && full <= 5_000
         && first <= 5_000
         && snap <= 1_000
-        && snap_file <= 1_000;
+        && snap_file <= 1_000
+        && snap_packs <= 1_000;
     println!("g5_initial_pass={budgets}");
     let _ = std::fs::remove_dir_all(&root);
 }

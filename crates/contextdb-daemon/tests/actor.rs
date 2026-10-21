@@ -155,3 +155,31 @@ fn timed_out_write_is_resolved_through_txn_status() {
         }
     }
 }
+/// Review finding 8: exact impacts are rate-limited to one per group
+/// interval, yet every queued impact and write is answered.
+#[test]
+fn queued_exact_impacts_are_paced_and_all_answered() {
+    let h = actor::spawn(store()).unwrap();
+    let (blobs, b) = create("a", b"a");
+    h.write(blobs, b).unwrap().unwrap();
+    let threads: Vec<_> = (0..6)
+        .map(|n| {
+            let h = h.clone();
+            std::thread::spawn(move || {
+                if n % 2 == 0 {
+                    let (_, batch) = create(&format!("imp{n}"), b"i");
+                    h.request(|reply| actor::Message::ImpactExact { batch, reply })
+                        .unwrap()
+                        .is_ok()
+                } else {
+                    let (blobs, b) = create(&format!("w{n}"), format!("w{n}").as_bytes());
+                    h.write(blobs, b).unwrap().is_ok()
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        assert!(t.join().unwrap());
+    }
+    assert_eq!(h.snapshot().epoch, Epoch(4), "impacts never commit");
+}

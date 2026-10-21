@@ -330,10 +330,16 @@ impl<D: Durability> Store<D> {
         }
         let mut report = OpenReport::default();
         // Blob presence: durable names only, leftovers removed (ADR 0006 §5);
-        // packed payloads are present when their record verifies (§17).
+        // packed payloads are present when their record verifies on a
+        // segment that is durable. A killed process can leave verifying
+        // records only in the page cache, so every segment is fully synced
+        // before it is trusted (ADR 0008 §17, P3 review finding 1).
         disk.sync_dir(&blob_dir).map_err(io)?;
         let mut blobs = BTreeSet::new();
         let names = disk.list(&blob_dir).map_err(io)?;
+        for name in names.iter().filter(|n| pack::is_pack(n)) {
+            disk.sync(&blob_dir.join(name)).map_err(io)?;
+        }
         let packs = pack::scan(&disk, &blob_dir, &names).map_err(io)?;
         blobs.extend(packs.map.keys().copied());
         for name in names {
@@ -382,6 +388,13 @@ impl<D: Durability> Store<D> {
                 bytes,
                 reason: fault,
             });
+        }
+        // Frames a killed process left only in the page cache are verified
+        // above; sync the tail segment so the epochs this open serves (and
+        // `txn_status` reports) are durable. Earlier segments were synced
+        // before rollover (P3 review note).
+        if let Some(last) = log::segments(&disk, &log_dir).map_err(io)?.last() {
+            disk.sync(last).map_err(io)?;
         }
         let checksums: Vec<ContentHash> = scan.frames.iter().map(|f| f.checksum).collect();
         let mut proj = Projections::open(&options.projections, &checksums).map_err(sql)?;
@@ -530,6 +543,11 @@ impl<D: Durability> Store<D> {
     }
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+    /// Poisons the store from outside (the daemon's replica cross-check,
+    /// ADR 0008 §3.3): nothing more is served or committed.
+    pub fn fail_stop(&mut self) -> StoreError {
+        self.poison()
     }
     fn poison(&mut self) -> StoreError {
         self.poisoned = true;

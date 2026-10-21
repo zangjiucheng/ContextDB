@@ -47,24 +47,53 @@ struct Session {
     /// Certificates issued to this session (recall and session certificates).
     certs: Vec<Certificate>,
     session_cert: Option<Certificate>,
+    /// Durable events of this session name epochs the log no longer holds
+    /// in the same form (e.g. after `ctx doctor --truncate-before`): its
+    /// ledger and handles may name reallocated ids (P3 review finding 2).
+    log_broken: bool,
+    /// A `LogBroken` event for this session is in the session log.
+    broken_durable: bool,
 }
 enum Writer {
     Events(Vec<SessionEvent>),
     /// Reply once everything queued before it is durable.
     Flush(mpsc::Sender<Result<(), StoreError>>),
+    /// Write what is queued, acknowledge and exit.
+    Stop(mpsc::Sender<()>),
 }
 pub struct Service<D: Durability> {
     pub actor: ActorHandle<D>,
     sessions: Mutex<BTreeMap<SessionId, Arc<Mutex<Session>>>>,
     writer: Mutex<mpsc::Sender<Writer>>,
+    writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     recall: Arc<Mutex<RecallIndex>>,
     stop: Arc<AtomicBool>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.stop_writer();
     }
 }
+impl<D: Durability> Service<D> {
+    /// Writes every queued session event and stops the writer thread. Run
+    /// before the store (and its lock) is released, so nothing appends to
+    /// `sessions/` unlocked and no lazy event is lost on a clean shutdown
+    /// (P3 review finding 5). Idempotent.
+    pub fn stop_writer(&self) {
+        // Held until the writer has exited, so a concurrent caller cannot go
+        // on to stop the actor while events are still being written (N3).
+        let mut slot = self.writer_thread.lock().expect("writer thread");
+        let Some(thread) = slot.take() else {
+            return;
+        };
+        let (tx, _rx) = mpsc::channel();
+        let _ = self.writer.lock().expect("writer").send(Writer::Stop(tx));
+        let _ = thread.join();
+    }
+}
+/// Most items one recall returns (ADR 0008 §9).
+pub const MAX_RECALL: usize = 1_000;
 fn random_id() -> [u8; 16] {
     use std::io::Read;
     let mut id = [0u8; 16];
@@ -150,7 +179,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .expect("indexer thread");
         }
         let (tx, rx) = mpsc::channel();
-        std::thread::Builder::new()
+        let writer_thread = std::thread::Builder::new()
             .name("ctxd-session-log".into())
             .spawn(move || writer(log, rx))
             .expect("session writer thread");
@@ -158,23 +187,52 @@ impl<D: Durability + Clone + 'static> Service<D> {
             actor,
             sessions: Mutex::new(BTreeMap::new()),
             writer: Mutex::new(tx),
+            writer_thread: Mutex::new(Some(writer_thread)),
             recall,
             stop,
         };
-        service.replay(events);
+        // Persist every newly detected log cut before serving (closure N1).
+        let broken = service.replay(events);
+        if !broken.is_empty() {
+            service.log(
+                broken
+                    .into_iter()
+                    .map(|session_id| SessionEvent::LogBroken { session_id })
+                    .collect(),
+            );
+            let _ = service.flush();
+        }
         service
     }
     /// Rebuilds in-memory sessions from durable events (sessions survive restarts).
-    fn replay(&self, events: Vec<SessionEvent>) {
+    ///
+    /// A session whose durable events name an epoch beyond the current tail,
+    /// or whose start checksum no longer matches the log, is marked
+    /// `log_broken`: the log was cut under it, so its ledger and handles may
+    /// name reallocated ids.
+    ///
+    /// Returns the sessions newly found broken, to be marked durably.
+    fn replay(&self, events: Vec<SessionEvent>) -> Vec<SessionId> {
+        let snap = self.actor.snapshot();
+        let tail = snap.epoch;
         let mut map = self.sessions.lock().expect("sessions");
+        let broken = |map: &BTreeMap<SessionId, Arc<Mutex<Session>>>, id: &SessionId| {
+            if let Some(s) = map.get(id) {
+                s.lock().expect("session").log_broken = true;
+            }
+        };
         for e in events {
             match e {
                 SessionEvent::Start {
                     session_id,
                     principal,
                     head_sha,
+                    started_epoch,
+                    log_checksum,
                     ..
                 } => {
+                    let log_broken = started_epoch > tail
+                        || snap.log.checksum_at(started_epoch).ok() != Some(log_checksum);
                     map.insert(
                         session_id,
                         Arc::new(Mutex::new(Session {
@@ -184,6 +242,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             superseded: Vec::new(),
                             certs: Vec::new(),
                             session_cert: None,
+                            log_broken,
+                            broken_durable: false,
                         })),
                     );
                 }
@@ -195,6 +255,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     required,
                     ..
                 } => {
+                    if epoch > tail {
+                        broken(&map, &session_id);
+                    }
                     if let Some(s) = map.get(&session_id) {
                         s.lock().expect("session").record(LedgerEntry {
                             logical,
@@ -205,9 +268,31 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     }
                 }
                 SessionEvent::CertIssued { cert } => {
+                    if cert.issued_epoch > tail
+                        || snap.log.checksum_at(cert.issued_epoch).ok()
+                            != Some(cert.log_checksum_at_issue)
+                    {
+                        broken(&map, &cert.session_id);
+                    }
                     if let Some(s) = map.get(&cert.session_id) {
                         let mut s = s.lock().expect("session");
                         s.certs.push((*cert).clone());
+                    }
+                }
+                SessionEvent::LogBroken { session_id } => {
+                    if let Some(s) = map.get(&session_id) {
+                        let mut s = s.lock().expect("session");
+                        s.log_broken = true;
+                        s.broken_durable = true;
+                    }
+                }
+                SessionEvent::SessionCert {
+                    session_id,
+                    cert_id,
+                } => {
+                    if let Some(s) = map.get(&session_id) {
+                        let mut s = s.lock().expect("session");
+                        s.session_cert = s.certs.iter().find(|c| c.cert_id == cert_id).cloned();
                     }
                 }
                 SessionEvent::End { session_id, .. } => {
@@ -216,6 +301,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 SessionEvent::Write { .. } => {}
             }
         }
+        map.iter()
+            .filter(|(_, s)| {
+                let s = s.lock().expect("session");
+                s.log_broken && !s.broken_durable
+            })
+            .map(|(id, _)| *id)
+            .collect()
     }
     fn log(&self, events: Vec<SessionEvent>) {
         let _ = self
@@ -224,12 +316,22 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .expect("writer")
             .send(Writer::Events(events));
     }
-    /// Waits until every event queued so far is durable.
-    fn flush(&self) -> Result<(), StoreError> {
+    /// Waits until every event queued so far is durable, for at most the
+    /// request timeout (ADR 0008 §5; P3 review finding 9).
+    fn flush(&self) -> Result<(), Response> {
         let (tx, rx) = mpsc::channel();
         let _ = self.writer.lock().expect("writer").send(Writer::Flush(tx));
-        rx.recv()
-            .unwrap_or_else(|_| Err(StoreError::Io("session writer stopped".into())))
+        match rx.recv_timeout(self.actor.timeout) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(err("Io", format!("session log: {e:?}"))),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(err(
+                "Timeout",
+                "session log sync exceeded the request timeout",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(err("Unavailable", "session writer stopped"))
+            }
+        }
     }
     fn session(&self, id: &SessionId) -> Option<Arc<Mutex<Session>>> {
         self.sessions.lock().expect("sessions").get(id).cloned()
@@ -270,6 +372,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         superseded: Vec::new(),
                         certs: Vec::new(),
                         session_cert: None,
+                        log_broken: false,
+                        broken_durable: false,
                     })),
                 );
                 self.log(vec![SessionEvent::Start {
@@ -288,18 +392,32 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Ok(()) => Response::Session {
                         session: session_id,
                     },
-                    Err(e) => err("Io", format!("{e:?}")),
+                    Err(r) => {
+                        // Never durable: the session does not exist.
+                        self.sessions.lock().expect("sessions").remove(&session_id);
+                        r
+                    }
                 }
             }
             Request::SessionEnd { session } => {
-                self.sessions.lock().expect("sessions").remove(&session);
-                self.log(vec![SessionEvent::End {
-                    session_id: session,
-                    epoch: snap.epoch,
-                }]);
+                {
+                    let mut sessions = self.sessions.lock().expect("sessions");
+                    match sessions.get(&session) {
+                        None => return err("UnknownSession", "unknown session"),
+                        Some(s) if s.lock().expect("session").principal != id.principal => {
+                            return err("UnknownSession", "session of another principal");
+                        }
+                        Some(_) => {}
+                    }
+                    sessions.remove(&session);
+                    self.log(vec![SessionEvent::End {
+                        session_id: session,
+                        epoch: snap.epoch,
+                    }]);
+                }
                 match self.flush() {
                     Ok(()) => Response::Done,
-                    Err(e) => err("Io", format!("{e:?}")),
+                    Err(r) => r,
                 }
             }
             Request::Recall {
@@ -473,6 +591,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "shutdown requires the admin socket");
                 }
+                self.stop_writer();
                 match self.actor.request(|reply| Message::Shutdown { reply }) {
                     Ok(()) => Response::Done,
                     Err(e) => submit_err(e),
@@ -558,6 +677,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         session: &Session,
         handle: &str,
     ) -> Option<(LogicalId, RevisionId, ContentHash)> {
+        // Handles of a session whose log was cut may name reallocated ids.
+        if session.log_broken {
+            return None;
+        }
         let (prefix, index) = handle.split_once('.')?;
         let index: usize = index.parse().ok()?;
         let cert = session
@@ -579,6 +702,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let Some(s) = self.session(&session) else {
             return err("UnknownSession", "unknown session");
         };
+        let limit = limit.clamp(1, MAX_RECALL);
         let db = &snap.db;
         // Basic retrieval (ADR 0008 §9): exact key, then prefix, then substring.
         let mut found: Vec<(u8, LogicalId)> = (0..db.logical_count() as u32)
@@ -606,7 +730,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .recall
             .lock()
             .expect("recall")
-            .search(query, scope, limit.max(1))
+            .search(query, scope, limit)
         {
             for (n, l) in hits.into_iter().enumerate() {
                 if l.index() < db.logical_count() && !found.iter().any(|(_, f)| *f == l) {
@@ -615,7 +739,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
         found.sort();
-        found.truncate(limit.max(1));
+        found.truncate(limit);
         let mut items = Vec::new();
         let mut withheld = Vec::new();
         for (_, l) in found {
@@ -667,10 +791,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 s.certs.push(cert);
             }
         }
-        drop(s);
         // Reads and the recall certificate are queued, not awaited: recall stays
         // on the read budget; a write using a handle flushes first (ADR 0008 §8.5).
+        // Queued under the session lock, so the durable order is the ledger
+        // order (N17; P3 review finding 4).
         self.log(events);
+        drop(s);
         Response::Recall {
             items,
             withheld,
@@ -733,8 +859,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             let mut s = s.lock().expect("session");
             s.record(entry.clone());
+            self.log(vec![read_event(session, &entry)]);
         }
-        self.log(vec![read_event(session, &entry)]);
         if mode == Mode::Certified && !certified {
             // CertifiedCurrent fails closed, without payload (T07e).
             let summary = if db.head(l) == Some(r) {
@@ -798,8 +924,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
         // A handle is usable once its certificate is durable.
-        if needs_flush && let Err(e) = self.flush() {
-            return Err(err("Io", format!("{e:?}")));
+        if needs_flush {
+            self.flush()?;
         }
         Ok(out)
     }
@@ -960,6 +1086,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => r,
             };
         }
+        if s.log_broken {
+            // The log was cut under this session: nothing it read can be
+            // re-certified from its ledger (P3 review finding 2).
+            return Response::Check {
+                decision: Decision::Warn,
+                validation: Validation::Invalid {
+                    reason: InvalidReason::LogMismatch,
+                    diffs: Vec::new(),
+                },
+                cert: s.session_cert.clone().map(Box::new),
+                superseded: Vec::new(),
+            };
+        }
         let superseded: Vec<CertDiff> = s
             .superseded
             .drain(..)
@@ -1006,9 +1145,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     adopted = (**new_cert).clone();
                     s.certs.push(adopted.clone());
                     s.session_cert = Some(adopted.clone());
-                    self.log(vec![SessionEvent::CertIssued {
-                        cert: Box::new(adopted.clone()),
-                    }]);
+                    self.log(vec![
+                        SessionEvent::CertIssued {
+                            cert: Box::new(adopted.clone()),
+                        },
+                        SessionEvent::SessionCert {
+                            session_id: session,
+                            cert_id: adopted.cert_id,
+                        },
+                    ]);
                 }
                 // Re-issue only when required reads are not covered (ADR 0008 §8.5).
                 let covered = s.required.values().all(|e| {
@@ -1019,8 +1164,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 });
                 if covered {
                     drop(s);
-                    if let Err(e) = self.flush() {
-                        return err("Io", format!("{e:?}"));
+                    if let Err(r) = self.flush() {
+                        return r;
                     }
                     return Response::Check {
                         decision: decision(&v),
@@ -1055,12 +1200,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(cert) => {
                 s.certs.push(cert.clone());
                 s.session_cert = Some(cert.clone());
+                self.log(vec![
+                    SessionEvent::CertIssued {
+                        cert: Box::new(cert.clone()),
+                    },
+                    SessionEvent::SessionCert {
+                        session_id: session,
+                        cert_id: cert.cert_id,
+                    },
+                ]);
                 drop(s);
-                self.log(vec![SessionEvent::CertIssued {
-                    cert: Box::new(cert.clone()),
-                }]);
-                if let Err(e) = self.flush() {
-                    return err("Io", format!("{e:?}"));
+                if let Err(r) = self.flush() {
+                    return r;
                 }
                 Response::Check {
                     decision: Decision::Allow,
@@ -1131,55 +1282,92 @@ fn read_event(session: SessionId, e: &LedgerEntry) -> SessionEvent {
 }
 /// The session-log writer: one FIFO queue, one synced group per drain, so at
 /// most one group is ever unsynced (ADR 0008 §4).
-/// Session-log writer (ADR 0008 §5): syncs at once when a durable event
-/// (`SessionStart`, `CertIssued`, `SessionEnd`) or a flush is pending, and
-/// otherwise at most every [`LAZY_SYNC`], so read events never put a full
-/// sync in the way of the op_log.
+/// Session-log writer (ADR 0008 §4): syncs at once when a durable event
+/// (`SessionStart`, `CertIssued`, `SessionCert`, `SessionEnd`), a flush or a
+/// stop is pending, and otherwise no later than [`LAZY_SYNC`] after the
+/// oldest unsynced event, however steadily events keep arriving (P3 review
+/// finding 6). Read events never put a full sync in the way of the op_log.
 fn writer<D: Durability>(mut log: SessionLog<D>, rx: mpsc::Receiver<Writer>) {
-    let mut events = Vec::new();
-    let mut waiters = Vec::new();
-    let mut since: Option<std::time::Instant> = None;
+    let mut p = Pending::default();
     loop {
-        let urgent = !waiters.is_empty()
-            || events.iter().any(|e| {
-                matches!(
-                    e,
-                    SessionEvent::Start { .. }
-                        | SessionEvent::CertIssued { .. }
-                        | SessionEvent::End { .. }
-                )
-            });
-        let message = match since {
-            _ if urgent => rx.try_recv().map_err(|e| match e {
-                mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
-                mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
-            }),
-            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-            Some(t) => rx.recv_timeout(LAZY_SYNC.saturating_sub(t.elapsed())),
+        let first = match p.since {
+            None => rx.recv().ok(),
+            Some(t) => match rx.recv_timeout(LAZY_SYNC.saturating_sub(t.elapsed())) {
+                Ok(m) => Some(m),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = log.append_group(&p.events);
+                    return;
+                }
+            },
         };
-        match message {
-            Ok(Writer::Events(e)) => {
-                since.get_or_insert_with(std::time::Instant::now);
-                events.extend(e);
-                continue;
-            }
-            Ok(Writer::Flush(w)) => {
-                waiters.push(w);
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = log.append_group(&events);
-                return;
+        let disconnected = first.is_none() && p.since.is_none();
+        if let Some(m) = first {
+            p.take(m);
+        }
+        // Drain what is already queued, bounded so a steady stream cannot
+        // postpone the sync.
+        for _ in 0..DRAIN_MAX {
+            match rx.try_recv() {
+                Ok(m) => p.take(m),
+                Err(_) => break,
             }
         }
-        let result = log.append_group(&std::mem::take(&mut events));
-        since = None;
-        for w in waiters.drain(..) {
+        let due = p.since.is_some_and(|t| t.elapsed() >= LAZY_SYNC);
+        if !(disconnected || due || p.urgent()) {
+            continue;
+        }
+        let result = log.append_group(&std::mem::take(&mut p.events));
+        (p.durable, p.since) = (false, None);
+        for w in p.waiters.drain(..) {
             let _ = w.send(result.clone());
+        }
+        if let Some(s) = p.stop.take() {
+            let _ = s.send(());
+            return;
+        }
+        if disconnected {
+            return;
         }
     }
 }
+/// What the session-log writer holds between syncs.
+#[derive(Default)]
+struct Pending {
+    events: Vec<SessionEvent>,
+    waiters: Vec<mpsc::Sender<Result<(), StoreError>>>,
+    /// A durable event is among `events`.
+    durable: bool,
+    stop: Option<mpsc::Sender<()>>,
+    /// When the oldest unsynced event arrived.
+    since: Option<std::time::Instant>,
+}
+impl Pending {
+    fn take(&mut self, m: Writer) {
+        match m {
+            Writer::Events(e) => {
+                self.since.get_or_insert_with(std::time::Instant::now);
+                self.durable |= e.iter().any(|e| {
+                    matches!(
+                        e,
+                        SessionEvent::Start { .. }
+                            | SessionEvent::CertIssued { .. }
+                            | SessionEvent::SessionCert { .. }
+                            | SessionEvent::LogBroken { .. }
+                            | SessionEvent::End { .. }
+                    )
+                });
+                self.events.extend(e);
+            }
+            Writer::Flush(w) => self.waiters.push(w),
+            Writer::Stop(s) => self.stop = Some(s),
+        }
+    }
+    fn urgent(&self) -> bool {
+        self.durable || self.stop.is_some() || !self.waiters.is_empty()
+    }
+}
+const DRAIN_MAX: usize = 4_096;
 const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Keeps the recall projection up to date with published snapshots: the

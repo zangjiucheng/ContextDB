@@ -37,9 +37,10 @@ fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
 fn random_id() -> [u8; 16] {
     use std::io::Read;
     let mut id = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut id);
-    }
+    // Fail rather than reuse an all-zero client_txn_id (review note).
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut id))
+        .expect("/dev/urandom");
     id
 }
 /// SD13 summary as one word plus reason.

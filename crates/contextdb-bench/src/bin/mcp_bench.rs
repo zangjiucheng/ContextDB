@@ -36,7 +36,15 @@ fn pct(v: &mut [u128], p: usize) -> f64 {
     v.sort_unstable();
     v[(v.len() * p).div_ceil(100).saturating_sub(1)] as f64 / 1e6
 }
-fn cell(clients: usize, full_sync: bool, seconds: u64) -> (f64, f64, f64, f64, u64, u64) {
+/// `deps`: the read step is a certified `ctx_recall` of a per-client
+/// dependency record, and the write depends on the returned handle, which
+/// forces the session-log sync on the write path (ADR 0008 §8.5 N8, m3).
+fn cell(
+    clients: usize,
+    full_sync: bool,
+    seconds: u64,
+    deps: bool,
+) -> (f64, f64, f64, f64, u64, u64) {
     let dir = std::env::temp_dir().join(format!(
         "mcp-bench-{}-{clients}-{full_sync}",
         std::process::id()
@@ -68,6 +76,16 @@ fn cell(clients: usize, full_sync: bool, seconds: u64) -> (f64, f64, f64, f64, u
                     "body": format!("{key} 0"), "adopt_as_base": true }),
                 );
                 let mut rev = w["revisions"][0].as_u64().unwrap();
+                let dkey = format!("dep-{t}");
+                if deps {
+                    tool(
+                        &mut s,
+                        &mut id,
+                        "ctx_record",
+                        json!({ "kind": "fact", "key": dkey, "create_only": true,
+                        "body": format!("{dkey} body"), "adopt_as_base": true }),
+                    );
+                }
                 tool(
                     &mut s,
                     &mut id,
@@ -81,21 +99,31 @@ fn cell(clients: usize, full_sync: bool, seconds: u64) -> (f64, f64, f64, f64, u
                 while Instant::now() < deadline {
                     n += 1;
                     let t0 = Instant::now();
-                    tool(
-                        &mut s,
-                        &mut id,
-                        "ctx_read",
-                        json!({ "target": key, "mode": "certified" }),
-                    );
+                    let handle = if deps {
+                        let r = tool(
+                            &mut s,
+                            &mut id,
+                            "ctx_recall",
+                            json!({ "query": dkey, "mode": "certified", "limit": 1 }),
+                        );
+                        r["items"][0]["handle"].as_str().map(str::to_owned)
+                    } else {
+                        tool(
+                            &mut s,
+                            &mut id,
+                            "ctx_read",
+                            json!({ "target": key, "mode": "certified" }),
+                        );
+                        None
+                    };
                     reads.push(t0.elapsed().as_nanos());
                     let t0 = Instant::now();
-                    let w = tool(
-                        &mut s,
-                        &mut id,
-                        "ctx_record",
-                        json!({ "kind": "fact", "expected_head": format!("{key}@{rev}"),
-                        "body": format!("{key} {n}"), "adopt_as_base": true }),
-                    );
+                    let mut args = json!({ "kind": "fact", "expected_head": format!("{key}@{rev}"),
+                        "body": format!("{key} {n}"), "adopt_as_base": true });
+                    if let Some(h) = handle {
+                        args["deps"] = json!([{ "target": h, "kind": "cur" }]);
+                    }
+                    let w = tool(&mut s, &mut id, "ctx_record", args);
                     writes.push(t0.elapsed().as_nanos());
                     rev = w["revisions"][0].as_u64().unwrap();
                 }
@@ -151,7 +179,7 @@ fn main() {
     for full_sync in [true, false] {
         let mut peak: f64 = 0.0;
         for &c in &clients {
-            let (r95, w95, w50, tps, groups, clones) = cell(c, full_sync, seconds);
+            let (r95, w95, w50, tps, groups, clones) = cell(c, full_sync, seconds, false);
             // ADR 0008 §11 (owner decision, 2026-10-20): 15 ms is the
             // one-client latency target; a cell with N clients may take one
             // in-flight group plus its own, 2 × N / throughput.
@@ -173,6 +201,21 @@ fn main() {
         if clients.contains(&128) && peak < 2000.0 {
             println!("throughput fullfsync={full_sync} peak {peak:.0} < 2,000 tx/s MISS");
             pass = false;
+        }
+    }
+    // Reported, not gated: recall + write with a handle dep (N8 forced sync).
+    println!("\nWith handle deps (certified recall, then a write depending on its handle):\n");
+    println!(
+        "| clients | fullfsync | recall p95 ms | write p50 ms | write p95 ms | write tx/s | groups | clone fallbacks |"
+    );
+    println!("|---:|---|---:|---:|---:|---:|---:|---:|");
+    for full_sync in [true, false] {
+        for &c in clients.iter().filter(|c| **c <= 8) {
+            let (r95, w95, w50, tps, groups, clones) = cell(c, full_sync, seconds, true);
+            println!(
+                "| {c} | {} | {r95:.2} | {w50:.2} | {w95:.2} | {tps:.0} | {groups} | {clones} |",
+                if full_sync { "on" } else { "off" }
+            );
         }
     }
     println!("g5_pass={pass}");

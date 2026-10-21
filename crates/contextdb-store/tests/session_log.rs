@@ -89,3 +89,31 @@ fn g4_session_log_groups_are_all_or_nothing() {
         }
     }
 }
+/// Review finding 3: a drain larger than a u16 group splits into several
+/// synced groups instead of failing (and losing every event in it).
+#[test]
+fn oversized_drain_is_split_into_synced_groups() {
+    let disk = SimDisk::new();
+    let (mut log, _) = open(&disk, 64 << 20);
+    let all: Vec<_> = (0..70_000u32).map(read).collect();
+    log.append_group(&all).unwrap();
+    drop(log);
+    let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 64 << 20);
+    assert_eq!(events, all);
+}
+/// Closure check N2: groups a killed process left only in the page cache
+/// are synced at open, so nothing replayed from them can vanish later.
+#[test]
+fn open_syncs_groups_a_killed_process_left_unsynced() {
+    let disk = SimDisk::new();
+    let (mut log, _) = open(&disk, 1 << 20);
+    log.append_group(&[read(1)]).unwrap();
+    disk.fail_next("sync");
+    assert!(log.append_group(&[read(2)]).is_err());
+    drop(log);
+    let disk = disk.restart();
+    let (_, events) = open(&disk, 1 << 20);
+    assert_eq!(events, vec![read(1), read(2)]);
+    let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 1 << 20);
+    assert_eq!(events, vec![read(1), read(2)]);
+}

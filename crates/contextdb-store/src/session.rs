@@ -59,6 +59,18 @@ pub enum SessionEvent {
         session_id: [u8; 16],
         epoch: Epoch,
     },
+    /// The session's current certificate (`ctx_check`) is `cert_id`, which an
+    /// earlier `CertIssued` carries; replay restores it (P3 review finding 2).
+    SessionCert {
+        session_id: [u8; 16],
+        cert_id: ContentHash,
+    },
+    /// The op_log was cut under this session (e.g. `ctx doctor
+    /// --truncate-before`): its ledger and handles may name reallocated ids.
+    /// Durable, so later restarts keep refusing them (P3 closure check N1).
+    LogBroken {
+        session_id: [u8; 16],
+    },
 }
 impl Wire for Layer {
     fn encode(&self, o: &mut Vec<u8>) {
@@ -137,6 +149,18 @@ impl Wire for SessionEvent {
                 session_id.encode(o);
                 epoch.encode(o);
             }
+            Self::SessionCert {
+                session_id,
+                cert_id,
+            } => {
+                5u8.encode(o);
+                session_id.encode(o);
+                cert_id.encode(o);
+            }
+            Self::LogBroken { session_id } => {
+                6u8.encode(o);
+                session_id.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -173,6 +197,13 @@ impl Wire for SessionEvent {
             4 => Self::End {
                 session_id: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
+            },
+            5 => Self::SessionCert {
+                session_id: Wire::decode(i)?,
+                cert_id: Wire::decode(i)?,
+            },
+            6 => Self::LogBroken {
+                session_id: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -308,10 +339,17 @@ impl<D: Durability> SessionLog<D> {
             log.tail = Some((n, bytes.len() as u64));
             log.prev = header.prev;
         }
+        // Groups a killed process left only in the page cache were replayed
+        // above; make them durable before anything relies on them, since a
+        // later empty flush syncs nothing (P3 closure check N2).
+        if let Some(last) = log.segments.last() {
+            log.disk.sync(last).map_err(io)?;
+        }
         report.events = events.len() as u64;
         Ok((log, events, report))
     }
-    /// Appends `events` as one group and syncs it. A failure poisons the log.
+    /// Appends `events` as one group (or several, past u16::MAX events) and
+    /// syncs it. A failure poisons the log.
     pub fn append_group(&mut self, events: &[SessionEvent]) -> Result<(), StoreError> {
         if self.poisoned {
             return Err(StoreError::Poisoned);
@@ -319,8 +357,16 @@ impl<D: Durability> SessionLog<D> {
         if events.is_empty() {
             return Ok(());
         }
-        let count = u16::try_from(events.len())
-            .map_err(|_| StoreError::Io("session group too large".into()))?;
+        // `GroupPos` counts in u16: larger drains become several groups, each
+        // synced before the next, so at most one group is ever unsynced
+        // (ADR 0008 §4 R2; P3 review finding 3).
+        if events.len() > usize::from(u16::MAX) {
+            for chunk in events.chunks(usize::from(u16::MAX)) {
+                self.append_group(chunk)?;
+            }
+            return Ok(());
+        }
+        let count = events.len() as u16;
         let seq = self.group_seq + 1;
         let first = self.next;
         let first_prev = self.prev;
