@@ -25,6 +25,7 @@ exclude = [
     "crates/contextdb-dd",
     "docs/research/prototypes/ddproto",
     "docs/research/prototypes/dbspproto",
+    "fuzz",
 ]
 
 [workspace.package]

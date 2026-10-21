@@ -1,0 +1,32 @@
+# cargo-fuzz targets (ADR 0008 §5, §10). A separate workspace with a pinned
+# nightly (rust-toolchain.toml here); the main workspace stays on 1.95.0.
+[package]
+name = "contextdb-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+contextdb-daemon = { path = "../crates/contextdb-daemon" }
+contextdb-mcp = { path = "../crates/contextdb-mcp" }
+contextdb-model = { path = "../crates/contextdb-model" }
+
+[workspace]
+
+[[bin]]
+name = "ipc_request"
+path = "fuzz_targets/ipc_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_json"
+path = "fuzz_targets/mcp_json.rs"
+test = false
+doc = false
+bench = false
