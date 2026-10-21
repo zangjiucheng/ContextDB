@@ -210,6 +210,7 @@ fn p3_events_decode_as_the_root_agent() {
             decision: Decision::Allow,
             harness_version: "2.1.306".into(),
             epoch: Epoch(2),
+            at: 1_790_000_000,
         },
         SessionEvent::Drift {
             session_id: [1; 16],

@@ -425,6 +425,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             available: false,
                             harness_version,
                             epoch: tail,
+                            at: 0,
                         });
                     }
                 }
@@ -437,6 +438,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     decision,
                     harness_version,
                     epoch,
+                    at,
                 } => hooks.telemetry.push(TelemetryEntry::Gate {
                     session: session_id,
                     agent,
@@ -447,6 +449,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     available: true,
                     harness_version,
                     epoch,
+                    at,
                 }),
                 SessionEvent::Drift {
                     session_id,
@@ -712,6 +715,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 action,
                 mode,
                 harness_version,
+                strict,
             } => match self.bind(id, &binding, &snap) {
                 Ok(b) => self.check_gated(
                     b,
@@ -720,6 +724,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     action,
                     mode,
                     harness_version,
+                    strict,
                     &snap,
                 ),
                 Err(r) => r,
@@ -1497,6 +1502,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         (session, s, agent, _): Bound,
         cert_id: Option<ContentHash>,
         live: BTreeMap<String, Vec<u8>>,
+        strict_req: bool,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let db = &snap.db;
@@ -1517,9 +1523,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         };
         let mut s = s.lock().expect("session");
         if let Some(id) = cert_id {
-            let Some(c) = s.certs.iter().find(|c| c.cert_id == id).cloned() else {
+            let Some(mut c) = s.certs.iter().find(|c| c.cert_id == id).cloned() else {
                 return err("UnknownRef", "certificate not issued to this session");
             };
+            c.strict_no_aba |= strict_req;
             return match validate(&c) {
                 Ok(v) => Response::Check {
                     decision: decision(&v),
@@ -1564,9 +1571,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .collect();
         // 1. Validate the existing session certificate, skipping superseded entries.
         let mut since: BTreeMap<(LogicalId, RevisionId), Epoch> = BTreeMap::new();
-        let mut strict = false;
+        // `ctx check --strict` validates (and re-issues) with strict_no_aba,
+        // so no alternative support can hide an ABA (SPEC §6.4 step 1).
+        let mut strict = strict_req;
         let mut prior: Option<Validation> = None;
-        if let Some(current) = s.agents.get(&agent).and_then(|a| a.session_cert.clone()) {
+        if let Some(mut current) = s.agents.get(&agent).and_then(|a| a.session_cert.clone()) {
+            current.strict_no_aba |= strict_req;
             strict = current.strict_no_aba;
             let live_entries: Vec<CertItem> = current
                 .entries
@@ -1730,10 +1740,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         action: Option<Action>,
         mode: Option<GateMode>,
         harness_version: String,
+        strict: bool,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let (session, s, agent, _) = bound.clone();
-        let mut response = self.check(bound, cert_id, live, snap);
+        let mut response = self.check(bound, cert_id, live, strict, snap);
+        let at = unix_now();
         if let Response::Check {
             validation,
             gate,
@@ -1768,6 +1780,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         available: true,
                         harness_version: harness_version.clone(),
                         epoch: snap.epoch,
+                        at,
                     });
                 self.log(vec![SessionEvent::Gate {
                     session_id: session,
@@ -1778,6 +1791,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     decision,
                     harness_version,
                     epoch: snap.epoch,
+                    at,
                 }]);
             }
         }
@@ -1929,6 +1943,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     available: false,
                     harness_version: harness_version.clone(),
                     epoch: snap.epoch,
+                    at: unix_now(),
                 }),
                 _ => {}
             }
@@ -2169,6 +2184,11 @@ impl Hooks {
             self.ended.pop_front();
         }
     }
+}
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 /// Entries of `agent`'s view whose head or status changed since they were
 /// last reported to it (ADR 0010 §4.4). A required read was certified at

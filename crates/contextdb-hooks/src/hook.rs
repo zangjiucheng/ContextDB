@@ -556,6 +556,7 @@ impl Hook {
                 action: Some(action.clone()),
                 mode: Some(mode),
                 harness_version: self.harness_version(),
+                strict: false,
             })?;
             match env.response {
                 Response::Check {

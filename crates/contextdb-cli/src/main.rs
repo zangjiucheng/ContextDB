@@ -1,6 +1,7 @@
 //! `ctx`: operator commands over a durable store (SPEC §5 P2, ADR 0006) and,
 //! with a running `ctxd`, admin commands over its socket (ADR 0008 §8.3).
 mod daemon;
+mod p4;
 
 use contextdb_model::*;
 use contextdb_store::{OpenOptions, ProjectionFile, StdDisk, Store, doctor, migrate};
@@ -29,6 +30,24 @@ Usage (via a running ctxd, admin socket):
                                        human validation of Sem rules (shows the
                                        vectors, records exactly what was shown)
   ctx shutdown <dir>                   stop ctxd
+
+Hooks and gating (P4, ADR 0010):
+  ctx check <dir> (--session HEX | --harness H --key K) [--agent A] [--strict]
+            [--action-tool T --action-path P ...] [--dry-run] [--fail-on-warn]
+                                       verdict and gate decision; exit 0 allow
+                                       (warn too unless --fail-on-warn), 1 deny,
+                                       2 error, 3 daemon unavailable
+  ctx check <dir> --all                exit 1 if any head is STALE or CONFLICTED
+  ctx policy show|apply <dir> [--file .contextdb/policy.toml]
+                                       commit a policy (admin; kernel-enforced)
+  ctx gating apply <dir> [--file .contextdb/gating.toml]
+                                       compile gating for the hooks
+  ctx hooks install|uninstall --harness claude|codex [--project ROOT]
+            [--dir DATA] [--ctx-hook PATH] [--mcp-name NAME]
+  ctx hooks flush <dir>                deliver every pending outbox fact now
+  ctx gate-report P4 <dir> [--out FILE]
+                                       dogfood numbers (false-deny, coverage, ...)
+  ctx dogfood review <dir>             label warn/deny decisions and sampled allows
   ctx --help | --version
 
 Specification: SPEC.md; durability: docs/adr/0006-p2-durable-log.md";
@@ -139,7 +158,29 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
     println!("truncated");
     Ok(())
 }
-fn run(args: &[String]) -> Result<(), String> {
+fn run(args: &[String]) -> Result<u8, String> {
+    let dir = |n: usize| args.get(n).map(Path::new).ok_or("missing <dir>");
+    match args.first().map(String::as_str) {
+        Some("check") => p4::check(dir(1)?, &args[2..]),
+        Some("policy") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            let mut rest = vec![sub];
+            rest.extend(args.iter().skip(3).cloned());
+            p4::policy(dir(2)?, &rest)
+        }
+        Some("gating") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            let mut rest = vec![sub];
+            rest.extend(args.iter().skip(3).cloned());
+            p4::gating(dir(2)?, &rest)
+        }
+        Some("hooks") => p4::hooks(&args[1..]),
+        Some("gate-report") => p4::gate_report(&args[1..]),
+        Some("dogfood") => p4::dogfood(&args[1..]),
+        _ => run_p3(args).map(|()| 0),
+    }
+}
+fn run_p3(args: &[String]) -> Result<(), String> {
     let dir = |n: usize| args.get(n).map(Path::new).ok_or("missing <dir>");
     match args.first().map(String::as_str) {
         Some(
@@ -210,10 +251,10 @@ fn main() -> ExitCode {
         _ => {}
     }
     match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("ctx: {e}");
-            ExitCode::from(2)
+            ExitCode::from(p4::EXIT_ERROR)
         }
     }
 }

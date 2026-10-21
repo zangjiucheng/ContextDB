@@ -102,6 +102,8 @@ pub enum SessionEvent {
         decision: Decision,
         harness_version: String,
         epoch: Epoch,
+        /// Wall-clock seconds, for the dogfood period.
+        at: u64,
     },
     /// Drift computed for one agent (ADR 0010 §5.4).
     Drift {
@@ -256,6 +258,7 @@ impl Wire for SessionEvent {
                 decision,
                 harness_version,
                 epoch,
+                at,
             } => {
                 9u8.encode(o);
                 session_id.encode(o);
@@ -266,6 +269,7 @@ impl Wire for SessionEvent {
                 decision.encode(o);
                 harness_version.encode(o);
                 epoch.encode(o);
+                at.encode(o);
             }
             Self::Drift {
                 session_id,
@@ -371,6 +375,7 @@ impl Wire for SessionEvent {
                 decision: Wire::decode(i)?,
                 harness_version: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
+                at: Wire::decode(i)?,
             },
             10 => Self::Drift {
                 session_id: Wire::decode(i)?,

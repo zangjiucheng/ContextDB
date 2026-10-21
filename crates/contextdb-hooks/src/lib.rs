@@ -6,7 +6,8 @@
 //! has made them durable. The binary wires these to `ctxd`.
 pub mod adapter;
 pub mod hook;
-pub mod outbox;
+/// The outbox lives in `contextdb-proto` so `ctxd`'s sweeper can share it.
+pub use contextdb_proto::outbox;
 pub mod patch;
 pub mod paths;
 pub mod render;

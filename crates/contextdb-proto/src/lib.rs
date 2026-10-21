@@ -4,6 +4,7 @@
 pub mod client;
 pub mod gate;
 pub mod lease;
+pub mod outbox;
 pub mod proto;
 
 pub use client::Client;

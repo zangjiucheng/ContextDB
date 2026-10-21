@@ -163,6 +163,28 @@ impl Daemon {
                 sockets: sockets.clone(),
             },
         )?;
+        {
+            // Leftover outbox streams (ended sessions, hooks that ran out of
+            // budget) are delivered at start and every 30 s (ADR 0010 §5.2).
+            let (service, stop, dir) = (service.clone(), stop.clone(), dir.clone());
+            let identity = Identity {
+                channel: Channel::Agent,
+                principal: options.principals[0],
+            };
+            std::thread::Builder::new()
+                .name("ctxd-outbox-sweeper".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        sweep_outbox(&dir, &service, identity);
+                        for _ in 0..600 {
+                            if stop.load(Ordering::Acquire) {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                    }
+                })?;
+        }
         Ok(Self {
             service,
             sockets,
@@ -203,6 +225,51 @@ impl Daemon {
         }
         let _ = std::fs::remove_file(&self.lease);
     }
+}
+/// Delivers every dirty outbox stream in `dir` to `service`, in process,
+/// with the hooks' own protocol (stream marks make it idempotent). Returns
+/// the number of streams fully delivered.
+pub fn sweep_outbox<D: contextdb_store::Durability + Clone + 'static>(
+    dir: &Path,
+    service: &Service<D>,
+    identity: Identity,
+) -> usize {
+    use contextdb_proto::outbox::{Delivered, Outbox, Reply};
+    let ob = Outbox::new(dir);
+    let mut done = 0;
+    for s in ob.dirty() {
+        let st = ob.state(&s);
+        if st.harness.is_empty() {
+            continue;
+        }
+        let result = ob.deliver(
+            &s,
+            std::time::Duration::from_secs(5),
+            |packets, skip| match service
+                .handle(
+                    identity,
+                    Request::Facts {
+                        harness: st.harness.clone(),
+                        harness_session: st.harness_session.clone(),
+                        stream: s,
+                        packets: packets.to_vec(),
+                        skip,
+                    },
+                )
+                .response
+            {
+                Response::Facts {
+                    applied_through, ..
+                } => Ok(Reply::Applied(applied_through)),
+                Response::Gap { expected } => Ok(Reply::Gap(expected)),
+                other => Err(format!("{other:?}")),
+            },
+        );
+        if matches!(result, Ok(Delivered::Done { remaining: 0, .. })) {
+            done += 1;
+        }
+    }
+    done
 }
 impl Drop for Daemon {
     fn drop(&mut self) {

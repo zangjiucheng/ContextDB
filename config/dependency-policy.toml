@@ -23,19 +23,22 @@ reviewed_external = ["nix", "arc-swap", "blake3"]
 [mcp]
 reviewed_external = ["serde", "serde_json"]
 
-# ADR 0010 §1: the wire protocol, lease discovery and client, shared by the
-# daemon and light clients; no external crates.
+# ADR 0010 §1, §5: the wire protocol, lease discovery, client and the outbox,
+# shared by the daemon (sweeper) and light clients; blake3 for stream ids and
+# record hashes, nix (fs) for flock and plain fsync.
 [proto]
-reviewed_external = []
+reviewed_external = ["blake3", "nix"]
 
-# ADR 0010 §1: ctx-hook parses harness JSON (serde_json), derives outbox
-# stream ids (blake3) and locks/fsyncs outbox files (nix, fs).
+# ADR 0010 §1: ctx-hook parses harness JSON (serde_json) and hashes
+# baselines (blake3); the outbox itself is in contextdb-proto.
 [hooks]
-reviewed_external = ["serde", "serde_json", "blake3", "nix"]
+reviewed_external = ["serde", "serde_json", "blake3"]
 
-# ADR 0010 §1: toml parses policy.toml and gating.toml in the CLI only.
+# ADR 0010 §1: toml parses policy.toml and gating.toml in the CLI only
+# (parse + serde features, no serde_derive); serde_json edits harness hook
+# configs (ctx hooks install); blake3 hashes the policy and gating sources.
 [cli]
-reviewed_external = ["toml"]
+reviewed_external = ["toml", "serde_json", "blake3"]
 
 # ADR 0010 §1: light clients must not link the store or SQLite.
 [light]

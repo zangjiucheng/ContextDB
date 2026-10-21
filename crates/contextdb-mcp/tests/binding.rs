@@ -66,6 +66,7 @@ fn verdict(s: &Service<SimDisk>, session: SessionId) -> Validation {
                 action: None,
                 mode: None,
                 harness_version: String::new(),
+                strict: false,
             },
         )
         .response

@@ -130,6 +130,7 @@ fn check(
             }),
             mode,
             harness_version: "2.1.306".into(),
+            strict: false,
         },
     ) {
         Response::Check {

@@ -569,6 +569,7 @@ impl<B: Backend> Server<B> {
                     action,
                     mode: None,
                     harness_version: String::new(),
+                    strict: false,
                 })?;
                 let Response::Check {
                     decision,

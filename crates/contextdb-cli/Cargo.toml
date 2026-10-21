@@ -15,6 +15,10 @@ contextdb-model.workspace = true
 contextdb-oracle.workspace = true
 contextdb-store.workspace = true
 contextdb-daemon.workspace = true
+contextdb-proto.workspace = true
+toml = { version = "=1.1.2", default-features = false, features = ["parse", "std", "serde"] }
+serde_json = "=1.0.151"
+blake3 = "=1.8.7"
 
 [dev-dependencies]
 contextdb-testkit.workspace = true

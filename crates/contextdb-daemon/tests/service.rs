@@ -454,6 +454,7 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
                 action: None,
                 mode: None,
                 harness_version: String::new(),
+                strict: false,
             },
         )
     };
@@ -591,6 +592,7 @@ fn check(s: &Service<SimDisk>, session: SessionId) -> Response {
             action: None,
             mode: None,
             harness_version: String::new(),
+            strict: false,
         },
     )
 }

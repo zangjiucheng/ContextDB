@@ -42,6 +42,8 @@ Builds on ADR 0008.
 - It has no external dependencies: the client uses std `UnixStream`.
 - The daemon re-exports it, so P3 paths and fuzz targets are unchanged.
 
+**Outbox placement (implementation note, revision 3.3).** The outbox module lives in `contextdb-proto` (which therefore reviews `blake3` and `nix` with `fs`), so `ctxd`'s sweeper shares it without linking serde; `contextdb-hooks` re-exports it.
+
 **`contextdb-hooks`.**
 - A library of pure parts: harness adapters (§3), renderers, the patch-path parser (§3.3), and outbox records and state (§5).
 - The binary **`ctx-hook <claude|codex> <event>`**:
@@ -193,7 +195,7 @@ ToolClass = Edit | Write | Notebook | Patch | Shell | Other(String)
 
 | Tag | Request | Channel | Purpose |
 |---|---|---|---|
-| 10 | `Check{binding, cert_id?, live_pos, action?, mode?, harness_version}` (extended) | agent | `Check` for the bound agent's view (§7). With `mode` (resolved by the hook from the action and its configuration), the daemon applies the shared predicate, logs a `Gate` event and returns the gate decision. The action does not filter in P4 |
+| 10 | `Check{binding, cert_id?, live_pos, action?, mode?, harness_version, strict}` (extended; `strict` = `ctx check --strict`, validates and re-issues with `strict_no_aba`) | agent | `Check` for the bound agent's view (§7). With `mode` (resolved by the hook from the action and its configuration), the daemon applies the shared predicate, logs a `Gate` event and returns the gate decision. The action does not filter in P4 |
 | 17 | `SessionAttach{harness, harness_session, repo, head_sha}` | agent | §2.1 |
 | 18 | `Claim{session, agent, call}` | agent | §2.3 (Claude) |
 | 19 | `Updates{binding, ack: Option<u64>, max_items}` | agent | peek/ack of flips in the agent's view (§4.4) |
@@ -207,7 +209,7 @@ Policy uses admin `Raw{[SetPolicy]}`.
 
 - **`Check`** gains `gate: Option<Decision>`, present when `mode` was sent, and `updates_pending: u32`. It never consumes updates. `ctx-mcp` reports the binding (`harness`, `claimed`, `unclaimed` or `server`) in its own output.
 - **`Updates`** returns `{token, items: Vec<UpdateItem>, more}`, where `UpdateItem = {logical, key, cert_rev, current: Option<RevisionId>, summary}`.
-- **`Facts`** returns `{applied_through}`, or `Gap{expected}`.
+- **`Facts`** returns `{applied_through, drift}` (the drift reports computed from this batch, shown by the Stop hook), or `Gap{expected}`.
 - **`Briefing`** returns `{stale, pending, conflicted, items}`, all advisory and without handles.
 - **`Attached`** returns `{session, created}`; **`Telemetry`** returns `{entries, next}`.
 
@@ -217,7 +219,7 @@ Policy uses admin `Raw{[SetPolicy]}`.
 |---|---|---|
 | 7 | `SessionKey{session_id, harness, harness_session}` | durable |
 | 8 | `Fact{session_id, stream, packet, epoch}`: an applied outbox packet (action, drift input, baseline, stream end, unavailable gate) | durable before the `Facts` reply |
-| 9 | `Gate{session_id, agent, action, mode, verdict, decision, harness_version, epoch}` | lazy (telemetry) |
+| 9 | `Gate{session_id, agent, action, mode, verdict, decision, harness_version, epoch, at}` (`at`: wall-clock seconds, for the dogfood period) | lazy (telemetry) |
 | 10 | `Drift{session_id, agent, report, epoch}`: the computed report | durable before the `Facts` reply |
 | 11 | `Reported{session_id, agent, items}` | lazy (§4.4) |
 | 14 | `StreamMark{stream, applied_through, skipped: Option<(u64, u64)>}` | durable; one per `Facts` batch |

@@ -76,6 +76,8 @@ pub enum TelemetryEntry {
         available: bool,
         harness_version: String,
         epoch: Epoch,
+        /// Wall-clock seconds (the dogfood period, ADR 0010 §10).
+        at: u64,
     },
     Write {
         session: SessionId,
@@ -200,6 +202,8 @@ pub enum Request {
         action: Option<Action>,
         mode: Option<GateMode>,
         harness_version: String,
+        /// Validate and issue with `strict_no_aba` (`ctx check --strict`).
+        strict: bool,
     },
     Diff {
         from: Epoch,
@@ -443,6 +447,7 @@ impl Wire for TelemetryEntry {
                 available,
                 harness_version,
                 epoch,
+                at,
             } => {
                 0u8.encode(o);
                 session.encode(o);
@@ -454,6 +459,7 @@ impl Wire for TelemetryEntry {
                 available.encode(o);
                 harness_version.encode(o);
                 epoch.encode(o);
+                at.encode(o);
             }
             Self::Write {
                 session,
@@ -501,6 +507,7 @@ impl Wire for TelemetryEntry {
                 available: Wire::decode(i)?,
                 harness_version: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
+                at: Wire::decode(i)?,
             },
             1 => Self::Write {
                 session: Wire::decode(i)?,
@@ -720,6 +727,7 @@ impl Wire for Request {
                 action,
                 mode,
                 harness_version,
+                strict,
             } => {
                 10u8.encode(o);
                 binding.encode(o);
@@ -728,6 +736,7 @@ impl Wire for Request {
                 action.encode(o);
                 mode.encode(o);
                 harness_version.encode(o);
+                strict.encode(o);
             }
             Self::Diff { from, to } => {
                 11u8.encode(o);
@@ -881,6 +890,7 @@ impl Wire for Request {
                 action: Wire::decode(i)?,
                 mode: Wire::decode(i)?,
                 harness_version: Wire::decode(i)?,
+                strict: Wire::decode(i)?,
             },
             11 => Self::Diff {
                 from: Wire::decode(i)?,
@@ -1307,6 +1317,7 @@ mod tests {
                 }),
                 mode: Some(GateMode::Enforce),
                 harness_version: "0.163.0".into(),
+                strict: false,
             },
             Request::Diff {
                 from: Epoch(1),

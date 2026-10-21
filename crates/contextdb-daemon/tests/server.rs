@@ -249,3 +249,67 @@ fn t08_readers_never_see_coupled_heads_out_of_step() {
     drop(d);
     let _ = std::fs::remove_dir_all(&dir);
 }
+/// ADR 0010 §5.2 (review N8): facts a hook left in the outbox (its session
+/// ended, or it ran out of budget) are delivered by `ctxd` at start, once.
+#[test]
+fn the_sweeper_delivers_leftover_outbox_streams_at_start() {
+    use contextdb_proto::outbox::{Outbox, stream_id};
+    let dir = tmp("sweep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let ob = Outbox::new(&dir);
+    let s = stream_id("claude", "left-behind");
+    ob.update_state(&s, |st| {
+        st.harness = "claude".into();
+        st.harness_session = "left-behind".into();
+    })
+    .unwrap();
+    ob.append(
+        &s,
+        None,
+        Fact::Drift {
+            done: Some(vec!["x.rs".into()]),
+        },
+    )
+    .unwrap();
+    let d = Daemon::start(&dir, &Options::default()).unwrap();
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    let drifts = |admin: &mut Client| match admin
+        .call(&Request::Telemetry {
+            since: 0,
+            limit: 100,
+        })
+        .unwrap()
+        .response
+    {
+        Response::Telemetry { entries, .. } => entries
+            .iter()
+            .filter(|e| matches!(e, TelemetryEntry::Drift { .. }))
+            .count(),
+        other => panic!("{other:?}"),
+    };
+    let t = std::time::Instant::now();
+    // Applied, then truncated by the sweeper once acknowledged.
+    while (drifts(&mut admin) == 0 || !ob.dirty().is_empty())
+        && t.elapsed() < std::time::Duration::from_secs(10)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(drifts(&mut admin), 1);
+    // Delivered and truncated: a second sweep sends nothing again.
+    assert!(ob.dirty().is_empty());
+    assert_eq!(
+        contextdb_daemon::server::sweep_outbox(
+            &dir,
+            &d.service,
+            contextdb_daemon::service::Identity {
+                channel: Channel::Agent,
+                principal: PrincipalId(1),
+            }
+        ),
+        0
+    );
+    assert_eq!(drifts(&mut admin), 1);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
+}
