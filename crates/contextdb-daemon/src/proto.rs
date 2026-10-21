@@ -36,6 +36,8 @@ pub enum Target {
     Logical(LogicalId),
     /// A logical's current head, by key.
     Key(String),
+    /// Explicit `key@rev` (the MCP spelling of `logical@rev`).
+    KeyRev { key: String, rev: RevisionId },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -252,6 +254,11 @@ impl Wire for Target {
                 3u8.encode(o);
                 k.encode(o);
             }
+            Self::KeyRev { key, rev } => {
+                4u8.encode(o);
+                key.encode(o);
+                rev.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -263,6 +270,10 @@ impl Wire for Target {
             },
             2 => Self::Logical(Wire::decode(i)?),
             3 => Self::Key(Wire::decode(i)?),
+            4 => Self::KeyRev {
+                key: Wire::decode(i)?,
+                rev: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }

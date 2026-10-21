@@ -509,6 +509,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     "revision does not belong to logical",
                 )),
             },
+            Target::KeyRev { key, rev } => match db.logical_by_key(key) {
+                Some(l) if db.revision_logical(*rev) == Some(l) => Ok((l, *rev)),
+                _ => Err(err(
+                    "InvalidArgument",
+                    format!("{key}@{} does not exist", rev.0),
+                )),
+            },
             Target::Handle(_) => Err(err("InvalidArgument", "handles need a session")),
         }
     }
@@ -729,6 +736,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         }
                         *rev
                     }
+                    Target::KeyRev { key, rev } => match db.logical_by_key(key) {
+                        Some(l) if db.revision_logical(*rev) == Some(l) => *rev,
+                        _ => return Err(err("InvalidDep", "explicit key@rev does not exist")),
+                    },
                     Target::Logical(_) | Target::Key(_) => {
                         return Err(err(
                             "InvalidDep",
@@ -913,6 +924,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         // 1. Validate the existing session certificate, skipping superseded entries.
         let mut since: BTreeMap<(LogicalId, RevisionId), Epoch> = BTreeMap::new();
         let mut strict = false;
+        let mut prior: Option<Validation> = None;
         if let Some(current) = s.session_cert.clone() {
             strict = current.strict_no_aba;
             let live_entries: Vec<CertItem> = current
@@ -939,6 +951,36 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         superseded,
                     };
                 }
+                // Adopt a recertified certificate as the session certificate.
+                let mut adopted = current.clone();
+                if let Validation::ValidRecertified { new_cert, .. } = &v {
+                    adopted = (**new_cert).clone();
+                    s.certs.push(adopted.clone());
+                    s.session_cert = Some(adopted.clone());
+                    self.log(vec![SessionEvent::CertIssued {
+                        cert: Box::new(adopted.clone()),
+                    }]);
+                }
+                // Re-issue only when required reads are not covered (ADR 0008 §8.5).
+                let covered = s.required.values().all(|e| {
+                    adopted
+                        .entries
+                        .iter()
+                        .any(|c| c.required && (c.logical, c.rev) == (e.logical, e.rev))
+                });
+                if covered {
+                    drop(s);
+                    if let Err(e) = self.flush() {
+                        return err("Io", format!("{e:?}"));
+                    }
+                    return Response::Check {
+                        decision: decision(&v),
+                        validation: v,
+                        cert: Some(Box::new(adopted)),
+                        superseded,
+                    };
+                }
+                prior = Some(v);
             }
         }
         // 2. Re-issue over the live required entries.
@@ -973,7 +1015,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 Response::Check {
                     decision: Decision::Allow,
-                    validation: Validation::Valid,
+                    // A recertification found on the way is reported, not hidden.
+                    validation: prior.unwrap_or(Validation::Valid),
                     cert: Some(Box::new(cert)),
                     superseded,
                 }

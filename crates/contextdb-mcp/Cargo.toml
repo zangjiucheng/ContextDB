@@ -9,3 +9,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+contextdb-model.workspace = true
+contextdb-daemon.workspace = true
+serde_json = "=1.0.151"
+
+[dev-dependencies]
+contextdb-store.workspace = true
