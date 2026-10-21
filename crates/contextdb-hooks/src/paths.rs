@@ -52,4 +52,46 @@ mod tests {
             assert_eq!(normalize(root, root, &once), once, "{p}");
         }
     }
+    /// G3 property (f), 10,000 seeds: normalisation is idempotent and a
+    /// result is repository-relative (no `..`, no leading `/`) or absolute
+    /// outside the root.
+    #[test]
+    fn prop_f_normalisation_is_idempotent_and_bounded() {
+        let parts = ["a", "b", "..", ".", "src", "x.rs", ""];
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let root = Path::new("/r/repo");
+        for _ in 0..10_000 {
+            let n = 1 + next() % 6;
+            let mut p: String = (0..n)
+                .map(|_| parts[(next() % parts.len() as u64) as usize])
+                .collect::<Vec<_>>()
+                .join("/");
+            if next() % 3 == 0 {
+                p = format!("/r/{p}");
+            }
+            let cwd = if next() % 2 == 0 {
+                root.to_path_buf()
+            } else {
+                root.join("src")
+            };
+            let once = normalize(root, &cwd, &p);
+            assert_eq!(normalize(root, root, &once), once, "{p}");
+            if !once.starts_with('/') {
+                assert!(
+                    !Path::new(&once)
+                        .components()
+                        .any(|c| c == Component::ParentDir),
+                    "{p} -> {once}"
+                );
+            } else {
+                assert!(!Path::new(&once).starts_with(root), "{p} -> {once}");
+            }
+        }
+    }
 }

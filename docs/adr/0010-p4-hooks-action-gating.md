@@ -313,6 +313,7 @@ It contains:
   - **`expected ≤ acked_through`:** the daemon lost marks it had acknowledged, for example after `ctx doctor --truncate-before`. Those records are already truncated, so the deliverer sends `skip = (expected, acked_through)`.
   - **The log lacks seqs from `expected` up to its first valid record** (a corrupt middle record): the deliverer sends `skip` for that range.
   - **Recording a skip.** The daemon records `StreamMark{skipped}`, counts the loss in the report, and advances. A gap can never stall a stream.
+- **When a loss surfaces.** A daemon that lost acknowledged marks learns nothing until the stream delivers again; the next delivery's `Gap` then resolves by `skip`, and the loss is counted. A stream that never delivers again leaves such a loss unreported (G3 property (b)).
 - **Ended sessions.** Packets for sessions that have ended are applied to the ended session's record. Stream marks are kept forever, at one `u64` per stream. Nothing is dropped by age.
 - **No kernel writes (T40).** No packet creates a revision or touches the kernel. T40 tests two things:
   - redelivered packets give one event each and leave the kernel digest unchanged;

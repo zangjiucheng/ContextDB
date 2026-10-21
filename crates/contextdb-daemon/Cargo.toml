@@ -20,6 +20,8 @@ arc-swap = "=1.9.3"
 blake3 = "=1.8.7"
 
 [dev-dependencies]
+rand_chacha = "=0.9.0"
+rand_core = "=0.9.5"
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "=0.7.2"

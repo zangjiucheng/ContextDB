@@ -43,6 +43,18 @@ pub fn stream_id(harness: &str, harness_session: &str) -> Stream {
 pub fn hex(s: &Stream) -> String {
     s.iter().map(|b| format!("{b:02x}")).collect()
 }
+/// G4 fault injection (debug builds only): the process aborts at the named
+/// step when `CTX_OUTBOX_CRASH` names it, as a SIGKILL would (no destructors;
+/// the page cache survives). Compiled out of release builds.
+#[inline]
+fn crash_point(name: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("CTX_OUTBOX_CRASH").is_ok_and(|v| v == name) {
+        std::process::abort();
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = name;
+}
 /// One serialised record.
 pub fn record(p: &Packet) -> Vec<u8> {
     let body = p.canonical_bytes();
@@ -233,9 +245,20 @@ impl Outbox {
             return Ok(None);
         }
         let last = scan(&bytes).iter().map(|p| p.seq).max().unwrap_or(0);
-        let seq = read_u64(&mut guard)?.max(last + 1).max(1);
+        // `.seq`, the log and the acknowledged mark each bound the next seq:
+        // a hook killed before writing `.seq` whose record was then
+        // delivered and truncated is still covered by `.ack` (G3 property b).
+        let acked = match File::open(self.path(s, "ack")) {
+            Ok(mut f) => read_u64(&mut f)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
+        };
+        let seq = read_u64(&mut guard)?.max(last + 1).max(acked + 1);
+        crash_point("append:before-write");
         log.write_all(&record(&Packet { seq, agent, fact }))?;
+        crash_point("append:before-sync");
         sync(&log)?;
+        crash_point("append:before-seq");
         write_u64(&mut guard, seq + 1)?;
         Ok(Some(seq))
     }
@@ -306,7 +329,9 @@ impl Outbox {
                 break;
             }
             let n = queue.len().min(BATCH);
-            match send(&queue[..n], skip) {
+            let reply = send(&queue[..n], skip);
+            crash_point("deliver:before-ack");
+            match reply {
                 Ok(Reply::Applied(through)) => {
                     if through <= acked && skip.is_none() {
                         break; // no progress: leave the rest for later
@@ -359,13 +384,20 @@ impl Outbox {
     }
     /// Empties a fully acknowledged log, under both locks in order.
     fn truncate_if_acked(&self, s: &Stream) -> io::Result<()> {
-        let _append = lock(open_rw(&self.path(s, "seq"))?, false)?;
+        let Some(mut append) = lock(open_rw(&self.path(s, "seq"))?, false)? else {
+            return Ok(());
+        };
         let Some(mut ack) = lock(open_rw(&self.path(s, "ack"))?, true)? else {
             return Ok(());
         };
         let acked = read_u64(&mut ack)?;
         let bytes = std::fs::read(self.path(s, "log")).unwrap_or_default();
-        if scan(&bytes).iter().all(|p| p.seq <= acked) {
+        let records = scan(&bytes);
+        if records.iter().all(|p| p.seq <= acked) {
+            // The log is about to forget its seqs: `.seq` must not.
+            let last = records.iter().map(|p| p.seq).max().unwrap_or(0);
+            let next = read_u64(&mut append)?.max(last + 1).max(acked + 1);
+            write_u64(&mut append, next)?;
             let log = open_rw(&self.path(s, "log"))?;
             log.set_len(0)?;
             sync(&log)?;

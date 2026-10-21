@@ -596,3 +596,65 @@ fn briefing_is_advisory_and_records_writes_for_coverage() {
         "ChannelRestricted"
     );
 }
+
+/// G4 (ADR 0010 §11): the daemon dies between applying a batch and syncing
+/// its stream mark, or after the sync but before the reply reached the hook.
+/// Either way the hook resends and every fact is applied exactly once.
+#[test]
+fn facts_survive_a_daemon_crash_at_either_side_of_the_sync() {
+    let drift = || Packet {
+        seq: 1,
+        agent: None,
+        fact: Fact::Drift {
+            done: Some(vec!["x.rs".into()]),
+        },
+    };
+    let send = |s: &Service<SimDisk>| {
+        call(
+            s,
+            Request::Facts {
+                harness: "claude".into(),
+                harness_session: "S".into(),
+                stream: [9; 16],
+                packets: vec![drift()],
+                skip: None,
+            },
+        )
+    };
+    let drifts = |s: &Service<SimDisk>| {
+        telemetry(s)
+            .iter()
+            .filter(|e| matches!(e, TelemetryEntry::Drift { .. }))
+            .count()
+    };
+    // Before the sync: the reply is an error, nothing is durable.
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    attach(&s, "S");
+    disk.fail_next("sync");
+    assert_ne!(code(&send(&s)), "ok");
+    drop(s);
+    let disk = disk.crash(contextdb_store::TailFate::Torn, 1);
+    let s = service(&disk);
+    assert!(matches!(
+        send(&s),
+        Response::Facts {
+            applied_through: 1,
+            ..
+        }
+    ));
+    assert_eq!(drifts(&s), 1);
+    // After the sync, before the reply: the resend is a duplicate.
+    let s = restart(s, &disk);
+    let disk = disk.crash(contextdb_store::TailFate::Torn, 2);
+    drop(s);
+    let s = service(&disk);
+    assert!(matches!(
+        send(&s),
+        Response::Facts {
+            applied_through: 1,
+            ref drift,
+        } if drift.is_empty()
+    ));
+    assert_eq!(drifts(&s), 1, "applied once across the crash");
+}

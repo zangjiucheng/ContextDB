@@ -121,6 +121,30 @@ pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
         _ => Some(PathBuf::from(top)),
     }
 }
+/// [`repo_root`], cached per working directory (ADR 0010 §3.2): `git
+/// rev-parse` costs ~15 ms, more than the rest of a PreToolUse hook. A cached
+/// root is used only while it still holds `.git` and still contains `cwd`.
+pub fn repo_root_cached(cwd: &Path) -> Option<PathBuf> {
+    let uid = std::env::var("USER").unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!("ctx-hook-{uid}"));
+    let key = blake3::hash(cwd.as_os_str().as_encoded_bytes()).to_hex();
+    let file = dir.join(&key[..32]);
+    if let Ok(text) = std::fs::read_to_string(&file) {
+        let root = PathBuf::from(text.trim_end());
+        let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        if root.join(".git").exists() && (canon.starts_with(&root) || cwd.starts_with(&root)) {
+            return Some(root);
+        }
+    }
+    let root = repo_root(cwd)?;
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let tmp = file.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, root.to_string_lossy().as_bytes()).is_ok() {
+            let _ = std::fs::rename(&tmp, &file);
+        }
+    }
+    Some(root)
+}
 /// The data directory for a repository (ADR 0010 §6.2): `CTX_DIR`, else the
 /// path in `<root>/.contextdb/dir.wire`, else `<root>/.contextdb/db`.
 pub fn data_dir(root: Option<&Path>) -> Option<PathBuf> {
@@ -211,7 +235,7 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
             // Unparsed input follows on_unavailable and is always reported
             // (ADR 0010 §3.1, review M11).
             let cwd = std::env::current_dir().ok()?;
-            let data = data_dir(repo_root(&cwd).as_deref())?;
+            let data = data_dir(repo_root_cached(&cwd).as_deref())?;
             if !data.exists() {
                 return None;
             }
@@ -224,7 +248,7 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
         }
     };
     let cwd = PathBuf::from(&ev.cwd);
-    let root = repo_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let root = repo_root_cached(&cwd).unwrap_or_else(|| cwd.clone());
     // Not a ContextDB repository: nothing, in every mode (§6.3).
     let data = data_dir(Some(&root))?;
     if !data.exists() {

@@ -1,4 +1,4 @@
-# cargo-fuzz targets (ADR 0008 §5, §10). A separate workspace with a pinned
+# cargo-fuzz targets (ADR 0008 §5, §10; ADR 0010 §11 G4). A separate workspace with a pinned
 # nightly (rust-toolchain.toml here); the main workspace stays on 1.95.0.
 [package]
 name = "contextdb-fuzz"
@@ -14,6 +14,9 @@ libfuzzer-sys = "0.4"
 contextdb-daemon = { path = "../crates/contextdb-daemon" }
 contextdb-mcp = { path = "../crates/contextdb-mcp" }
 contextdb-model = { path = "../crates/contextdb-model" }
+contextdb-hooks = { path = "../crates/contextdb-hooks" }
+contextdb-proto = { path = "../crates/contextdb-proto" }
+serde_json = "=1.0.151"
 
 [workspace]
 
@@ -27,6 +30,34 @@ bench = false
 [[bin]]
 name = "mcp_json"
 path = "fuzz_targets/mcp_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_stdin"
+path = "fuzz_targets/hook_stdin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patch_paths"
+path = "fuzz_targets/patch_paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_meta"
+path = "fuzz_targets/mcp_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_records"
+path = "fuzz_targets/wire_records.rs"
 test = false
 doc = false
 bench = false

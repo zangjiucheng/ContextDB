@@ -97,6 +97,7 @@ dependencies = [
  "contextdb-daemon",
  "contextdb-mcp",
  "contextdb-model",
+ "contextdb-proto",
  "contextdb-store",
  "contextdb-testkit",
  "serde_json",
@@ -139,6 +140,8 @@ dependencies = [
  "contextdb-store",
  "loom",
  "nix",
+ "rand_chacha",
+ "rand_core",
 ]
 
 [[package]]
@@ -186,6 +189,8 @@ dependencies = [
  "contextdb-core",
  "contextdb-model",
  "nix",
+ "rand_chacha",
+ "rand_core",
 ]
 
 [[package]]

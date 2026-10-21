@@ -1630,7 +1630,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 });
                 if covered {
                     drop(s);
-                    if let Err(r) = self.flush() {
+                    // Only an adopted recertification logged anything this
+                    // check must make durable; an unchanged certificate already
+                    // is (ADR 0010 G5: no session-log sync on steady checks).
+                    if matches!(v, Validation::ValidRecertified { .. })
+                        && let Err(r) = self.flush()
+                    {
                         return r;
                     }
                     return Response::Check {
