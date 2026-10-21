@@ -11,6 +11,11 @@ DATA="$PWD/.contextdb/db"            # inside the repo; add .contextdb/db/ to .g
 mkdir -p "$DATA" && ctxd "$DATA" &   # keep it running for the whole period
 ```
 
+Start from an empty data directory. Outbox records and session logs written by pre-release P4 builds are not compatible, so remove a data directory created by earlier development builds.
+
+```sh
+```
+
 ## 2. Configure gating and policy (committed to the repository)
 
 `.contextdb/gating.toml`: start in `warn`. The false-deny rate is measured on the actions that would have been flagged.
@@ -94,6 +99,6 @@ If coverage is below 60%, SPEC says to improve automatic dependency inference (O
 
 ## What to watch for
 
-- `MCP calls without a claim` is also the live check of the harnesses' `_meta` keys (T41b pins them from source, not from captured traffic). It must stay near zero; a high count means MCP reads are not reaching the hooks' session. Check the server name in the claim matcher (step 3), and whether a harness upgrade changed its `_meta` keys.
+- `MCP calls without a claim` is also the live check of Claude Code's `_meta` key (T41b pins the keys from source, not from captured traffic). Codex calls bind by thread id and are never counted as unclaimed; for Codex, check that its MCP reads appear in the Codex sessions' checks. It must stay near zero; a high count means MCP reads are not reaching the hooks' session. Check the server name in the claim matcher (step 3), and whether a harness upgrade changed its `_meta` keys.
 - Many `Empty` warnings mean the agents act without certified reads.
 - Drift `undeclared` lists files changed with no recorded edit. These are mostly Bash side effects, and also edits by people. The count is an upper bound.

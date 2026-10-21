@@ -240,8 +240,9 @@ struct Daemon {
     deadline: Instant,
 }
 impl Daemon {
-    fn connect(data: &Path, timeout: Duration) -> Result<Self, String> {
-        let deadline = Instant::now() + timeout;
+    /// Connects within `timeout`; every call shares the `budget` deadline.
+    fn connect(data: &Path, timeout: Duration, budget: Duration) -> Result<Self, String> {
+        let deadline = Instant::now() + budget.max(timeout);
         let l = lease::read_lease(&data.join("ctxd.lease")).ok_or("no ctxd lease")?;
         let sock = l
             .sockets
@@ -278,6 +279,36 @@ pub struct Hook {
     pub stream: Stream,
     pub ev: HookEvent,
 }
+fn generation_file(data: &Path, harness: Harness, session: &str) -> PathBuf {
+    let base = outbox::stream_id(harness.name(), session);
+    data.join("outbox")
+        .join(format!("{}.gen", outbox::hex(&base)))
+}
+/// The outbox stream of a harness session: generation 0 is the plain stream
+/// id; each SessionEnd starts the next generation for a resumed session.
+pub fn stream_of(data: &Path, harness: Harness, session: &str) -> Stream {
+    let generation = std::fs::read_to_string(generation_file(data, harness, session))
+        .ok()
+        .and_then(|g| g.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    if generation == 0 {
+        outbox::stream_id(harness.name(), session)
+    } else {
+        outbox::stream_id(harness.name(), &format!("{session}\u{0}{generation}"))
+    }
+}
+fn next_generation(data: &Path, harness: Harness, session: &str) {
+    let file = generation_file(data, harness, session);
+    let g = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|g| g.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let _ = std::fs::create_dir_all(file.parent().expect("outbox dir"));
+    let tmp = file.with_extension("gen.tmp");
+    if std::fs::write(&tmp, (g + 1).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &file);
+    }
+}
 /// Runs one hook event; returns stdout (None: print nothing).
 pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
     let ev = match adapter::parse(harness, event, stdin) {
@@ -313,7 +344,7 @@ pub fn run(harness: Harness, event: EventName, stdin: &str) -> Option<String> {
         event,
         cfg: gate_config(&data),
         outbox: Outbox::new(&data),
-        stream: outbox::stream_id(harness.name(), &ev.session),
+        stream: stream_of(&data, harness, &ev.session),
         root: roots.top,
         main: roots.main,
         data,
@@ -386,7 +417,12 @@ impl Hook {
     }
     /// The daemon and this harness session's ctxd session.
     fn attach(&self) -> Result<(Daemon, [u8; 16]), String> {
-        let mut d = Daemon::connect(&self.data, self.timeout())?;
+        self.attach_within(self.timeout())
+    }
+    /// As `attach`, with the calls bounded by `budget` instead of
+    /// `timeout_ms` (SessionStart's briefing; closure check N2).
+    fn attach_within(&self, budget: Duration) -> Result<(Daemon, [u8; 16]), String> {
+        let mut d = Daemon::connect(&self.data, self.timeout(), budget)?;
         let env = d.call(Request::SessionAttach {
             harness: self.harness.name().into(),
             harness_session: self.ev.session.clone(),
@@ -454,7 +490,8 @@ impl Hook {
     /// `budget`. Returns the drift reports the daemon computed.
     fn deliver(&self, budget: Duration, all: bool) -> Vec<DriftReport> {
         let start = Instant::now();
-        let Ok(mut d) = Daemon::connect(&self.data, self.timeout()) else {
+        // Delivery has its own budget, not the 150 ms check deadline (N2).
+        let Ok(mut d) = Daemon::connect(&self.data, self.timeout(), budget) else {
             return Vec::new();
         };
         let mut streams = vec![self.stream];
@@ -533,7 +570,7 @@ impl Hook {
             self.append(Fact::Baseline { dirty: baseline });
         }
         let mut out = Output::default();
-        match self.attach() {
+        match self.attach_within(Duration::from_secs(2)) {
             Ok((mut d, session)) => {
                 if let Ok(Envelope {
                     epoch,
@@ -884,12 +921,14 @@ impl Hook {
             ..Output::default()
         }
     }
+    /// The stream ends: its StreamEnd, once delivered (now, or later by the
+    /// sweeper), ends the session the stream belongs to. A resumed harness
+    /// session with the same id then writes a new stream generation, so
+    /// nothing of this one lands in the next session (closure check N1).
     fn session_end(&self) -> Output {
         self.append(Fact::StreamEnd);
+        next_generation(&self.data, self.harness, &self.ev.session);
         self.deliver(Duration::from_millis(900), false);
-        if let Ok((mut d, session)) = self.attach() {
-            let _ = d.call(Request::SessionEnd { session });
-        }
         Output::default()
     }
 }

@@ -132,7 +132,8 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
         let mut model = Model::default();
         let mut order = 0u64;
         let mut version = vec![0u32; n as usize];
-        let mut pending: BTreeMap<Option<String>, Peek> = BTreeMap::new();
+        // Up to eight kept peeks per agent, as the daemon keeps them.
+        let mut pending: BTreeMap<Option<String>, Vec<Peek>> = BTreeMap::new();
         let b = |agent: &Option<String>| Binding::Session {
             session,
             agent: agent.clone(),
@@ -184,19 +185,19 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                     heads[l as usize] = result.allocations.new_revisions[0].0;
                 }
                 2 => {
-                    // Peek, acknowledging the previous batch half the time
-                    // (else its output was dropped).
-                    let ack = (rng.next_u32() % 2 == 0)
-                        .then(|| pending.get(&agent).map(|p| p.0))
-                        .flatten();
-                    if let Some(t) = ack
-                        && let Some((pt, items)) = pending.get(&agent)
-                        && *pt == t
-                    {
+                    // Peek, acknowledging one kept batch half the time (not
+                    // necessarily the latest: another peek may have come in
+                    // between), else its output was dropped.
+                    let kept = pending.entry(agent.clone()).or_default();
+                    let pick = (rng.next_u32() % 2 == 0 && !kept.is_empty())
+                        .then(|| rng.next_u32() as usize % kept.len());
+                    let ack = pick.map(|k| {
+                        let (t, items) = kept.remove(k);
                         for (l, cur) in items {
-                            model.reported.insert((agent.clone(), *l), *cur);
+                            model.reported.insert((agent.clone(), l), cur);
                         }
-                    }
+                        t
+                    });
                     let Response::Updates { token, items, .. } = ok(s
                         .handle(
                             AGENT,
@@ -226,16 +227,17 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                         .collect();
                     assert_eq!(got, want, "seed {seed}: updates for {agent:?}");
                     nonempty += u64::from(!got.is_empty());
-                    pending.insert(
-                        agent.clone(),
-                        (
-                            token,
-                            items
-                                .iter()
-                                .map(|i| (i.logical.0, i.current.map(|r| r.0)))
-                                .collect(),
-                        ),
-                    );
+                    let kept = pending.entry(agent.clone()).or_default();
+                    kept.push((
+                        token,
+                        items
+                            .iter()
+                            .map(|i| (i.logical.0, i.current.map(|r| r.0)))
+                            .collect(),
+                    ));
+                    if kept.len() > 8 {
+                        kept.remove(0);
+                    }
                 }
                 _ => {
                     let Response::Check { validation, .. } = ok(s

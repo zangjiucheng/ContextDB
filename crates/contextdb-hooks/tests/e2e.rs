@@ -647,3 +647,67 @@ fn compaction_keeps_the_baseline_and_streams_without_session_start_are_swept() {
     }
     drop(d);
 }
+
+/// Closure check N1 and N3: a clean SessionEnd ends the session without
+/// creating another; resuming the same harness session id starts a new
+/// session on a new stream, and an edit made before the end is not reported
+/// as undeclared drift.
+#[test]
+fn session_end_and_resume_make_no_phantom_and_keep_earlier_edits_declared() {
+    let repo = Repo::new("resume");
+    let d = repo.daemon();
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    let live = |admin: &mut Client| match admin.call(&Request::Status).unwrap().response {
+        Response::Status { sessions, .. } => sessions,
+        other => panic!("{other:?}"),
+    };
+    let start = input(
+        "SessionStart",
+        "sess-r",
+        &repo.root,
+        json!({ "source": "startup" }),
+    );
+    repo.hook("claude", "session-start", &start);
+    assert_eq!(live(&mut admin), 1);
+    std::fs::write(repo.root.join("early.txt"), "x").unwrap();
+    let post = input(
+        "PostToolUse",
+        "sess-r",
+        &repo.root,
+        json!({ "tool_name": "Write", "tool_use_id": "w",
+            "tool_input": { "file_path": repo.root.join("early.txt"), "content": "x" },
+            "tool_response": {} }),
+    );
+    repo.hook("claude", "post-tool-use", &post);
+    let end = input(
+        "SessionEnd",
+        "sess-r",
+        &repo.root,
+        json!({ "reason": "other" }),
+    );
+    repo.hook("claude", "session-end", &end);
+    assert_eq!(live(&mut admin), 0, "ended, and no phantom session left");
+    // Resume with the same id: a new session, and the earlier edit is the
+    // same harness session's own.
+    let resume = input(
+        "SessionStart",
+        "sess-r",
+        &repo.root,
+        json!({ "source": "resume" }),
+    );
+    repo.hook("claude", "session-start", &resume);
+    assert_eq!(live(&mut admin), 1);
+    // Changed again after the resume (so the new baseline does not hide
+    // it): still declared, by the same harness session's earlier session.
+    std::fs::write(repo.root.join("early.txt"), "y").unwrap();
+    let stop = input(
+        "Stop",
+        "sess-r",
+        &repo.root,
+        json!({ "stop_hook_active": false }),
+    );
+    if let Some(o) = repo.hook("claude", "stop", &stop) {
+        let msg = o["systemMessage"].as_str().unwrap_or("");
+        assert!(!msg.contains("early.txt"), "{msg}");
+    }
+}

@@ -703,7 +703,7 @@ The dogfood row stays Pending (§0.1).
 
 ## 18. Implementation review (revision 3.4)
 
-A non-implementing reviewer reviewed `8131399..db559e8` plus the working tree: 1 blocker (reproduced), 7 majors, 12 minors.
+A non-implementing reviewer reviewed `8131399..db559e8` plus the working tree: 1 blocker (reproduced), 7 majors, 12 minors. Its closure check of `8ca096a` found all closed, the fixes acceptable, and four new minors (N1–N4), fixed below.
 
 | Finding | Resolution |
 |---|---|
@@ -716,6 +716,11 @@ A non-implementing reviewer reviewed `8131399..db559e8` plus the working tree: 1
 | M6 dogfood labels keyed by a telemetry index | Labels and the allow sample are keyed by a hash of the entry; unavailable-gate facts carry their own time. Test: labels survive reordering |
 | M7 the `_meta` contract was claimed but not captured | P4.md states the keys are verified from source and binary; the live check is the dogfood's unclaimed-call count (kit updated) |
 | Minors | (1) every append writes the stream's harness session, so the sweeper can deliver it (e2e test); (2) several pending `Updates` tokens per agent, random token start; (3) `**/` spans whole segments; (4) patch headers only at column 0; (5) a delivered `StreamEnd` ends a still-live session; (6) one deadline for all of a hook's daemon calls; (7) `Facts` batches capped at 4 MiB; (8) kept: on a gap the hook resends what it still holds (lost marks mean lost effects), and skips only what it no longer has (§5.3); (9) SubagentStart is installed and reports the child before its MCP calls; (10) `ctx check` never logs a gated action and `--all` needs no session; (11) the root cache lives in `~/.cache/contextdb/roots` and is revalidated against nested repositories; (12) a retried write (same `client_txn_id`) is counted once |
+| Closure N1: SessionEnd created and ended a phantom session; a stale StreamEnd could end a resumed session | The hook no longer sends SessionEnd: its StreamEnd, once delivered (by it or the sweeper), ends the stream's own session. Each stream has an owner session (its first applied fact; rebuilt on replay), and late facts go to the owner, live or ended, never to a later session of the key. A SessionEnd bumps the stream generation, so a resumed harness session writes a new stream. e2e test: no phantom, resume gets a new session |
+| Closure N2: delivery budgets capped at `timeout_ms` | The connection's deadline is the caller's budget: delivery 50/500/900 ms, SessionStart 2 s, checks `timeout_ms` |
+| Closure N3: drift false positive after resuming an ended session | Drift also subtracts paths declared by earlier sessions of the same harness session (the key is kept per session). e2e test |
+| Closure N4: window between leaving the live map and joining the ended | The session joins the ended before it leaves the live map |
+| Closure notes | Property (d) now acknowledges any kept token (up to eight per agent); the dogfood kit starts from an empty data directory and says the unclaimed count checks Claude only |
 | Notes | Full shell commands are recorded (README says so); a broken-log session's reason says to start a new session; telemetry and keys grow with use and are replayed at start (bounded by the dogfood's scale; compaction is P10 material) |
 
 ## 16. Risks and limitations

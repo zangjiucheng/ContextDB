@@ -65,6 +65,8 @@ struct Session {
     principal: PrincipalId,
     head_sha: String,
     repo: String,
+    /// The harness session this session serves, if any.
+    key: Option<(String, String)>,
     started_epoch: Epoch,
     ended_epoch: Option<Epoch>,
     agents: BTreeMap<Agent, AgentState>,
@@ -102,6 +104,9 @@ struct Hooks {
     written: BTreeSet<[u8; 16]>,
     /// Outbox stream high-water marks.
     streams: BTreeMap<[u8; 16], u64>,
+    /// The session each stream's facts belong to (its first applied fact);
+    /// late facts and its StreamEnd go there (closure check N1).
+    stream_owner: BTreeMap<[u8; 16], SessionId>,
     /// Recently ended sessions, for late facts and concurrent-drift.
     ended: VecDeque<(SessionId, Arc<Mutex<Session>>)>,
     telemetry: Vec<TelemetryEntry>,
@@ -415,11 +420,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     harness,
                     harness_session,
                 } => {
+                    if let Some(s) = map.get(&session_id) {
+                        s.lock().expect("session").key =
+                            Some((harness.clone(), harness_session.clone()));
+                    }
                     hooks.keys.insert((harness, harness_session), session_id);
                 }
                 SessionEvent::Fact {
-                    session_id, packet, ..
+                    session_id,
+                    packet,
+                    stream,
+                    ..
                 } => {
+                    hooks.stream_owner.entry(stream).or_insert(session_id);
                     if let Some(s) = find(&map, &hooks, &session_id) {
                         s.lock().expect("session").note_fact(&packet);
                     }
@@ -888,20 +901,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// Ends a live session: removed from `sessions`, then (with `sessions`
     /// released, review B1) kept among the ended for late facts.
     fn end_session(&self, id: Identity, session: SessionId, epoch: Epoch) -> Result<(), Response> {
-        let removed = {
-            let mut sessions = self.sessions.lock().expect("sessions");
-            match sessions.get(&session) {
-                None => return Err(err("UnknownSession", "unknown session")),
-                Some(s) if s.lock().expect("session").principal != id.principal => {
-                    return Err(err("UnknownSession", "session of another principal"));
-                }
-                Some(_) => sessions.remove(&session),
+        let s = match self.session(&session) {
+            None => return Err(err("UnknownSession", "unknown session")),
+            Some(s) if s.lock().expect("session").principal != id.principal => {
+                return Err(err("UnknownSession", "session of another principal"));
             }
+            Some(s) => s,
         };
-        if let Some(s) = removed {
-            s.lock().expect("session").ended_epoch = Some(epoch);
-            self.hooks.lock().expect("hooks").end(session, s);
-        }
+        s.lock().expect("session").ended_epoch = Some(epoch);
+        // Among the ended before leaving the live map, so a concurrent lookup
+        // always finds it in one of them (closure check N4).
+        self.hooks.lock().expect("hooks").end(session, s);
+        self.sessions.lock().expect("sessions").remove(&session);
         self.log(vec![SessionEvent::End {
             session_id: session,
             epoch,
@@ -960,12 +971,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 return Err(r);
             }
         };
-        let session = Arc::new(Mutex::new(Session::new(
-            id.principal,
-            head_sha.clone(),
-            repo.clone(),
-            snap.epoch,
-        )));
+        let session = {
+            let mut st = Session::new(id.principal, head_sha.clone(), repo.clone(), snap.epoch);
+            st.key = Some(key.clone());
+            Arc::new(Mutex::new(st))
+        };
         self.sessions
             .lock()
             .expect("sessions")
@@ -1902,30 +1912,40 @@ impl<D: Durability + Clone + 'static> Service<D> {
         skip: Option<(u64, u64)>,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        // Facts of an ended session still apply to it (§5.3).
-        // `hooks` and `sessions` one at a time (review B1).
-        let sid = self
+        // A stream's facts belong to the session its first fact applied to
+        // (live or ended, §5.3): late facts never land in a later session of
+        // the same key, and a resumed harness session gets a new stream
+        // (closure check N1). `hooks` and `sessions` one at a time (B1).
+        let find = |sid: SessionId| {
+            self.session(&sid).or_else(|| {
+                self.hooks
+                    .lock()
+                    .expect("hooks")
+                    .ended
+                    .iter()
+                    .find(|(e, _)| *e == sid)
+                    .map(|(_, s)| s.clone())
+            })
+        };
+        let owner = self
             .hooks
             .lock()
             .expect("hooks")
-            .keys
-            .get(&(harness.clone(), harness_session.clone()))
+            .stream_owner
+            .get(&stream)
             .copied();
-        let known = sid.and_then(|sid| {
-            self.session(&sid)
-                .or_else(|| {
-                    self.hooks
-                        .lock()
-                        .expect("hooks")
-                        .ended
-                        .iter()
-                        .find(|(e, _)| *e == sid)
-                        .map(|(_, s)| s.clone())
-                })
-                .map(|s| (sid, s))
-        });
-        let (session, s) = match known {
-            Some(v) => v,
+        let (session, s) = match owner {
+            Some(sid) => match find(sid) {
+                Some(s) => (sid, s),
+                None => {
+                    // Evicted from the ended: record the facts against it
+                    // without bringing it back to life.
+                    let mut gone =
+                        Session::new(id.principal, String::new(), String::new(), snap.epoch);
+                    gone.ended_epoch = Some(snap.epoch);
+                    (sid, Arc::new(Mutex::new(gone)))
+                }
+            },
             None => match self.attach(
                 id,
                 harness,
@@ -1934,7 +1954,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 String::new(),
                 snap,
             ) {
-                Ok((sid, s, _, _)) => (sid, s),
+                Ok((sid, s, _, _)) => {
+                    self.hooks
+                        .lock()
+                        .expect("hooks")
+                        .stream_owner
+                        .insert(stream, sid);
+                    (sid, s)
+                }
                 Err(r) => return r,
             },
         };
@@ -2038,8 +2065,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             hooks.streams.insert(stream, through);
             hooks.telemetry.extend(telemetry);
         }
-        // A delivered StreamEnd ends a session still live (e.g. one that late
-        // facts re-created), so it never lingers (review minor 5).
+        // A delivered StreamEnd ends the stream's own session if still live
+        // (the hook does not end it separately: closure check N1).
         if ended && self.session(&session).is_some() {
             let _ = self.end_session(id, session, snap.epoch);
             let _ = self.flush();
@@ -2082,9 +2109,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .map(|(_, s)| s.clone()),
         );
         let mut declared = BTreeSet::new();
+        let key = s.lock().expect("session").key.clone();
         for o in others {
             let o = o.lock().expect("session");
-            if o.repo == repo && o.ended_epoch.is_none_or(|e| e >= started) {
+            // Active at the same time in the same repository, or an earlier
+            // session of the same harness session (resumed after an end,
+            // closure check N3).
+            let concurrent = o.repo == repo && o.ended_epoch.is_none_or(|e| e >= started);
+            if concurrent || (key.is_some() && o.key == key) {
                 declared.extend(o.declared());
             }
         }
@@ -2184,6 +2216,7 @@ impl Session {
             principal,
             head_sha,
             repo,
+            key: None,
             started_epoch: started,
             ended_epoch: None,
             agents: BTreeMap::new(),
