@@ -1,6 +1,6 @@
 # Implementation status
 
-**P3 is implemented and under gate verification** ([P3 gate](gates/P3.md),
+**Gate P3 passed** (2026-10-21) after independent review, a closure check and a closure confirmation ([P3 gate](gates/P3.md),
 [ADR 0008](adr/0008-p3-daemon-sessions-certificates.md) rev 3.3,
 [ADR 0009](adr/0009-p3-memory-scopes-after-maintained-layers.md)).
 

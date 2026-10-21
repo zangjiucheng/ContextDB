@@ -591,3 +591,8 @@ The independent P3 review of `5b49800` found 1 blocker, 2 majors and 7 minors. A
   - A `SessionStart` that timed out may become durable later.
   - Reads served after a poisoned session log, or after `Stop`, lose their lazy events.
   - A retried `SessionEnd` gets `UnknownSession`; clients treat that as done.
+
+**Closure confirmation (of `4ba1291`).** A non-implementing reviewer found N1–N3 closed and no new blocker or major. It raised two minors, both now fixed:
+- **C1** → if the startup `LogBroken` sync fails or times out, `Service::with_recall` stops the writer and the actor and returns an error, so `ctxd` refuses to serve. Otherwise plain writes could reuse the cut epochs and hide the break from the next restart. Test: `a_cut_that_cannot_be_marked_durably_refuses_to_serve`.
+- **C2** → `SessionLog::open` also syncs `sessions/`. A rollover killed between the segment's file sync and its directory sync leaves a valid header-only segment that later groups append to, so its name must be durable. Test: `open_syncs_the_name_of_a_segment_whose_rollover_was_killed`, which fails without the sync.
+- **Accepted (low):** a transient op_log read error during replay is treated as a cut and marks the session broken. This fails safe.

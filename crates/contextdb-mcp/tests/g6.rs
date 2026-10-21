@@ -29,7 +29,7 @@ fn service() -> Arc<Service<SimDisk>> {
     let dir = Path::new("/db");
     let (store, _) = Store::open(disk.clone(), dir, &OpenOptions::default()).unwrap();
     let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
-    Arc::new(Service::new(actor::spawn(store).unwrap(), log, events))
+    Arc::new(Service::new(actor::spawn(store).unwrap(), log, events).unwrap())
 }
 struct Agent {
     server: Server<InProcess>,

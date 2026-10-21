@@ -108,7 +108,10 @@ impl Daemon {
         let (log, events, _) = SessionLog::open(disk.clone(), &dir, false, 64 << 20)?;
         let actor = actor::spawn(store)?;
         let recall = dir.join("recall.sqlite");
-        let service = Arc::new(Service::with_recall(actor, log, events, Some(&recall)));
+        let service = Arc::new(
+            Service::with_recall(actor, log, events, Some(&recall))
+                .map_err(|e| io::Error::other(format!("session log: {e:?}")))?,
+        );
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;

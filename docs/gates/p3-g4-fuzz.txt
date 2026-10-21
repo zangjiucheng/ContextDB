@@ -1,0 +1,9 @@
+# P3 G4 fuzz, cargo-fuzz 0.13.2, remote host, ≥ 1 h per target (final status lines)
+## ipc_request
+#3655426140: cov: 2306 ft: 9098 corp: 2131 exec/s: 61386 oom/timeout/crash: 0/0/0 time: 3615s job: 333 dft_time: 0
+INFO: fuzzed for 3615 seconds, wrapping up soon
+INFO: exiting: 0 time: 3618s
+## mcp_json
+#962018437: cov: 1433 ft: 7835 corp: 2256 exec/s: 15599 oom/timeout/crash: 0/0/0 time: 3615s job: 333 dft_time: 0
+INFO: fuzzed for 3615 seconds, wrapping up soon
+INFO: exiting: 0 time: 3618s

@@ -27,7 +27,7 @@ fn service(disk: &SimDisk) -> Service<SimDisk> {
     let (store, _) = Store::open(disk.clone(), dir, &OpenOptions::default()).unwrap();
     let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
     let actor = actor::spawn(store).unwrap();
-    Service::new(actor, log, events)
+    Service::new(actor, log, events).unwrap()
 }
 fn call(s: &Service<SimDisk>, id: Identity, req: Request) -> Response {
     s.handle(id, req).response
@@ -720,6 +720,47 @@ fn a_cut_session_without_a_certificate_stays_broken_across_restarts() {
         } => {}
         other => panic!("re-certified over reallocated ids: {other:?}"),
     }
+}
+/// N1 closure confirmation: when the `LogBroken` marker cannot be made
+/// durable the daemon refuses to serve, so plain writes cannot reuse the cut
+/// epochs and hide the break from the next restart.
+#[test]
+fn a_cut_that_cannot_be_marked_durably_refuses_to_serve() {
+    let disk = SimDisk::new();
+    let a = {
+        let s = service(&disk);
+        let a = start(&s);
+        record(&s, a, "db", "mongodb", Vec::new());
+        let read = Request::Read {
+            session: a,
+            target: Target::Key("db".into()),
+            mode: Mode::Certified,
+        };
+        assert_eq!(code(&call(&s, AGENT, read)), "ok");
+        call(&s, ADMIN, Request::Shutdown);
+        a
+    };
+    let dir = Path::new("/db");
+    let plan = contextdb_store::doctor::plan_truncate_before(&disk, dir, Epoch(1)).unwrap();
+    contextdb_store::doctor::truncate_before(&disk, dir, &plan).unwrap();
+    {
+        let (store, _) = Store::open(disk.clone(), dir, &OpenOptions::default()).unwrap();
+        let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
+        let actor = actor::spawn(store).unwrap();
+        disk.fail_next("sync");
+        assert!(Service::new(actor, log, events).is_err());
+    }
+    let s = service(&disk);
+    assert!(matches!(
+        check(&s, a),
+        Response::Check {
+            validation: Validation::Invalid {
+                reason: InvalidReason::LogMismatch,
+                ..
+            },
+            ..
+        }
+    ));
 }
 /// Review finding 5: lazily synced read events are written on a clean
 /// shutdown, before the store lock is released.

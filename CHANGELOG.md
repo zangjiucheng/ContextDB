@@ -82,3 +82,13 @@
   - payloads go to append-only, self-verifying blob packs staged with `F_BARRIERFSYNC`, so the group's op_log `F_FULLFSYNC` makes them durable.
 
   With 8 clients and fullfsync on, write p50 went from 98 to 12 ms and throughput from 81 to 597 tx/s. With 128 clients it went from 95 to 4,521 tx/s, and to 6,533 tx/s with fullfsync off.
+- P3 review fixes (ADR 0008 §18):
+  - Open fully syncs pack segments, the op_log tail and the session-log tail and directory.
+  - A cut session log is persisted as `LogBroken`, and `ctxd` refuses to serve if that marker cannot be made durable.
+  - Oversized session drains are split into groups; recall results are capped.
+  - The session writer is flushed and joined before the store lock is released.
+- **Gate P3 passed** (2026-10-21):
+  - G4 stress on `4ba1291`: 1/8/32/128 clients × 10 min, 0 mixed epochs, chain breaks or replay mismatches.
+  - Fuzz: IPC and MCP targets, 1 h each, 0 crashes.
+  - G5 under the owner's per-client write budgets.
+  - See `docs/gates/P3.md`.

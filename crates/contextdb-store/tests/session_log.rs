@@ -117,3 +117,20 @@ fn open_syncs_groups_a_killed_process_left_unsynced() {
     let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 1 << 20);
     assert_eq!(events, vec![read(1), read(2)]);
 }
+/// N2 closure confirmation: a rollover killed after the segment's file sync
+/// but before its directory sync leaves a valid header-only segment that
+/// later groups append to; open makes its name durable.
+#[test]
+fn open_syncs_the_name_of_a_segment_whose_rollover_was_killed() {
+    let disk = SimDisk::new();
+    let (mut log, _) = open(&disk, 1 << 20);
+    disk.fail_next("sync_dir");
+    assert!(log.append_group(&[read(1)]).is_err());
+    drop(log);
+    let disk = disk.restart();
+    let (mut log, _) = open(&disk, 1 << 20);
+    log.append_group(&[read(2)]).unwrap();
+    drop(log);
+    let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 1 << 20);
+    assert_eq!(events, vec![read(2)]);
+}

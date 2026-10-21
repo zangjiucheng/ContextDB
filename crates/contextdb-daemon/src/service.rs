@@ -155,7 +155,15 @@ fn handle_of(cert: &Certificate, index: usize) -> String {
 }
 impl<D: Durability + Clone + 'static> Service<D> {
     /// Starts the session-log writer and replays the session log into memory.
-    pub fn new(actor: ActorHandle<D>, log: SessionLog<D>, events: Vec<SessionEvent>) -> Self {
+    ///
+    /// Fails when a newly detected log cut cannot be made durable: serving
+    /// then would let plain writes reuse the cut epochs and hide the break
+    /// from the next restart.
+    pub fn new(
+        actor: ActorHandle<D>,
+        log: SessionLog<D>,
+        events: Vec<SessionEvent>,
+    ) -> Result<Self, Response> {
         Self::with_recall(actor, log, events, None)
     }
     /// As `new`, with the FTS5 recall projection in `recall_path` (memory if None).
@@ -164,7 +172,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         log: SessionLog<D>,
         events: Vec<SessionEvent>,
         recall_path: Option<&std::path::Path>,
-    ) -> Self {
+    ) -> Result<Self, Response> {
         let recall = Arc::new(Mutex::new(
             RecallIndex::open(recall_path)
                 .or_else(|_| RecallIndex::open(None))
@@ -200,9 +208,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     .map(|session_id| SessionEvent::LogBroken { session_id })
                     .collect(),
             );
-            let _ = service.flush();
+            if let Err(e) = service.flush() {
+                // Release the store (and its lock) before reporting.
+                service.stop_writer();
+                let _ = service.actor.request(|reply| Message::Shutdown { reply });
+                return Err(e);
+            }
         }
-        service
+        Ok(service)
     }
     /// Rebuilds in-memory sessions from durable events (sessions survive restarts).
     ///

@@ -3,7 +3,7 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0、P1、P2 Gate 已通过，见 [`docs/gates/P2.md`](docs/gates/P2.md)。P3（守护进程、MCP 与 certified read）已经实现，正在走 Gate 验证，进度见 [`docs/gates/P3.md`](docs/gates/P3.md)。
+- **当前阶段**：P0–P3 Gate 已通过。P3（守护进程、MCP 与 certified read）见 [`docs/gates/P3.md`](docs/gates/P3.md)，下一阶段是 P4（hooks 与 action gating）。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)

@@ -345,6 +345,9 @@ impl<D: Durability> SessionLog<D> {
         if let Some(last) = log.segments.last() {
             log.disk.sync(last).map_err(io)?;
         }
+        // Likewise a segment whose rollover was killed before its directory
+        // sync: later groups append to it, so its name must be durable.
+        log.disk.sync_dir(&log.dir).map_err(io)?;
         report.events = events.len() as u64;
         Ok((log, events, report))
     }

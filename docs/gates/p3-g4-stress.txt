@@ -1,0 +1,9 @@
+# P3 G4 stress, ctxd-stress, commit 4ba1291, remote host (Ubuntu 24.04, ≤48 cores), 4 × 600 s
+clients=1 seconds=600.0 reads=60043 cas_attempts=60457 cas_ok=60457 cas_conflicts=0 coupled_moves=30209 coupled_conflicts=0 busy=0 other=0 write_tx_per_s=151 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=90676
+G4 PASS
+clients=8 seconds=600.0 reads=162213 cas_attempts=162400 cas_ok=111381 cas_conflicts=51019 coupled_moves=27155 coupled_conflicts=53919 busy=0 other=0 write_tx_per_s=231 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=138546
+G4 PASS
+clients=32 seconds=600.1 reads=415339 cas_attempts=415228 cas_ok=134457 cas_conflicts=280771 coupled_moves=19470 coupled_conflicts=187792 busy=0 other=0 write_tx_per_s=257 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=153937
+G4 PASS
+clients=128 seconds=600.1 reads=1118473 cas_attempts=1118811 cas_ok=120387 cas_conflicts=998424 coupled_moves=15703 coupled_conflicts=543002 busy=0 other=0 write_tx_per_s=227 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=136100
+G4 PASS
