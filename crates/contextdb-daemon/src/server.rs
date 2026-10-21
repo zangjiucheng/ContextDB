@@ -229,6 +229,7 @@ fn serve(
                         },
                     },
                 );
+                close_after_reply(&mut stream);
                 return;
             }
             Err(_) => return,
@@ -242,6 +243,23 @@ fn serve(
         if shutdown && ok {
             stop.store(true, Ordering::Release);
             return;
+        }
+    }
+}
+/// Closes after an error reply without resetting the peer: the rest of the
+/// rejected frame (its length is not trusted across versions) is drained,
+/// bounded in bytes and time, since closing with unread input makes Linux
+/// report `ECONNRESET` to the client instead of a clean end of stream.
+fn close_after_reply(stream: &mut UnixStream) {
+    use std::io::Read;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let mut buf = [0u8; 64 * 1024];
+    let mut left = proto::MAX_FRAME as usize + 8;
+    while left > 0 {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left = left.saturating_sub(n),
         }
     }
 }

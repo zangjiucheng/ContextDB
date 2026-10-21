@@ -13,7 +13,8 @@
 # the `remote` alias is a load-balanced pool whose nodes have separate /tmp, so
 # one node is pinned), CTXDB_REMOTE_DIR (/tmp/remote-ctxdb),
 # CTXDB_REMOTE_RUST (/tmp/remote-rust), CTXDB_REMOTE_JOBS (48, exported as
-# MUTATION_JOBS and FUZZ_JOBS to the job).
+# CARGO_BUILD_JOBS, MUTATION_JOBS and FUZZ_JOBS to the job; fuzz.sh runs two
+# targets, so pass FUZZ_JOBS=<half> to stay within the budget).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 host=${CTXDB_REMOTE:-user@remote-host}
@@ -21,7 +22,7 @@ dir=${CTXDB_REMOTE_DIR:-/tmp/remote-ctxdb}
 rust=${CTXDB_REMOTE_RUST:-/tmp/remote-rust}
 jobs=${CTXDB_REMOTE_JOBS:-48}
 env="export RUSTUP_HOME=$rust/rustup CARGO_HOME=$rust/cargo PATH=$rust/cargo/bin:\$PATH \
-CARGO_TARGET_DIR=$dir/target MUTATION_JOBS=$jobs FUZZ_JOBS=$jobs"
+CARGO_TARGET_DIR=$dir/target CARGO_BUILD_JOBS=$jobs MUTATION_JOBS=$jobs FUZZ_JOBS=$jobs"
 
 remote() { ssh -o BatchMode=yes "$host" "$@"; }
 need_toolchain() {
@@ -32,7 +33,9 @@ need_toolchain() {
 }
 sync_tree() {
   remote "mkdir -p $dir/src $dir/logs"
-  rsync -az --delete --exclude target --exclude results --exclude .git ./ "$host:$dir/src/"
+  # Fuzz state is excluded so a sync never deletes it under a running job.
+  rsync -az --delete --exclude target --exclude results --exclude .git \
+    --exclude fuzz/artifacts --exclude fuzz/corpus --exclude fuzz/coverage ./ "$host:$dir/src/"
 }
 case ${1:-} in
   setup)
