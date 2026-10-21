@@ -5,7 +5,7 @@ use contextdb_testkit::generate_p1;
 use std::collections::BTreeSet;
 #[test]
 fn prop1_through_prop9_10000_chacha8_seeds() {
-    let mut totals = [0u64; 7];
+    let mut totals = [0u64; 10];
     for seed in 0..10_000 {
         let trace = generate_p1(seed);
         assert_eq!(trace, generate_p1(seed));
@@ -114,6 +114,27 @@ fn prop1_through_prop9_10000_chacha8_seeds() {
                     });
                     totals[5] += u64::from(inserted);
                     totals[6] += u64::from(db.stats().pk_slow_paths > 0);
+                    // Incremental L1/L2 (ADR 0008 §7): changes the walker must
+                    // find without an L0 flip.
+                    let changed = |pick: &dyn Fn(&NodeState, &NodeState) -> bool| {
+                        result.status_diff.iter().any(|r| {
+                            prev.nodes
+                                .get(r.index())
+                                .is_some_and(|old| pick(old, &fixed.nodes[r.index()]))
+                        })
+                    };
+                    totals[7] += u64::from(changed(&|a, b| {
+                        a.l0 == b.l0 && (a.l1, a.l2) != (b.l1, b.l2)
+                    }));
+                    totals[8] += u64::from(changed(&|a, b| {
+                        (a.l0, a.l1, a.l2) == (b.l0, b.l1, b.l2)
+                            && a.dimensions.stale_reason != b.dimensions.stale_reason
+                    }));
+                    totals[9] += u64::from(changed(&|a, b| {
+                        (a.l0, a.l1, a.l2) == (b.l0, b.l1, b.l2)
+                            && a.dimensions.stale_reason == b.dimensions.stale_reason
+                            && a != b
+                    }));
                 } else {
                     assert_eq!(db.digest(), digest);
                     assert_eq!(db.epoch(), epoch);
@@ -136,14 +157,24 @@ fn prop1_through_prop9_10000_chacha8_seeds() {
             totals[4] += u64::from(matches!(actual, Err(TxError::HeadConflict { .. })));
         }
     }
-    for (n, percent) in [(1, 5), (2, 5), (3, 3), (4, 3), (5, 3), (6, 2)] {
+    for (n, percent) in [
+        (1, 5),
+        (2, 5),
+        (3, 3),
+        (4, 3),
+        (5, 3),
+        (6, 2),
+        (7, 5),
+        (8, 5),
+        (9, 5),
+    ] {
         assert!(
             totals[n] * 100 >= totals[0] * percent,
             "coverage {n}: {totals:?}"
         );
     }
     eprintln!(
-        "P1 coverage [tx,mixed-head-base,alternative-save,cycle,CAS,new-premise-rule,PK-slow]={totals:?}"
+        "P1 coverage [tx,mixed-head-base,alternative-save,cycle,CAS,new-premise-rule,PK-slow,layer-flip-no-l0,reason-only,witness-or-dimension-only]={totals:?}"
     );
 }
 

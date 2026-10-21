@@ -48,3 +48,9 @@
   - `migrate` resumes from the newest backup and syncs before the swap;
   - `get_blob` is gated on poison.
 - Close the P2 gate: independent review and two closure checks, CI run 39497969575 and nightly run 39498455621 on `de80aa6`.
+- Accept P3 G0: ADR 0008 (daemon, group commit, session log, certificates, MCP) after four review rounds; SPEC v1.5.0–v1.5.3.
+- P3 milestone 1 (core):
+  - **Counter-based L1/L2 columns.** Per-incidence literal bits, per-rule counters and per-node truth, witness and reason replace the query-time memo. They are maintained by the rank-ordered status walker (SPEC §3.4 Phase 3b), and FullRecompute rebuilds them independently. `Db` is `Send + Sync`.
+  - **Certificates.** `issue_certificate` and `validate_certificate` cover the L2-witness closure, `since_epoch` strict windows from a per-epoch change log, log linkage and recertification. The oracle gains an independent issuance and validation; PROP11 runs 10,000 seeds.
+  - **Tests.** P3 engine goldens T06d-sem, T16, T16b-cert, T21, T62-P3 and T65. New PROP2b coverage gates.
+  - **Memory.** ADR 0009 (owner decision) moves the L1/L2 state from the query-cache scope to the hot scope: hot ≤ 90, query cache ≤ 32 B/inc. The total is unchanged.

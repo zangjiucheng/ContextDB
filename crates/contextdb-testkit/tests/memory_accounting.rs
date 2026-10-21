@@ -87,7 +87,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     );
     golden(
         &multi,
-        [749584, 349708, 141892, 471840, 704098, 519908, 9997],
+        [749584, 349708, 382712, 471840, 464098, 519908, 9997],
     );
     check("hub", load(&shape(Shape::Hub, 5_000, 7).batches), 0.01);
     // Sparse metadata, many interned lanes, references and B-tree tables.
@@ -158,6 +158,6 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     let lanes = check("metadata_lanes", db, 0.04);
     golden(
         &lanes,
-        [496388, 100584, 51192, 195992, 306647, 235180, 4519],
+        [496388, 100584, 144498, 195992, 186647, 235180, 4519],
     );
 }

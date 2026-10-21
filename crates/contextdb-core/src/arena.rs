@@ -112,6 +112,9 @@ impl LogicalArena {
     pub fn kind(&self, l: LogicalId) -> RecordKind {
         self.kind[l.index()]
     }
+    pub fn scope_lane(&self, l: LogicalId) -> &str {
+        &self.scopes[self.scope[l.index()] as usize]
+    }
     fn key(&self, n: usize) -> &str {
         key_at(&self.keys, &self.key_end, n)
     }

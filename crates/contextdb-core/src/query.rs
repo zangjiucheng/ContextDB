@@ -1,7 +1,7 @@
 use crate::{
     Indexes, InputView,
     engine::CountingState,
-    layers::{LayerMemo, semantic, vectors},
+    layers::{LayerColumns, semantic, vectors},
 };
 use contextdb_model::*;
 
@@ -37,10 +37,9 @@ pub(crate) fn why_not(
     i: &impl InputView,
     c: &CountingState,
     index: &Indexes,
-    memo: &mut LayerMemo,
+    layers: &LayerColumns,
     r: RevisionId,
     depth: usize,
-    epoch: Epoch,
 ) -> Result<WhyNot, TxError> {
     if r.index() >= i.revision_count() {
         return Err(TxError::UnknownRef);
@@ -53,7 +52,7 @@ pub(crate) fn why_not(
         for p in i.premises(*j) {
             let logical = i.revision_logical(p.premise);
             let head = i.head(logical);
-            let node = memo.node(i, c, index, p.premise, epoch)?;
+            let node = layers.node_state(i, p.premise, c.row(p.premise));
             if !node.l0 {
                 incidences.push(IncidenceFailure::Unsupported(p.premise));
             }
@@ -73,7 +72,7 @@ pub(crate) fn why_not(
                 });
             }
             let head_l2 = if p.kind == EdgeKind::Sem {
-                let h = memo.node(i, c, index, head, epoch)?;
+                let h = layers.node_state(i, head, c.row(head));
                 if !h.l1 {
                     incidences.push(IncidenceFailure::SemanticHeadUnsupported(head));
                 }
@@ -82,10 +81,10 @@ pub(crate) fn why_not(
                 true
             };
             if depth > 0 && !node.l2 {
-                upstream.push(why_not(i, c, index, memo, p.premise, depth - 1, epoch)?);
+                upstream.push(why_not(i, c, index, layers, p.premise, depth - 1)?);
             }
             if depth > 0 && p.kind == EdgeKind::Sem && head != p.premise && !head_l2 {
-                upstream.push(why_not(i, c, index, memo, head, depth - 1, epoch)?);
+                upstream.push(why_not(i, c, index, layers, head, depth - 1)?);
             }
         }
         rules.push(RuleFailure {

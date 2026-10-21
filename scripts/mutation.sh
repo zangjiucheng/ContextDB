@@ -5,12 +5,14 @@ cd "$(dirname "$0")/.."
 mkdir -p results
 # The baseline must select testkit too; --test-package alone does not apply
 # to cargo-mutants 27.1.0's initial baseline build/test selection.
-cargo mutants --workspace --test-workspace true \
+CONTEXTDB_PROP11_SEEDS=${CONTEXTDB_PROP11_SEEDS:-2000} cargo mutants --workspace --test-workspace true \
   --file crates/contextdb-core/src/engine/counting.rs \
   --file crates/contextdb-core/src/txn.rs \
   --file crates/contextdb-core/src/arena.rs \
   --file crates/contextdb-core/src/stage.rs \
   --file crates/contextdb-core/src/memory.rs \
+  --file crates/contextdb-core/src/layers.rs \
+  --file crates/contextdb-core/src/cert.rs \
   --jobs 4 --timeout 60 \
   --output results/p1-mutation "$@" -- \
-  --package contextdb-core --package contextdb-testkit --lib --test p0 --test p1 --test memory_accounting --locked
+  --package contextdb-core --package contextdb-testkit --lib --test p0 --test p1 --test memory_accounting --test p3 --test p3_certificates --locked

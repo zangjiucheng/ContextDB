@@ -1,29 +1,13 @@
-use crate::{Indexes, InputView, engine::CountingState};
+//! L1/L2 as maintained columns (SPEC §3.4 Phase 3b, ADR 0008 §7).
+//!
+//! Counting mode updates the columns incrementally inside the status walker:
+//! incidences and rules are marked dirty by net-delta seeds and by upstream
+//! node changes, and are re-evaluated when their conclusion is popped (rank
+//! order, so premises and Sem heads are final). FullRecompute mode rebuilds
+//! every column in topological order with direct literal evaluation.
+use crate::{Indexes, InputView, PearceKelly, engine::CountingRow, engine::CountingState};
 use contextdb_model::*;
-
-#[derive(Clone, Debug)]
-struct Entry {
-    epoch: Option<Epoch>,
-    truth: [bool; 2],
-    witness: [Option<Witness>; 2],
-    reason: StaleReason,
-}
-impl Default for Entry {
-    fn default() -> Self {
-        Self {
-            epoch: None,
-            truth: [false; 2],
-            witness: [None; 2],
-            reason: StaleReason::Unsupported,
-        }
-    }
-}
-/// Query-time memoization. Commits invalidate the status dependency closure;
-/// untouched entries remain reusable across epochs without whole-vector clears.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct LayerMemo {
-    entries: Vec<Entry>,
-}
+use std::collections::BTreeMap;
 
 pub(crate) fn vectors(i: &impl InputView, j: RuleId) -> (HeadVector, HeadVector) {
     let mut asserted: Vec<_> = i
@@ -49,163 +33,284 @@ pub(crate) fn semantic(i: &impl InputView, j: RuleId) -> SemState {
         }
     }
 }
-impl LayerMemo {
+/// Gate of layer `level` (0 = L1, 1 = L2) for a rule with semantic state `sem`.
+fn gate(sem: SemState, level: usize) -> bool {
+    if level == 0 {
+        sem != SemState::Rejected
+    } else {
+        matches!(sem, SemState::Verified | SemState::NotRequired)
+    }
+}
+
+/// Maintained L1/L2 state. Indexed like the counting state: per incidence
+/// (`lit`), per rule (`unsat`, `active`, `sem`) and per revision (the rest).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayerColumns {
+    /// Literal truth per incidence: bit 0 = L1, bit 1 = L2.
+    lit: Vec<u8>,
+    unsat: Vec<[u32; 2]>,
+    active: Vec<[bool; 2]>,
+    sem: Vec<SemState>,
+    truth: Vec<[bool; 2]>,
+    witness: Vec<[Option<Witness>; 2]>,
+    reason: Vec<StaleReason>,
+    dirty_inc: Vec<bool>,
+    dirty_rule: Vec<bool>,
+    pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
+    pending_rule: BTreeMap<RevisionId, Vec<RuleId>>,
+}
+impl LayerColumns {
     pub(crate) fn retained_bytes(&self) -> usize {
-        crate::memory::vec_bytes(&self.entries)
+        use crate::memory::{bool_bytes, vec_bytes as b};
+        b(&self.lit)
+            + b(&self.unsat)
+            + b(&self.active)
+            + b(&self.sem)
+            + b(&self.truth)
+            + b(&self.witness)
+            + b(&self.reason)
+            + bool_bytes(&self.dirty_inc)
+            + bool_bytes(&self.dirty_rule)
     }
-    pub fn invalidate(&mut self, affected: &[RevisionId]) {
-        for r in affected {
-            if let Some(entry) = self.entries.get_mut(r.index()) {
-                entry.epoch = None;
-            }
-        }
-    }
+    /// Literal of incidence `p` at `level` from the current columns.
     fn literal(&self, i: &impl InputView, p: Incidence, level: usize) -> bool {
         let logical = i.revision_logical(p.premise);
         let head = i.head(logical);
-        self.entries[p.premise.index()].truth[level]
+        self.truth[p.premise.index()][level]
             && (p.kind != EdgeKind::Cur || head == p.premise)
             && (p.kind != EdgeKind::Pin
                 || head == p.premise
                 || i.logical_kind(logical) == RecordKind::Evidence)
-            && (p.kind != EdgeKind::Sem || self.entries[head.index()].truth[level])
+            && (p.kind != EdgeKind::Sem || self.truth[head.index()][level])
     }
-    fn ensure(
+    /// Extends every column for appended revisions, rules and incidences.
+    /// New rules start with every literal false (unsat = premise count).
+    pub(crate) fn grow(&mut self, i: &impl InputView, index: &Indexes) {
+        use crate::memory::resize;
+        let (n, rules, incs) = (i.revision_count(), i.rule_count(), index.inc_rule.len());
+        let old_rules = self.unsat.len();
+        resize(&mut self.lit, incs, 0);
+        resize(&mut self.dirty_inc, incs, false);
+        resize(&mut self.active, rules, [false; 2]);
+        resize(&mut self.sem, rules, SemState::NotRequired);
+        resize(&mut self.dirty_rule, rules, false);
+        resize(&mut self.unsat, rules, [0; 2]);
+        for j in old_rules..rules {
+            let k = index.rule_incidences(RuleId(j as u32)).len() as u32;
+            self.unsat[j] = [k; 2];
+        }
+        resize(&mut self.truth, n, [false; 2]);
+        resize(&mut self.witness, n, [None; 2]);
+        resize(&mut self.reason, n, StaleReason::Unsupported);
+    }
+    /// Marks an incidence for re-evaluation; returns its conclusion when newly marked.
+    fn mark_incidence(
+        &mut self,
+        i: &impl InputView,
+        index: &Indexes,
+        id: IncId,
+    ) -> Option<RevisionId> {
+        if self.dirty_inc[id.index()] {
+            return None;
+        }
+        self.dirty_inc[id.index()] = true;
+        let c = i.conclusion(index.inc_rule[id.index()]);
+        self.pending_inc.entry(c).or_default().push(id);
+        Some(c)
+    }
+    fn mark_rule(&mut self, i: &impl InputView, j: RuleId) -> Option<RevisionId> {
+        if self.dirty_rule[j.index()] {
+            return None;
+        }
+        self.dirty_rule[j.index()] = true;
+        let c = i.conclusion(j);
+        self.pending_rule.entry(c).or_default().push(j);
+        Some(c)
+    }
+    /// Phase 3b seeds (SPEC §3.4). Returns the conclusions to push.
+    pub(crate) fn seed(
+        &mut self,
+        i: &impl InputView,
+        index: &Indexes,
+        delta: &NetDelta,
+        revalidated: &[RuleId],
+    ) -> Vec<RevisionId> {
+        let mut out = Vec::new();
+        for (l, old, new) in &delta.head_moves {
+            for r in old.iter().chain(std::iter::once(new)) {
+                for id in index
+                    .exact_by_rev
+                    .row(r.index())
+                    .iter()
+                    .chain(index.pin_by_rev.row(r.index()))
+                {
+                    out.extend(self.mark_incidence(i, index, *id));
+                }
+            }
+            for id in index.sem_by_logical.row(l.index()) {
+                out.extend(self.mark_incidence(i, index, *id));
+                out.extend(self.mark_rule(i, index.inc_rule[id.index()]));
+            }
+        }
+        for j in delta.enable_flips.iter().chain(revalidated) {
+            out.extend(self.mark_rule(i, *j));
+        }
+        for j in &delta.new_rules {
+            out.extend(self.mark_rule(i, *j));
+            for id in index.rule_incidences(*j) {
+                out.extend(self.mark_incidence(i, index, IncId(id as u32)));
+            }
+        }
+        out
+    }
+    /// Re-evaluates the dirty incidences and rules concluding `r`, then `r`'s
+    /// node columns. Premises and Sem heads rank below `r`, so they are final.
+    pub(crate) fn refresh(
         &mut self,
         i: &impl InputView,
         c: &CountingState,
         index: &Indexes,
         r: RevisionId,
-        epoch: Epoch,
     ) {
-        let missing = i.revision_count().saturating_sub(self.entries.len());
-        crate::memory::grow(&mut self.entries, missing);
-        self.entries.resize_with(i.revision_count(), Entry::default);
-        let mut stack = vec![(r, false)];
-        while let Some((r, expanded)) = stack.pop() {
-            if self.entries[r.index()].epoch.is_some() {
-                continue;
-            }
-            if !expanded && !i.base(r) {
-                stack.push((r, true));
-                for j in index.rules_by_concl.row(r.index()) {
-                    if !i.enabled(*j) {
-                        continue;
-                    }
-                    for p in i.premises(*j) {
-                        if self.entries[p.premise.index()].epoch.is_none() {
-                            stack.push((p.premise, false));
-                        }
-                        if p.kind == EdgeKind::Sem {
-                            let head = i.head(i.revision_logical(p.premise));
-                            if self.entries[head.index()].epoch.is_none() {
-                                stack.push((head, false));
-                            }
-                        }
-                    }
+        for id in self.pending_inc.remove(&r).unwrap_or_default() {
+            self.dirty_inc[id.index()] = false;
+            let j = index.inc_rule[id.index()];
+            let p = index.incidence(i, id.index());
+            let old = self.lit[id.index()];
+            let mut now = 0;
+            for level in 0..2 {
+                if self.literal(i, p, level) {
+                    now |= 1 << level;
                 }
-                continue;
             }
-            let mut truth = [i.base(r); 2];
-            let mut witness = if i.base(r) {
-                [Some(Witness::Base); 2]
-            } else {
-                [None; 2]
-            };
-            if !i.base(r) {
-                for j in index.rules_by_concl.row(r.index()) {
-                    if !i.enabled(*j) {
-                        continue;
-                    }
-                    let sem = semantic(i, *j);
-                    for level in 0..2 {
-                        let gate = if level == 0 {
-                            sem != SemState::Rejected
+            if now != old {
+                self.lit[id.index()] = now;
+                for level in 0..2 {
+                    let (was, is) = (old >> level & 1 == 1, now >> level & 1 == 1);
+                    if was != is {
+                        let u = &mut self.unsat[j.index()][level];
+                        *u = if is {
+                            u.checked_sub(1).expect("layer unsat underflow")
                         } else {
-                            matches!(sem, SemState::Verified | SemState::NotRequired)
+                            u.checked_add(1).expect("layer unsat overflow")
                         };
-                        if gate && i.premises(*j).all(|p| self.literal(i, p, level)) {
-                            truth[level] = true;
-                            if witness[level].is_none() {
-                                witness[level] = Some(Witness::Rule(*j));
-                            }
-                        }
                     }
                 }
+                self.mark_rule(i, j);
             }
-            let mut reason = StaleReason::Unsupported;
-            if i.head(i.revision_logical(r)) != r {
-                reason = StaleReason::HeadSuperseded;
-            } else if c.s[r.index()]
-                && let Some(Witness::Rule(j)) = c.witness[r.index()]
-            {
-                if semantic(i, j) == SemState::Rejected {
-                    reason = StaleReason::Rejected;
-                } else if let Some(p) = i.premises(j).find(|p| !self.literal(i, *p, 0)) {
-                    let logical = i.revision_logical(p.premise);
-                    let head = i.head(logical);
-                    reason = if p.kind == EdgeKind::Pin
-                        && head != p.premise
-                        && i.logical_kind(logical) != RecordKind::Evidence
-                    {
-                        StaleReason::SupersededPinnedPremise(p.premise)
-                    } else if p.kind == EdgeKind::Sem
-                        && head != p.premise
-                        && !self.entries[head.index()].truth[0]
-                    {
-                        self.entries[head.index()].reason.clone()
-                    } else {
-                        self.entries[p.premise.index()].reason.clone()
-                    };
-                }
+        }
+        for j in self.pending_rule.remove(&r).unwrap_or_default() {
+            self.dirty_rule[j.index()] = false;
+            let sem = semantic(i, j);
+            self.sem[j.index()] = sem;
+            for level in 0..2 {
+                self.active[j.index()][level] =
+                    i.enabled(j) && gate(sem, level) && self.unsat[j.index()][level] == 0;
             }
-            self.entries[r.index()] = Entry {
-                epoch: Some(epoch),
-                truth,
-                witness,
-                reason,
+        }
+        self.node(i, c, index, r);
+    }
+    /// Node columns of `r` from its rules' columns.
+    fn node(&mut self, i: &impl InputView, c: &CountingState, index: &Indexes, r: RevisionId) {
+        let n = r.index();
+        let base = i.base(r);
+        for level in 0..2 {
+            let first = index
+                .rules_by_concl
+                .row(n)
+                .iter()
+                .find(|j| self.active[j.index()][level])
+                .copied();
+            self.truth[n][level] = base || first.is_some();
+            self.witness[n][level] = if base {
+                Some(Witness::Base)
+            } else {
+                first.map(Witness::Rule)
             };
         }
+        self.reason[n] = self.stale_reason(i, c, index, r);
     }
-    pub fn node(
-        &mut self,
+    /// SD13 STALE reason rule; inherited reasons are read from final premises.
+    fn stale_reason(
+        &self,
         i: &impl InputView,
         c: &CountingState,
         index: &Indexes,
         r: RevisionId,
-        epoch: Epoch,
-    ) -> Result<NodeState, TxError> {
-        if r.index() >= i.revision_count() {
-            return Err(TxError::UnknownRef);
+    ) -> StaleReason {
+        if i.head(i.revision_logical(r)) != r {
+            return StaleReason::HeadSuperseded;
         }
-        self.ensure(i, c, index, r, epoch);
-        Ok(self.cached_node(i, r, c.row(r)))
+        let (true, Some(Witness::Rule(j))) = (c.s[r.index()], c.witness[r.index()]) else {
+            return StaleReason::Unsupported;
+        };
+        if self.sem[j.index()] == SemState::Rejected {
+            return StaleReason::Rejected;
+        }
+        let failing = index
+            .rule_incidences(j)
+            .find(|id| self.lit[*id] & 1 == 0)
+            .map(|id| index.incidence(i, id));
+        let Some(p) = failing else {
+            return StaleReason::Unsupported;
+        };
+        let logical = i.revision_logical(p.premise);
+        let head = i.head(logical);
+        if p.kind == EdgeKind::Pin
+            && head != p.premise
+            && i.logical_kind(logical) != RecordKind::Evidence
+        {
+            StaleReason::SupersededPinnedPremise(p.premise)
+        } else if p.kind == EdgeKind::Sem && head != p.premise && !self.truth[head.index()][0] {
+            self.reason[head.index()].clone()
+        } else {
+            self.reason[p.premise.index()].clone()
+        }
     }
-    /// Used by the transaction diff walker before invalidating this node. All
-    /// entries are valid at publication; DAG order preserves old entries until pop.
-    pub fn cached_node(
+    /// After `r` is popped: marks downstream incidences when `r`'s truth or
+    /// stale reason changed (reason-only changes still propagate, ADR 0008 §7).
+    /// Returns the conclusions to push.
+    pub(crate) fn propagate(
+        &mut self,
+        i: &impl InputView,
+        index: &Indexes,
+        r: RevisionId,
+    ) -> Vec<RevisionId> {
+        let mut out = Vec::new();
+        for id in index.rules_by_premise.row(r.index()) {
+            out.extend(self.mark_incidence(i, index, *id));
+        }
+        let logical = i.revision_logical(r);
+        if i.head(logical) == r {
+            for id in index.sem_by_logical.row(logical.index()) {
+                out.extend(self.mark_incidence(i, index, *id));
+            }
+        }
+        out
+    }
+    /// The node's full published state.
+    pub(crate) fn node_state(
         &self,
         i: &impl InputView,
         r: RevisionId,
-        c: crate::engine::CountingRow,
+        c: CountingRow,
     ) -> NodeState {
-        let entry = &self.entries[r.index()];
-        crate::invariant_assert!(entry.epoch.is_some());
-
-        let witness = [c.witness, entry.witness[0], entry.witness[1]];
+        let n = r.index();
+        let witness = [c.witness, self.witness[n][0], self.witness[n][1]];
         let sem = if !c.s {
             SemState::NotApplicable
         } else {
             match witness.iter().rev().flatten().next() {
                 Some(Witness::Base) => SemState::NotRequired,
-                Some(Witness::Rule(j)) => semantic(i, *j),
+                Some(Witness::Rule(j)) => self.sem[j.index()],
                 None => SemState::NotApplicable,
             }
         };
+        let [l1, l2] = self.truth[n];
         NodeState {
             l0: c.s,
-            l1: entry.truth[0],
-            l2: entry.truth[1],
+            l1,
+            l2,
             support: c.support,
             witness,
             dimensions: Dimensions {
@@ -221,94 +326,78 @@ impl LayerMemo {
                 } else {
                     Structural::Unsupported
                 },
-                l1: entry.truth[0],
-                l2: entry.truth[1],
+                l1,
+                l2,
                 semantic: sem,
-                stale_reason: entry.reason.clone(),
+                stale_reason: self.reason[n].clone(),
                 observation: Observation::NotApplicable,
             },
         }
     }
-    pub fn refresh_rule(
-        &mut self,
-        i: &impl InputView,
-        c: &CountingState,
-        index: &Indexes,
-        j: RuleId,
-        epoch: Epoch,
-        d: &mut DerivedSnapshot,
-    ) {
-        let n = j.index();
-        d.sat[n].copy_from_slice(&c.sat[index.rule_incidences(j)]);
-        d.unsat[n] = c.unsat[n];
-        d.active[n] = c.counted[n];
-        let sem = semantic(i, j);
-        d.sem[n] = sem;
-        for p in i.premises(j) {
-            self.ensure(i, c, index, p.premise, epoch);
-            if p.kind == EdgeKind::Sem {
-                self.ensure(i, c, index, i.head(i.revision_logical(p.premise)), epoch);
-            }
-        }
-        for level in 0..2 {
-            let gate = if level == 0 {
-                sem != SemState::Rejected
-            } else {
-                matches!(sem, SemState::Verified | SemState::NotRequired)
-            };
-            d.layer_active[n][level] =
-                i.enabled(j) && gate && i.premises(j).all(|p| self.literal(i, p, level));
-        }
+    pub(crate) fn sem(&self, j: RuleId) -> SemState {
+        self.sem[j.index()]
     }
-    pub fn snapshot(
-        &mut self,
+    pub(crate) fn layer_active(&self, j: RuleId) -> [bool; 2] {
+        self.active[j.index()]
+    }
+    /// Recomputes every column from scratch in topological order with direct
+    /// literal evaluation (FullRecompute mode; snapshot rebuilds).
+    pub(crate) fn rebuild(
         i: &impl InputView,
         c: &CountingState,
         index: &Indexes,
-        epoch: Epoch,
-    ) -> DerivedSnapshot {
-        let nodes = (0..i.revision_count())
-            .map(|n| {
-                self.node(i, c, index, RevisionId(n as u32), epoch)
-                    .expect("valid revision")
-            })
-            .collect();
-        let sem: Vec<_> = (0..i.rule_count())
-            .map(|n| semantic(i, RuleId(n as u32)))
-            .collect();
-        let mut layer_active = Vec::new();
-        for (n, rule_sem) in sem.iter().enumerate() {
-            let j = RuleId(n as u32);
-            let mut active = [false; 2];
-            if i.enabled(j) {
-                for p in i.premises(j) {
-                    self.ensure(i, c, index, p.premise, epoch);
-                    if p.kind == EdgeKind::Sem {
-                        self.ensure(i, c, index, i.head(i.revision_logical(p.premise)), epoch);
+        topo: &PearceKelly,
+    ) -> Self {
+        let mut out = Self::default();
+        out.grow(i, index);
+        for node in topo.order() {
+            let CycleNode::Revision(r) = node else {
+                continue;
+            };
+            for j in index.rules_by_concl.row(r.index()) {
+                let sem = semantic(i, *j);
+                out.sem[j.index()] = sem;
+                let mut unsat = [0u32; 2];
+                for id in index.rule_incidences(*j) {
+                    let p = index.incidence(i, id);
+                    let mut bits = 0;
+                    for (level, u) in unsat.iter_mut().enumerate() {
+                        if out.literal(i, p, level) {
+                            bits |= 1 << level;
+                        } else {
+                            *u += 1;
+                        }
                     }
+                    out.lit[id] = bits;
                 }
-                for (level, result) in active.iter_mut().enumerate() {
-                    let gate = if level == 0 {
-                        *rule_sem != SemState::Rejected
-                    } else {
-                        matches!(rule_sem, SemState::Verified | SemState::NotRequired)
-                    };
-                    *result = gate && i.premises(j).all(|p| self.literal(i, p, level));
+                out.unsat[j.index()] = unsat;
+                for (level, u) in unsat.iter().enumerate() {
+                    out.active[j.index()][level] = i.enabled(*j) && gate(sem, level) && *u == 0;
                 }
             }
-            layer_active.push(active);
+            out.node(i, c, index, *r);
         }
-        DerivedSnapshot {
-            nodes,
-            sem,
-            layer_active,
-            sat: index
-                .rule_start
-                .windows(2)
-                .map(|w| c.sat[w[0] as usize..w[1] as usize].to_vec())
-                .collect(),
-            unsat: c.unsat.clone(),
-            active: c.counted.clone(),
-        }
+        out
+    }
+    /// Debug/paranoid: the incremental columns equal a full rebuild (DA5 for L1/L2).
+    pub(crate) fn assert_matches_rebuild(
+        &self,
+        i: &impl InputView,
+        c: &CountingState,
+        index: &Indexes,
+        topo: &PearceKelly,
+    ) {
+        let full = Self::rebuild(i, c, index, topo);
+        assert!(self.pending_inc.is_empty() && self.pending_rule.is_empty());
+        assert_eq!(
+            (&self.lit, &self.unsat, &self.active, &self.sem),
+            (&full.lit, &full.unsat, &full.active, &full.sem),
+            "L1/L2 rule columns"
+        );
+        assert_eq!(
+            (&self.truth, &self.witness, &self.reason),
+            (&full.truth, &full.witness, &full.reason),
+            "L1/L2 node columns"
+        );
     }
 }

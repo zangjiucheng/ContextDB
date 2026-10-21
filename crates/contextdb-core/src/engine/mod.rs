@@ -48,7 +48,10 @@ pub struct Maintenance {
     /// path computes its own snapshot diff and does not consume this journal.
     pub before: std::collections::BTreeMap<RevisionId, CountingRow>,
 }
-pub trait Maintainer: Clone + std::fmt::Debug + Default {
+pub trait Maintainer: Clone + std::fmt::Debug + Default + Send + Sync {
+    /// Whether L1/L2 columns are maintained incrementally (Counting) or rebuilt
+    /// from scratch after every commit (FullRecompute, an independent exact mode).
+    const INCREMENTAL_LAYERS: bool;
     fn update<S: StatsSink, V: InputView>(
         &mut self,
         i: &V,

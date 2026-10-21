@@ -9,8 +9,10 @@ mod contract;
 /// let op = contextdb_model::Op::AddRule { conclusion: contextdb_model::LogicalId(0), incidences: vec![], enabled: true };
 /// ```
 pub struct Contract;
+mod cert;
 mod status;
 mod wire;
+pub use cert::*;
 pub use contract::*;
 pub use status::*;
 pub use wire::*;

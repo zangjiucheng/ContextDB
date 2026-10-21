@@ -19,3 +19,4 @@ rand_core = "=0.9.5"
 [dev-dependencies]
 contextdb-core.workspace = true
 stats_alloc = "=0.1.10"
+blake3 = "=1.8.7"

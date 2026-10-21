@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.5.3 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.5.4 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -488,7 +488,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **Gate P1**
 - G2：P0 全部 golden 迁移到引擎（每个 exact mode 各跑一次）；新增 T05、T06c（引擎）、T06d-cur、T07d、T08、T08b、T22、T23、T27、T30、T31。
 - G3：PROP1–PROP9（PROP2b 自 P3 起，届时 L1/L2 为增量列）；PROP1 **10,000 固定 seed**，每 epoch 精确计数器相等；coverage 门槛（§8.2）全部达到；bounded exhaustive（nightly）深度 6 为 gate（0 违例并报告状态/迁移数），深度 8 只报告；cargo-mutants 作用于 `counting.rs`、`txn.rs`，存活 mutant 全部杀死或书面说明。
-- G5（initial，经 ADR 校准）：在 `multi_support(p_alt=0.3)` 与 `hub` 两种形状、100K revisions / ~300K incidences、单线程下：局部更新（E_visited ≤ 100）commit p99 ≤ 1 ms；CURRENT（L0）p99 ≤ 50 µs；WHY(depth 3) p99 ≤ 200 µs；内存按 ADR 0005 分范围（不含 payload）：hot（支持索引 + 计数 + 拓扑）≤ 72 B/incidence，inputs ≤ 50 B/incidence，query cache ≤ 49 B/incidence，内存 history ≤ 58 B/每条状态变化，live heap 总量 ≤ 各范围之和；预算 = ⌈1.10 × 两形状实测上界较大者⌉；以计数分配器测得的 live heap 作上界，分类计数不得超过 live heap（否则 INVALID）；RSS 仅报告不设门槛。原 64 B/incidence 整库预算已由 ADR 0005 校准取代。报告附 ShapeStats。
+- G5（initial，经 ADR 校准）：在 `multi_support(p_alt=0.3)` 与 `hub` 两种形状、100K revisions / ~300K incidences、单线程下：局部更新（E_visited ≤ 100）commit p99 ≤ 1 ms；CURRENT（L0）p99 ≤ 50 µs；WHY(depth 3) p99 ≤ 200 µs；内存按 ADR 0005 分范围（不含 payload；P3 起 L1/L2 改为维护列，经 ADR 0009 重新校准）：hot（支持索引 + 计数 + 拓扑 + L1/L2 列）≤ 90 B/incidence，inputs ≤ 50 B/incidence，query cache ≤ 32 B/incidence，内存 history ≤ 58 B/每条状态变化，live heap 总量 ≤ 各范围之和；预算 = ⌈1.10 × 两形状实测上界较大者⌉；以计数分配器测得的 live heap 作上界，分类计数不得超过 live heap（否则 INVALID）；RSS 仅报告不设门槛。原 64 B/incidence 整库预算已由 ADR 0005 校准取代。报告附 ShapeStats。
 - G6：§1.2 的 MongoDB→PostgreSQL 场景以 Rust 集成测试形式通过（Cur 依赖的 D3 STALE、Sem 依赖的 D2 PENDING、有替代支持的结论保留）。
 - G8：`docs/SEMANTICS.md` 的 prior-art 一节写明 counting 算法来自 Gupta et al. 1993 / Forbus & de Kleer 1993 Ex 7.5，不作为本项目的主张。
 
@@ -1252,6 +1252,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.5.4 | 2026-10-20 | ADR 0009（项目所有者决定）：L1/L2 从查询缓存改为维护列，状态从 query cache 移入 hot；按 ADR 0005 同一规则重新校准：hot ≤ 90、query cache ≤ 32 B/incidence，范围预算总和 172 B/incidence（原 171） |
 | 1.5.3 | 2026-10-20 | ADR 0008 确认轮：先校验时跳过读集中已被取代的条目，并作为取代 diff 报告，使冲突后重读即可恢复（T32 流程）；共享 vector 项的 strict 区间从最早的 `since_epoch` 起算。P3 G0 通过 |
 | 1.5.2 | 2026-10-20 | ADR 0008 第三轮复核：条目增加 `since_epoch`，strict 区间从它起算；`ctx_check` 先校验再重新签发，不得用重新签发掩盖 strict 变化；签发失败时按 §6.4 映射为判定；`Empty` 加入判定集合；校验的输入写明含历史与日志链。op_log 尾部算法中，语义故障即使位于组边界也 fail-closed（见 ADR 0008 §3.2） |
 | 1.5.1 | 2026-10-20 | ADR 0008 第二轮复核：T34 的截断单位改为最后一组（op_log 格式 2 与 session log 共用尾部算法）；§6.4 增加 `log_checksum_at_issue` 与第 0 步 `Invalid{LogMismatch}`；签发增加 `Empty` 失败，并区分 recall 证书与 session 证书（读集条目可被取代，失败的 certified 读记为 advisory）；advisory recall 不签发证书；`ctx_read` 增加 `mode`；§6.2 增加 daemon / store 错误；§10 CodeAnchor 一行写明协作式边界 |

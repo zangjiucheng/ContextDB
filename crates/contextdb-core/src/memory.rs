@@ -72,13 +72,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 .iter()
                 .map(|((_, v), r)| vec_bytes(v) + r.validator.capacity())
                 .sum::<usize>();
-        let history = vec_bytes(&self.history)
+        let history = self.changes.retained_bytes()
+            + vec_bytes(&self.history)
             + self
                 .history
                 .iter()
                 .map(|t| vec_bytes(&t.changes))
                 .sum::<usize>();
-        let mut query_cache = self.memo.borrow().retained_bytes();
+        let mut query_cache = 0;
         if let Some(d) = self.derived.get() {
             query_cache += vec_bytes(&d.nodes)
                 + vec_bytes(&d.sat)
@@ -91,7 +92,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         MemoryFootprint {
             inputs,
             indexes: self.indexes.retained_bytes(),
-            maintenance: self.maintainer.retained_bytes(),
+            maintenance: self.maintainer.retained_bytes() + self.layers.retained_bytes(),
             topology: self.pk.retained_bytes(),
             query_cache,
             history,

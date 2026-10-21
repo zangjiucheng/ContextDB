@@ -1,5 +1,7 @@
 //! Independent input model and Jacobi/Kahn reference evaluators.
+mod cert;
 mod eval;
+pub use cert::{CertParams, History, cert_issue_oracle, cert_validate_oracle};
 mod input;
 mod query;
 pub use eval::{jacobi, kahn, summarize};

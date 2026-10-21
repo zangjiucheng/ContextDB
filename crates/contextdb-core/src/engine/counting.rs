@@ -65,6 +65,7 @@ impl Counting {
     }
 }
 impl Maintainer for Counting {
+    const INCREMENTAL_LAYERS: bool = true;
     fn retained_bytes(&self) -> usize {
         self.state.retained_bytes()
             + crate::memory::bool_bytes(&self.dirty_inc)

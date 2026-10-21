@@ -8,6 +8,7 @@ pub struct FullRecompute {
     state: CountingState,
 }
 impl Maintainer for FullRecompute {
+    const INCREMENTAL_LAYERS: bool = false;
     fn retained_bytes(&self) -> usize {
         self.state.retained_bytes()
     }

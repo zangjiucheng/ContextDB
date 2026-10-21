@@ -1,4 +1,4 @@
-//! Sequential transactions with exact incremental L0 and memoized L1/L2 queries.
+//! Sequential transactions with exact incremental L0 and maintained L1/L2 columns.
 //! Inputs are exported by value; callers cannot mutate stored inputs or derived state.
 //! ```compile_fail
 //! let mut db = contextdb_core::Db::default();
@@ -8,6 +8,8 @@
 macro_rules! invariant_assert { ($($arg:tt)*) => { if cfg!(any(debug_assertions, feature="paranoid")) { assert!($($arg)*); } }; }
 pub(crate) use invariant_assert;
 mod arena;
+mod cert;
+pub use cert::{HistoryUnavailable, IssueRequest, LogLink};
 mod fast;
 mod history;
 mod memory;
@@ -17,7 +19,7 @@ pub mod engine;
 mod layers;
 mod query;
 pub use query::Proof;
-use std::{cell::RefCell, sync::OnceLock};
+use std::sync::OnceLock;
 mod pk;
 mod stage;
 mod stats;
@@ -50,7 +52,8 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     rules: RuleArena,
     epoch: Epoch,
     derived: OnceLock<DerivedSnapshot>,
-    memo: RefCell<layers::LayerMemo>,
+    layers: layers::LayerColumns,
+    changes: cert::ChangeLog,
     indexes: Indexes,
     history: Vec<history::Transition>,
     initial_epoch: Epoch,
@@ -59,14 +62,7 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
 }
 impl<M: Maintainer, S: StatsSink> DerivedView for Db<M, S> {
     fn derived(&self) -> &DerivedSnapshot {
-        self.derived.get_or_init(|| {
-            self.memo.borrow_mut().snapshot(
-                &self.view(),
-                self.maintainer.state(),
-                &self.indexes,
-                self.epoch,
-            )
-        })
+        self.derived.get_or_init(|| self.snapshot())
     }
 }
 impl Default for Db<Counting, NoStats> {
@@ -83,7 +79,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             rules: RuleArena::default(),
             epoch: Epoch(0),
             derived: OnceLock::new(),
-            memo: RefCell::default(),
+            layers: layers::LayerColumns::default(),
+            changes: cert::ChangeLog::default(),
             indexes: Indexes::default(),
             pk: PearceKelly::default(),
             maintainer: M::default(),
@@ -155,6 +152,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         db.tables = inputs;
         db.pk = pk;
         db.indexes = indexes;
+        db.layers =
+            layers::LayerColumns::rebuild(&db.view(), db.maintainer.state(), &db.indexes, &db.pk);
         // Baseline post-states at `epoch`: pre-states for later diffs. DIFF
         // windows start after `epoch`, so the baseline is never reported itself.
         let baseline = db
@@ -208,13 +207,39 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         }
     }
     pub fn node(&self, r: RevisionId) -> Result<NodeState, TxError> {
-        self.memo.borrow_mut().node(
-            &self.view(),
-            self.maintainer.state(),
-            &self.indexes,
-            r,
-            self.epoch,
-        )
+        if r.index() >= self.revisions.len() {
+            return Err(TxError::UnknownRef);
+        }
+        Ok(self
+            .layers
+            .node_state(&self.view(), r, self.maintainer.state().row(r)))
+    }
+    /// The full derived snapshot from the maintained columns.
+    fn snapshot(&self) -> DerivedSnapshot {
+        let view = self.view();
+        let c = self.maintainer.state();
+        DerivedSnapshot {
+            nodes: (0..self.revisions.len())
+                .map(|n| {
+                    let r = RevisionId(n as u32);
+                    self.layers.node_state(&view, r, c.row(r))
+                })
+                .collect(),
+            sem: (0..self.rules.len())
+                .map(|n| self.layers.sem(RuleId(n as u32)))
+                .collect(),
+            layer_active: (0..self.rules.len())
+                .map(|n| self.layers.layer_active(RuleId(n as u32)))
+                .collect(),
+            sat: self
+                .indexes
+                .rule_start
+                .windows(2)
+                .map(|w| c.sat[w[0] as usize..w[1] as usize].to_vec())
+                .collect(),
+            unsat: c.unsat.clone(),
+            active: c.counted.clone(),
+        }
     }
     pub fn current(&self, l: LogicalId) -> Result<(RevisionId, NodeState), TxError> {
         let r = *self
@@ -305,10 +330,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             &self.view(),
             self.maintainer.state(),
             &self.indexes,
-            &mut self.memo.borrow_mut(),
+            &self.layers,
             r,
             depth,
-            self.epoch,
         )
     }
     #[cfg(feature = "timing")]
@@ -468,6 +492,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         if let Some(p) = policy {
             self.tables.policy = p;
         }
+        // Advances only (ADR 0008 §6.3): a committed position that differs.
+        let watermark_moves: Vec<String> = watermarks
+            .iter()
+            .filter(|(scope, position)| self.tables.watermarks.get(*scope) != Some(*position))
+            .map(|(scope, _)| scope.clone())
+            .collect();
         self.tables.watermarks.extend(watermarks);
         for (l, m) in metadata {
             self.logicals.put_metadata(l, m);
@@ -519,7 +549,18 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 .keys()
                 .map(|(j, _)| self.rules.conclusion(*j)),
         );
-        Ok(self.finish(undo, delta, allocations, extra, old_revisions, epoch, stats))
+        let revalidated: Vec<RuleId> = undo.validations.keys().map(|(j, _)| *j).collect();
+        Ok(self.finish(
+            undo,
+            delta,
+            allocations,
+            extra,
+            revalidated,
+            watermark_moves,
+            old_revisions,
+            epoch,
+            stats,
+        ))
     }
     fn commit_mutable(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
@@ -538,10 +579,149 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             delta,
             Allocations::default(),
             Default::default(),
+            Vec::new(),
+            Vec::new(),
             old_revisions,
             epoch,
             S::default(),
         ))
+    }
+    /// Counting mode: the rank-ordered status walker. Each popped node first
+    /// gets its pre-state from the unchanged columns, then its dirty rules and
+    /// incidences are re-evaluated (SPEC §3.4 Phase 3b). Changes in any of
+    /// L0/L1/L2 or the stale reason propagate downstream (ADR 0008 §7).
+    #[allow(clippy::too_many_arguments)]
+    fn walk(
+        &mut self,
+        undo: &fast::Undo,
+        update: &engine::Maintenance,
+        mut seeds: std::collections::BTreeSet<RevisionId>,
+        delta: &NetDelta,
+        revalidated: &[RuleId],
+        old_revisions: usize,
+        stats: &mut S,
+    ) -> (Vec<NodeChange>, Vec<RevisionId>) {
+        use std::{cmp::Reverse, collections::BinaryHeap};
+        let view = view::StoredView {
+            tables: &self.tables,
+            logicals: &self.logicals,
+            revisions: &self.revisions,
+            rules: &self.rules,
+        };
+        let before_view = fast::Before {
+            view: view::StoredView {
+                tables: &self.tables,
+                logicals: &self.logicals,
+                revisions: &self.revisions,
+                rules: &self.rules,
+            },
+            undo,
+        };
+        let state = self.maintainer.state();
+        self.layers.grow(&view, &self.indexes);
+        seeds.extend(self.layers.seed(&view, &self.indexes, delta, revalidated));
+        let mut heap = BinaryHeap::new();
+        for r in &seeds {
+            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(*r)), *r)));
+        }
+        let mut changes = Vec::new();
+        let mut visited = Vec::new();
+        while let Some(Reverse((_, r))) = heap.pop() {
+            stats.record(stats::Work::Status(r));
+            visited.push(r);
+            let before = (r.index() < old_revisions).then(|| {
+                let old = update
+                    .before
+                    .get(&r)
+                    .copied()
+                    .unwrap_or_else(|| state.row(r));
+                self.layers.node_state(&before_view, r, old)
+            });
+            self.layers.refresh(&view, state, &self.indexes, r);
+            let after = self.layers.node_state(&view, r, state.row(r));
+            let propagates = before.as_ref().is_none_or(|before| {
+                before.l0 != after.l0
+                    || before.l1 != after.l1
+                    || before.l2 != after.l2
+                    || before.dimensions.stale_reason != after.dimensions.stale_reason
+            });
+            if propagates {
+                for c in self.layers.propagate(&view, &self.indexes, r) {
+                    if seeds.insert(c) {
+                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
+                    }
+                }
+                // Conclusions whose incidences were already dirty still need a
+                // visit for inherited stale reasons.
+                for id in self.indexes.rules_by_premise.row(r.index()) {
+                    let c = view.conclusion(self.indexes.inc_rule[id.index()]);
+                    if seeds.insert(c) {
+                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
+                    }
+                }
+            }
+            if before.as_ref() != Some(&after) {
+                changes.push(NodeChange {
+                    revision: r,
+                    before,
+                    after: Some(after),
+                });
+            }
+        }
+        #[cfg(any(debug_assertions, feature = "paranoid"))]
+        self.layers
+            .assert_matches_rebuild(&view, state, &self.indexes, &self.pk);
+        changes.sort_by_key(|c| c.revision);
+        (changes, visited)
+    }
+    /// FullRecompute mode: rebuild every L1/L2 column and compare every node.
+    fn recompute_layers(
+        &mut self,
+        undo: &fast::Undo,
+        update: &engine::Maintenance,
+        old_revisions: usize,
+    ) -> Vec<NodeChange> {
+        let view = view::StoredView {
+            tables: &self.tables,
+            logicals: &self.logicals,
+            revisions: &self.revisions,
+            rules: &self.rules,
+        };
+        let before_view = fast::Before {
+            view: view::StoredView {
+                tables: &self.tables,
+                logicals: &self.logicals,
+                revisions: &self.revisions,
+                rules: &self.rules,
+            },
+            undo,
+        };
+        let state = self.maintainer.state();
+        let before: Vec<NodeState> = (0..old_revisions)
+            .map(|n| {
+                let r = RevisionId(n as u32);
+                let old = update
+                    .before
+                    .get(&r)
+                    .copied()
+                    .unwrap_or_else(|| state.row(r));
+                self.layers.node_state(&before_view, r, old)
+            })
+            .collect();
+        self.layers = layers::LayerColumns::rebuild(&view, state, &self.indexes, &self.pk);
+        let mut before = before.into_iter();
+        (0..self.revisions.len())
+            .filter_map(|n| {
+                let r = RevisionId(n as u32);
+                let after = self.layers.node_state(&view, r, state.row(r));
+                let before = before.next();
+                (before.as_ref() != Some(&after)).then_some(NodeChange {
+                    revision: r,
+                    before,
+                    after: Some(after),
+                })
+            })
+            .collect()
     }
     /// Shared publication tail: counting maintenance, the status walker from
     /// net-delta seeds (revisions at or above `old_revisions` are new and have
@@ -553,6 +733,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         delta: NetDelta,
         allocations: Allocations,
         extra: std::collections::BTreeSet<RevisionId>,
+        revalidated: Vec<RuleId>,
+        watermark_moves: Vec<String>,
         old_revisions: usize,
         epoch: Epoch,
         mut stats: S,
@@ -570,115 +752,69 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .update(&view, &self.indexes, &self.pk, &delta, &mut stats);
         // Counter/witness-only changes must be reported, even without S flips.
         seeds.extend(update.before.keys().copied());
-        let before_view = fast::Before {
-            view: view::StoredView {
-                tables: &self.tables,
-                logicals: &self.logicals,
-                revisions: &self.revisions,
-                rules: &self.rules,
-            },
-            undo: &undo,
+        let (changes, visited) = if M::INCREMENTAL_LAYERS {
+            self.walk(
+                &undo,
+                &update,
+                seeds,
+                &delta,
+                &revalidated,
+                old_revisions,
+                &mut stats,
+            )
+        } else {
+            (
+                self.recompute_layers(&undo, &update, old_revisions),
+                Vec::new(),
+            )
         };
-        use std::{cmp::Reverse, collections::BinaryHeap};
-        let mut heap = BinaryHeap::new();
-        for r in &seeds {
-            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(*r)), *r)));
-        }
-        let mut changes = Vec::new();
-        let mut memo = self.memo.borrow_mut();
-        while let Some(Reverse((_, r))) = heap.pop() {
-            stats.record(stats::Work::Status(r));
-            let is_new = r.index() >= old_revisions;
-            let before = (!is_new).then(|| {
-                let old = update
-                    .before
-                    .get(&r)
-                    .copied()
-                    .unwrap_or_else(|| self.maintainer.state().row(r));
-                memo.cached_node(&before_view, r, old)
-            });
-            memo.invalidate(&[r]);
-            let after = memo
-                .node(&view, self.maintainer.state(), &self.indexes, r, epoch)
-                .expect("status revision");
-            let propagates = before.as_ref().is_none_or(|before| {
-                before.l0 != after.l0
-                    || before.l1 != after.l1
-                    || before.l2 != after.l2
-                    || before.dimensions.stale_reason != after.dimensions.stale_reason
-            });
-            if propagates {
-                for id in self.indexes.rules_by_premise.row(r.index()) {
-                    let c = view.conclusion(self.indexes.inc_rule[id.index()]);
-                    if seeds.insert(c) {
-                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
+        if M::INCREMENTAL_LAYERS {
+            // Preserve an already materialized public snapshot: extend it for
+            // new revisions/rules and patch changed rows. Rebuilding is O(N).
+            if let Some(snapshot) = self.derived.get_mut() {
+                for change in &changes {
+                    let after = change.after.as_ref().expect("post-state").clone();
+                    let n = change.revision.index();
+                    if n < snapshot.nodes.len() {
+                        snapshot.nodes[n] = after;
+                    } else {
+                        crate::invariant_assert!(n == snapshot.nodes.len());
+                        snapshot.nodes.push(after);
                     }
                 }
-                let logical = view.revision_logical(r);
-                if view.head(logical) == r {
-                    for id in self.indexes.sem_by_logical.row(logical.index()) {
-                        let c = view.conclusion(self.indexes.inc_rule[id.index()]);
-                        if seeds.insert(c) {
-                            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
-                        }
+                let added = delta.new_rules.len();
+                memory::grow(&mut snapshot.sat, added);
+                memory::grow(&mut snapshot.unsat, added);
+                memory::grow(&mut snapshot.active, added);
+                memory::grow(&mut snapshot.layer_active, added);
+                memory::grow(&mut snapshot.sem, added);
+                for j in delta.new_rules.iter() {
+                    crate::invariant_assert!(j.index() == snapshot.sat.len());
+                    snapshot
+                        .sat
+                        .push(vec![false; self.indexes.rule_incidences(*j).len()]);
+                    snapshot.unsat.push(0);
+                    snapshot.active.push(false);
+                    snapshot.layer_active.push([false; 2]);
+                    snapshot.sem.push(SemState::NotRequired);
+                }
+                let c = self.maintainer.state();
+                for r in &visited {
+                    for j in self.indexes.rules_by_concl.row(r.index()) {
+                        let n = j.index();
+                        snapshot.sat[n].copy_from_slice(&c.sat[self.indexes.rule_incidences(*j)]);
+                        snapshot.unsat[n] = c.unsat[n];
+                        snapshot.active[n] = c.counted[n];
+                        snapshot.layer_active[n] = self.layers.layer_active(*j);
+                        snapshot.sem[n] = self.layers.sem(*j);
                     }
                 }
             }
-            if before.as_ref() != Some(&after) {
-                changes.push(NodeChange {
-                    revision: r,
-                    before,
-                    after: Some(after),
-                });
-            }
+        } else {
+            self.derived = OnceLock::new();
         }
-        drop(memo);
-        changes.sort_by_key(|c| c.revision);
-        // Preserve an already materialized public snapshot: extend it for new
-        // revisions/rules and patch changed rows. Rebuilding would be O(N).
-        if let Some(snapshot) = self.derived.get_mut() {
-            for change in &changes {
-                let after = change.after.as_ref().expect("post-state").clone();
-                let n = change.revision.index();
-                if n < snapshot.nodes.len() {
-                    snapshot.nodes[n] = after;
-                } else {
-                    crate::invariant_assert!(n == snapshot.nodes.len());
-                    snapshot.nodes.push(after);
-                }
-            }
-            let added = delta.new_rules.len();
-            memory::grow(&mut snapshot.sat, added);
-            memory::grow(&mut snapshot.unsat, added);
-            memory::grow(&mut snapshot.active, added);
-            memory::grow(&mut snapshot.layer_active, added);
-            memory::grow(&mut snapshot.sem, added);
-            let missing = self.revisions.len().saturating_sub(snapshot.nodes.len());
-            memory::grow(&mut snapshot.nodes, missing);
-            for j in delta.new_rules.iter() {
-                crate::invariant_assert!(j.index() == snapshot.sat.len());
-                snapshot
-                    .sat
-                    .push(vec![false; self.indexes.rule_incidences(*j).len()]);
-                snapshot.unsat.push(0);
-                snapshot.active.push(false);
-                snapshot.layer_active.push([false; 2]);
-                snapshot.sem.push(SemState::NotRequired);
-            }
-            let mut memo = self.memo.borrow_mut();
-            for r in &seeds {
-                for j in self.indexes.rules_by_concl.row(r.index()) {
-                    memo.refresh_rule(
-                        &view,
-                        self.maintainer.state(),
-                        &self.indexes,
-                        *j,
-                        epoch,
-                        snapshot,
-                    );
-                }
-            }
-        }
+        self.changes
+            .record(epoch, &delta, &watermark_moves, old_revisions);
         let l0_flips = update.flips;
         let status_diff = changes.iter().map(|c| c.revision).collect();
         self.record(epoch, changes);
@@ -712,6 +848,13 @@ pub fn policy_hash(p: &PolicyDoc) -> ContentHash {
     *blake3::hash(json.as_bytes()).as_bytes()
 }
 
+/// Snapshot readers share a published `Db` across threads (ADR 0008 §3.3).
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<Db<Counting, NoStats>>();
+    shared::<Db<FullRecompute, NoStats>>();
+    shared::<Db<Counting, CommitStats>>();
+};
 #[cfg(test)]
 mod tests {
     use super::*;

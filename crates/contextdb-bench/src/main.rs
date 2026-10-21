@@ -129,9 +129,10 @@ fn main() {
     let untracked = live_heap.saturating_sub(lower_total);
     let changes = memory.history_changes.max(1) as f64;
     let scopes = [
-        ("hot", memory.hot_bytes(), inc, 72.0),
+        // ADR 0009 (amends ADR 0005): L1/L2 columns moved from cache to hot.
+        ("hot", memory.hot_bytes(), inc, 90.0),
         ("inputs", memory.inputs, inc, 50.0),
-        ("query_cache", memory.query_cache, inc, 49.0),
+        ("query_cache", memory.query_cache, inc, 32.0),
         ("history_per_change", memory.history, changes, 58.0),
     ];
     let mut scopes_pass = accounting_valid;

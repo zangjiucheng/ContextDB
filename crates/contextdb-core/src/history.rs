@@ -196,7 +196,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let indexes = self.indexes.clone();
         let epoch = self.epoch;
         let derived = self.derived.clone();
-        let memo = self.memo.clone();
+        let layers = self.layers.clone();
+        let changes = self.changes.clone();
         let history_len = self.history.len();
         #[cfg(feature = "timing")]
         let timing = self.timing.clone();
@@ -212,7 +213,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.indexes = indexes;
         self.epoch = epoch;
         self.derived = derived;
-        self.memo = memo;
+        self.layers = layers;
+        self.changes = changes;
         self.history.truncate(history_len);
         #[cfg(feature = "timing")]
         {
