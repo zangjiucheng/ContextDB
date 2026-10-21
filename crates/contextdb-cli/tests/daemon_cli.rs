@@ -55,7 +55,7 @@ fn ctx_status_validate_and_shutdown_through_the_admin_socket() {
                base: bool| {
         let r = agent
             .call(&Request::Record {
-                session,
+                binding: Binding::root(session),
                 kind: RecordKind::Fact,
                 body: body.as_bytes().to_vec(),
                 target,

@@ -1,6 +1,6 @@
 # ADR 0010 — P4 hooks, outbox and action gating
 
-Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0. The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
+Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0; **revision 3.3** records implementation notes from milestone 1 (§4: requests changed in place under protocol 2, final tag tables; §2.3: a claim serves every request of its tool call). The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
 
 Review history (non-implementing reviewer):
 
@@ -86,8 +86,8 @@ Builds on ADR 0008.
 3. **Claude Code: id-keyed claims.** Claude sets `_meta["claudecode/toolUseId"]` (the hook's `tool_use_id`) on MCP calls.
    - The installer adds a PreToolUse entry matching only the session-scoped ContextDB tools: `^mcp__contextdb__(ctx_recall|ctx_read|ctx_record|ctx_supersede|ctx_check)$`, using the registered server name or `--mcp-name`. The name is normalised as the harness does for tool names (characters outside `[A-Za-z0-9_-]` become `_`) and regex-escaped; a name that normalises to empty is rejected.
    - For such a call the hook sends `Claim{session, agent_id, call: tool_use_id}` and **waits for the reply** before exiting, so the claim exists before the tool runs (PreToolUse precedes the call in both harnesses). It prints nothing.
-   - `ctx-mcp` sends `binding: Call(tool_use_id)`. The daemon resolves and consumes the claim for that exact id and runs the request in its session, as its `agent_id`.
-   - Claims live until consumed or until the session ends. There is no short TTL, so a long permission prompt cannot orphan a claim; a claim whose call never runs (denied or failed) is inert, because only its own id can consume it, and costs memory until the session ends.
+   - `ctx-mcp` sends `binding: Call(tool_use_id)`. The daemon resolves the claim for that exact id and runs the request in its session, as its `agent_id`. Every request of the same tool call (e.g. `ctx_record`'s advisory head lookup, then the record) resolves through the same claim; ids are unique per call, so reuse cannot misattribute.
+   - Claims live until the session ends (at most 65,536 kept per daemon, oldest dropped first). There is no short TTL, so a long permission prompt cannot orphan a claim; a claim whose call never runs (denied or failed) is inert, because only its own id resolves it.
    - The claim's `agent_id` comes from the hook input and is authoritative. Claude's undocumented `_meta["claudecode/agentId"]`, when present, is only cross-checked: a mismatch is logged and counted, never used to override.
 4. **No id.** If `_meta` carries neither form (a harness upgrade dropped it, or another client), `ctx-mcp` uses its own unkeyed session as in P3 and the response says `binding: Unclaimed`. There is **no** argument-digest fallback: matching by content could put one session's reads into another's ledger, and a check could then pass on reads that session never made (I6).
 5. **Report.** `ctx gate-report` counts `Unclaimed` calls, so a broken binding shows up in the dogfood numbers.
@@ -183,56 +183,52 @@ ToolClass = Edit | Write | Notebook | Patch | Shell | Other(String)
 ## 4. Daemon protocol (PROTOCOL_VERSION 2)
 
 **Compatibility.**
-- `Request` and `Response` gain appended variants.
-- `PROTOCOL_VERSION` goes from 1 to 2. The version check is strict equality, so P3 `ctx-mcp` processes get `ProtocolVersion` errors until the harness restarts them.
-- The session log gains tags 7–14. A P3 binary cannot open a P4 session log, so downgrade is not supported.
+- `PROTOCOL_VERSION` goes from 1 to 2, and the version check is strict equality. P3 clients cannot talk to a P4 daemon, so the session-scoped requests are changed in place (implementation note, revision 3.3), with no mirror tags. P3 `ctx-mcp` processes get `ProtocolVersion` errors until the harness restarts them.
+- The session log gains tags 7–11, 14 and 15–18 (§4.3). A P3 binary cannot open a P4 session log, so downgrade is not supported; P3 logs replay under P4 unchanged.
 - All of this is in the upgrade notes.
 
-**Session binding field.** Every session-scoped request now carries `binding: Session(SessionId) | Key{harness, harness_session, agent_id} | Call(tool_use_id)` in place of `session`. `Key` and `Call` resolve to `(session, agent_id)` (§2).
+**Session binding field.** `Recall`, `Read`, `Record`, `Supersede`, `Check`, `Updates` and `Briefing` carry `binding: Session{session, agent} | Key{harness, harness_session, agent} | Call{id}` in place of `session`. `Key` and `Call` resolve to `(session, agent)` (§2).
 
 ### 4.1 Requests
 
 | Tag | Request | Channel | Purpose |
 |---|---|---|---|
+| 10 | `Check{binding, cert_id?, live_pos, action?, mode?, harness_version}` (extended) | agent | `Check` for the bound agent's view (§7). With `mode` (resolved by the hook from the action and its configuration), the daemon applies the shared predicate, logs a `Gate` event and returns the gate decision. The action does not filter in P4 |
 | 17 | `SessionAttach{harness, harness_session, repo, head_sha}` | agent | §2.1 |
-| 18 | `Claim{session, agent_id, call}` | agent | §2.3 (Claude) |
-| 19 | `Check2{binding, agent_id, cert_id?, action?, mode: Option<Mode>, live_pos}` | agent | `Check` for the agent's view (§7), plus the action and the mode the hook resolved from the action and its configuration. If `mode` is present, the daemon applies the shared predicate, logs a `Gate` event and returns the gate decision. The action does not filter in P4 |
-| 20 | `Updates{binding, agent_id, ack: Option<u64>, max_items}` | agent | peek/ack of flips in the agent's view (§4.4) |
-| 21 | `Facts{stream, packets: Vec<Packet>, skip: Option<(u64, u64)>}` | agent | outbox delivery (§5); replies only once the facts are durable |
-| 22 | `Briefing{session, budget_chars}` | agent | advisory briefing (§4.5) |
-| 23 | `GateLog{since, limit}` | admin | input for the dogfood report (§10) |
+| 18 | `Claim{session, agent, call}` | agent | §2.3 (Claude) |
+| 19 | `Updates{binding, ack: Option<u64>, max_items}` | agent | peek/ack of flips in the agent's view (§4.4) |
+| 20 | `Facts{harness, harness_session, stream, packets: Vec<Packet>, skip: Option<(u64, u64)>}` | agent | outbox delivery (§5); replies only once the facts are durable |
+| 21 | `Briefing{binding, budget_chars}` | agent | advisory briefing (§4.5) |
+| 22 | `Telemetry{since, limit}` | admin | input for the dogfood report (§10) |
 
-- Session-scoped P3 requests (`Recall`, `Read`, `Record`, `Supersede`, `Check`) accept `binding` through new tags 24–28, which mirror them. The P3 tags keep their meaning.
-- Policy uses admin `Raw{[SetPolicy]}`.
+Policy uses admin `Raw{[SetPolicy]}`.
 
 ### 4.2 Responses
 
-- **`Check2`** returns the P3 `Check` response plus:
-  - `gate: Option<Decision>`, present when `mode` was sent;
-  - `updates_pending: u32`;
-  - `binding: Bound | Unclaimed`.
-
-  It never consumes updates.
-- **`Updates`** returns `{token, epoch, items: Vec<UpdateItem>, more}`, where `UpdateItem = {logical, key, cert_rev, current: Option<RevisionId>, state, summary}`.
+- **`Check`** gains `gate: Option<Decision>`, present when `mode` was sent, and `updates_pending: u32`. It never consumes updates. `ctx-mcp` reports the binding (`harness`, `claimed`, `unclaimed` or `server`) in its own output.
+- **`Updates`** returns `{token, items: Vec<UpdateItem>, more}`, where `UpdateItem = {logical, key, cert_rev, current: Option<RevisionId>, summary}`.
 - **`Facts`** returns `{applied_through}`, or `Gap{expected}`.
-- **`Briefing`** returns `{epoch, stale, pending, conflicted, items}`, all advisory and without handles.
+- **`Briefing`** returns `{stale, pending, conflicted, items}`, all advisory and without handles.
+- **`Attached`** returns `{session, created}`; **`Telemetry`** returns `{entries, next}`.
 
-### 4.3 Session events (appended tags)
+### 4.3 Session events
 
 | Tag | Event | Durability |
 |---|---|---|
-| 7 | `SessionKey{session_id, key}` | durable |
-| 8 | `Action{session_id, agent_id, stream, seq, action, ok, epoch}` | durable before the `Facts` reply |
-| 9 | `Gate{session_id, agent_id, stream_seq: Option<(stream, seq)>, action, verdict_code, mode, decision, available, harness_version, epoch}` | lazy when the hook reaches the daemon; durable when it comes from the outbox |
-| 10 | `Drift{session_id, agent_id, stream, seq, report}` | durable before reply |
-| 11 | `Reported{session_id, agent_id, token, items}` | lazy (§4.4) |
-| 12 | `Baseline{session_id, stream, seq, dirty}` | durable before reply |
-| 13 | `StreamEnd{session_id, stream, seq}` | durable before reply |
+| 7 | `SessionKey{session_id, harness, harness_session}` | durable |
+| 8 | `Fact{session_id, stream, packet, epoch}`: an applied outbox packet (action, drift input, baseline, stream end, unavailable gate) | durable before the `Facts` reply |
+| 9 | `Gate{session_id, agent, action, mode, verdict, decision, harness_version, epoch}` | lazy (telemetry) |
+| 10 | `Drift{session_id, agent, report, epoch}`: the computed report | durable before the `Facts` reply |
+| 11 | `Reported{session_id, agent, items}` | lazy (§4.4) |
 | 14 | `StreamMark{stream, applied_through, skipped: Option<(u64, u64)>}` | durable; one per `Facts` batch |
+| 15 | `Read{…, agent}` | as P3 `Read` |
+| 16 | `Write{session_id, agent, client_txn_id, epoch, reason, with_deps}` | lazy |
+| 17 | `SessionCert{session_id, agent, cert_id}` | durable |
+| 18 | `Unclaimed{epoch}` | lazy (telemetry) |
 
-- **`Record` now logs `Write2`.** `Write2{session_id, agent_id, client_txn_id, epoch, reason:"record"}` ties every write to its session and agent.
-- **Agent ids on existing events.** Existing tags keep their layout, so a P4 daemon replays a P3 session log unchanged (G7 test). New tags carry the agent: 15 `Read2{…, agent_id}`, 16 `Write2{…, agent_id}`, 17 `SessionCert2{session_id, agent_id, cert_id}`. Old tags decode as `agent_id = None` (root).
-- **Replay** rebuilds keys, per-agent ledgers, stream marks from `StreamMark`, reported state, and baselines.
+- **Agent ids on existing events.** The in-memory `Read`, `Write` and `SessionCert` events carry `agent` and are written under tags 15–17. P3 tags 1, 3 and 5 still decode, as the root agent (`agent = None`, `with_deps = false`), so a P4 daemon replays a P3 session log unchanged (test `p3_events_decode_as_the_root_agent`).
+- **`Record` now logs `Write`**, so every write is tied to its session and agent; `with_deps` says whether the batch added a rule with incidences (coverage, §10).
+- **Replay** rebuilds keys, per-agent ledgers and session certificates, stream marks from `StreamMark`, reported state, write sets and telemetry.
 
 ### 4.4 `context_update` (UserPromptSubmit)
 
@@ -347,7 +343,7 @@ It sends `Drift{agent_id, done}`. The daemon computes:
 
 ```
 resolve_mode(cfg: &GateConfig, action: &Action) -> Mode     // hook, CLI, MCP
-gate(mode: Mode, verdict: VerdictCode) -> Decision          // daemon (Check2), CLI dry-run, report
+gate(mode: GateMode, verdict: &Validation) -> Decision     // daemon (Check), CLI dry-run, report
 ```
 
 **`resolve_mode`.**
@@ -414,7 +410,7 @@ The unavailable outcome is recorded in the outbox as a `Gate` fact.
 
 ### 6.5 MCP `ctx_check` (SPEC §6.3)
 
-**Call.** `ctx_check(cert_id?, action?{tool, paths, command})` sends `Check2` with the binding from `_meta` (§2), the action, and the mode resolved from `gating.wire`.
+**Call.** `ctx_check(cert_id?, action?{tool, paths, command})` sends `Check` with the binding from `_meta` (§2), the action, and the mode resolved from `gating.wire`.
 
 **Returns** `{decision, verdict, diffs, superseded, cert_id, binding, context_update}`, where:
 - `decision` is the gate decision;
@@ -423,7 +419,7 @@ The unavailable outcome is recorded in the outbox as a `Gate` fact.
 ### 6.6 Certificate at SessionStart (ADR 0008 §16 open item)
 
 - SessionStart issues no certificate: with an empty ledger, issuance would give `Empty` (I6).
-- The first `Check2` of each agent issues it lazily, as in P3.
+- The first `Check` of each agent issues it lazily, as in P3.
 - Amendment A2.
 
 ## 7. Subagents (T66): one session, per-agent ledger views
@@ -616,7 +612,7 @@ The dogfood row stays Pending (§0.1).
 1. **Protocol and claims.**
    - Split out `contextdb-proto`, then protocol v2.
    - `SessionAttach`, `_meta` binding, Claude claims.
-   - Per-agent ledger views and `Check2`, `Updates`, `Facts`, `Briefing`, `GateLog`.
+   - Per-agent ledger views and the extended `Check`, `Updates`, `Facts`, `Briefing`, `Telemetry`.
    - `Record` logs `Write`; `Client` timeouts.
 2. **`contextdb-hooks` library:** adapters, renderers, patch parser, outbox.
 3. **`ctx-hook` binary:** every event; T38, T39 and T41b.

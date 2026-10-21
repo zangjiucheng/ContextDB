@@ -58,7 +58,7 @@ fn record(
         s,
         AGENT,
         Request::Record {
-            session,
+            binding: Binding::root(session),
             kind: RecordKind::Decision,
             body: body.as_bytes().to_vec(),
             target: WriteTarget::Create {
@@ -88,7 +88,7 @@ fn recall(s: &Service<SimDisk>, session: SessionId, query: &str) -> (Vec<Item>, 
         s,
         AGENT,
         Request::Recall {
-            session,
+            binding: Binding::root(session),
             query: query.into(),
             scope: "repo".into(),
             mode: Mode::Certified,
@@ -110,7 +110,7 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
         &s,
         AGENT,
         Request::Record {
-            session,
+            binding: Binding::root(session),
             kind: RecordKind::CodeAnchor,
             body: b"fn main".to_vec(),
             target: WriteTarget::Create {
@@ -167,7 +167,7 @@ fn t36_deps_must_be_this_sessions_required_handles_or_explicit_revisions() {
         }]
     };
     let plan = |session, deps| Request::Record {
-        session,
+        binding: Binding::root(session),
         kind: RecordKind::Plan,
         body: b"migrate".to_vec(),
         target: WriteTarget::Create {
@@ -233,7 +233,7 @@ fn t07e_certified_read_never_returns_a_superseded_revision() {
         &s,
         AGENT,
         Request::Supersede {
-            session: a,
+            binding: Binding::root(a),
             logical: LogicalId(0),
             body: b"postgresql".to_vec(),
             expected_head: RevisionId(0),
@@ -249,7 +249,7 @@ fn t07e_certified_read_never_returns_a_superseded_revision() {
             &s,
             AGENT,
             Request::Read {
-                session: a,
+                binding: Binding::root(a),
                 target,
                 mode,
             },
@@ -289,7 +289,7 @@ fn t32_retry_after_conflict_references_exactly_what_was_read() {
     record(&s, a, "db", "v1", Vec::new());
     record(&s, a, "x", "x", Vec::new());
     let revise = |expected, deps| Request::Record {
-        session: a,
+        binding: Binding::root(a),
         kind: RecordKind::Decision,
         body: format!("v{expected}").into_bytes(),
         target: WriteTarget::Revise {
@@ -338,7 +338,7 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
     let a = start(&s);
     record(&s, a, "evidence", "e", Vec::new());
     let plan = Request::Record {
-        session: a,
+        binding: Binding::root(a),
         kind: RecordKind::Plan,
         body: b"plan v1".to_vec(),
         target: WriteTarget::Create {
@@ -358,7 +358,7 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
     assert_eq!(code(&call(&s, AGENT, plan)), "ok");
     // A dependent of the plan, which must not be rebound by supersede.
     let child = Request::Record {
-        session: a,
+        binding: Binding::root(a),
         kind: RecordKind::Plan,
         body: b"child".to_vec(),
         target: WriteTarget::Create {
@@ -377,7 +377,7 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
     };
     assert_eq!(code(&call(&s, AGENT, child)), "ok");
     let sup = Request::Supersede {
-        session: a,
+        binding: Binding::root(a),
         logical: LogicalId(1),
         body: b"plan v2".to_vec(),
         expected_head: RevisionId(1),
@@ -422,7 +422,7 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
     let (items, _) = recall(&s, planner, "db");
     let handle = items[0].handle.clone().unwrap();
     let plan = Request::Record {
-        session: planner,
+        binding: Binding::root(planner),
         kind: RecordKind::Plan,
         body: b"use mongodb driver".to_vec(),
         target: WriteTarget::Create {
@@ -438,7 +438,7 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
     };
     assert_eq!(code(&call(&s, AGENT, plan)), "ok");
     let read_plan = Request::Read {
-        session: planner,
+        binding: Binding::root(planner),
         target: Target::Key("plan".into()),
         mode: Mode::Certified,
     };
@@ -448,9 +448,12 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
             &s,
             AGENT,
             Request::Check {
-                session: planner,
+                binding: Binding::root(planner),
                 cert_id: None,
                 live_pos: Vec::new(),
+                action: None,
+                mode: None,
+                harness_version: String::new(),
             },
         )
     };
@@ -465,7 +468,7 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
     assert_eq!((decision, validation), (Decision::Allow, Validation::Valid));
     // Another agent supersedes the database decision.
     let sup = Request::Supersede {
-        session: other,
+        binding: Binding::root(other),
         logical: LogicalId(0),
         body: b"postgresql".to_vec(),
         expected_head: RevisionId(0),
@@ -504,7 +507,7 @@ fn sessions_and_handles_survive_a_daemon_restart() {
         let h = items[0].handle.clone().unwrap();
         // Force durability of the recall certificate, as a write using it would.
         let dep = Request::Record {
-            session: a,
+            binding: Binding::root(a),
             kind: RecordKind::Plan,
             body: b"p".to_vec(),
             target: WriteTarget::Create {
@@ -526,7 +529,7 @@ fn sessions_and_handles_survive_a_daemon_restart() {
     let crashed = disk.crash(contextdb_store::TailFate::Torn, 1);
     let s = service(&crashed);
     let read = Request::Read {
-        session,
+        binding: Binding::root(session),
         target: Target::Handle(handle),
         mode: Mode::Certified,
     };
@@ -561,7 +564,7 @@ fn recall_finds_records_by_payload_text_after_indexing() {
     let (items, _) = find("mongodb");
     assert_eq!(items[0].key, "d1-db");
     let sup = Request::Supersede {
-        session: a,
+        binding: Binding::root(a),
         logical: LogicalId(0),
         body: b"Use PostgreSQL".to_vec(),
         expected_head: RevisionId(0),
@@ -582,9 +585,12 @@ fn check(s: &Service<SimDisk>, session: SessionId) -> Response {
         s,
         AGENT,
         Request::Check {
-            session,
+            binding: Binding::root(session),
             cert_id: None,
             live_pos: Vec::new(),
+            action: None,
+            mode: None,
+            harness_version: String::new(),
         },
     )
 }
@@ -645,7 +651,7 @@ fn restart_restores_the_session_certificate_and_a_cut_log_breaks_the_session() {
         other => panic!("cut log must not be re-certified: {other:?}"),
     }
     let dep = Request::Record {
-        session: a,
+        binding: Binding::root(a),
         kind: RecordKind::Plan,
         body: b"p".to_vec(),
         target: WriteTarget::Create {
@@ -690,7 +696,7 @@ fn a_cut_session_without_a_certificate_stays_broken_across_restarts() {
         // A certified read issues no certificate, so only the durable
         // `LogBroken` marker can carry the break past a second restart.
         let read = Request::Read {
-            session: a,
+            binding: Binding::root(a),
             target: Target::Key("db".into()),
             mode: Mode::Certified,
         };
@@ -732,7 +738,7 @@ fn a_cut_that_cannot_be_marked_durably_refuses_to_serve() {
         let a = start(&s);
         record(&s, a, "db", "mongodb", Vec::new());
         let read = Request::Read {
-            session: a,
+            binding: Binding::root(a),
             target: Target::Key("db".into()),
             mode: Mode::Certified,
         };
@@ -797,7 +803,7 @@ fn steady_reads_are_synced_within_the_lazy_bound() {
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let read = Request::Read {
-                    session: a,
+                    binding: Binding::root(a),
                     target: Target::Key("db".into()),
                     mode: Mode::Advisory,
                 };
@@ -843,7 +849,7 @@ fn recall_is_capped() {
         &s,
         AGENT,
         Request::Recall {
-            session: a,
+            binding: Binding::root(a),
             query: "k".into(),
             scope: "repo".into(),
             mode: Mode::Advisory,

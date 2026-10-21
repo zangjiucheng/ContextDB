@@ -144,6 +144,15 @@ version = "0.1.0"
 [[package]]
 name = "contextdb-hooks"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "contextdb-daemon",
+ "contextdb-model",
+ "contextdb-proto",
+ "contextdb-store",
+ "nix",
+ "serde_json",
+]
 
 [[package]]
 name = "contextdb-mcp"

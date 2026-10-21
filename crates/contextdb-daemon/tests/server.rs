@@ -42,7 +42,7 @@ fn channel_is_bound_by_socket_and_shutdown_cleans_up() {
         panic!()
     };
     let rec = Request::Record {
-        session,
+        binding: Binding::root(session),
         kind: RecordKind::Fact,
         body: b"hello".to_vec(),
         target: WriteTarget::Create {
@@ -105,7 +105,7 @@ fn session(c: &mut Client) -> SessionId {
 fn create(c: &mut Client, s: SessionId, key: &str, body: &str) {
     let r = c
         .call(&Request::Record {
-            session: s,
+            binding: Binding::root(s),
             kind: RecordKind::Fact,
             body: body.as_bytes().to_vec(),
             target: WriteTarget::Create {
@@ -135,7 +135,7 @@ fn t12_concurrent_writers_expecting_the_same_head_one_wins() {
                 let s = session(&mut c);
                 barrier.wait();
                 c.call(&Request::Record {
-                    session: s,
+                    binding: Binding::root(s),
                     kind: RecordKind::Fact,
                     body: format!("v2-{n}").into_bytes(),
                     target: WriteTarget::Revise {
@@ -192,7 +192,7 @@ fn t08_readers_never_see_coupled_heads_out_of_step() {
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     let r = c
                         .call(&Request::Recall {
-                            session: s,
+                            binding: Binding::root(s),
                             query: "pair-".into(),
                             scope: "repo".into(),
                             mode: Mode::Advisory,

@@ -10,9 +10,11 @@ mod contract;
 /// ```
 pub struct Contract;
 mod cert;
+mod hook;
 mod status;
 mod wire;
 pub use cert::*;
 pub use contract::*;
+pub use hook::*;
 pub use status::*;
 pub use wire::*;

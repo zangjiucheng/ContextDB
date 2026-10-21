@@ -196,11 +196,55 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "target": target, "depth": { "type": "integer" } }, "required": ["target"] } },
         { "name": "ctx_impact", "description": "Records that depend on the target (reachable impact).",
           "inputSchema": { "type": "object", "properties": { "target": target }, "required": ["target"] } },
-        { "name": "ctx_check", "description": "Validate this session's certificate: allow (Valid/ValidRecertified) or warn, with diffs.",
-          "inputSchema": { "type": "object", "properties": { "cert_id": { "type": "string" } } } },
+        { "name": "ctx_check", "description": "Validate this session's certificate: allow (Valid/ValidRecertified) or warn, with diffs and the reads that changed since last reported (context_update).",
+          "inputSchema": { "type": "object", "properties": { "cert_id": { "type": "string" },
+            "action": { "type": "object", "properties": { "tool": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "command": { "type": "string" } } } } } },
         { "name": "ctx_txn_status", "description": "Committed{epoch} or NotCommitted for a client_txn_id.",
           "inputSchema": { "type": "object", "properties": { "client_txn_id": { "type": "string" } }, "required": ["client_txn_id"] } },
     ])
+}
+/// The session a `tools/call` acts for, from the harness's `_meta` (ADR 0010
+/// §2): Codex sends its thread ids, Claude Code the tool-use id its
+/// PreToolUse hook claimed. None: no harness binding (use this server's own
+/// session, as in P3).
+pub fn meta_binding(meta: &Value) -> Option<Binding> {
+    let s = |k: &str| {
+        meta.get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    if let (Some(session), Some(thread)) = (s("sessionId"), s("threadId")) {
+        // A root thread's id is its session id.
+        return Some(Binding::Key {
+            harness: "codex".into(),
+            harness_session: session.into(),
+            agent: (thread != session).then(|| thread.into()),
+        });
+    }
+    s("claudecode/toolUseId").map(|id| Binding::Call { id: id.into() })
+}
+/// `ctx_check`'s `action{tool, paths, command}` (SPEC §6.3).
+fn action_of(v: &Value) -> Result<Action, String> {
+    let tool = match v.get("tool").and_then(Value::as_str).unwrap_or("") {
+        "edit" | "Edit" | "MultiEdit" => ToolClass::Edit,
+        "write" | "Write" => ToolClass::Write,
+        "notebook" | "NotebookEdit" => ToolClass::Notebook,
+        "patch" | "apply_patch" => ToolClass::Patch,
+        "shell" | "Bash" | "PowerShell" => ToolClass::Shell,
+        "" => return Err("action.tool required".into()),
+        other => ToolClass::Other(other.into()),
+    };
+    let paths = v
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(Into::into).collect())
+        .unwrap_or_default();
+    let command = v.get("command").and_then(Value::as_str).map(Into::into);
+    Ok(Action {
+        tool,
+        paths,
+        command,
+    })
 }
 fn arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
     args.get(name).and_then(Value::as_str)
@@ -271,7 +315,8 @@ impl<B: Backend> Server<B> {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(match self.tool(name, &args) {
+                let meta = params.get("_meta").cloned().unwrap_or(Value::Null);
+                Ok(match self.bound_tool(name, &args, meta_binding(&meta)) {
                     Ok(value) => json!({
                         "content": [{ "type": "text", "text": value.to_string() }],
                         "structuredContent": value,
@@ -313,8 +358,46 @@ impl<B: Backend> Server<B> {
         }
         Ok(env)
     }
-    fn tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
-        let session = self.session()?;
+    /// Runs a tool for the harness binding; a call no hook claimed runs in
+    /// this server's own session and says so (ADR 0010 §2.4).
+    fn bound_tool(
+        &mut self,
+        name: &str,
+        args: &Value,
+        binding: Option<Binding>,
+    ) -> Result<Value, String> {
+        let (label, result) = match binding {
+            Some(b) => {
+                let label = match &b {
+                    Binding::Call { .. } => "claimed",
+                    _ => "harness",
+                };
+                match self.tool(name, args, Some(b)) {
+                    Err(e) if e.starts_with("Unclaimed") => {
+                        ("unclaimed", self.tool(name, args, None))
+                    }
+                    other => (label, other),
+                }
+            }
+            None => ("server", self.tool(name, args, None)),
+        };
+        result.map(|mut v| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("binding".into(), json!(label));
+            }
+            v
+        })
+    }
+    fn tool(
+        &mut self,
+        name: &str,
+        args: &Value,
+        binding: Option<Binding>,
+    ) -> Result<Value, String> {
+        let binding = match binding {
+            Some(b) => b,
+            None => Binding::root(self.session()?),
+        };
         let txn = |args: &Value| -> Result<Option<[u8; 16]>, String> {
             match arg(args, "client_txn_id") {
                 Some(t) => unhex(t)
@@ -331,7 +414,7 @@ impl<B: Backend> Server<B> {
         match name {
             "ctx_recall" => {
                 let env = self.call(Request::Recall {
-                    session,
+                    binding: binding.clone(),
                     query: arg(args, "query").unwrap_or("").into(),
                     scope: arg(args, "scope").unwrap_or("").into(),
                     mode: mode(args),
@@ -355,7 +438,7 @@ impl<B: Backend> Server<B> {
             "ctx_read" => {
                 let target = parse_target(arg(args, "target").ok_or("target required")?)?;
                 let env = self.call(Request::Read {
-                    session,
+                    binding: binding.clone(),
                     target,
                     mode: mode(args),
                 })?;
@@ -387,7 +470,7 @@ impl<B: Backend> Server<B> {
                         key: arg(args, "key").ok_or("create_only needs key")?.into(),
                         scope_lane: arg(args, "scope").unwrap_or("repo").into(),
                     },
-                    (false, Some(head)) => self.revise(session, head)?,
+                    (false, Some(head)) => self.revise(&binding, head)?,
                     _ => {
                         return Err(
                             "InvalidArgument: give exactly one of create_only or expected_head"
@@ -413,7 +496,7 @@ impl<B: Backend> Server<B> {
                     .transpose()?
                     .unwrap_or_default();
                 let env = self.call(Request::Record {
-                    session,
+                    binding: binding.clone(),
                     kind,
                     body,
                     target,
@@ -428,12 +511,12 @@ impl<B: Backend> Server<B> {
                 let WriteTarget::Revise {
                     logical,
                     expected_head,
-                } = self.revise(session, head)?
+                } = self.revise(&binding, head)?
                 else {
                     unreachable!("revise returns Revise")
                 };
                 let env = self.call(Request::Supersede {
-                    session,
+                    binding: binding.clone(),
                     logical,
                     body: arg(args, "body")
                         .ok_or("body required")?
@@ -478,21 +561,38 @@ impl<B: Backend> Server<B> {
                     Some(c) => Some(unhex(c).ok_or("cert_id must be 64 hex digits")?),
                     None => None,
                 };
+                let action = args.get("action").map(action_of).transpose()?;
                 let env = self.call(Request::Check {
-                    session,
+                    binding: binding.clone(),
                     cert_id,
                     live_pos: Vec::new(),
+                    action,
+                    mode: None,
+                    harness_version: String::new(),
                 })?;
                 let Response::Check {
                     decision,
                     validation: v,
                     cert,
                     superseded,
+                    ..
                 } = env.response
                 else {
                     return Err("unexpected response".into());
                 };
                 let (verdict, diffs) = validation(&v);
+                // A peek: UserPromptSubmit acknowledges (ADR 0010 A6).
+                let update = match self
+                    .call(Request::Updates {
+                        binding: binding.clone(),
+                        ack: None,
+                        max_items: 20,
+                    })?
+                    .response
+                {
+                    Response::Updates { items, .. } => items,
+                    _ => Vec::new(),
+                };
                 Ok(json!({
                     "epoch": env.epoch.0,
                     "decision": format!("{decision:?}").to_lowercase(),
@@ -500,6 +600,12 @@ impl<B: Backend> Server<B> {
                     "diffs": diffs,
                     "superseded": superseded.iter().map(diff).collect::<Vec<_>>(),
                     "cert_id": cert.map(|c| hex(&c.cert_id)),
+                    "context_update": update.iter().map(|u| json!({
+                        "key": u.key,
+                        "read": u.cert_rev.0,
+                        "current": u.current.map(|r| r.0),
+                        "summary": summary_text(&u.summary),
+                    })).collect::<Vec<_>>(),
                 }))
             }
             "ctx_txn_status" => {
@@ -518,7 +624,7 @@ impl<B: Backend> Server<B> {
         }
     }
     /// `key@rev` of the expected head → the logical id (advisory read) and rev.
-    fn revise(&mut self, session: SessionId, head: &str) -> Result<WriteTarget, String> {
+    fn revise(&mut self, binding: &Binding, head: &str) -> Result<WriteTarget, String> {
         let Target::KeyRev { key, rev } = parse_target(head)? else {
             return Err("expected_head must be key@rev".into());
         };
@@ -530,7 +636,7 @@ impl<B: Backend> Server<B> {
             });
         }
         let env = self.call(Request::Read {
-            session,
+            binding: binding.clone(),
             target: Target::KeyRev { key, rev },
             mode: Mode::Advisory,
         })?;

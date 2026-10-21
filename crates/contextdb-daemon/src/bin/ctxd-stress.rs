@@ -65,7 +65,7 @@ fn session(c: &mut Client) -> SessionId {
 fn read(c: &mut Client, s: SessionId, key: &str) -> Option<(Epoch, Item)> {
     let env = c
         .call(&Request::Read {
-            session: s,
+            binding: Binding::root(s),
             target: Target::Key(key.into()),
             mode: Mode::Advisory,
         })
@@ -93,7 +93,7 @@ fn main() -> ExitCode {
     keys.extend((0..CAS_LOGICALS).map(|n| format!("cas-{n}")));
     for k in &keys {
         let r = setup.call(&Request::Record {
-            session: s,
+            binding: Binding::root(s),
             kind: RecordKind::Fact,
             body: format!("{k} 0").into_bytes(),
             target: WriteTarget::Create {
@@ -132,7 +132,7 @@ fn main() -> ExitCode {
                         0..=3 => {
                             counts.reads.fetch_add(1, Ordering::Relaxed);
                             let r = c.call(&Request::Recall {
-                                session: s,
+                                binding: Binding::root(s),
                                 query: "pair-".into(),
                                 scope: "repo".into(),
                                 mode: Mode::Advisory,
@@ -168,7 +168,7 @@ fn main() -> ExitCode {
                             }
                             counts.attempts.fetch_add(1, Ordering::Relaxed);
                             let r = c.call(&Request::Record {
-                                session: s,
+                                binding: Binding::root(s),
                                 kind: RecordKind::Fact,
                                 body: format!("{k} {t} {n}").into_bytes(),
                                 target: WriteTarget::Revise {

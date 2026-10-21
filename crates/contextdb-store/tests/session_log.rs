@@ -11,6 +11,7 @@ const DIR: &str = "/db";
 fn read(n: u32) -> SessionEvent {
     SessionEvent::Read {
         session_id: [7; 16],
+        agent: None,
         logical: LogicalId(n),
         rev: RevisionId(n),
         layer: Layer::L2,
@@ -133,4 +134,115 @@ fn open_syncs_the_name_of_a_segment_whose_rollover_was_killed() {
     drop(log);
     let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 1 << 20);
     assert_eq!(events, vec![read(2)]);
+}
+/// ADR 0010 §4.3 (review M1): P3 session-log events (tags 1, 3, 5) still
+/// decode under P4, as the root agent; P4 writes them under tags 15–17.
+#[test]
+fn p3_events_decode_as_the_root_agent() {
+    let mut read = vec![1u8];
+    [7u8; 16].encode(&mut read);
+    LogicalId(3).encode(&mut read);
+    RevisionId(4).encode(&mut read);
+    Layer::L2.encode(&mut read);
+    Epoch(5).encode(&mut read);
+    true.encode(&mut read);
+    let e = SessionEvent::from_bytes(&read).unwrap();
+    assert_eq!(
+        e,
+        SessionEvent::Read {
+            session_id: [7; 16],
+            agent: None,
+            logical: LogicalId(3),
+            rev: RevisionId(4),
+            layer: Layer::L2,
+            epoch: Epoch(5),
+            required: true,
+        }
+    );
+    assert_eq!(e.canonical_bytes()[0], 15);
+    let mut write = vec![3u8];
+    [1u8; 16].encode(&mut write);
+    [2u8; 16].encode(&mut write);
+    Epoch(6).encode(&mut write);
+    "why".to_string().encode(&mut write);
+    assert!(matches!(
+        SessionEvent::from_bytes(&write).unwrap(),
+        SessionEvent::Write {
+            agent: None,
+            with_deps: false,
+            ..
+        }
+    ));
+    let mut cert = vec![5u8];
+    [1u8; 16].encode(&mut cert);
+    [9u8; 32].encode(&mut cert);
+    assert!(matches!(
+        SessionEvent::from_bytes(&cert).unwrap(),
+        SessionEvent::SessionCert { agent: None, cert_id, .. } if cert_id == [9; 32]
+    ));
+    // Every P4 event round-trips.
+    let p4 = [
+        SessionEvent::SessionKey {
+            session_id: [1; 16],
+            harness: "codex".into(),
+            harness_session: "t".into(),
+        },
+        SessionEvent::Fact {
+            session_id: [1; 16],
+            stream: [2; 16],
+            packet: Packet {
+                seq: 3,
+                agent: Some("a".into()),
+                fact: Fact::StreamEnd,
+            },
+            epoch: Epoch(1),
+        },
+        SessionEvent::Gate {
+            session_id: [1; 16],
+            agent: None,
+            action: Action {
+                tool: ToolClass::Edit,
+                paths: vec!["x".into()],
+                command: None,
+            },
+            mode: GateMode::Warn,
+            verdict: "Valid".into(),
+            decision: Decision::Allow,
+            harness_version: "2.1.306".into(),
+            epoch: Epoch(2),
+        },
+        SessionEvent::Drift {
+            session_id: [1; 16],
+            agent: Some("a".into()),
+            report: DriftReport::default(),
+            epoch: Epoch(2),
+        },
+        SessionEvent::Reported {
+            session_id: [1; 16],
+            agent: None,
+            items: vec![(LogicalId(1), (Some(RevisionId(2)), Summary::Certified))],
+        },
+        SessionEvent::StreamMark {
+            stream: [2; 16],
+            applied_through: 4,
+            skipped: Some((2, 3)),
+        },
+        SessionEvent::Unclaimed { epoch: Epoch(9) },
+        SessionEvent::Write {
+            session_id: [1; 16],
+            agent: Some("a".into()),
+            client_txn_id: [3; 16],
+            epoch: Epoch(4),
+            reason: "record".into(),
+            with_deps: true,
+        },
+        SessionEvent::SessionCert {
+            session_id: [1; 16],
+            agent: Some("a".into()),
+            cert_id: [4; 32],
+        },
+    ];
+    for e in p4 {
+        assert_eq!(SessionEvent::from_bytes(&e.canonical_bytes()).unwrap(), e);
+    }
 }

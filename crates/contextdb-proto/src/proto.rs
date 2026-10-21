@@ -1,11 +1,13 @@
-//! IPC protocol (ADR 0008 §5): length-prefixed, versioned frames whose body
-//! is the Wire encoding of a `Request` or an `Envelope`. Requests carry no
-//! channel or principal: identity comes from the socket and peer credentials.
+//! IPC protocol (ADR 0008 §5, ADR 0010 §4): length-prefixed, versioned frames
+//! whose body is the Wire encoding of a `Request` or an `Envelope`. Requests
+//! carry no channel or principal: identity comes from the socket and peer
+//! credentials. Version 2 (P4) binds session-scoped requests through
+//! [`Binding`] and adds the hook requests.
 use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -23,6 +25,77 @@ macro_rules! wire_struct {
             }
         }
     };
+}
+
+/// Which session and agent a session-scoped request acts for (ADR 0010 §2).
+/// `agent` is None for the root agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// An explicit session (P3 clients, hooks after `SessionAttach`).
+    Session {
+        session: SessionId,
+        agent: Option<String>,
+    },
+    /// A harness session key, attached on first use (Codex MCP `_meta`).
+    Key {
+        harness: String,
+        harness_session: String,
+        agent: Option<String>,
+    },
+    /// A tool-call id claimed by the PreToolUse hook (Claude Code MCP).
+    Call { id: String },
+}
+impl Binding {
+    pub fn root(session: SessionId) -> Self {
+        Self::Session {
+            session,
+            agent: None,
+        }
+    }
+}
+/// One `context_update` line (ADR 0010 §4.4): a read whose head or status
+/// changed since it was last reported to this agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateItem {
+    pub logical: LogicalId,
+    pub key: String,
+    pub cert_rev: RevisionId,
+    pub current: Option<RevisionId>,
+    pub summary: Summary,
+}
+/// One report input (ADR 0010 §10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TelemetryEntry {
+    Gate {
+        session: SessionId,
+        agent: Option<String>,
+        action: Action,
+        mode: GateMode,
+        verdict: String,
+        decision: Decision,
+        available: bool,
+        harness_version: String,
+        epoch: Epoch,
+    },
+    Write {
+        session: SessionId,
+        agent: Option<String>,
+        with_deps: bool,
+        epoch: Epoch,
+    },
+    Drift {
+        session: SessionId,
+        agent: Option<String>,
+        report: DriftReport,
+    },
+    Skip {
+        stream: [u8; 16],
+        from: u64,
+        to: u64,
+    },
+    Unclaimed {
+        epoch: Epoch,
+    },
 }
 
 /// What a read or a dep refers to.
@@ -73,19 +146,19 @@ pub enum Request {
         session: SessionId,
     },
     Recall {
-        session: SessionId,
+        binding: Binding,
         query: String,
         scope: String,
         mode: Mode,
         limit: u32,
     },
     Read {
-        session: SessionId,
+        binding: Binding,
         target: Target,
         mode: Mode,
     },
     Record {
-        session: SessionId,
+        binding: Binding,
         kind: RecordKind,
         body: Vec<u8>,
         target: WriteTarget,
@@ -94,7 +167,7 @@ pub enum Request {
         client_txn_id: Option<[u8; 16]>,
     },
     Supersede {
-        session: SessionId,
+        binding: Binding,
         logical: LogicalId,
         body: Vec<u8>,
         expected_head: RevisionId,
@@ -117,10 +190,16 @@ pub enum Request {
     ImpactBatch {
         batch: Batch,
     },
+    /// `ctx_check` for the bound agent's view (ADR 0010 §6, §7). With
+    /// `mode`, the daemon applies the gate predicate, logs the decision and
+    /// returns it; `action` is recorded, never used to filter in P4.
     Check {
-        session: SessionId,
+        binding: Binding,
         cert_id: Option<ContentHash>,
         live_pos: Vec<(String, Vec<u8>)>,
+        action: Option<Action>,
+        mode: Option<GateMode>,
+        harness_version: String,
     },
     Diff {
         from: Epoch,
@@ -145,6 +224,46 @@ pub enum Request {
     },
     /// Admin only.
     Shutdown,
+    /// The live session of a harness session, started if missing (ADR 0010 §2.1).
+    SessionAttach {
+        harness: String,
+        harness_session: String,
+        repo: String,
+        head_sha: String,
+    },
+    /// Claude Code PreToolUse on a ContextDB MCP tool: the call with this
+    /// tool-use id acts for this session and agent (ADR 0010 §2.3).
+    Claim {
+        session: SessionId,
+        agent: Option<String>,
+        call: String,
+    },
+    /// `context_update`: peek (`ack: None`) or acknowledge token and peek
+    /// the next batch (ADR 0010 §4.4).
+    Updates {
+        binding: Binding,
+        ack: Option<u64>,
+        max_items: u32,
+    },
+    /// Outbox delivery for one stream, in seq order; replies once durable
+    /// (ADR 0010 §5.2–5.3). `skip` names a range the client cannot resend.
+    Facts {
+        harness: String,
+        harness_session: String,
+        stream: [u8; 16],
+        packets: Vec<Packet>,
+        skip: Option<(u64, u64)>,
+    },
+    /// Advisory SessionStart briefing; adds nothing to the ledger (ADR 0010 §4.5).
+    Briefing {
+        binding: Binding,
+        budget_chars: u32,
+    },
+    /// Admin only: report inputs from index `since` (ADR 0010 §10).
+    Telemetry {
+        since: u64,
+        limit: u32,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -155,12 +274,6 @@ pub struct Item {
     pub state: NodeState,
     pub summary: Summary,
     pub handle: Option<String>,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Decision {
-    Allow,
-    Warn,
-    Deny,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
@@ -202,6 +315,10 @@ pub enum Response {
         validation: Validation,
         cert: Option<Box<Certificate>>,
         superseded: Vec<CertDiff>,
+        /// The gate decision when the request carried a mode.
+        gate: Option<Decision>,
+        /// `context_update` items waiting for this agent (not consumed).
+        updates_pending: u32,
     },
     Diff {
         diff: EpochDiff,
@@ -213,6 +330,33 @@ pub enum Response {
     },
     TxnStatus {
         committed: Option<(Epoch, CommitResult)>,
+    },
+    Attached {
+        session: SessionId,
+        created: bool,
+    },
+    Updates {
+        token: u64,
+        items: Vec<UpdateItem>,
+        more: bool,
+    },
+    Facts {
+        applied_through: u64,
+    },
+    /// The batch does not continue the stream: resend from `expected`, or
+    /// skip what cannot be resent (ADR 0010 §5.3).
+    Gap {
+        expected: u64,
+    },
+    Briefing {
+        stale: u32,
+        pending: u32,
+        conflicted: u32,
+        items: Vec<Item>,
+    },
+    Telemetry {
+        entries: Vec<TelemetryEntry>,
+        next: u64,
     },
 }
 /// Every response names the snapshot epoch it was computed on.
@@ -233,6 +377,151 @@ wire_struct!(Item {
     handle
 });
 wire_struct!(Envelope { epoch, response });
+wire_struct!(UpdateItem {
+    logical,
+    key,
+    cert_rev,
+    current,
+    summary
+});
+
+impl Wire for Binding {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Session { session, agent } => {
+                0u8.encode(o);
+                session.encode(o);
+                agent.encode(o);
+            }
+            Self::Key {
+                harness,
+                harness_session,
+                agent,
+            } => {
+                1u8.encode(o);
+                harness.encode(o);
+                harness_session.encode(o);
+                agent.encode(o);
+            }
+            Self::Call { id } => {
+                2u8.encode(o);
+                id.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Session {
+                session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+            },
+            1 => Self::Key {
+                harness: Wire::decode(i)?,
+                harness_session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+            },
+            2 => Self::Call {
+                id: Wire::decode(i)?,
+            },
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+impl Wire for TelemetryEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Gate {
+                session,
+                agent,
+                action,
+                mode,
+                verdict,
+                decision,
+                available,
+                harness_version,
+                epoch,
+            } => {
+                0u8.encode(o);
+                session.encode(o);
+                agent.encode(o);
+                action.encode(o);
+                mode.encode(o);
+                verdict.encode(o);
+                decision.encode(o);
+                available.encode(o);
+                harness_version.encode(o);
+                epoch.encode(o);
+            }
+            Self::Write {
+                session,
+                agent,
+                with_deps,
+                epoch,
+            } => {
+                1u8.encode(o);
+                session.encode(o);
+                agent.encode(o);
+                with_deps.encode(o);
+                epoch.encode(o);
+            }
+            Self::Drift {
+                session,
+                agent,
+                report,
+            } => {
+                2u8.encode(o);
+                session.encode(o);
+                agent.encode(o);
+                report.encode(o);
+            }
+            Self::Skip { stream, from, to } => {
+                3u8.encode(o);
+                stream.encode(o);
+                from.encode(o);
+                to.encode(o);
+            }
+            Self::Unclaimed { epoch } => {
+                4u8.encode(o);
+                epoch.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Gate {
+                session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                action: Wire::decode(i)?,
+                mode: Wire::decode(i)?,
+                verdict: Wire::decode(i)?,
+                decision: Wire::decode(i)?,
+                available: Wire::decode(i)?,
+                harness_version: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            1 => Self::Write {
+                session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                with_deps: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            2 => Self::Drift {
+                session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                report: Wire::decode(i)?,
+            },
+            3 => Self::Skip {
+                stream: Wire::decode(i)?,
+                from: Wire::decode(i)?,
+                to: Wire::decode(i)?,
+            },
+            4 => Self::Unclaimed {
+                epoch: Wire::decode(i)?,
+            },
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
 
 impl Wire for Target {
     fn encode(&self, o: &mut Vec<u8>) {
@@ -290,19 +579,6 @@ impl Wire for Mode {
         }
     }
 }
-impl Wire for Decision {
-    fn encode(&self, o: &mut Vec<u8>) {
-        (*self as u8).encode(o)
-    }
-    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
-        match u8::decode(i)? {
-            0 => Ok(Self::Allow),
-            1 => Ok(Self::Warn),
-            2 => Ok(Self::Deny),
-            _ => Err(WireError::InvalidEncoding),
-        }
-    }
-}
 impl Wire for WriteTarget {
     fn encode(&self, o: &mut Vec<u8>) {
         match self {
@@ -355,31 +631,31 @@ impl Wire for Request {
                 session.encode(o);
             }
             Self::Recall {
-                session,
+                binding,
                 query,
                 scope,
                 mode,
                 limit,
             } => {
                 2u8.encode(o);
-                session.encode(o);
+                binding.encode(o);
                 query.encode(o);
                 scope.encode(o);
                 mode.encode(o);
                 limit.encode(o);
             }
             Self::Read {
-                session,
+                binding,
                 target,
                 mode,
             } => {
                 3u8.encode(o);
-                session.encode(o);
+                binding.encode(o);
                 target.encode(o);
                 mode.encode(o);
             }
             Self::Record {
-                session,
+                binding,
                 kind,
                 body,
                 target,
@@ -388,7 +664,7 @@ impl Wire for Request {
                 client_txn_id,
             } => {
                 4u8.encode(o);
-                session.encode(o);
+                binding.encode(o);
                 kind.encode(o);
                 body.encode(o);
                 target.encode(o);
@@ -397,7 +673,7 @@ impl Wire for Request {
                 client_txn_id.encode(o);
             }
             Self::Supersede {
-                session,
+                binding,
                 logical,
                 body,
                 expected_head,
@@ -407,7 +683,7 @@ impl Wire for Request {
                 client_txn_id,
             } => {
                 5u8.encode(o);
-                session.encode(o);
+                binding.encode(o);
                 logical.encode(o);
                 body.encode(o);
                 expected_head.encode(o);
@@ -435,14 +711,20 @@ impl Wire for Request {
                 batch.encode(o);
             }
             Self::Check {
-                session,
+                binding,
                 cert_id,
                 live_pos,
+                action,
+                mode,
+                harness_version,
             } => {
                 10u8.encode(o);
-                session.encode(o);
+                binding.encode(o);
                 cert_id.encode(o);
                 live_pos.encode(o);
+                action.encode(o);
+                mode.encode(o);
+                harness_version.encode(o);
             }
             Self::Diff { from, to } => {
                 11u8.encode(o);
@@ -472,6 +754,65 @@ impl Wire for Request {
                 batch.encode(o);
             }
             Self::Shutdown => 16u8.encode(o),
+            Self::SessionAttach {
+                harness,
+                harness_session,
+                repo,
+                head_sha,
+            } => {
+                17u8.encode(o);
+                harness.encode(o);
+                harness_session.encode(o);
+                repo.encode(o);
+                head_sha.encode(o);
+            }
+            Self::Claim {
+                session,
+                agent,
+                call,
+            } => {
+                18u8.encode(o);
+                session.encode(o);
+                agent.encode(o);
+                call.encode(o);
+            }
+            Self::Updates {
+                binding,
+                ack,
+                max_items,
+            } => {
+                19u8.encode(o);
+                binding.encode(o);
+                ack.encode(o);
+                max_items.encode(o);
+            }
+            Self::Facts {
+                harness,
+                harness_session,
+                stream,
+                packets,
+                skip,
+            } => {
+                20u8.encode(o);
+                harness.encode(o);
+                harness_session.encode(o);
+                stream.encode(o);
+                packets.encode(o);
+                skip.encode(o);
+            }
+            Self::Briefing {
+                binding,
+                budget_chars,
+            } => {
+                21u8.encode(o);
+                binding.encode(o);
+                budget_chars.encode(o);
+            }
+            Self::Telemetry { since, limit } => {
+                22u8.encode(o);
+                since.encode(o);
+                limit.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -486,19 +827,19 @@ impl Wire for Request {
                 session: Wire::decode(i)?,
             },
             2 => Self::Recall {
-                session: Wire::decode(i)?,
+                binding: Wire::decode(i)?,
                 query: Wire::decode(i)?,
                 scope: Wire::decode(i)?,
                 mode: Wire::decode(i)?,
                 limit: Wire::decode(i)?,
             },
             3 => Self::Read {
-                session: Wire::decode(i)?,
+                binding: Wire::decode(i)?,
                 target: Wire::decode(i)?,
                 mode: Wire::decode(i)?,
             },
             4 => Self::Record {
-                session: Wire::decode(i)?,
+                binding: Wire::decode(i)?,
                 kind: Wire::decode(i)?,
                 body: Wire::decode(i)?,
                 target: Wire::decode(i)?,
@@ -507,7 +848,7 @@ impl Wire for Request {
                 client_txn_id: Wire::decode(i)?,
             },
             5 => Self::Supersede {
-                session: Wire::decode(i)?,
+                binding: Wire::decode(i)?,
                 logical: Wire::decode(i)?,
                 body: Wire::decode(i)?,
                 expected_head: Wire::decode(i)?,
@@ -531,9 +872,12 @@ impl Wire for Request {
                 batch: Wire::decode(i)?,
             },
             10 => Self::Check {
-                session: Wire::decode(i)?,
+                binding: Wire::decode(i)?,
                 cert_id: Wire::decode(i)?,
                 live_pos: Wire::decode(i)?,
+                action: Wire::decode(i)?,
+                mode: Wire::decode(i)?,
+                harness_version: Wire::decode(i)?,
             },
             11 => Self::Diff {
                 from: Wire::decode(i)?,
@@ -554,6 +898,37 @@ impl Wire for Request {
                 batch: Wire::decode(i)?,
             },
             16 => Self::Shutdown,
+            17 => Self::SessionAttach {
+                harness: Wire::decode(i)?,
+                harness_session: Wire::decode(i)?,
+                repo: Wire::decode(i)?,
+                head_sha: Wire::decode(i)?,
+            },
+            18 => Self::Claim {
+                session: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                call: Wire::decode(i)?,
+            },
+            19 => Self::Updates {
+                binding: Wire::decode(i)?,
+                ack: Wire::decode(i)?,
+                max_items: Wire::decode(i)?,
+            },
+            20 => Self::Facts {
+                harness: Wire::decode(i)?,
+                harness_session: Wire::decode(i)?,
+                stream: Wire::decode(i)?,
+                packets: Wire::decode(i)?,
+                skip: Wire::decode(i)?,
+            },
+            21 => Self::Briefing {
+                binding: Wire::decode(i)?,
+                budget_chars: Wire::decode(i)?,
+            },
+            22 => Self::Telemetry {
+                since: Wire::decode(i)?,
+                limit: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -611,12 +986,16 @@ impl Wire for Response {
                 validation,
                 cert,
                 superseded,
+                gate,
+                updates_pending,
             } => {
                 10u8.encode(o);
                 decision.encode(o);
                 validation.encode(o);
                 cert.as_deref().cloned().encode(o);
                 superseded.encode(o);
+                gate.encode(o);
+                updates_pending.encode(o);
             }
             Self::Diff { diff } => {
                 11u8.encode(o);
@@ -635,6 +1014,42 @@ impl Wire for Response {
             Self::TxnStatus { committed } => {
                 13u8.encode(o);
                 committed.encode(o);
+            }
+            Self::Attached { session, created } => {
+                14u8.encode(o);
+                session.encode(o);
+                created.encode(o);
+            }
+            Self::Updates { token, items, more } => {
+                15u8.encode(o);
+                token.encode(o);
+                items.encode(o);
+                more.encode(o);
+            }
+            Self::Facts { applied_through } => {
+                16u8.encode(o);
+                applied_through.encode(o);
+            }
+            Self::Gap { expected } => {
+                17u8.encode(o);
+                expected.encode(o);
+            }
+            Self::Briefing {
+                stale,
+                pending,
+                conflicted,
+                items,
+            } => {
+                18u8.encode(o);
+                stale.encode(o);
+                pending.encode(o);
+                conflicted.encode(o);
+                items.encode(o);
+            }
+            Self::Telemetry { entries, next } => {
+                19u8.encode(o);
+                entries.encode(o);
+                next.encode(o);
             }
         }
     }
@@ -677,6 +1092,8 @@ impl Wire for Response {
                 validation: Wire::decode(i)?,
                 cert: Option::<Certificate>::decode(i)?.map(Box::new),
                 superseded: Wire::decode(i)?,
+                gate: Wire::decode(i)?,
+                updates_pending: Wire::decode(i)?,
             },
             11 => Self::Diff {
                 diff: Wire::decode(i)?,
@@ -688,6 +1105,31 @@ impl Wire for Response {
             },
             13 => Self::TxnStatus {
                 committed: Wire::decode(i)?,
+            },
+            14 => Self::Attached {
+                session: Wire::decode(i)?,
+                created: Wire::decode(i)?,
+            },
+            15 => Self::Updates {
+                token: Wire::decode(i)?,
+                items: Wire::decode(i)?,
+                more: Wire::decode(i)?,
+            },
+            16 => Self::Facts {
+                applied_through: Wire::decode(i)?,
+            },
+            17 => Self::Gap {
+                expected: Wire::decode(i)?,
+            },
+            18 => Self::Briefing {
+                stale: Wire::decode(i)?,
+                pending: Wire::decode(i)?,
+                conflicted: Wire::decode(i)?,
+                items: Wire::decode(i)?,
+            },
+            19 => Self::Telemetry {
+                entries: Wire::decode(i)?,
+                next: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -782,19 +1224,25 @@ mod tests {
             },
             Request::SessionEnd { session: s },
             Request::Recall {
-                session: s,
+                binding: Binding::root(s),
                 query: "db".into(),
                 scope: "repo".into(),
                 mode: Mode::Certified,
                 limit: 8,
             },
             Request::Read {
-                session: s,
+                binding: Binding::Call {
+                    id: "toolu_01".into(),
+                },
                 target: Target::Handle("0123456789ab.2".into()),
                 mode: Mode::Advisory,
             },
             Request::Record {
-                session: s,
+                binding: Binding::Key {
+                    harness: "codex".into(),
+                    harness_session: "t1".into(),
+                    agent: Some("t2".into()),
+                },
                 kind: RecordKind::Plan,
                 body: b"plan".to_vec(),
                 target: WriteTarget::Create {
@@ -812,7 +1260,10 @@ mod tests {
                 client_txn_id: Some([9; 16]),
             },
             Request::Supersede {
-                session: s,
+                binding: Binding::Session {
+                    session: s,
+                    agent: Some("a".into()),
+                },
                 logical: LogicalId(1),
                 body: vec![1, 2],
                 expected_head: RevisionId(3),
@@ -838,9 +1289,16 @@ mod tests {
                 }]),
             },
             Request::Check {
-                session: s,
+                binding: Binding::root(s),
                 cert_id: Some([5; 32]),
                 live_pos: vec![("repo".into(), vec![1])],
+                action: Some(Action {
+                    tool: ToolClass::Patch,
+                    paths: vec!["a.rs".into()],
+                    command: None,
+                }),
+                mode: Some(GateMode::Enforce),
+                harness_version: "0.163.0".into(),
             },
             Request::Diff {
                 from: Epoch(1),
@@ -859,7 +1317,106 @@ mod tests {
                 batch: Batch::new(Vec::new()),
             },
             Request::Shutdown,
+            Request::SessionAttach {
+                harness: "claude".into(),
+                harness_session: "abc".into(),
+                repo: "r".into(),
+                head_sha: "h".into(),
+            },
+            Request::Claim {
+                session: s,
+                agent: None,
+                call: "toolu_02".into(),
+            },
+            Request::Updates {
+                binding: Binding::root(s),
+                ack: Some(4),
+                max_items: 20,
+            },
+            Request::Facts {
+                harness: "codex".into(),
+                harness_session: "t1".into(),
+                stream: [8; 16],
+                packets: vec![Packet {
+                    seq: 1,
+                    agent: None,
+                    fact: Fact::StreamEnd,
+                }],
+                skip: Some((2, 5)),
+            },
+            Request::Briefing {
+                binding: Binding::root(s),
+                budget_chars: 1500,
+            },
+            Request::Telemetry {
+                since: 3,
+                limit: 100,
+            },
         ]
+    }
+    fn responses() -> Vec<Response> {
+        vec![
+            Response::Check {
+                decision: Decision::Warn,
+                validation: Validation::Empty,
+                cert: None,
+                superseded: Vec::new(),
+                gate: Some(Decision::Deny),
+                updates_pending: 2,
+            },
+            Response::Attached {
+                session: [1; 16],
+                created: true,
+            },
+            Response::Updates {
+                token: 7,
+                items: vec![UpdateItem {
+                    logical: LogicalId(1),
+                    key: "db".into(),
+                    cert_rev: RevisionId(2),
+                    current: Some(RevisionId(3)),
+                    summary: Summary::Stale(StaleReason::HeadSuperseded),
+                }],
+                more: false,
+            },
+            Response::Facts { applied_through: 9 },
+            Response::Gap { expected: 4 },
+            Response::Briefing {
+                stale: 1,
+                pending: 2,
+                conflicted: 0,
+                items: Vec::new(),
+            },
+            Response::Telemetry {
+                entries: vec![
+                    TelemetryEntry::Skip {
+                        stream: [0; 16],
+                        from: 1,
+                        to: 2,
+                    },
+                    TelemetryEntry::Unclaimed { epoch: Epoch(3) },
+                    TelemetryEntry::Write {
+                        session: [2; 16],
+                        agent: None,
+                        with_deps: true,
+                        epoch: Epoch(4),
+                    },
+                ],
+                next: 3,
+            },
+        ]
+    }
+    #[test]
+    fn new_responses_round_trip() {
+        for r in responses() {
+            let env = Envelope {
+                epoch: Epoch(1),
+                response: r,
+            };
+            let mut buf = Vec::new();
+            write_response(&mut buf, &env).unwrap();
+            assert_eq!(read_response(&mut buf.as_slice()).unwrap(), env);
+        }
     }
     #[test]
     fn every_request_round_trips_through_a_frame() {

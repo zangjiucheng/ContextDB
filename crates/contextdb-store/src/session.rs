@@ -1,5 +1,6 @@
 //! Session log (ADR 0008 §4, owner decision): sessions, read ledgers, issued
-//! certificates and write audit records. It is a second append-only,
+//! certificates and write audit records, and from P4 session facts and
+//! telemetry (ADR 0010 §4.3, A8). It is a second append-only,
 //! hash-chained log family under `<dir>/sessions/`, sharing op_log framing and
 //! the tail algorithm (`log::scan_with`). It never feeds kernel state.
 //!
@@ -37,8 +38,11 @@ pub enum SessionEvent {
         started_epoch: Epoch,
         log_checksum: ContentHash,
     },
+    /// `agent` is None for the root agent (ADR 0010 §7); P3 logs (tag 1)
+    /// decode as root.
     Read {
         session_id: [u8; 16],
+        agent: Option<String>,
         logical: LogicalId,
         rev: RevisionId,
         layer: Layer,
@@ -48,12 +52,15 @@ pub enum SessionEvent {
     CertIssued {
         cert: Box<Certificate>,
     },
-    /// Audit only (e.g. a supersede reason).
+    /// Audit and coverage (e.g. a supersede reason); `with_deps` is whether
+    /// the batch added a rule with incidences (ADR 0010 §10).
     Write {
         session_id: [u8; 16],
+        agent: Option<String>,
         client_txn_id: [u8; 16],
         epoch: Epoch,
         reason: String,
+        with_deps: bool,
     },
     End {
         session_id: [u8; 16],
@@ -63,6 +70,7 @@ pub enum SessionEvent {
     /// earlier `CertIssued` carries; replay restores it (P3 review finding 2).
     SessionCert {
         session_id: [u8; 16],
+        agent: Option<String>,
         cert_id: ContentHash,
     },
     /// The op_log was cut under this session (e.g. `ctx doctor
@@ -70,6 +78,54 @@ pub enum SessionEvent {
     /// Durable, so later restarts keep refusing them (P3 closure check N1).
     LogBroken {
         session_id: [u8; 16],
+    },
+    /// The harness session this session serves (ADR 0010 §2.1).
+    SessionKey {
+        session_id: [u8; 16],
+        harness: String,
+        harness_session: String,
+    },
+    /// A delivered outbox fact (ADR 0010 §5); durable before its reply.
+    Fact {
+        session_id: [u8; 16],
+        stream: [u8; 16],
+        packet: Packet,
+        epoch: Epoch,
+    },
+    /// A PreToolUse gate decision checked by the daemon (ADR 0010 §6).
+    Gate {
+        session_id: [u8; 16],
+        agent: Option<String>,
+        action: Action,
+        mode: GateMode,
+        verdict: String,
+        decision: Decision,
+        harness_version: String,
+        epoch: Epoch,
+    },
+    /// Drift computed for one agent (ADR 0010 §5.4).
+    Drift {
+        session_id: [u8; 16],
+        agent: Option<String>,
+        report: DriftReport,
+        epoch: Epoch,
+    },
+    /// `context_update` items acknowledged by an agent (ADR 0010 §4.4).
+    Reported {
+        session_id: [u8; 16],
+        agent: Option<String>,
+        items: Vec<(LogicalId, (Option<RevisionId>, Summary))>,
+    },
+    /// Outbox stream high-water mark after a delivered batch, and a range
+    /// the client could not resend (ADR 0010 §5.3).
+    StreamMark {
+        stream: [u8; 16],
+        applied_through: u64,
+        skipped: Option<(u64, u64)>,
+    },
+    /// An MCP call arrived without a claim (ADR 0010 §2.4), for the report.
+    Unclaimed {
+        epoch: Epoch,
     },
 }
 impl Wire for Layer {
@@ -114,14 +170,16 @@ impl Wire for SessionEvent {
             }
             Self::Read {
                 session_id,
+                agent,
                 logical,
                 rev,
                 layer,
                 epoch,
                 required,
             } => {
-                1u8.encode(o);
+                15u8.encode(o);
                 session_id.encode(o);
+                agent.encode(o);
                 logical.encode(o);
                 rev.encode(o);
                 layer.encode(o);
@@ -134,15 +192,19 @@ impl Wire for SessionEvent {
             }
             Self::Write {
                 session_id,
+                agent,
                 client_txn_id,
                 epoch,
                 reason,
+                with_deps,
             } => {
-                3u8.encode(o);
+                16u8.encode(o);
                 session_id.encode(o);
+                agent.encode(o);
                 client_txn_id.encode(o);
                 epoch.encode(o);
                 reason.encode(o);
+                with_deps.encode(o);
             }
             Self::End { session_id, epoch } => {
                 4u8.encode(o);
@@ -151,15 +213,95 @@ impl Wire for SessionEvent {
             }
             Self::SessionCert {
                 session_id,
+                agent,
                 cert_id,
             } => {
-                5u8.encode(o);
+                17u8.encode(o);
                 session_id.encode(o);
+                agent.encode(o);
                 cert_id.encode(o);
             }
             Self::LogBroken { session_id } => {
                 6u8.encode(o);
                 session_id.encode(o);
+            }
+            Self::SessionKey {
+                session_id,
+                harness,
+                harness_session,
+            } => {
+                7u8.encode(o);
+                session_id.encode(o);
+                harness.encode(o);
+                harness_session.encode(o);
+            }
+            Self::Fact {
+                session_id,
+                stream,
+                packet,
+                epoch,
+            } => {
+                8u8.encode(o);
+                session_id.encode(o);
+                stream.encode(o);
+                packet.encode(o);
+                epoch.encode(o);
+            }
+            Self::Gate {
+                session_id,
+                agent,
+                action,
+                mode,
+                verdict,
+                decision,
+                harness_version,
+                epoch,
+            } => {
+                9u8.encode(o);
+                session_id.encode(o);
+                agent.encode(o);
+                action.encode(o);
+                mode.encode(o);
+                verdict.encode(o);
+                decision.encode(o);
+                harness_version.encode(o);
+                epoch.encode(o);
+            }
+            Self::Drift {
+                session_id,
+                agent,
+                report,
+                epoch,
+            } => {
+                10u8.encode(o);
+                session_id.encode(o);
+                agent.encode(o);
+                report.encode(o);
+                epoch.encode(o);
+            }
+            Self::Reported {
+                session_id,
+                agent,
+                items,
+            } => {
+                11u8.encode(o);
+                session_id.encode(o);
+                agent.encode(o);
+                items.encode(o);
+            }
+            Self::StreamMark {
+                stream,
+                applied_through,
+                skipped,
+            } => {
+                14u8.encode(o);
+                stream.encode(o);
+                applied_through.encode(o);
+                skipped.encode(o);
+            }
+            Self::Unclaimed { epoch } => {
+                18u8.encode(o);
+                epoch.encode(o);
             }
         }
     }
@@ -179,6 +321,7 @@ impl Wire for SessionEvent {
             },
             1 => Self::Read {
                 session_id: Wire::decode(i)?,
+                agent: None,
                 logical: Wire::decode(i)?,
                 rev: Wire::decode(i)?,
                 layer: Wire::decode(i)?,
@@ -190,9 +333,11 @@ impl Wire for SessionEvent {
             },
             3 => Self::Write {
                 session_id: Wire::decode(i)?,
+                agent: None,
                 client_txn_id: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
                 reason: Wire::decode(i)?,
+                with_deps: false,
             },
             4 => Self::End {
                 session_id: Wire::decode(i)?,
@@ -200,10 +345,73 @@ impl Wire for SessionEvent {
             },
             5 => Self::SessionCert {
                 session_id: Wire::decode(i)?,
+                agent: None,
                 cert_id: Wire::decode(i)?,
             },
             6 => Self::LogBroken {
                 session_id: Wire::decode(i)?,
+            },
+            7 => Self::SessionKey {
+                session_id: Wire::decode(i)?,
+                harness: Wire::decode(i)?,
+                harness_session: Wire::decode(i)?,
+            },
+            8 => Self::Fact {
+                session_id: Wire::decode(i)?,
+                stream: Wire::decode(i)?,
+                packet: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            9 => Self::Gate {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                action: Wire::decode(i)?,
+                mode: Wire::decode(i)?,
+                verdict: Wire::decode(i)?,
+                decision: Wire::decode(i)?,
+                harness_version: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            10 => Self::Drift {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                report: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            11 => Self::Reported {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                items: Wire::decode(i)?,
+            },
+            14 => Self::StreamMark {
+                stream: Wire::decode(i)?,
+                applied_through: Wire::decode(i)?,
+                skipped: Wire::decode(i)?,
+            },
+            15 => Self::Read {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                logical: Wire::decode(i)?,
+                rev: Wire::decode(i)?,
+                layer: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+                required: Wire::decode(i)?,
+            },
+            16 => Self::Write {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+                reason: Wire::decode(i)?,
+                with_deps: Wire::decode(i)?,
+            },
+            17 => Self::SessionCert {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                cert_id: Wire::decode(i)?,
+            },
+            18 => Self::Unclaimed {
+                epoch: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
