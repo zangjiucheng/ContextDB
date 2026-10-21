@@ -1,0 +1,39 @@
+{
+  "tool": "cargo-mutants 27.1.0",
+  "rust": "1.95.0",
+  "date": "2026-10-20",
+  "host": "remote (AMD EPYC 9554, 64 cores), --jobs 48, via scripts/remote.sh",
+  "commit": "9835b56",
+  "mutants": 785,
+  "caught": 771,
+  "unviable": 14,
+  "missed": 0,
+  "timeouts": 0,
+  "wall_minutes": 4,
+  "scope_sha256": {
+    "crates/contextdb-core/src/engine/counting.rs": "69feb321df2f84e983f6a78b63288317807423372d73ee428899ce72c846a918",
+    "crates/contextdb-core/src/txn.rs": "b9aad18552f37a91d36cbca0fd77a081dec374bf5944a30e5bd7c365c909b5e6",
+    "crates/contextdb-core/src/arena.rs": "352ba90a2c87a4cef8dac70e28216acc23fa63ebefe93868502ff044b7bf20f6",
+    "crates/contextdb-core/src/stage.rs": "acc43145b23c23207cc61a01916b27afd66b8ca7e30bdce55926e7fa351160a8",
+    "crates/contextdb-core/src/memory.rs": "ff86dbd0e123a0494b6bf7d5482fecf8b09a41c81ce1633904bf8757ee0cb1bd",
+    "crates/contextdb-core/src/layers.rs": "ed620c14adaf2d55ccae3a3b8b92f5a4ed9d107294fd0db943d7cb631f13a725",
+    "crates/contextdb-core/src/cert.rs": "6242657eecb3871cc184ea3121268197d45eb5f27060887a5e14da013ccc9d2d"
+  },
+  "tests": "core/testkit --lib --test p0 --test p1 --test memory_accounting --test p3 --test p3_certificates (PROP11 2,000 seeds) --locked",
+  "unviable_list": [
+    "crates/contextdb-core/src/arena.rs:524:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::new(0)",
+    "crates/contextdb-core/src/arena.rs:524:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from(0)",
+    "crates/contextdb-core/src/arena.rs:524:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from_iter([1])",
+    "crates/contextdb-core/src/arena.rs:524:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::new(1)",
+    "crates/contextdb-core/src/arena.rs:524:9: replace Indexes::rule_incidences -> std::ops::Range<usize> with Range::from(1)",
+    "crates/contextdb-core/src/cert.rs:70:9: delete match arm Summary::Stale(_) in entry_outcome",
+    "crates/contextdb-core/src/cert.rs:68:9: delete match arm Summary::Unavailable in entry_outcome",
+    "crates/contextdb-core/src/cert.rs:71:9: delete match arm Summary::Conflicted in entry_outcome",
+    "crates/contextdb-core/src/cert.rs:72:9: delete match arm Summary::Pending(PendingReason::ObservationLag) in entry_outcome",
+    "crates/contextdb-core/src/cert.rs:73:9: delete match arm Summary::Pending(PendingReason::Semantic | PendingReason::StructuralUnknown) in entry_outcome",
+    "crates/contextdb-core/src/cert.rs:76:9: delete match arm Summary::Certified in entry_outcome",
+    "crates/contextdb-core/src/layers.rs:23:5: replace semantic -> SemState with Default::default()",
+    "crates/contextdb-core/src/layers.rs:338:9: replace LayerColumns::sem -> SemState with Default::default()",
+    "crates/contextdb-core/src/txn.rs:14:9: replace Resolver<'_, '_>::r -> Result<RevRef, TxError> with Ok(Default::default())"
+  ]
+}
