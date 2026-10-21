@@ -288,6 +288,50 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn revision_count(&self) -> usize {
         self.revisions.len()
     }
+    /// Logical by key (SPEC §6.1 contract 6).
+    pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
+        self.logicals.find_key(key)
+    }
+    pub fn logical_count(&self) -> usize {
+        self.logicals.len()
+    }
+    /// `(key, kind, scope_lane)` of a logical.
+    pub fn logical_info(&self, l: LogicalId) -> Option<(String, RecordKind, String)> {
+        (l.index() < self.logicals.len()).then(|| {
+            (
+                self.logicals.export_key(l),
+                self.logicals.kind(l),
+                self.logicals.scope_lane(l).to_owned(),
+            )
+        })
+    }
+    /// Current head of a logical.
+    pub fn head(&self, l: LogicalId) -> Option<RevisionId> {
+        self.tables.heads.get(l.index()).copied()
+    }
+    pub fn revision_logical(&self, r: RevisionId) -> Option<LogicalId> {
+        (r.index() < self.revisions.len()).then(|| self.revisions.logical(r))
+    }
+    /// Rules concluding `r` with their enabled bit, premises and references.
+    pub fn rules_concluding(
+        &self,
+        r: RevisionId,
+    ) -> Vec<(RuleId, bool, Vec<Incidence>, Vec<RevisionId>)> {
+        let view = self.view();
+        self.indexes
+            .rules_by_concl
+            .row(r.index())
+            .iter()
+            .map(|j| {
+                (
+                    *j,
+                    view.enabled(*j),
+                    view.premises(*j).collect(),
+                    view.references(*j).to_vec(),
+                )
+            })
+            .collect()
+    }
     /// Committed observer watermark of a scope (SD18.6).
     pub fn watermark(&self, scope: &str) -> Option<&[u8]> {
         self.tables.watermarks.get(scope).map(Vec::as_slice)

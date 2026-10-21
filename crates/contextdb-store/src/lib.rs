@@ -15,5 +15,5 @@ pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::ProjectionFile;
 pub use store::{
     LogReader, OpenOptions, OpenReport, Payload, Store, StoreError, TruncatedTail, TxnStatus,
-    Unavailable,
+    Unavailable, read_blob,
 };

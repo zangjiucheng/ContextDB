@@ -1012,6 +1012,15 @@ impl<D: Durability> Store<D> {
     }
 }
 
+/// Reads a payload from `<dir>/blobs` without a `Store` (reader threads,
+/// ADR 0008 §3.3): blobs are immutable once their put returned.
+pub fn read_blob(disk: &dyn Durability, dir: &Path, hash: &ContentHash) -> Payload {
+    match disk.read(&dir.join("blobs").join(hex(hash))) {
+        Ok(bytes) if *blake3::hash(&bytes).as_bytes() == *hash => Payload::Available(bytes),
+        Ok(_) => Payload::Unavailable(Unavailable::Corrupt),
+        Err(_) => Payload::Unavailable(Unavailable::Missing),
+    }
+}
 /// Reads and re-verifies one durable frame through the shared index.
 fn read_frame(
     disk: &dyn Durability,
