@@ -51,6 +51,31 @@ impl ChangeLog {
             + self.watermarks.values().map(b).sum::<usize>()
     }
 }
+/// Per-entry result of SPEC §6.4 step 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryOutcome {
+    Denied,
+    Invalid,
+    Conflicted,
+    Unknown,
+    Pending,
+    Ok,
+}
+/// The SPEC §6.4 step 2 table, total over SD13 summaries (PROP11 totality).
+/// `is_head`: the entry's recorded revision is still its logical's head.
+pub(crate) fn entry_outcome(summary: &Summary, is_head: bool) -> EntryOutcome {
+    match summary {
+        Summary::Unavailable => EntryOutcome::Denied,
+        _ if !is_head => EntryOutcome::Invalid,
+        Summary::Stale(_) => EntryOutcome::Invalid,
+        Summary::Conflicted => EntryOutcome::Conflicted,
+        Summary::Pending(PendingReason::ObservationLag) => EntryOutcome::Unknown,
+        Summary::Pending(PendingReason::Semantic | PendingReason::StructuralUnknown) => {
+            EntryOutcome::Pending
+        }
+        Summary::Certified => EntryOutcome::Ok,
+    }
+}
 /// Epochs are recorded in increasing order: any entry > `since`?
 fn after(epochs: Option<&Vec<Epoch>>, since: Epoch) -> bool {
     epochs
@@ -295,22 +320,18 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 current: Some(head),
                 summary: Some(summary.clone()),
             };
-            if summary == Summary::Unavailable {
-                denied = true;
-            } else if head != e.rev || matches!(summary, Summary::Stale(_)) {
-                invalid.push(diff());
-            } else {
-                match summary {
-                    Summary::Conflicted => conflicted.push(e.logical),
-                    Summary::Pending(PendingReason::ObservationLag) => {
-                        lag.insert(self.logicals.scope_lane(e.logical).to_owned());
-                    }
-                    Summary::Pending(_) => {
-                        pending = true;
-                        pending_rules.extend(self.pending_rules(head));
-                    }
-                    _ => {}
+            match entry_outcome(&summary, head == e.rev) {
+                EntryOutcome::Denied => denied = true,
+                EntryOutcome::Invalid => invalid.push(diff()),
+                EntryOutcome::Conflicted => conflicted.push(e.logical),
+                EntryOutcome::Unknown => {
+                    lag.insert(self.logicals.scope_lane(e.logical).to_owned());
                 }
+                EntryOutcome::Pending => {
+                    pending = true;
+                    pending_rules.extend(self.pending_rules(head));
+                }
+                EntryOutcome::Ok => {}
             }
         }
         // Step 3: the vector recomputed on the current state.
@@ -411,5 +432,50 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .filter(|j| self.layers.sem(**j) == SemState::Pending)
             .copied()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn entry_table_is_total_over_sd13_summaries() {
+        use EntryOutcome as O;
+        let stale = [
+            StaleReason::HeadSuperseded,
+            StaleReason::Unsupported,
+            StaleReason::Rejected,
+            StaleReason::SupersededPinnedPremise(RevisionId(3)),
+        ];
+        for head in [true, false] {
+            assert_eq!(entry_outcome(&Summary::Unavailable, head), O::Denied);
+            for r in &stale {
+                assert_eq!(entry_outcome(&Summary::Stale(r.clone()), head), O::Invalid);
+            }
+        }
+        // A non-head entry is Invalid whatever its head's summary (HeadSuperseded).
+        for s in [
+            Summary::Conflicted,
+            Summary::Certified,
+            Summary::Pending(PendingReason::Semantic),
+            Summary::Pending(PendingReason::ObservationLag),
+        ] {
+            assert_eq!(entry_outcome(&s, false), O::Invalid);
+        }
+        assert_eq!(entry_outcome(&Summary::Conflicted, true), O::Conflicted);
+        assert_eq!(
+            entry_outcome(&Summary::Pending(PendingReason::ObservationLag), true),
+            O::Unknown
+        );
+        assert_eq!(
+            entry_outcome(&Summary::Pending(PendingReason::Semantic), true),
+            O::Pending
+        );
+        // T65: PENDING(StructuralUnknown) → Pending (reachable from P10).
+        assert_eq!(
+            entry_outcome(&Summary::Pending(PendingReason::StructuralUnknown), true),
+            O::Pending
+        );
+        assert_eq!(entry_outcome(&Summary::Certified, true), O::Ok);
     }
 }

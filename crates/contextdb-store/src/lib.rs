@@ -7,11 +7,13 @@ pub mod durability;
 pub mod log;
 pub mod migrate;
 pub mod projection;
+pub mod session;
 #[doc(hidden)]
 pub mod snapshot;
 mod store;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::ProjectionFile;
 pub use store::{
-    OpenOptions, OpenReport, Payload, Store, StoreError, TruncatedTail, TxnStatus, Unavailable,
+    LogReader, OpenOptions, OpenReport, Payload, Store, StoreError, TruncatedTail, TxnStatus,
+    Unavailable,
 };

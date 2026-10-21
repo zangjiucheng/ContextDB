@@ -54,3 +54,11 @@
   - **Certificates.** `issue_certificate` and `validate_certificate` cover the L2-witness closure, `since_epoch` strict windows from a per-epoch change log, log linkage and recertification. The oracle gains an independent issuance and validation; PROP11 runs 10,000 seeds.
   - **Tests.** P3 engine goldens T06d-sem, T16, T16b-cert, T21, T62-P3 and T65. New PROP2b coverage gates.
   - **Memory.** ADR 0009 (owner decision) moves the L1/L2 state from the query-cache scope to the hot scope: hot ≤ 90, query cache ≤ 32 B/inc. The total is unchanged.
+- P3 milestone 2 (store):
+  - **op_log format 2:** group framing `{seq, idx, count}`, with migrations from formats 0 and 1.
+  - **Recovery:** one tail algorithm, shared by op_log and the session log. Only the last group is truncatable, and semantic faults fail closed.
+  - **`Store::commit_group`:** one sync per group, replies held until it, idempotency across ids staged in the group.
+  - **Session log** (`sessions/`).
+  - **`LogReader`** for reader threads.
+  - **`watermark_history` projection.**
+  - **Doctor:** cuts at group boundaries.

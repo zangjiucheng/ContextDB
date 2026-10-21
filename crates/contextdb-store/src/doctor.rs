@@ -68,14 +68,27 @@ pub fn plan_truncate_before(
             });
         }
         let mut pos = log::HEADER_LEN;
+        // Start of the group being read, if it is not complete yet.
+        let mut group: Option<(usize, Epoch)> = None;
         while pos < bytes.len() {
             if next == epoch {
-                plan.cut = Some((seg.clone(), pos as u64));
-                dropped(&mut plan, &bytes, pos);
+                // Cut at a group boundary (ADR 0008 §3.2): a partial group
+                // would be truncated as a torn tail at the next open, so the
+                // whole group is dropped and listed.
+                let (cut, first) = group.unwrap_or((pos, epoch));
+                plan.keep_through = Epoch(first.0 - 1);
+                plan.cut = Some((seg.clone(), cut as u64));
+                dropped(&mut plan, &bytes, cut);
                 break;
             }
             match log::parse_frame(&bytes, pos) {
                 Ok((row, sum, end)) if row.epoch == next && row.prev_checksum == prev => {
+                    if row.group.idx == 0 {
+                        group = Some((pos, row.epoch));
+                    }
+                    if row.group.idx + 1 == row.group.count {
+                        group = None;
+                    }
                     prev = sum;
                     next = Epoch(next.0 + 1);
                     pos = end;

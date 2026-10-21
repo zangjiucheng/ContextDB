@@ -142,6 +142,45 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
             }))
             .collect(),
     ));
+    // Strict-mode change log (ADR 0008 §6.3): head moves, base flips and a
+    // watermark advance on pre-existing state.
+    batches.push(Batch::new(
+        (0..10u32)
+            .flat_map(|n| {
+                [
+                    Op::AddRevision {
+                        logical: LogicalId(2_200 + n).into(),
+                        content: {
+                            // Unique: extra logicals have uniform-byte contents.
+                            let mut c = [0xEE; 32];
+                            c[0] = n as u8;
+                            c
+                        },
+                        adopt_as_base: true,
+                    },
+                    Op::SetHead {
+                        logical: LogicalId(2_200 + n).into(),
+                        expected: RevisionId(2_200 + n).into(),
+                        new: RevRef::New(n as u16),
+                    },
+                ]
+            })
+            .collect(),
+    ));
+    batches.push(Batch::new(
+        (0..10u32)
+            .map(|n| Op::RetractBase {
+                rev: RevisionId(2_300 + n).into(),
+            })
+            .collect(),
+    ));
+    let mut observer = Batch::new(vec![Op::ObserverWatermark {
+        scope: "lane-1".into(),
+        expected: None,
+        position: vec![1],
+    }]);
+    observer.channel = Channel::Observer;
+    batches.push(observer);
     let db = load(&batches);
     let inputs = db.inputs();
     assert_eq!((inputs.validations.len(), inputs.artifacts.len()), (20, 30));
@@ -158,6 +197,6 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     let lanes = check("metadata_lanes", db, 0.04);
     golden(
         &lanes,
-        [496388, 100584, 144498, 195992, 186647, 235180, 4519],
+        [496898, 100624, 144898, 196672, 187127, 238236, 4549],
     );
 }

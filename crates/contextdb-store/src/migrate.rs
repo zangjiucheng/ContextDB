@@ -61,8 +61,10 @@ pub fn log_format(disk: &dyn Durability, dir: &Path) -> Result<Option<u32>, Stor
     let bytes = disk.read(first).map_err(io)?;
     Ok(log::parse_header(&bytes).map(|h| h.format))
 }
-/// Rewrites a format-0 log as format 1. Frames are verified with the format-0
-/// rules first; any inconsistency aborts with the old log untouched. Holds the
+/// Rewrites a format-0 or format-1 log as the current format. Frames are
+/// verified with their own format's rules first; any inconsistency aborts with
+/// the old log untouched. Format 0 results are re-derived (they lack
+/// `status_diff`); every migrated frame becomes its own group (format 2). Holds the
 /// store lock, and finishes a migration interrupted between its two renames.
 pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreError> {
     let _lock = crate::store::lock(disk, dir)?;
@@ -78,7 +80,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
                 backup: String::new(),
             });
         }
-        Some(0) => 0,
+        Some(f @ (0 | 1)) => f,
         Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
         Some(f) => return Err(StoreError::FormatUnsupported(f)),
         None => return Err(StoreError::Io("no log to migrate".into())),
@@ -91,7 +93,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
         }
     }
     disk.create_dir_all(&new_dir).map_err(io)?;
-    let rows = legacy_rows(disk, &old_dir)?;
+    let rows = legacy_rows(disk, &old_dir, from)?;
     let mut db = Db::default();
     let mut prev = log::GENESIS;
     let seg = new_dir.join(log::segment_name(Epoch(1)));
@@ -99,23 +101,41 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
         .map_err(io)?;
     for old in &rows {
         let batch = old.batch().map_err(|e| StoreError::Io(e.to_string()))?;
-        let legacy = legacy::decode_result(&old.result_blob)
-            .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
         let derived = db
             .commit(&batch)
             .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
-        let derived_legacy = CommitResult {
-            status_diff: Vec::new(),
-            ..derived.clone()
+        let group = log::GroupPos {
+            seq: old.epoch.0,
+            idx: 0,
+            count: 1,
         };
-        if derived_legacy != legacy {
-            return Err(StoreError::ReplayDivergence { epoch: old.epoch });
-        }
-        let row = LogRow {
-            result_blob: derived.canonical_bytes(),
-            acked_result: Some(legacy.canonical_bytes()),
-            prev_checksum: prev,
-            ..old.clone()
+        let row = if from == 0 {
+            let legacy = legacy::decode_result(&old.result_blob)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
+            let derived_legacy = CommitResult {
+                status_diff: Vec::new(),
+                ..derived.clone()
+            };
+            if derived_legacy != legacy {
+                return Err(StoreError::ReplayDivergence { epoch: old.epoch });
+            }
+            LogRow {
+                result_blob: derived.canonical_bytes(),
+                acked_result: Some(legacy.canonical_bytes()),
+                prev_checksum: prev,
+                group,
+                ..old.clone()
+            }
+        } else {
+            // Format 1 results are current: replay must reproduce them.
+            if old.result().ok() != Some(derived) {
+                return Err(StoreError::ReplayDivergence { epoch: old.epoch });
+            }
+            LogRow {
+                prev_checksum: prev,
+                group,
+                ..old.clone()
+            }
         };
         let (bytes, sum) = log::frame(&row);
         disk.append(&seg, &bytes).map_err(io)?;
@@ -187,8 +207,8 @@ fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreErr
         backup: dir.join(backup).display().to_string(),
     })
 }
-/// Verified format-0 rows (same framing and chain rules as format 1).
-fn legacy_rows(disk: &dyn Durability, dir: &Path) -> Result<Vec<LogRow>, StoreError> {
+/// Verified rows of a legacy format (formats 0 and 1 share framing and chain rules).
+fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<LogRow>, StoreError> {
     let mut rows = Vec::new();
     let mut prev = log::GENESIS;
     for seg in log::segments(disk, dir).map_err(io)? {
@@ -197,7 +217,7 @@ fn legacy_rows(disk: &dyn Durability, dir: &Path) -> Result<Vec<LogRow>, StoreEr
             epoch: Epoch(rows.len() as u64 + 1),
             fault: FrameFault::SegmentHeader,
         })?;
-        if header.format != 0 || header.prev != prev {
+        if header.format != format || header.prev != prev {
             return Err(StoreError::ChainBroken {
                 epoch: Epoch(rows.len() as u64 + 1),
                 fault: FrameFault::SegmentHeader,
@@ -206,8 +226,9 @@ fn legacy_rows(disk: &dyn Durability, dir: &Path) -> Result<Vec<LogRow>, StoreEr
         let mut pos = log::HEADER_LEN;
         while pos < bytes.len() {
             let epoch = Epoch(rows.len() as u64 + 1);
-            let (row, sum, end) = log::parse_frame(&bytes, pos)
-                .map_err(|fault| StoreError::ChainBroken { epoch, fault })?;
+            let (row, sum, end) =
+                log::parse_frame_with::<LogRow>(&log::OP_LOG, &bytes, pos, format)
+                    .map_err(|fault| StoreError::ChainBroken { epoch, fault })?;
             if row.prev_checksum != prev || row.epoch != epoch {
                 return Err(StoreError::ChainBroken {
                     epoch,
@@ -227,13 +248,26 @@ pub fn write_legacy(
     dir: &Path,
     batches: &[Batch],
 ) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 0)
+}
+/// Test and tooling support: writes a format-1 log (P2 layout, no group header).
+pub fn write_format1(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 1)
+}
+fn write_format(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+    format: u32,
+) -> Result<u64, StoreError> {
     let log_dir = dir.join("log");
     disk.create_dir_all(&log_dir).map_err(io)?;
     let seg = log_dir.join(log::segment_name(Epoch(1)));
-    let mut header = log::segment_header(Epoch(1), log::GENESIS);
-    header[8..12].copy_from_slice(&0u32.to_le_bytes());
-    let check = log::header_check(&header[..52]);
-    header[52..60].copy_from_slice(&check);
+    let header = log::segment_header_with(&log::OP_LOG, 1, log::GENESIS, format);
     disk.write_new(&seg, &header).map_err(io)?;
     let mut db = Db::default();
     let mut prev = log::GENESIS;
@@ -249,11 +283,16 @@ pub fn write_legacy(
             client_txn_id: b.client_txn_id,
             batch_hash: *blake3::hash(&batch_blob).as_bytes(),
             batch_blob,
-            result_blob: legacy::encode_result(&result),
+            result_blob: if format == 0 {
+                legacy::encode_result(&result)
+            } else {
+                result.canonical_bytes()
+            },
             acked_result: None,
             prev_checksum: prev,
+            group: log::GroupPos::default(),
         };
-        let (bytes, sum) = log::frame(&row);
+        let (bytes, sum) = log::frame_format(&row, format);
         disk.append(&seg, &bytes).map_err(io)?;
         prev = sum;
         n += 1;

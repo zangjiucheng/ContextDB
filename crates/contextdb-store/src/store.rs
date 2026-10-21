@@ -11,7 +11,7 @@ use contextdb_model::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex, RwLock},
 };
 
 const SELF_CHECK_SAMPLE: usize = 1_000;
@@ -84,9 +84,31 @@ pub(crate) fn migration_incomplete(disk: &dyn Durability, dir: &Path) -> std::io
         .iter()
         .any(|n| n == "log.migrating" || (n.starts_with("log.v") && n.ends_with(".bak"))))
 }
+/// Net watermark advances of a committed batch (ADR 0008 §6.3): each
+/// `ObserverWatermark` is compare-and-set on `expected`, so a scope advanced
+/// iff the first op's `expected` differs from the committed position.
+fn watermark_moves(db: &Db, batch: &Batch) -> Vec<(String, Vec<u8>)> {
+    let mut first: BTreeMap<&str, &Option<Vec<u8>>> = BTreeMap::new();
+    for op in &batch.ops {
+        if let Op::ObserverWatermark {
+            scope, expected, ..
+        } = op
+        {
+            first.entry(scope.as_str()).or_insert(expected);
+        }
+    }
+    first
+        .into_iter()
+        .filter_map(|(scope, expected)| {
+            let now = db.watermark(scope)?;
+            (expected.as_deref() != Some(now)).then(|| (scope.to_owned(), now.to_vec()))
+        })
+        .collect()
+}
 /// Projection rows for the epoch just committed to `db`.
 fn rows<'a>(
     db: &Db,
+    batch: &Batch,
     result: &'a CommitResult,
     checksum: ContentHash,
     base: &'a mut Vec<(RevisionId, bool)>,
@@ -104,6 +126,7 @@ fn rows<'a>(
         checksum,
         result,
         base,
+        watermarks: watermark_moves(db, batch),
         posts: result
             .status_diff
             .iter()
@@ -173,6 +196,12 @@ pub enum Payload {
     Available(Vec<u8>),
     Unavailable(Unavailable),
 }
+/// Segment paths and frame locations, shared with `LogReader`s.
+#[derive(Debug, Default)]
+pub(crate) struct LogIndex {
+    segments: Vec<PathBuf>,
+    frames: Vec<FrameLoc>,
+}
 #[derive(Clone, Debug)]
 struct FrameLoc {
     segment: usize,
@@ -188,8 +217,7 @@ pub struct Store<D: Durability> {
     disk: D,
     dir: PathBuf,
     db: Db,
-    segments: Vec<PathBuf>,
-    frames: Vec<FrameLoc>,
+    index: Arc<RwLock<LogIndex>>,
     ids: BTreeMap<[u8; 16], (Epoch, ContentHash)>,
     blobs: BTreeSet<ContentHash>,
     tail: Option<Tail>,
@@ -200,6 +228,8 @@ pub struct Store<D: Durability> {
     /// G4 fault injection: the next commit stops after its frame sync.
     crash_after_sync: bool,
     segment_target: usize,
+    /// Sequence number of the last group written (ADR 0008 §3.2).
+    group_seq: u64,
     _lock: Box<dyn LockGuard>,
 }
 /// Poison registry key: one disk instance and one store directory, so a failure
@@ -353,8 +383,10 @@ impl<D: Durability> Store<D> {
         let mut store = Self {
             dir: dir.to_path_buf(),
             db: Db::default(),
-            segments: log::segments(&disk, &log_dir).map_err(io)?,
-            frames: Vec::new(),
+            index: Arc::new(RwLock::new(LogIndex {
+                segments: log::segments(&disk, &log_dir).map_err(io)?,
+                frames: Vec::new(),
+            })),
             ids: BTreeMap::new(),
             blobs,
             tail: None,
@@ -363,6 +395,7 @@ impl<D: Durability> Store<D> {
             poisoned: false,
             crash_after_sync: false,
             segment_target: options.segment_target,
+            group_seq: 0,
             _lock: lock,
             disk,
         };
@@ -384,18 +417,15 @@ impl<D: Durability> Store<D> {
         let skip = report.snapshot_epoch.map_or(0, |e| e.0);
         store.proj.begin_bulk().map_err(sql)?;
         // Replay without idempotency, blob checks or appends (ADR 0006 §4 step 5).
-        let mut start = log::HEADER_LEN as u64;
-        let mut current = None;
         for f in scan.frames {
             let segment = store
+                .index
+                .read()
+                .expect("log index")
                 .segments
                 .iter()
                 .position(|s| *s == f.segment)
                 .expect("scanned segment");
-            if current != Some(segment) {
-                current = Some(segment);
-                start = log::HEADER_LEN as u64;
-            }
             if f.row.epoch.0 > skip {
                 let batch = f.row.batch().expect("verified frame");
                 let result = store
@@ -409,7 +439,7 @@ impl<D: Durability> Store<D> {
                     let mut base = Vec::new();
                     store
                         .proj
-                        .apply(&rows(&store.db, &result, f.checksum, &mut base))
+                        .apply(&rows(&store.db, &batch, &result, f.checksum, &mut base))
                         .map_err(sql)?;
                 }
                 report.replayed += 1;
@@ -417,12 +447,17 @@ impl<D: Durability> Store<D> {
             if let Some(id) = f.row.client_txn_id {
                 store.ids.insert(id, (f.row.epoch, f.row.batch_hash));
             }
-            store.frames.push(FrameLoc {
-                segment,
-                start,
-                end: f.end,
-            });
-            start = f.end;
+            store
+                .index
+                .write()
+                .expect("log index")
+                .frames
+                .push(FrameLoc {
+                    segment,
+                    start: f.start,
+                    end: f.end,
+                });
+            store.group_seq = f.row.group.seq;
             store.tail = Some(Tail {
                 segment,
                 size: f.end,
@@ -455,9 +490,18 @@ impl<D: Durability> Store<D> {
         // self-check accepted the state they came from (review N5).
         store.proj.end_bulk().map_err(sql)?;
         // A last segment with a valid header but no frames continues the chain.
-        if store.tail.is_none() && !store.segments.is_empty() {
-            let n = store.segments.len() - 1;
-            let bytes = store.disk.read(&store.segments[n]).map_err(io)?;
+        let last_segment = {
+            let index = store.index.read().expect("log index");
+            index
+                .segments
+                .len()
+                .checked_sub(1)
+                .map(|n| (n, index.segments[n].clone()))
+        };
+        if store.tail.is_none()
+            && let Some((n, path)) = last_segment
+        {
+            let bytes = store.disk.read(&path).map_err(io)?;
             let header = log::parse_header(&bytes).expect("scanned header");
             store.tail = Some(Tail {
                 segment: n,
@@ -519,112 +563,195 @@ impl<D: Durability> Store<D> {
     /// Reads and re-verifies one durable frame.
     pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
         self.readable()?;
-        let loc = epoch
-            .0
-            .checked_sub(1)
-            .and_then(|n| self.frames.get(n as usize))
-            .ok_or(StoreError::Tx(TxError::UnknownRef))?;
-        // One frame, not the whole segment (review finding 6).
-        let len = usize::try_from(loc.end - loc.start)
-            .map_err(|_| StoreError::Io("frame size".into()))?;
-        let bytes = self
-            .disk
-            .read_range(&self.segments[loc.segment], loc.start, len)
-            .map_err(io)?;
-        let frame = &bytes[16..len - 32];
-        if log::checksum(frame) != bytes[len - 32..] {
-            return Err(StoreError::ChainBroken {
-                epoch,
-                fault: FrameFault::Checksum,
-            });
+        self.read_frame(epoch)
+    }
+    /// A durable frame, without the poison check (used inside a group commit,
+    /// which only reads frames that were durable before the group began).
+    fn read_frame(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
+        read_frame(&self.disk, &self.index, epoch)
+    }
+    /// A read-only view of the log up to the current durable tail, for reader
+    /// threads (ADR 0008 §3.3): log-replay reads never block the commit actor.
+    pub fn log_reader(&self) -> LogReader<D>
+    where
+        D: Clone,
+    {
+        LogReader {
+            disk: self.disk.clone(),
+            index: self.index.clone(),
+            tail: self.epoch(),
         }
-        LogRow::decode_body(frame).map_err(|e| StoreError::Io(e.to_string()))
     }
     pub fn commit(&mut self, batch: &Batch) -> Result<CommitResult, StoreError> {
-        self.usable()?;
-        let batch_blob = if encodable(batch) {
-            batch.canonical_bytes()
-        } else {
-            return Err(StoreError::Tx(TxError::CapacityExceeded {
-                kind: CapacityKind::Encoding,
-            }));
-        };
-        let batch_hash = *blake3::hash(&batch_blob).as_bytes();
-        // Step 1: idempotency precedes every other check (ADR 0006 §3).
-        if let Some(id) = batch.client_txn_id
-            && let Some((epoch, hash)) = self.ids.get(&id).copied()
-        {
-            if hash != batch_hash {
-                return Err(StoreError::Tx(TxError::TxnIdReuse { id }));
-            }
-            return self
-                .read_row(epoch)?
-                .acked()
-                .map_err(|e| StoreError::Io(e.to_string()));
-        }
-        self.in_flight = true;
-        // Step 2: apply with blob presence; a rejection leaves no trace.
-        let result = match self.db.commit_with(batch, &self.blobs) {
-            Ok(r) => r,
-            Err(e) => {
-                self.in_flight = false;
-                return Err(StoreError::Tx(e));
-            }
-        };
-        // Step 3: append one frame and sync before anything is published.
-        let row = LogRow {
-            epoch: result.epoch,
-            branch: batch.branch,
-            principal: batch.principal,
-            channel: batch.channel,
-            client_txn_id: batch.client_txn_id,
-            batch_hash,
-            batch_blob,
-            result_blob: result.canonical_bytes(),
-            acked_result: None,
-            prev_checksum: self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum),
-        };
-        let (bytes, sum) = log::frame(&row);
-        let (segment, start) = match self.append(result.epoch, &row.prev_checksum, &bytes) {
-            Ok(v) => v,
-            Err(_) => {
-                self.in_flight = false;
-                return Err(self.poison());
-            }
-        };
-        if std::mem::take(&mut self.crash_after_sync) {
-            // Durable but never published or acked: the process "dies" here.
-            self.in_flight = false;
-            return Err(self.poison());
-        }
-        // Step 4: publish.
-        self.in_flight = false;
-        let end = start + bytes.len() as u64;
-        self.frames.push(FrameLoc {
-            segment,
-            start,
-            end,
-        });
-        self.tail = Some(Tail {
-            segment,
-            size: end,
-            checksum: sum,
-        });
-        if let Some(id) = batch.client_txn_id {
-            self.ids.insert(id, (result.epoch, batch_hash));
-        }
-        // Projections after durability; a failure only makes them stale.
-        let mut base = Vec::new();
-        if self
-            .proj
-            .apply(&rows(&self.db, &result, sum, &mut base))
-            .is_err()
-        {
-            self.proj.mark_stale();
-        }
-        Ok(result)
+        self.commit_group(std::slice::from_ref(batch))
+            .pop()
+            .expect("one result per batch")
     }
-    /// Appends a synced frame, opening a synced segment first when needed.
+    /// Group commit (ADR 0008 §3.2): every batch gets its own epoch and frame,
+    /// the group shares one sync, and no result is returned before it.
+    /// Idempotency covers ids staged earlier in the same group. If anything
+    /// fails after the first apply, the store is poisoned and every batch of
+    /// the group gets `Poisoned` (the daemon reports `OutcomeUnknown`).
+    pub fn commit_group(&mut self, batches: &[Batch]) -> Vec<Result<CommitResult, StoreError>> {
+        if let Err(e) = self.usable() {
+            return batches.iter().map(|_| Err(e.clone())).collect();
+        }
+        enum Slot {
+            Done(Box<Result<CommitResult, StoreError>>),
+            Applied(usize),
+            Duplicate(usize),
+        }
+        let mut slots = Vec::with_capacity(batches.len());
+        let mut staged_ids: BTreeMap<[u8; 16], (usize, ContentHash)> = BTreeMap::new();
+        let mut applied: Vec<(LogRow, CommitResult)> = Vec::new();
+        let mut applied_batch: Vec<usize> = Vec::new();
+        let prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
+        self.in_flight = true;
+        for (n, batch) in batches.iter().enumerate() {
+            if !encodable(batch) {
+                slots.push(Slot::Done(Box::new(Err(StoreError::Tx(
+                    TxError::CapacityExceeded {
+                        kind: CapacityKind::Encoding,
+                    },
+                )))));
+                continue;
+            }
+            let batch_blob = batch.canonical_bytes();
+            let batch_hash = *blake3::hash(&batch_blob).as_bytes();
+            // Step 1: idempotency, durable ids first, then ids staged in this group.
+            if let Some(id) = batch.client_txn_id {
+                if let Some((epoch, hash)) = self.ids.get(&id).copied() {
+                    slots.push(Slot::Done(Box::new(if hash != batch_hash {
+                        Err(StoreError::Tx(TxError::TxnIdReuse { id }))
+                    } else {
+                        self.read_frame(epoch)
+                            .and_then(|r| r.acked().map_err(|e| StoreError::Io(e.to_string())))
+                    })));
+                    continue;
+                }
+                if let Some((k, hash)) = staged_ids.get(&id).copied() {
+                    slots.push(if hash != batch_hash {
+                        Slot::Done(Box::new(Err(StoreError::Tx(TxError::TxnIdReuse { id }))))
+                    } else {
+                        Slot::Duplicate(k)
+                    });
+                    continue;
+                }
+            }
+            // Step 2: apply with blob presence; a rejection leaves no trace.
+            match self.db.commit_with(batch, &self.blobs) {
+                Err(e) => slots.push(Slot::Done(Box::new(Err(StoreError::Tx(e))))),
+                Ok(result) => {
+                    let row = LogRow {
+                        epoch: result.epoch,
+                        branch: batch.branch,
+                        principal: batch.principal,
+                        channel: batch.channel,
+                        client_txn_id: batch.client_txn_id,
+                        batch_hash,
+                        batch_blob,
+                        result_blob: result.canonical_bytes(),
+                        acked_result: None,
+                        prev_checksum: prev,
+                        group: log::GroupPos::default(),
+                    };
+                    if let Some(id) = batch.client_txn_id {
+                        staged_ids.insert(id, (applied.len(), batch_hash));
+                    }
+                    slots.push(Slot::Applied(applied.len()));
+                    applied_batch.push(n);
+                    applied.push((row, result));
+                }
+            }
+        }
+        if !applied.is_empty() {
+            // Step 3: frame the group, append, sync once.
+            let count = u16::try_from(applied.len()).expect("group size bounded");
+            let seq = self.group_seq + 1;
+            let mut prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
+            let mut bytes = Vec::new();
+            let mut sums = Vec::with_capacity(applied.len());
+            let mut ends = Vec::with_capacity(applied.len());
+            for (idx, (row, _)) in applied.iter_mut().enumerate() {
+                row.prev_checksum = prev;
+                row.group = log::GroupPos {
+                    seq,
+                    idx: idx as u16,
+                    count,
+                };
+                let (frame, sum) = log::frame(row);
+                bytes.extend_from_slice(&frame);
+                ends.push(bytes.len() as u64);
+                sums.push(sum);
+                prev = sum;
+            }
+            let first_epoch = applied[0].1.epoch;
+            let first_prev = applied[0].0.prev_checksum;
+            let (segment, start) = match self.append(first_epoch, &first_prev, &bytes) {
+                Ok(v) => v,
+                Err(_) => {
+                    self.in_flight = false;
+                    let e = self.poison();
+                    return batches.iter().map(|_| Err(e.clone())).collect();
+                }
+            };
+            if std::mem::take(&mut self.crash_after_sync) {
+                // Durable but never published or acked: the process "dies" here.
+                self.in_flight = false;
+                let e = self.poison();
+                return batches.iter().map(|_| Err(e.clone())).collect();
+            }
+            // Step 4: publish.
+            self.group_seq = seq;
+            let mut from = start;
+            for (k, (row, result)) in applied.iter().enumerate() {
+                let end = start + ends[k];
+                self.index
+                    .write()
+                    .expect("log index")
+                    .frames
+                    .push(FrameLoc {
+                        segment,
+                        start: from,
+                        end,
+                    });
+                from = end;
+                if let Some(id) = row.client_txn_id {
+                    self.ids.insert(id, (result.epoch, row.batch_hash));
+                }
+                // Projections after durability; a failure only makes them stale.
+                let mut base = Vec::new();
+                if self
+                    .proj
+                    .apply(&rows(
+                        &self.db,
+                        &batches[applied_batch[k]],
+                        result,
+                        sums[k],
+                        &mut base,
+                    ))
+                    .is_err()
+                {
+                    self.proj.mark_stale();
+                }
+            }
+            self.tail = Some(Tail {
+                segment,
+                size: start + bytes.len() as u64,
+                checksum: *sums.last().expect("non-empty group"),
+            });
+        }
+        self.in_flight = false;
+        slots
+            .into_iter()
+            .map(|slot| match slot {
+                Slot::Done(r) => *r,
+                Slot::Applied(k) | Slot::Duplicate(k) => Ok(applied[k].1.clone()),
+            })
+            .collect()
+    }
+    /// Appends a synced group, opening a synced segment first when needed.
+    /// Rollover happens only at group boundaries.
     fn append(
         &mut self,
         epoch: Epoch,
@@ -642,15 +769,16 @@ impl<D: Durability> Store<D> {
                 .write_new(&path, &log::segment_header(epoch, *prev))?;
             self.disk.sync(&path)?;
             self.disk.sync_dir(&log_dir)?;
-            self.segments.push(path);
-            (self.segments.len() - 1, log::HEADER_LEN as u64)
+            let mut index = self.index.write().expect("log index");
+            index.segments.push(path);
+            (index.segments.len() - 1, log::HEADER_LEN as u64)
         } else {
             let t = self.tail.as_ref().expect("tail");
             (t.segment, t.size)
         };
-        let path = &self.segments[segment];
-        self.disk.append(path, bytes)?;
-        self.disk.sync(path)?;
+        let path = self.index.read().expect("log index").segments[segment].clone();
+        self.disk.append(&path, bytes)?;
+        self.disk.sync(&path)?;
         Ok((segment, start))
     }
     /// Stores a payload; returns only after it is durable (ADR 0006 §5).
@@ -694,7 +822,7 @@ impl<D: Durability> Store<D> {
     /// The last durable epoch. After poisoning, the in-memory Db may be one
     /// epoch ahead; this never is.
     pub fn epoch(&self) -> Epoch {
-        Epoch(self.frames.len() as u64)
+        Epoch(self.index.read().expect("log index").frames.len() as u64)
     }
     /// Database as of `e`: the live one when it retains `e`, otherwise a replay
     /// of the verified log prefix (ADR 0006 §8, source 3).
@@ -798,7 +926,7 @@ impl<D: Durability> Store<D> {
                 if Epoch(n) > mark {
                     let checksum = log::checksum(&row.encode_body());
                     self.proj
-                        .apply(&rows(&db, &result, checksum, &mut base))
+                        .apply(&rows(&db, &batch, &result, checksum, &mut base))
                         .map_err(sql)?;
                 }
             }
@@ -809,6 +937,23 @@ impl<D: Durability> Store<D> {
             return Err(e);
         }
         Ok(self.proj.watermark())
+    }
+    /// Whether `scope`'s watermark advanced in `(since, until]`, from the
+    /// projection; `None` when projections do not cover `until` (ADR 0008 §6.3).
+    pub fn watermark_advanced(
+        &self,
+        scope: &str,
+        since: Epoch,
+        until: Epoch,
+    ) -> Result<Option<bool>, StoreError> {
+        self.readable()?;
+        if !self.proj.covers(until) {
+            return Ok(None);
+        }
+        self.proj
+            .watermark_advanced(scope, since, until)
+            .map(Some)
+            .map_err(sql)
     }
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
@@ -833,5 +978,67 @@ impl<D: Durability> Store<D> {
         crate::snapshot::write(&self.disk, &self.dir, epoch, &checksum, &self.db.inputs())
             .map_err(io)?;
         Ok(epoch)
+    }
+}
+
+/// Reads and re-verifies one durable frame through the shared index.
+fn read_frame(
+    disk: &dyn Durability,
+    index: &RwLock<LogIndex>,
+    epoch: Epoch,
+) -> Result<LogRow, StoreError> {
+    let (path, loc) = {
+        let index = index.read().expect("log index");
+        let loc = epoch
+            .0
+            .checked_sub(1)
+            .and_then(|n| index.frames.get(n as usize))
+            .cloned()
+            .ok_or(StoreError::Tx(TxError::UnknownRef))?;
+        (index.segments[loc.segment].clone(), loc)
+    };
+    // One frame, not the whole segment (review finding 6).
+    let len =
+        usize::try_from(loc.end - loc.start).map_err(|_| StoreError::Io("frame size".into()))?;
+    let bytes = disk.read_range(&path, loc.start, len).map_err(io)?;
+    let frame = &bytes[16..len - 32];
+    if log::checksum(frame) != bytes[len - 32..] {
+        return Err(StoreError::ChainBroken {
+            epoch,
+            fault: FrameFault::Checksum,
+        });
+    }
+    LogRow::decode_body(frame).map_err(|e| StoreError::Io(e.to_string()))
+}
+/// Read-only log access bounded by the tail it was created at (ADR 0008 §3.3).
+#[derive(Clone)]
+pub struct LogReader<D: Durability> {
+    disk: D,
+    index: Arc<RwLock<LogIndex>>,
+    tail: Epoch,
+}
+impl<D: Durability> LogReader<D> {
+    pub fn tail(&self) -> Epoch {
+        self.tail
+    }
+    pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
+        if epoch > self.tail {
+            return Err(StoreError::Tx(TxError::UnknownRef));
+        }
+        read_frame(&self.disk, &self.index, epoch)
+    }
+    /// The database as of `e` by replaying the verified prefix (ADR 0006 §8 source 3).
+    pub fn replay_to(&self, e: Epoch) -> Result<Db, StoreError> {
+        if e > self.tail {
+            return Err(StoreError::Tx(TxError::UnknownRef));
+        }
+        let mut db = Db::default();
+        for n in 1..=e.0 {
+            let row = self.read_row(Epoch(n))?;
+            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+            db.commit(&batch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+        }
+        Ok(db)
     }
 }

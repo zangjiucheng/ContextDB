@@ -1123,3 +1123,371 @@ fn review_n6_failed_catch_up_rolls_back_to_the_old_watermark() {
     assert_eq!(report.projection_watermark, store.epoch(), "committed");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// ADR 0008 §3.2: group commit and the shared tail algorithm.
+
+/// Commits `batches` as one group with fresh client ids; returns the results.
+fn group(
+    store: &mut Store<SimDisk>,
+    batches: &[Batch],
+    first_id: u64,
+) -> Vec<Result<CommitResult, StoreError>> {
+    let staged: Vec<Batch> = batches
+        .iter()
+        .enumerate()
+        .map(|(n, b)| {
+            let mut b = with_blobs(store, b);
+            b.client_txn_id = Some(txn(first_id + n as u64));
+            b
+        })
+        .collect();
+    store.commit_group(&staged)
+}
+/// A store whose last group has `n` accepted frames; returns (disk, epoch before it).
+fn last_group_of(n: usize) -> (SimDisk, Epoch) {
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    let base = |key: String, c: u8| contextdb_testkit::create(&key, RecordKind::Fact, true, c);
+    group(&mut store, &[Batch::new(vec![base("a".into(), 1)])], 0);
+    let before = store.epoch();
+    let batches: Vec<Batch> = (0..n)
+        .map(|k| Batch::new(vec![base(format!("g{k}"), 10 + k as u8)]))
+        .collect();
+    assert!(group(&mut store, &batches, 100).iter().all(|r| r.is_ok()));
+    assert_eq!(store.epoch().0, before.0 + n as u64);
+    (disk, before)
+}
+fn frames(disk: &SimDisk) -> Vec<log::Located> {
+    log::scan(disk, &Path::new(DIR).join("log")).unwrap().frames
+}
+#[test]
+fn group_commit_held_replies_idempotency_and_one_sync() {
+    let disk = SimDisk::new();
+    let (mut store, _) = open(&disk).unwrap();
+    let a = contextdb_testkit::create("a", RecordKind::Fact, true, 1);
+    let b = contextdb_testkit::create("b", RecordKind::Fact, true, 2);
+    let mut x = with_blobs(&mut store, &Batch::new(vec![a.clone()]));
+    x.client_txn_id = Some(txn(1));
+    let mut dup_other = with_blobs(&mut store, &Batch::new(vec![b]));
+    dup_other.client_txn_id = Some(txn(1));
+    let rejected = Batch::new(vec![a]); // key "a" exists once x is staged
+    let rejected = with_blobs(&mut store, &rejected);
+    let results = store.commit_group(&[x.clone(), x.clone(), dup_other, rejected]);
+    let first = results[0].clone().unwrap();
+    assert_eq!(
+        results[1],
+        Ok(first.clone()),
+        "staged duplicate shares the result"
+    );
+    assert_eq!(
+        results[2],
+        Err(StoreError::Tx(TxError::TxnIdReuse { id: txn(1) }))
+    );
+    assert!(matches!(
+        results[3],
+        Err(StoreError::Tx(TxError::LogicalExists { .. }))
+    ));
+    assert_eq!(store.epoch(), Epoch(1), "one applied batch");
+    // Every frame of a group carries {seq, idx, count}.
+    let f = frames(&disk);
+    assert_eq!(f.len(), 1);
+    assert_eq!((f[0].row.group.seq, f[0].row.group.count), (1, 1));
+    drop(store);
+    let (_, report) = open(&disk).unwrap();
+    assert_eq!(report.replayed, 1);
+}
+#[test]
+fn group_tail_short_final_group_is_truncated() {
+    let (disk, before) = last_group_of(3);
+    let f = frames(&disk);
+    let seg = f[0].segment.clone();
+    disk.truncate(&seg, f[f.len() - 1].start).unwrap(); // 2 of 3 frames remain
+    disk.sync(&seg).unwrap();
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(store.epoch(), before, "the whole short group is dropped");
+    assert_eq!(
+        report.truncated_tail.unwrap().reason,
+        log::FrameFault::Incomplete
+    );
+}
+#[test]
+fn group_tail_torn_frame_inside_last_group_truncates_the_group() {
+    let (disk, before) = last_group_of(3);
+    let f = frames(&disk);
+    // Damage the middle frame: the frame after it still has a valid checksum.
+    disk.corrupt(&f[2].segment, f[2].start as usize + 30, 0x5A);
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(store.epoch(), before);
+    assert!(report.truncated_tail.is_some());
+}
+#[test]
+fn group_tail_damage_followed_by_a_later_group_fails_closed() {
+    let (disk, _) = last_group_of(1);
+    let (mut store, _) = open(&disk).unwrap();
+    let more = contextdb_testkit::create("later", RecordKind::Fact, true, 99);
+    group(&mut store, &[Batch::new(vec![more])], 200);
+    drop(store);
+    let f = frames(&disk);
+    disk.corrupt(&f[1].segment, f[1].start as usize + 30, 0x5A);
+    assert!(matches!(open(&disk), Err(StoreError::ChainBroken { .. })));
+}
+#[test]
+fn group_tail_semantic_fault_at_a_boundary_fails_closed() {
+    let (disk, _) = last_group_of(2);
+    let f = frames(&disk);
+    let last = f.last().unwrap();
+    // Re-frame the last group's first frame with a skipped group seq: checksum
+    // valid, chain valid, but the group sequence jumps (a writer bug).
+    let first = &f[f.len() - 2];
+    let mut row = first.row.clone();
+    row.group.seq += 1;
+    let (bytes, _) = log::frame(&row);
+    disk.truncate(&first.segment, first.start).unwrap();
+    disk.append(&first.segment, &bytes).unwrap();
+    disk.sync(&first.segment).unwrap();
+    let _ = last;
+    assert!(matches!(
+        open(&disk),
+        Err(StoreError::ChainBroken {
+            fault: log::FrameFault::Group,
+            ..
+        })
+    ));
+}
+#[test]
+fn group_tail_junk_after_a_complete_group_is_truncated() {
+    let (disk, _) = last_group_of(2);
+    let epoch = {
+        let (s, _) = open(&disk).unwrap();
+        s.epoch()
+    };
+    let seg = frames(&disk)[0].segment.clone();
+    disk.append(&seg, &[0xAB; 37]).unwrap();
+    disk.sync(&seg).unwrap();
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(store.epoch(), epoch, "complete groups are kept");
+    assert_eq!(report.truncated_tail.unwrap().bytes, 37);
+}
+/// G4 for groups: inject at append, sync or post-sync on a group of 2–6
+/// batches. Recovery keeps all of the group or none of it, the in-flight ids
+/// agree, and retries apply at most once.
+#[test]
+fn g4_group_commit() {
+    let (mut fired_total, mut seed) = (0, 0u64);
+    while fired_total < runs() {
+        seed += 1;
+        let disk = SimDisk::new();
+        let options = OpenOptions {
+            segment_target: if seed % 2 == 1 {
+                700
+            } else {
+                log::SEGMENT_TARGET
+            },
+            ..OpenOptions::default()
+        };
+        let reopen = |d: &SimDisk| Store::open(d.clone(), Path::new(DIR), &options).unwrap();
+        let (mut store, _) = reopen(&disk);
+        let log = contextdb_testkit::generate_p1(seed);
+        let mut acked: Vec<(Batch, CommitResult)> = Vec::new();
+        let mut batches = log.batches.iter().cloned().enumerate().peekable();
+        let mut id = 0u64;
+        // A prefix of 0–3 groups of 1–3 batches.
+        for g in 0..seed % 4 {
+            if batches.peek().is_none() {
+                break;
+            }
+            let n = 1 + (seed + g) as usize % 3;
+            let chunk: Vec<Batch> = batches.by_ref().take(n).map(|(_, b)| b).collect();
+            let staged: Vec<Batch> = chunk
+                .iter()
+                .map(|b| {
+                    let mut b = with_blobs(&mut store, b);
+                    id += 1;
+                    b.client_txn_id = Some(txn(id));
+                    b
+                })
+                .collect();
+            for (b, r) in staged.iter().zip(store.commit_group(&staged)) {
+                if let Ok(r) = r {
+                    acked.push((b.clone(), r));
+                }
+            }
+        }
+        let chunk: Vec<Batch> = batches
+            .by_ref()
+            .take(2 + seed as usize % 5)
+            .map(|(_, b)| b)
+            .collect();
+        if chunk.len() < 2 {
+            continue;
+        }
+        let staged: Vec<Batch> = chunk
+            .iter()
+            .map(|b| {
+                let mut b = with_blobs(&mut store, b);
+                id += 1;
+                b.client_txn_id = Some(txn(id));
+                b
+            })
+            .collect();
+        let point = seed % 3;
+        match point {
+            0 => disk.fail_next("append"),
+            1 => disk.fail_next("sync"),
+            _ => store.crash_after_next_sync(),
+        }
+        let before = store.epoch();
+        let results = store.commit_group(&staged);
+        let accepted_any = results.iter().any(|r| r != &Err(StoreError::Poisoned));
+        if accepted_any {
+            continue; // every batch was rejected: nothing was written, nothing injected
+        }
+        fired_total += 1;
+        drop(store);
+        let crashed = disk.crash(FATES[seed as usize % 4], seed);
+        let (mut store, _) = reopen(&crashed);
+        // Reference: the acked prefix, plus the in-flight group if recovered.
+        let mut reference = Db::default();
+        for (b, _) in &acked {
+            reference.commit(b).unwrap();
+        }
+        let mut with_group = reference.clone();
+        let accepted = staged
+            .iter()
+            .filter(|b| with_group.commit(b).is_ok())
+            .count() as u64;
+        let recovered = store.epoch();
+        let all = recovered.0 == before.0 + accepted;
+        assert!(
+            recovered == before || all,
+            "seed {seed}: partial group recovered"
+        );
+        if point == 2 {
+            assert!(all, "seed {seed}: a synced group was lost");
+        }
+        if point == 0 {
+            assert_eq!(recovered, before, "seed {seed}: unwritten group recovered");
+        }
+        let expect = if all { &with_group } else { &reference };
+        assert_eq!(store.db().unwrap().digest(), expect.digest(), "seed {seed}");
+        for b in &staged {
+            let status = store.txn_status(&b.client_txn_id.unwrap()).unwrap();
+            if !all {
+                assert_eq!(status, TxnStatus::NotCommitted);
+            }
+        }
+        // Retrying the whole group applies each committed batch at most once:
+        // committed ids return their original result; only batches that were
+        // never committed (rejected or lost) may apply now (§6.1 contract 1).
+        let status: Vec<TxnStatus> = staged
+            .iter()
+            .map(|b| store.txn_status(&b.client_txn_id.unwrap()).unwrap())
+            .collect();
+        let epoch = store.epoch();
+        let retried = store.commit_group(&staged);
+        let mut fresh = 0;
+        for (st, r) in status.iter().zip(&retried) {
+            match st {
+                TxnStatus::Committed { result, .. } => {
+                    assert_eq!(
+                        r,
+                        &Ok((**result).clone()),
+                        "seed {seed}: committed retry changed"
+                    )
+                }
+                TxnStatus::NotCommitted => fresh += u64::from(r.is_ok()),
+            }
+        }
+        assert_eq!(
+            store.epoch().0,
+            epoch.0 + fresh,
+            "seed {seed}: retry re-applied"
+        );
+    }
+}
+#[test]
+fn log_reader_is_bounded_by_its_tail_and_replays_exactly() {
+    let disk = SimDisk::new();
+    let mut store = populated(&disk, 6);
+    let reader = store.log_reader();
+    let (tail, digest) = (reader.tail(), store.db().unwrap().digest());
+    assert!(tail.0 >= 3);
+    commit_some(&mut store, 61, 3);
+    assert!(store.epoch() > tail, "later commits");
+    assert_eq!(reader.replay_to(tail).unwrap().digest(), digest);
+    assert!(
+        reader.read_row(Epoch(tail.0 + 1)).is_err(),
+        "bounded by tail"
+    );
+    for e in 1..=tail.0 {
+        assert_eq!(
+            reader.read_row(Epoch(e)).unwrap(),
+            store.read_row(Epoch(e)).unwrap()
+        );
+    }
+    // Readers work from other threads.
+    let r2 = reader.clone();
+    let d = std::thread::spawn(move || r2.replay_to(tail).unwrap().digest())
+        .join()
+        .unwrap();
+    assert_eq!(d, digest);
+}
+#[test]
+fn watermark_history_projection_records_net_advances() {
+    let tmp = std::env::temp_dir().join(format!("contextdb-wm-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let proj = tmp.join("p.sqlite");
+    let _ = std::fs::remove_file(&proj);
+    let disk = SimDisk::new();
+    let (mut store, _) = open_with(&disk, &proj);
+    let watermark = |expected: Option<u8>, position: u8| {
+        let mut b = Batch::new(vec![Op::ObserverWatermark {
+            scope: "repo".into(),
+            expected: expected.map(|v| vec![v]),
+            position: vec![position],
+        }]);
+        b.channel = Channel::Observer;
+        b
+    };
+    store.commit(&watermark(None, 1)).unwrap(); // epoch 1: set
+    let content = store.put_blob(b"x").unwrap();
+    store
+        .commit(&Batch::new(vec![Op::CreateLogical {
+            key: "x".into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content,
+            adopt_as_base: true,
+        }]))
+        .unwrap(); // epoch 2: unrelated
+    store.commit(&watermark(Some(1), 1)).unwrap(); // epoch 3: same position, no advance
+    store.commit(&watermark(Some(1), 2)).unwrap(); // epoch 4: advance
+    let adv = |a, b| {
+        store
+            .watermark_advanced("repo", Epoch(a), Epoch(b))
+            .unwrap()
+    };
+    assert_eq!(adv(0, 1), Some(true));
+    assert_eq!(adv(1, 3), Some(false));
+    assert_eq!(adv(1, 4), Some(true));
+    assert_eq!(adv(4, 4), Some(false));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+#[test]
+fn doctor_cut_inside_a_group_moves_to_the_group_start() {
+    let (disk, before) = last_group_of(3);
+    let middle = Epoch(before.0 + 2);
+    let plan = doctor::plan_truncate_before(&disk, Path::new(DIR), middle).unwrap();
+    assert_eq!(plan.keep_through, before, "the whole group is dropped");
+    assert_eq!(
+        plan.dropped_epochs,
+        vec![Epoch(before.0 + 1), middle, Epoch(before.0 + 3)]
+    );
+    doctor::truncate_before(&disk, Path::new(DIR), &plan).unwrap();
+    let (store, report) = open(&disk).unwrap();
+    assert_eq!(store.epoch(), before);
+    assert!(
+        report.truncated_tail.is_none(),
+        "no partial group left behind"
+    );
+}

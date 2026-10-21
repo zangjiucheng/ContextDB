@@ -324,3 +324,57 @@ fn t65_verdict_priority() {
         }
     ));
 }
+
+#[test]
+fn issuance_rejects_a_revision_of_another_logical() {
+    let mut rig = Rig::new();
+    rig.ok(vec![create("x", true, 0), create("y", true, 1)]);
+    // Revision 1 belongs to y, not x.
+    assert_eq!(
+        rig.issue(&[(0, 1)], false),
+        Err(IssueFailure::NotCertified {
+            logical: LogicalId(0),
+            rev: RevisionId(1),
+            summary: Summary::Stale(StaleReason::Unsupported),
+        })
+    );
+}
+#[test]
+fn stale_reason_is_inherited_through_a_current_pin() {
+    // X: r0 superseded by r3. B ← Pin X@r0 (L0 true, L1 false). C ← Pin B (B is
+    // current), so C inherits B's reason instead of blaming B itself.
+    let mut rig = Rig::new();
+    rig.ok(vec![
+        create("x", true, 0),
+        create("b", false, 1),
+        create("c", false, 2),
+    ]);
+    rig.ok(vec![
+        rule(1, &[(0, EdgeKind::Pin)]),
+        rule(2, &[(1, EdgeKind::Pin)]),
+    ]);
+    rig.ok(vec![revision(0, 9), head(0, 0, 3)]);
+    let pinned = Summary::Stale(StaleReason::SupersededPinnedPremise(RevisionId(0)));
+    assert_eq!(rig.summary(1), pinned);
+    assert_eq!(rig.summary(2), pinned);
+}
+#[test]
+fn sem_premise_not_l1_with_a_supported_head_inherits_the_premise_reason() {
+    // Q: r0 → r3. X: r1 (← Pin Q@r0) then head r4 (base). D: r2 ← Sem X@r1.
+    // r1 is not L1 while X's head r4 is CERTIFIED, so D inherits r1's own
+    // reason (r1 is superseded: HeadSuperseded), not the head's.
+    let mut rig = Rig::new();
+    rig.ok(vec![
+        create("q", true, 0),
+        create("x", false, 1),
+        create("d", false, 2),
+    ]);
+    rig.ok(vec![
+        rule(1, &[(0, EdgeKind::Pin)]),
+        rule(2, &[(1, EdgeKind::Sem)]),
+    ]);
+    rig.ok(vec![revision(0, 9), head(0, 0, 3)]);
+    rig.ok(vec![revision(1, 8), head(1, 1, 4)]);
+    assert_eq!(rig.summary(4), Summary::Certified);
+    assert_eq!(rig.summary(2), Summary::Stale(StaleReason::HeadSuperseded));
+}

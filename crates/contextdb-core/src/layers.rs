@@ -380,6 +380,7 @@ impl LayerColumns {
         out
     }
     /// Debug/paranoid: the incremental columns equal a full rebuild (DA5 for L1/L2).
+    #[cfg(any(debug_assertions, feature = "paranoid", test))]
     pub(crate) fn assert_matches_rebuild(
         &self,
         i: &impl InputView,
@@ -399,5 +400,27 @@ impl LayerColumns {
             (&full.truth, &full.witness, &full.reason),
             "L1/L2 node columns"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Db, Maintainer};
+    #[test]
+    #[should_panic(expected = "L1/L2")]
+    fn rebuild_cross_check_detects_a_corrupted_column() {
+        let mut db = Db::default();
+        db.commit(&Batch::new(vec![Op::CreateLogical {
+            key: "x".into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: [1; 32],
+            adopt_as_base: true,
+        }]))
+        .unwrap();
+        db.layers.truth[0] = [false; 2];
+        db.layers
+            .assert_matches_rebuild(&db.view(), db.maintainer.state(), &db.indexes, &db.pk);
     }
 }

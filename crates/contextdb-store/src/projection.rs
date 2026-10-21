@@ -26,6 +26,8 @@ pub struct EpochRows<'a> {
     pub checksum: ContentHash,
     pub result: &'a CommitResult,
     pub base: &'a [(RevisionId, bool)],
+    /// Watermark advances: (scope, new position).
+    pub watermarks: Vec<(String, Vec<u8>)>,
     pub posts: Vec<(RevisionId, NodeState)>,
 }
 type Sql<T> = rusqlite::Result<T>;
@@ -68,6 +70,12 @@ fn write_rows(conn: &Connection, rows: &EpochRows<'_>) -> Sql<()> {
             .execute(params![e, r.0])?;
         }
     }
+    for (scope, position) in &rows.watermarks {
+        conn.prepare_cached(
+            "INSERT INTO watermark_history(scope, position, from_epoch) VALUES (?1, ?2, ?3)",
+        )?
+        .execute(params![scope, position, e])?;
+    }
     Ok(())
 }
 fn write_watermark(conn: &Connection, epoch: Epoch, checksum: &ContentHash) -> Sql<()> {
@@ -93,6 +101,9 @@ CREATE TABLE IF NOT EXISTS base_history(
     branch INTEGER NOT NULL, rev_id INTEGER NOT NULL,
     asserted_epoch INTEGER NOT NULL, retracted_epoch INTEGER);
 CREATE INDEX IF NOT EXISTS base_history_rev ON base_history(rev_id, asserted_epoch);
+CREATE TABLE IF NOT EXISTS watermark_history(
+    scope TEXT NOT NULL, position BLOB NOT NULL, from_epoch INTEGER NOT NULL,
+    PRIMARY KEY (scope, from_epoch));
 ";
 impl Projections {
     /// Opens the tables and returns the watermark if it names `checksums`
@@ -135,7 +146,7 @@ impl Projections {
     pub fn clear(&mut self) -> Sql<()> {
         self.conn.execute_batch(
             "DELETE FROM diff_log; DELETE FROM head_history; DELETE FROM base_history;
-             DELETE FROM projection_watermark;",
+             DELETE FROM watermark_history; DELETE FROM projection_watermark;",
         )?;
         self.watermark = Epoch(0);
         Ok(())
@@ -227,6 +238,15 @@ impl Projections {
             .optional()?
             .map(Self::decode)
             .transpose()
+    }
+    /// Did `scope`'s watermark advance in `(since, until]`? Strict-mode history
+    /// beyond the in-memory change log (ADR 0008 §6.3).
+    pub fn watermark_advanced(&self, scope: &str, since: Epoch, until: Epoch) -> Sql<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM watermark_history WHERE scope = ?1 AND from_epoch > ?2 AND from_epoch <= ?3)",
+            params![scope, since.0 as i64, until.0 as i64],
+            |r| r.get(0),
+        )
     }
     /// Snapshot(e): the logical's head as of `e`.
     pub fn head_at(&self, l: LogicalId, e: Epoch) -> Sql<Option<RevisionId>> {

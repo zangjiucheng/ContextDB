@@ -288,6 +288,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn revision_count(&self) -> usize {
         self.revisions.len()
     }
+    /// Committed observer watermark of a scope (SD18.6).
+    pub fn watermark(&self, scope: &str) -> Option<&[u8]> {
+        self.tables.watermarks.get(scope).map(Vec::as_slice)
+    }
     /// Current base bit of a revision (store projections, base_history).
     pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
         self.tables
