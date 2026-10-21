@@ -7,6 +7,6 @@ cargo build --release --locked -p contextdb-daemon --bin ctxd-stress
 mkdir -p results
 status=0
 for clients in ${STRESS_CLIENTS:-1 8 32 128}; do
-  ./target/release/ctxd-stress "$clients" "$seconds" | tee -a results/stress.txt || status=1
+  "${CARGO_TARGET_DIR:-target}/release/ctxd-stress" "$clients" "$seconds" | tee -a results/stress.txt || status=1
 done
 exit $status
