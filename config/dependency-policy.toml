@@ -22,3 +22,21 @@ reviewed_external = ["nix", "arc-swap", "blake3"]
 # ADR 0008 §10: hand-rolled JSON-RPC over stdio (owner decision).
 [mcp]
 reviewed_external = ["serde", "serde_json"]
+
+# ADR 0010 §1: the wire protocol, lease discovery and client, shared by the
+# daemon and light clients; no external crates.
+[proto]
+reviewed_external = []
+
+# ADR 0010 §1: ctx-hook parses harness JSON (serde_json), derives outbox
+# stream ids (blake3) and locks/fsyncs outbox files (nix, fs).
+[hooks]
+reviewed_external = ["serde", "serde_json", "blake3", "nix"]
+
+# ADR 0010 §1: toml parses policy.toml and gating.toml in the CLI only.
+[cli]
+reviewed_external = ["toml"]
+
+# ADR 0010 §1: light clients must not link the store or SQLite.
+[light]
+crates = ["contextdb-proto", "contextdb-hooks"]

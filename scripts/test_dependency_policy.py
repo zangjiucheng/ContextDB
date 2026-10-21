@@ -22,7 +22,9 @@ def metadata(edges=None, external=()):
             "id": name,
             "name": name if name in external else f"contextdb-{name}",
             "dependencies": [
-                {"name": dep if dep in external else f"contextdb-{dep}"}
+                {"name": dep}
+                if dep in external
+                else {"name": f"contextdb-{dep}", "path": f"/crates/{dep}"}
                 for dep in edges.get(name, ())
             ],
         }
@@ -87,6 +89,22 @@ class DependencyPolicyTests(unittest.TestCase):
         daemon["dependencies"].append({"name": "tokio"})
         errors = check(data, policy)
         self.assertTrue(any("contextdb-daemon declares unreviewed external crate: tokio" in e for e in errors))
+
+    def test_light_clients_must_not_reach_the_store(self):
+        policy = dict(POLICY, light={"crates": ["contextdb-hooks"]})
+        data = metadata({"core": ["model"], "proto": ["core"], "hooks": ["proto"]})
+        self.assertEqual(check(data, policy), [])
+        data = metadata({"core": ["model"], "proto": ["core", "store"], "hooks": ["proto"]})
+        errors = check(data, policy)
+        self.assertTrue(any("contextdb-hooks must not reach contextdb-store" in e for e in errors))
+
+    def test_dev_edges_to_the_store_are_allowed_for_light_clients(self):
+        policy = dict(POLICY, light={"crates": ["contextdb-hooks"]})
+        data = metadata({"core": ["model"], "hooks": ["store"]})
+        for node in data["resolve"]["nodes"]:
+            if node["id"] == "hooks":
+                node["deps"] = [{"pkg": "store", "dep_kinds": [{"kind": "dev"}]}]
+        self.assertEqual(check(data, policy), [])
 
 
 if __name__ == "__main__":

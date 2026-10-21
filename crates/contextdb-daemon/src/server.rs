@@ -286,18 +286,4 @@ fn close_after_reply(stream: &mut UnixStream) {
         }
     }
 }
-/// A blocking client for one socket.
-pub struct Client {
-    stream: UnixStream,
-}
-impl Client {
-    pub fn connect(path: &Path) -> io::Result<Self> {
-        Ok(Self {
-            stream: UnixStream::connect(path)?,
-        })
-    }
-    pub fn call(&mut self, request: &Request) -> Result<Envelope, FrameError> {
-        proto::write_request(&mut self.stream, request)?;
-        proto::read_response(&mut self.stream)
-    }
-}
+pub use contextdb_proto::Client;

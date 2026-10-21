@@ -1,13 +1,13 @@
 # ContextDB — Project Specification
 
-> Version: 1.5.4 · Date: 2026-10-20 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.0 · Date: 2026-10-21 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
 **核心原则**
 
 1. **Correctness before features, features before speed。** 每一阶段先过 oracle，再谈性能和集成。
-2. **每个阶段必须通过 Verification Gate 才能进入下一阶段**（§4）。Gate 不通过不得“边做下一阶段边补”。
+2. **每个阶段必须通过 Verification Gate 才能进入下一阶段**（§4）。Gate 不通过不得“边做下一阶段边补”。唯一例外见附录 C 1.6.0 A11：需要长期真实使用的 dogfood 层可与下一阶段的 G0 / 实现并行，但下一阶段的 Gate 不得早于本阶段通过。
 3. **只采纳在源码中验证过的思路**；README-only / refuted 机制不得作为设计依据；§3.5 列出的机制禁止引入。
 4. **版本一致性 ≠ 语义真理。** ContextDB 证明“在声明的依赖版本与验证规则下可以使用”，不证明自然语言内容正确。
 5. 长期项目，无交付日期压力；阶段按依赖顺序推进，研究 track 与产品 track 共用同一内核。
@@ -272,7 +272,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 ### 3.1 组件
 
 ```
-Claude Code / Codex ──hooks──> ctx-hook (static Rust bin) ──> local outbox.sqlite ──┐
+Claude Code / Codex ──hooks──> ctx-hook (static Rust bin) ──> local outbox (per-stream log) ──┐
         │                                                                           │
         └──MCP stdio──> ctx-mcp (thin client) ──────────────────────────────────────┤
                                                                                     ▼
@@ -388,7 +388,7 @@ commit(batch):
 4. 无前置条件的先读后写编辑（必须 CAS）。
 5. 无 fencing（epoch / token）的租约作为写入互斥。
 6. 丢失任一来源即硬删派生项（必须 OR 计数，失去全部支持时标记而不删除）。
-7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集与证书这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
+7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集、证书以及 P4 起的会话事实与遥测（行动、门控决定、drift、基线、增量确认、流标记、会话键；ADR 0010 A8）这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
 8. mtime 漂移扫描作为锚点或失效信号。
 9. 可被调用方忽略错误的“否决 hook”（否决必须在提交事务内生效）。
 10. 嵌入 Dolt / prolly tree 作为内核存储。
@@ -526,7 +526,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `ctxd`：单实例租约（pid + start-time 栅栏 + flock 能力探测；拒绝 NFS/SMB/WSL 数据目录）、单 writer commit actor、epoch-pinned snapshot readers（chunked persistent vector / `Arc` COW，读者无锁）。
 - IPC：Unix domain socket，长度前缀帧，版本化协议。
 - **transport channels**：`agent` / `observer` / `admin`；channel 与 principal 由 transport 层绑定（socket 路径与 peer credential），请求参数不能改变身份；`observer` 通道是 CodeAnchor 唯一写入入口（SD18.3）。
-- 会话：自有 append-only session log（ADR 0008；`sessions`、`read_ledger`、`certificates` 表都是它的可重建投影）；session 钉住 repo / branch / git HEAD；`read_ledger(session, logical, rev, layer, epoch, required)` 只追加。
+- 会话：自有 append-only session log（ADR 0008；`sessions`、`read_ledger`、`certificates` 表都是它的可重建投影）；session 钉住 repo / branch / git HEAD；`read_ledger(session, agent, logical, rev, layer, epoch, required)` 只追加（`agent` 自 P4 起，根 agent 为空；ADR 0010 A9）。
 - Certificate：由 read_ledger 生成；`validate_certificate` 全部结果与优先级见 §6.4。
 - 强制 CAS：所有 agent 写入必须带 `expected_head` 或 `create_only`；deps 只能引用本会话证书中的 handle 或显式 `logical@rev`（证据准入）。
 - 增量 L1/L2 列（§3.4 Phase 3b，替换 P1 的按需计算；与 oracle 精确比较）。
@@ -548,11 +548,11 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 
 **范围**
 - `ctx-hook`（静态 Rust 二进制，Claude Code / Codex stdin/stdout JSON 协议；协议版本固定并做契约测试）。
-- 本地 outbox（`packet_id = sha256(repo, session, range)`，**at-least-once + dedup**）。
-- Hook 行为（§6.5）：SessionStart briefing、UserPromptSubmit `<context_update>` 增量（不重写前缀，保 prompt cache）、PreToolUse 校验（**P4 校验整个会话 certificate，不按路径过滤**；默认 warn）、PostToolUse 写集合记录、Stop / SubagentStop / PreCompact / SessionEnd 冲刷 outbox + declared-vs-done drift（`DriftReport` artifact）。
-- SubagentStart / SubagentStop：子会话继承父 certificate 的只读视图；子会话读集与写集回传父会话。
+- 本地 outbox（`packet_id = (stream, seq)`，`stream = blake3(harness, harness_session)`，seq 每流单调且崩溃后从日志恢复；**at-least-once 投递 + 幂等应用**；ADR 0010 §5、A5）。
+- Hook 行为（§6.5）：SessionStart briefing、UserPromptSubmit `<context_update>` 增量（不重写前缀，保 prompt cache）、PreToolUse 校验（**P4 校验整个会话 certificate，不按路径过滤**；默认 warn）、PostToolUse 写集合记录、Stop / SubagentStop / PreCompact / SessionEnd 冲刷 outbox + declared-vs-done drift（P4 中 `DriftReport` 记入 session log，不是内核 Artifact，因为 `OpenArtifact` 需要目标 revision；P5a 以锚点为目标重新评估；ADR 0010 A3）。
+- Subagent：与根 agent 共用 session，按 agent 分视图（ADR 0010 §7、A1）。子 agent 继承根的读集视图；子 agent 的读进入根的视图（根自己读过的 logical 以根的条目为准）；事实带 `agent_id`。MCP 调用经 harness 的 tool-call id（`_meta`）绑定到 session 与 agent（A7）。
 - Policy：`.contextdb/policy.toml` 解析为 PolicyDoc 后经 `SetPolicy{policy}` Op（admin 通道）提交才生效，在内核事务中执行（`--no-verify` 无法绕过）。
-- `ctx check --strict`（pre-push / CI，退出码门控）。
+- `ctx check --strict`（按会话，退出码门控）与可选 `--all`；pre-push 的 `--range` 移到 P5a（ADR 0010 A4）。
 - 门控模式：`off | warn | enforce`，按路径/工具配置；dry-run 与真实检查共用同一谓词。
 
 **Gate P4**
@@ -809,7 +809,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ctx_record` | `(kind, body, anchors?, deps:[{target, kind}], expected_head \| create_only（必填）, adopt_as_base（必填）)` → `{rev, epoch}` 或 §6.2 错误 | P3 |
 | `ctx_supersede` | `(logical, body, expected_head, adopt_as_base, carry_rules: copy\|none, reason)`；`copy` 只把旧 head **自己的**支撑规则（结论为旧 head 的 enabled 规则）复制到新 revision，**从不**改写依赖旧 revision 的规则（§3.5 #2） | P3 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | SD15；impact 支持 hypothetical batch | P3 |
-| `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径） |
+| `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径）；P4 起 `context_update` 在 MCP 中只是不消费的 peek，由 UserPromptSubmit 确认（ADR 0010 A6） |
 | `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker |
 | `ctx_txn_status` | `(client_txn_id)` → `Committed{epoch, result} \| NotCommitted`；所有写工具都接受可选 `client_txn_id` | P3 |
 | `ctx_commit` | 多 head 原子 + `expect_cert_valid` | P6 |
@@ -833,7 +833,7 @@ Certificate {
 
 **签发**：`required=true` 的条目必须为 CERTIFIED，否则签发失败并返回该条目的汇总状态；advisory 读以 `required=false` 记录，不影响判定。向量中同一 logical 出现两个生效 revision → `Ambiguous`（签发失败）。没有 required 条目 → 签发失败 `Empty`；`Empty` 永不视为通过（I6）。P3 有两类证书（ADR 0008 §6.2）：
 - **recall 证书**：由 certified 模式的 `ctx_recall` 签发，条目即本次返回的 items，handle 来自它；advisory recall 不签发证书。
-- **session 证书**：由 `ctx_check` 签发，条目是会话读集中仍然有效的 required 条目。同一 logical 后来读到的另一 revision 会取代先前条目，失败的 certified 读按 advisory 记录。
+- **session 证书**：由 `ctx_check` 签发，条目是会话读集（P4 起为该 agent 的视图，ADR 0010 A10）中仍然有效的 required 条目。同一 logical 后来读到的另一 revision 会取代先前条目，失败的 certified 读按 advisory 记录。
 
 **校验** `validate_certificate(c, live_pos)` 是以下输入的纯函数：当前状态（c.branch 的最新 epoch）、自各条目 `since_epoch` 起的提交历史（head 移动、base 翻转、watermark 推进）、op_log 校验和链、`live_pos`。按以下步骤计算：
 
@@ -865,14 +865,14 @@ Certificate {
 
 | 事件 | 行为 | 失败策略 |
 |---|---|---|
-| SessionStart | 注册 session，钉住 repo/branch/HEAD；新建 certificate；注入预算内 certified briefing 与 PENDING/STALE 摘要 | daemon 不可达：跳过注入并提示 |
-| SubagentStart / SubagentStop | 子会话继承父证书只读视图；结束时读集/写集回传父会话 | 同上 |
+| SessionStart | 注册 session，钉住 repo/branch/HEAD；注入预算内 advisory briefing 与 PENDING/STALE 摘要（不记入读集）；certificate 在首次校验时签发（ADR 0010 A2） | daemon 不可达：跳过注入并提示 |
+| SubagentStart / SubagentStop | 子 agent 与根共用 session、按 agent 分视图（继承根视图；读入根视图）；SubagentStop 只做 drift（ADR 0010 A1） | 同上 |
 | UserPromptSubmit | 对比读集与当前状态；有翻转时注入 `<context_update epoch=…>` 增量 | fail-open |
 | PreToolUse（Edit/Write/ApplyPatch/Bash） | P4：校验整个会话证书；P5a 起：取锚定目标路径且在证书中的条目 → `ctx_check` → `permissionDecision` + ≤ 480B 理由；默认 warn | 超时可配置，默认 fail-open |
 | PostToolUse（Edit/Write/Bash） | 写集合记录；锚点重算入队（Bash 的副作用只能经 git diff 事后检测） | 异步 |
-| Stop / PreCompact / SessionEnd | 冲刷 outbox；declared-vs-done drift → `DriftReport` artifact | — |
+| Stop / PreCompact / SessionEnd | 冲刷 outbox；declared-vs-done drift → `DriftReport`（P4：session log 记录，A3） | — |
 | git post-commit / post-checkout / post-merge | observer 同步锚点 head 与 watermark | — |
-| pre-push / CI | `ctx check --strict --range origin/main..HEAD`；STALE / CONFLICTED → 非零退出 | 唯一默认硬门控点 |
+| pre-push / CI | `ctx check --strict --range origin/main..HEAD`（P5a 起；P4 为按会话 `--strict` 与可选 `--all`，ADR 0010 A4）；STALE / CONFLICTED → 非零退出 | 唯一默认硬门控点 |
 
 ### 6.6 CLI
 
@@ -903,11 +903,11 @@ policies(branch, epoch, content_hash, policy_json)                           -- 
 watermarks(branch, scope, position, epoch)
 artifacts(id, rev_id, branch, type, state /*open|resolved*/, info_hash, payload, epoch)
 sessions(id, parent_session, harness, repo, branch, head_sha, principal, started_epoch)
-read_ledger(session_id, logical_id, rev_id, layer, epoch, required)         -- append-only
+read_ledger(session_id, agent_id NULL, logical_id, rev_id, layer, epoch, required)  -- append-only；agent_id 自 P4（ADR 0010 A9）
 certificates(id, session_id, vector_json, issued_epoch, code_commit, watermarks_json, strict_no_aba)
 jobs(claim_key, token, state, pid, started)
 handoffs(id, owner, state, cert_id, summary)
--- client side outbox.sqlite: events(id, packet_id UNIQUE, payload, attempts, status)
+-- client side outbox/<stream>.{log,seq,ack,state}: self-verifying records (seq, agent_id, event); packet_id = (stream, seq)（ADR 0010 §5）
 ```
 
 - **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围（blobs、快照中的 payload 缓存、git 镜像、导出物）在 P9 定义；镜像与导出物需要重新生成。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
@@ -1139,6 +1139,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | agent 伪造 CodeAnchor | 锚点写入只接受 observer 通道（SD18.3）；P3–P8 为协作式边界，经 MCP 的 agent 无法伪造，同用户 shell 直连 observer socket 不在防护范围内 | P3 / P9 |
 | agent 伪造依赖 / 投毒 | deps 只能引用证书内 handle 或显式 `logical@rev`；provenance 门控晋升 | P3 / P9 |
 | agent 不声明依赖（图为空） | 读证书自动记录读集；policy 锚定要求（§2.5 A5）；Stop drift 检查；PreToolUse 提示缺失依赖；P4 测量覆盖率 | P3–P5 |
+| MCP 调用无法关联到 session / agent | 按 harness 的 tool-call id（`_meta`）绑定（Codex 直接，Claude Code 经 PreToolUse claim）；无 id 时用 MCP 自身 session 并在报告中计数 `Unclaimed`，从不按内容猜测（ADR 0010 A7） | P4 |
 | Bash 副作用绕过 PreToolUse 的路径解析 | 只能经 PostToolUse git diff 与 drift 事后检测；文档化 | P4 |
 | retry escape（知情覆盖） | CAS 只防 lost update；文档化限制（T32） | P3 |
 | LLM validator 被诱导误判 | 永不写 Rejected；handle allowlist；去重与上限；可审计（prompt_sha256） | P7 |
@@ -1252,6 +1253,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.0 | 2026-10-21 | P4 G0（ADR 0010，独立复核三轮后）：A1 subagent 与根共用 session、按 agent 分视图；A2 SessionStart 注入 advisory briefing，证书首次校验时签发；A3 P4 的 DriftReport 记入 session log（`OpenArtifact` 需目标 revision）；A4 pre-push `--range` 移至 P5a；A5 outbox `packet_id = (stream, seq)`；A6 MCP `context_update` 为不消费的 peek；A7 MCP 调用按 harness tool-call id 绑定；A8 session log 领域扩展为会话事实与遥测，仍不参与内核状态；A9 `read_ledger` 增加 `agent`；A10 session 证书按 agent 视图签发；A11（项目所有者决定）P4 的 G6 dogfood 需 ≥ 2 周真实使用，其余 Gate 层通过后可并行开始 P5a 的 G0 与实现，但 P4 只有在 dogfood 报告通过后才算 Passed，P5a 的 Gate 也不得早于 P4 通过 |
 | 1.5.4 | 2026-10-20 | ADR 0009（项目所有者决定）：L1/L2 从查询缓存改为维护列，状态从 query cache 移入 hot；按 ADR 0005 同一规则重新校准：hot ≤ 90、query cache ≤ 32 B/incidence，范围预算总和 172 B/incidence（原 171） |
 | 1.5.3 | 2026-10-20 | ADR 0008 确认轮：先校验时跳过读集中已被取代的条目，并作为取代 diff 报告，使冲突后重读即可恢复（T32 流程）；共享 vector 项的 strict 区间从最早的 `since_epoch` 起算。P3 G0 通过 |
 | 1.5.2 | 2026-10-20 | ADR 0008 第三轮复核：条目增加 `since_epoch`，strict 区间从它起算；`ctx_check` 先校验再重新签发，不得用重新签发掩盖 strict 变化；签发失败时按 §6.4 映射为判定；`Empty` 加入判定集合；校验的输入写明含历史与日志链。op_log 尾部算法中，语义故障即使位于组边界也 fail-closed（见 ADR 0008 §3.2） |

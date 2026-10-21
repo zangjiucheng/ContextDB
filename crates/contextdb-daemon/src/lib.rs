@@ -10,7 +10,7 @@ pub mod actor;
 #[cfg(not(loom))]
 pub mod lease;
 #[cfg(not(loom))]
-pub mod proto;
+pub use contextdb_proto::proto;
 #[cfg(not(loom))]
 pub mod server;
 #[cfg(not(loom))]

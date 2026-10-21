@@ -131,6 +131,7 @@ dependencies = [
  "blake3",
  "contextdb-core",
  "contextdb-model",
+ "contextdb-proto",
  "contextdb-store",
  "loom",
  "nix",
@@ -162,6 +163,14 @@ version = "0.1.0"
 name = "contextdb-oracle"
 version = "0.1.0"
 dependencies = [
+ "contextdb-model",
+]
+
+[[package]]
+name = "contextdb-proto"
+version = "0.1.0"
+dependencies = [
+ "contextdb-core",
  "contextdb-model",
 ]
 

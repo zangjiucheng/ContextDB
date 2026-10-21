@@ -62,7 +62,43 @@ def check(metadata: dict, policy: dict) -> list[str]:
 
     # ADR 0006 §1, ADR 0008 §1: crates with a reviewed list may only declare
     # reviewed external dependencies directly (normal and build edges).
-    for section, crate in (("store", "contextdb-store"), ("daemon", "contextdb-daemon"), ("mcp", "contextdb-mcp")):
+    # ADR 0010 §1: light clients link neither the store nor SQLite through
+    # normal or build edges (tests may use an in-process daemon).
+    normal_graph = {
+        node["id"]: {
+            dep["pkg"]
+            for dep in node["deps"]
+            if any(k.get("kind") != "dev" for k in dep.get("dep_kinds", [{"kind": None}]))
+        }
+        for node in metadata["resolve"]["nodes"]
+    }
+
+    def reachable_normal(start: str) -> set[str]:
+        seen = set()
+        pending = list(normal_graph.get(start, ()))
+        while pending:
+            current = pending.pop()
+            if current not in seen:
+                seen.add(current)
+                pending.extend(normal_graph.get(current, ()))
+        return seen
+
+    for crate in policy.get("light", {}).get("crates", []):
+        if crate not in members:
+            continue
+        for dependency_id in reachable_normal(members[crate]):
+            name = packages[dependency_id]["name"]
+            if name in ("contextdb-store", "rusqlite", "libsqlite3-sys"):
+                errors.append(f"{crate} must not reach {name}")
+
+    for section, crate in (
+        ("store", "contextdb-store"),
+        ("daemon", "contextdb-daemon"),
+        ("mcp", "contextdb-mcp"),
+        ("proto", "contextdb-proto"),
+        ("hooks", "contextdb-hooks"),
+        ("cli", "contextdb-cli"),
+    ):
         reviewed = set(policy.get(section, {}).get("reviewed_external", []))
         if crate not in members:
             continue
