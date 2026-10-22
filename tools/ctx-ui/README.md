@@ -1,5 +1,7 @@
 # ctx-ui
 
+![ctx-ui graph view](../../docs/images/ctx-ui-graph.png)
+
 A local, read-only view of a ContextDB context graph in the browser:
 - logicals and revisions, coloured by derived state (CERTIFIED / STALE / PENDING / CONFLICTED / UNAVAILABLE);
 - the justification DAG, with premises above their conclusions and edges styled by kind (pin / cur / sem / ref);
