@@ -1,19 +1,13 @@
-# P5a G5 anchor benchmark (anchor_bench), M1 Pro, 2026-10-22, ADR 0011 r0.4 tree (before the path-filter repo-cache change).
-# Started at 1-min load 12.6 (5-min 49.5), ended 18.7: still not an idle machine.
+# P5a G5 anchor benchmark (anchor_bench), M1 Pro, 2026-10-22, tree 1ce43dc (ADR 0011 r0.4 code), confirmation run.
+# Load average at start 7.98 / 9.37 / 7.27, at end 9.23 / 9.67 / 7.60 (lowest observed on this desktop).
+# Rule (ADR 0011 §7, owner decision 2026-10-22): P4 hook budgets at every size; 10/100 anchors without misses; misses at 1,000 reported.
 P5a anchor benchmark; os=macos arch=aarch64 timeout_live_ms=40 observer_ms=5000
-anchors=10 full_sync=false initial_reconcile_ms=17.037 certified_reads=10/10 capture_p95_ms=1.238 capture_p99_ms=1.856 capture_failures=0/100 steady_reconcile_p95_ms=1.667 hook_p95_ms=8.170 hook_p99_ms=10.451 hook_warnings=0/100
-anchors=100 full_sync=false initial_reconcile_ms=26.497 certified_reads=99/100 capture_p95_ms=5.574 capture_p99_ms=7.234 capture_failures=0/100 steady_reconcile_p95_ms=7.859 hook_p95_ms=14.065 hook_p99_ms=27.329 hook_warnings=1/100
-anchors=1000 full_sync=false initial_reconcile_ms=34.287 certified_reads=972/1000 capture_p95_ms=20.040 capture_p99_ms=23.480 capture_failures=0/100 steady_reconcile_p95_ms=39.450 hook_p95_ms=37.792 hook_p99_ms=45.262 hook_warnings=1/100
-anchors=10 full_sync=true initial_reconcile_ms=18.986 certified_reads=10/10 capture_p95_ms=0.553 capture_p99_ms=0.627 capture_failures=0/100 steady_reconcile_p95_ms=0.705 hook_p95_ms=4.541 hook_p99_ms=6.039 hook_warnings=0/100
-anchors=100 full_sync=true initial_reconcile_ms=28.783 certified_reads=100/100 capture_p95_ms=2.642 capture_p99_ms=2.737 capture_failures=0/100 steady_reconcile_p95_ms=4.359 hook_p95_ms=7.340 hook_p99_ms=12.167 hook_warnings=0/100
-anchors=1000 full_sync=true initial_reconcile_ms=44.277 certified_reads=942/1000 capture_p95_ms=40.381 capture_p99_ms=41.270 capture_failures=12/100 steady_reconcile_p95_ms=85.636 hook_p95_ms=63.700 hook_p99_ms=68.000 hook_warnings=1/100
-p5a_g5_pass=false
+anchors=10 full_sync=false initial_reconcile_ms=15.582 certified_reads=10/10 capture_p95_ms=0.666 capture_p99_ms=0.850 capture_failures=0/100 steady_reconcile_p95_ms=0.788 hook_p95_ms=4.442 hook_p99_ms=5.148 hook_warnings=0/100
+anchors=100 full_sync=false initial_reconcile_ms=12.601 certified_reads=100/100 capture_p95_ms=2.649 capture_p99_ms=2.665 capture_failures=0/100 steady_reconcile_p95_ms=4.389 hook_p95_ms=7.110 hook_p99_ms=13.580 hook_warnings=0/100
+anchors=1000 full_sync=false initial_reconcile_ms=31.315 certified_reads=972/1000 capture_p95_ms=18.520 capture_p99_ms=19.924 capture_failures=0/100 steady_reconcile_p95_ms=34.350 hook_p95_ms=36.200 hook_p99_ms=50.513 hook_warnings=1/100
+anchors=10 full_sync=true initial_reconcile_ms=21.662 certified_reads=10/10 capture_p95_ms=0.509 capture_p99_ms=0.583 capture_failures=0/100 steady_reconcile_p95_ms=0.733 hook_p95_ms=4.314 hook_p99_ms=5.373 hook_warnings=0/100
+anchors=100 full_sync=true initial_reconcile_ms=20.940 certified_reads=100/100 capture_p95_ms=2.623 capture_p99_ms=2.705 capture_failures=0/100 steady_reconcile_p95_ms=4.313 hook_p95_ms=6.882 hook_p99_ms=11.623 hook_warnings=0/100
+anchors=1000 full_sync=true initial_reconcile_ms=42.065 certified_reads=982/1000 capture_p95_ms=19.201 capture_p99_ms=23.308 capture_failures=0/100 steady_reconcile_p95_ms=40.145 hook_p95_ms=37.257 hook_p99_ms=50.420 hook_warnings=1/100
+p5a_g5_pass=true
 
-# Earlier run, 2026-10-21, r0.3 tree, load 32-55:
-anchors=10 full_sync=false initial_reconcile_ms=12.022 certified_reads=10/10 capture_p95_ms=1.391 capture_p99_ms=2.491 capture_failures=0/100 steady_reconcile_p95_ms=1.554 hook_p95_ms=49.376 hook_p99_ms=66.714 hook_warnings=0/100
-anchors=100 full_sync=false initial_reconcile_ms=14.741 certified_reads=100/100 capture_p95_ms=2.815 capture_p99_ms=3.548 capture_failures=0/100 steady_reconcile_p95_ms=4.614 hook_p95_ms=26.873 hook_p99_ms=32.583 hook_warnings=0/100
-anchors=1000 full_sync=false initial_reconcile_ms=35.172 certified_reads=934/1000 capture_p95_ms=28.001 capture_p99_ms=40.415 capture_failures=3/100 steady_reconcile_p95_ms=41.801 hook_p95_ms=24.582 hook_p99_ms=33.854 hook_warnings=1/100
-anchors=10 full_sync=true initial_reconcile_ms=23.940 certified_reads=10/10 capture_p95_ms=1.112 capture_p99_ms=1.344 capture_failures=0/100 steady_reconcile_p95_ms=1.723 hook_p95_ms=33.141 hook_p99_ms=45.776 hook_warnings=0/100
-anchors=100 full_sync=true initial_reconcile_ms=30.978 certified_reads=100/100 capture_p95_ms=3.630 capture_p99_ms=7.914 capture_failures=0/100 steady_reconcile_p95_ms=5.284 hook_p95_ms=28.015 hook_p99_ms=76.849 hook_warnings=0/100
-anchors=1000 full_sync=true initial_reconcile_ms=49.536 certified_reads=908/1000 capture_p95_ms=30.046 capture_p99_ms=42.154 capture_failures=3/100 steady_reconcile_p95_ms=54.364 hook_p95_ms=49.287 hook_p99_ms=80.033 hook_warnings=6/100
-p5a_g5_pass=false
+# Earlier runs under load are in git history of this file (r0.3: load 32-55; r0.4: 1-min load 12.6, 5-min 49.5).
