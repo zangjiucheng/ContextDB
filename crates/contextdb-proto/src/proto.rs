@@ -7,7 +7,7 @@ use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -279,6 +279,49 @@ pub enum Request {
         since: u64,
         limit: u32,
     },
+    /// Bounded committed scope state, observer/admin only (ADR 0011).
+    AnchorState {
+        scope: String,
+    },
+    /// Point-in-time range check of all current roots reachable from anchors.
+    CheckAnchors {
+        scope: String,
+        paths: Vec<String>,
+        expected_head: Vec<u8>,
+        expected_position: Vec<u8>,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorEntry {
+    pub logical: LogicalId,
+    pub key: String,
+    pub head: RevisionId,
+    pub content: ContentHash,
+    pub base: bool,
+    pub breaks: Vec<ArtifactId>,
+    pub descriptor: Vec<u8>,
+}
+impl Wire for AnchorEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.logical.encode(o);
+        self.key.encode(o);
+        self.head.encode(o);
+        self.content.encode(o);
+        self.base.encode(o);
+        self.breaks.encode(o);
+        self.descriptor.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            logical: Wire::decode(i)?,
+            key: Wire::decode(i)?,
+            head: Wire::decode(i)?,
+            content: Wire::decode(i)?,
+            base: Wire::decode(i)?,
+            breaks: Wire::decode(i)?,
+            descriptor: Wire::decode(i)?,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -377,6 +420,10 @@ pub enum Response {
     Telemetry {
         entries: Vec<TelemetryEntry>,
         next: u64,
+    },
+    AnchorState {
+        watermark: Option<Vec<u8>>,
+        anchors: Vec<AnchorEntry>,
     },
 }
 /// Every response names the snapshot epoch it was computed on.
@@ -845,6 +892,22 @@ impl Wire for Request {
                 since.encode(o);
                 limit.encode(o);
             }
+            Self::AnchorState { scope } => {
+                23u8.encode(o);
+                scope.encode(o);
+            }
+            Self::CheckAnchors {
+                scope,
+                paths,
+                expected_head,
+                expected_position,
+            } => {
+                24u8.encode(o);
+                scope.encode(o);
+                paths.encode(o);
+                expected_head.encode(o);
+                expected_position.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -961,6 +1024,15 @@ impl Wire for Request {
             22 => Self::Telemetry {
                 since: Wire::decode(i)?,
                 limit: Wire::decode(i)?,
+            },
+            23 => Self::AnchorState {
+                scope: Wire::decode(i)?,
+            },
+            24 => Self::CheckAnchors {
+                scope: Wire::decode(i)?,
+                paths: Wire::decode(i)?,
+                expected_head: Wire::decode(i)?,
+                expected_position: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1090,6 +1162,11 @@ impl Wire for Response {
                 entries.encode(o);
                 next.encode(o);
             }
+            Self::AnchorState { watermark, anchors } => {
+                20u8.encode(o);
+                watermark.encode(o);
+                anchors.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1171,6 +1248,10 @@ impl Wire for Response {
             19 => Self::Telemetry {
                 entries: Wire::decode(i)?,
                 next: Wire::decode(i)?,
+            },
+            20 => Self::AnchorState {
+                watermark: Wire::decode(i)?,
+                anchors: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1257,6 +1338,15 @@ mod tests {
     fn requests() -> Vec<Request> {
         let s = [3u8; 16];
         vec![
+            Request::AnchorState {
+                scope: "code:repo".into(),
+            },
+            Request::CheckAnchors {
+                scope: "code:repo".into(),
+                paths: vec!["a.rs".into()],
+                expected_head: vec![1; 20],
+                expected_position: vec![2; 32],
+            },
             Request::SessionStart {
                 harness: "claude".into(),
                 repo: "r".into(),
@@ -1398,6 +1488,18 @@ mod tests {
     }
     fn responses() -> Vec<Response> {
         vec![
+            Response::AnchorState {
+                watermark: Some(vec![1; 32]),
+                anchors: vec![AnchorEntry {
+                    logical: LogicalId(1),
+                    key: "code:repo/a.rs".into(),
+                    head: RevisionId(2),
+                    content: [3; 32],
+                    base: true,
+                    breaks: vec![ArtifactId(4)],
+                    descriptor: vec![5],
+                }],
+            },
             Response::Check {
                 decision: Decision::Warn,
                 validation: Validation::Empty,

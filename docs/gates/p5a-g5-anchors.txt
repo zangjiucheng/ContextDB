@@ -1,0 +1,13 @@
+# P5a G5 anchor benchmark (anchor_bench), M1 Pro, 2026-10-21, final tree.
+# Desktop under unrelated load: load average 32-55 on 10 cores during the run (not a quiet baseline).
+# Pass rule in anchor_bench (stricter than ADR 0011 §7): P4 hook budgets AND zero capture failures AND every certified read at every size.
+P5a anchor benchmark; os=macos arch=aarch64 timeout_live_ms=40 observer_ms=5000
+anchors=10 full_sync=false initial_reconcile_ms=12.022 certified_reads=10/10 capture_p95_ms=1.391 capture_p99_ms=2.491 capture_failures=0/100 steady_reconcile_p95_ms=1.554 hook_p95_ms=49.376 hook_p99_ms=66.714 hook_warnings=0/100
+anchors=100 full_sync=false initial_reconcile_ms=14.741 certified_reads=100/100 capture_p95_ms=2.815 capture_p99_ms=3.548 capture_failures=0/100 steady_reconcile_p95_ms=4.614 hook_p95_ms=26.873 hook_p99_ms=32.583 hook_warnings=0/100
+anchors=1000 full_sync=false initial_reconcile_ms=35.172 certified_reads=934/1000 capture_p95_ms=28.001 capture_p99_ms=40.415 capture_failures=3/100 steady_reconcile_p95_ms=41.801 hook_p95_ms=24.582 hook_p99_ms=33.854 hook_warnings=1/100
+anchors=10 full_sync=true initial_reconcile_ms=23.940 certified_reads=10/10 capture_p95_ms=1.112 capture_p99_ms=1.344 capture_failures=0/100 steady_reconcile_p95_ms=1.723 hook_p95_ms=33.141 hook_p99_ms=45.776 hook_warnings=0/100
+anchors=100 full_sync=true initial_reconcile_ms=30.978 certified_reads=100/100 capture_p95_ms=3.630 capture_p99_ms=7.914 capture_failures=0/100 steady_reconcile_p95_ms=5.284 hook_p95_ms=28.015 hook_p99_ms=76.849 hook_warnings=0/100
+anchors=1000 full_sync=true initial_reconcile_ms=49.536 certified_reads=908/1000 capture_p95_ms=30.046 capture_p99_ms=42.154 capture_failures=3/100 steady_reconcile_p95_ms=54.364 hook_p95_ms=49.287 hook_p99_ms=80.033 hook_warnings=6/100
+p5a_g5_pass=false
+
+# Before the capture/daemon optimisations (Codex run, same bench): anchors=1000 certified_reads=0/1000, capture_failures=34/100 and 16/100.

@@ -15,8 +15,26 @@ use crate::{
 use contextdb_model::*;
 use std::path::{Path, PathBuf};
 
-pub const SESSION_FORMAT: u32 = 1;
+pub const SESSION_FORMAT: u32 = 2;
 
+/// Original per-root proof, independent of the session aggregate certificate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootProof {
+    pub cert: Certificate,
+    pub paths: Vec<String>,
+}
+impl Wire for RootProof {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.cert.encode(o);
+        self.paths.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            cert: Wire::decode(i)?,
+            paths: Wire::decode(i)?,
+        })
+    }
+}
 /// Read layer recorded in the ledger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
@@ -26,6 +44,10 @@ pub enum Layer {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEvent {
+    RootProof {
+        agent: Option<String>,
+        proof: Box<RootProof>,
+    },
     Start {
         session_id: [u8; 16],
         parent: Option<[u8; 16]>,
@@ -146,6 +168,11 @@ impl Wire for Layer {
 impl Wire for SessionEvent {
     fn encode(&self, o: &mut Vec<u8>) {
         match self {
+            Self::RootProof { agent, proof } => {
+                19u8.encode(o);
+                agent.encode(o);
+                proof.encode(o);
+            }
             Self::Start {
                 session_id,
                 parent,
@@ -311,6 +338,10 @@ impl Wire for SessionEvent {
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(match u8::decode(i)? {
+            19 => Self::RootProof {
+                agent: Wire::decode(i)?,
+                proof: Box::new(Wire::decode(i)?),
+            },
             0 => Self::Start {
                 session_id: Wire::decode(i)?,
                 parent: Wire::decode(i)?,
@@ -430,7 +461,7 @@ pub struct SessionRecord {
     pub group: GroupPos,
 }
 impl Record for SessionRecord {
-    fn decode(body: &[u8], _format: u32) -> Result<Self, WireError> {
+    fn decode(body: &[u8], format: u32) -> Result<Self, WireError> {
         let mut i = Decoder::new(body, DecodeLimits::DURABLE);
         let r = Self {
             event: Wire::decode(&mut i)?,
@@ -439,6 +470,9 @@ impl Record for SessionRecord {
         };
         if i.remaining() != 0 {
             return Err(WireError::TrailingBytes);
+        }
+        if format < 2 && matches!(r.event, SessionEvent::RootProof { .. }) {
+            return Err(WireError::UnknownVersion);
         }
         Ok(r)
     }
@@ -476,6 +510,7 @@ pub struct SessionLog<D: Durability> {
     group_seq: u64,
     segment_target: usize,
     poisoned: bool,
+    tail_format: u32,
 }
 fn io(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
@@ -492,8 +527,14 @@ impl<D: Durability> SessionLog<D> {
         let dir = store_dir.join("sessions");
         disk.create_dir_all(&dir).map_err(io)?;
         disk.sync_dir(store_dir).map_err(io)?;
-        let scan = log::scan_with::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, SESSION_FORMAT)
-            .map_err(io)?;
+        let scan = log::scan_with_formats::<SessionRecord>(
+            &log::SESSION_LOG,
+            &disk,
+            &dir,
+            1,
+            SESSION_FORMAT,
+        )
+        .map_err(io)?;
         if let Some(f) = scan.newer_format.or(scan.older_format) {
             return Err(StoreError::FormatUnsupported(f));
         }
@@ -519,7 +560,21 @@ impl<D: Durability> SessionLog<D> {
             disk.sync(&seg).map_err(io)?;
             report.truncated_bytes = Some(bytes);
         }
-        let segments = log::segments(&disk, &dir).map_err(io)?;
+        let mut segments = log::segments(&disk, &dir).map_err(io)?;
+        // A crash can leave a fully synced, empty legacy rollover. It carries
+        // no event and would collide with the format-2 segment's first number.
+        // Validate all versions/frames above before removing that empty name.
+        if let Some(last) = segments.last() {
+            let bytes = disk.read(last).map_err(io)?;
+            if bytes.len() == log::HEADER_LEN
+                && log::parse_header_with(&log::SESSION_LOG, &bytes)
+                    .is_some_and(|h| h.format != SESSION_FORMAT)
+            {
+                disk.remove(last).map_err(io)?;
+                disk.sync_dir(&dir).map_err(io)?;
+                report.removed_segment = segments.pop();
+            }
+        }
         let mut log = Self {
             disk,
             dir,
@@ -530,6 +585,7 @@ impl<D: Durability> SessionLog<D> {
             group_seq: 0,
             segment_target,
             poisoned: false,
+            tail_format: SESSION_FORMAT,
         };
         let mut events = Vec::with_capacity(scan.frames.len());
         for f in scan.frames {
@@ -544,13 +600,22 @@ impl<D: Durability> SessionLog<D> {
             log.group_seq = f.row.group.seq;
             events.push(f.row.event);
         }
-        if log.tail.is_none() && !log.segments.is_empty() {
-            // A header-only last segment continues the chain.
+        if !log.segments.is_empty() {
+            // A header-only last segment, including after prior frames,
+            // continues the chain without overwriting the preceding segment.
             let n = log.segments.len() - 1;
             let bytes = log.disk.read(&log.segments[n]).map_err(io)?;
             let header = log::parse_header_with(&log::SESSION_LOG, &bytes).expect("scanned header");
-            log.tail = Some((n, bytes.len() as u64));
-            log.prev = header.prev;
+            if bytes.len() == log::HEADER_LEN {
+                log.tail = Some((n, bytes.len() as u64));
+                log.prev = header.prev;
+            }
+        }
+        if let Some(last) = log.segments.last() {
+            let bytes = log.disk.read(last).map_err(io)?;
+            log.tail_format = log::parse_header_with(&log::SESSION_LOG, &bytes)
+                .expect("scanned header")
+                .format;
         }
         // Groups a killed process left only in the page cache were replayed
         // above; make them durable before anything relies on them, since a
@@ -603,9 +668,10 @@ impl<D: Durability> SessionLog<D> {
             prev = sum;
         }
         let written = (|| -> std::io::Result<(usize, u64)> {
-            let rollover = self
-                .tail
-                .is_none_or(|(_, size)| size as usize >= self.segment_target);
+            let rollover = self.tail_format != SESSION_FORMAT
+                || self.tail.is_none_or(|(_, size)| {
+                    size as usize > log::HEADER_LEN && size as usize >= self.segment_target
+                });
             let (k, start) = if rollover {
                 let path = self.dir.join(log::segment_name(Epoch(first)));
                 self.disk.write_new(
@@ -625,6 +691,7 @@ impl<D: Durability> SessionLog<D> {
         })();
         match written {
             Ok((k, start)) => {
+                self.tail_format = SESSION_FORMAT;
                 self.tail = Some((k, start + bytes.len() as u64));
                 self.prev = prev;
                 self.next += events.len() as u64;

@@ -41,5 +41,8 @@ reviewed_external = ["serde", "serde_json", "blake3"]
 reviewed_external = ["toml", "serde_json", "blake3"]
 
 # ADR 0010 §1: light clients must not link the store or SQLite.
+[anchors]
+reviewed_external = ["blake3", "nix", "sha1-checked", "sha2"]
+
 [light]
-crates = ["contextdb-proto", "contextdb-hooks"]
+crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors"]

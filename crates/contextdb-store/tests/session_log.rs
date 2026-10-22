@@ -8,6 +8,77 @@ use contextdb_store::{
 use std::path::Path;
 
 const DIR: &str = "/db";
+#[test]
+fn p5a_legacy_tail_rolls_before_new_event_and_old_reader_refuses_without_repair() {
+    use contextdb_store::{
+        log::{self, GroupPos, Record},
+        session::{RootProof, SessionRecord},
+    };
+    let disk = SimDisk::new();
+    let dir = Path::new(DIR).join("sessions");
+    disk.create_dir_all(&dir).unwrap();
+    let path = dir.join(log::segment_name(Epoch(1)));
+    let legacy = SessionRecord {
+        event: read(7),
+        prev: log::GENESIS,
+        group: GroupPos {
+            seq: 1,
+            idx: 0,
+            count: 1,
+        },
+    };
+    let (frame, _) = log::frame_with(&log::SESSION_LOG, &legacy.encode());
+    let mut bytes = log::segment_header_with(&log::SESSION_LOG, 1, log::GENESIS, 1);
+    bytes.extend(frame);
+    disk.write_new(&path, &bytes).unwrap();
+    disk.sync(&path).unwrap();
+    disk.sync_dir(&dir).unwrap();
+    let (mut opened, events) = open(&disk, usize::MAX);
+    assert_eq!(events, vec![read(7)]);
+    let cert = Certificate {
+        cert_id: [0; 32],
+        session_id: [7; 16],
+        principal: PrincipalId(0),
+        branch: MAIN,
+        issued_epoch: Epoch(0),
+        log_checksum_at_issue: [0; 32],
+        code_commit: String::new(),
+        watermarks: Vec::new(),
+        entries: Vec::new(),
+        vector: Vec::new(),
+        strict_no_aba: false,
+    };
+    let event = SessionEvent::RootProof {
+        agent: None,
+        proof: Box::new(RootProof {
+            cert,
+            paths: vec!["code:repo/a.rs".into()],
+        }),
+    };
+    opened.append_group(std::slice::from_ref(&event)).unwrap();
+    drop(opened);
+    assert_eq!(
+        disk.read(&path).unwrap(),
+        bytes,
+        "legacy segment is immutable even below size target"
+    );
+    let segments = log::segments(&disk, &dir).unwrap();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(
+        log::parse_header_with(&log::SESSION_LOG, &disk.read(&segments[1]).unwrap())
+            .unwrap()
+            .format,
+        2
+    );
+    let old = log::scan_with::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, 1).unwrap();
+    assert_eq!(old.newer_format, Some(2));
+    assert!(old.torn_tail.is_none());
+    assert!(old.empty_tail_segment.is_none());
+    let before = disk.read(&segments[1]).unwrap();
+    let (_, events) = open(&disk, usize::MAX);
+    assert_eq!(events, vec![read(7), event]);
+    assert_eq!(disk.read(&segments[1]).unwrap(), before);
+}
 fn read(n: u32) -> SessionEvent {
     SessionEvent::Read {
         session_id: [7; 16],
@@ -245,5 +316,55 @@ fn p3_events_decode_as_the_root_agent() {
     ];
     for e in p4 {
         assert_eq!(SessionEvent::from_bytes(&e.canonical_bytes()).unwrap(), e);
+    }
+}
+
+#[test]
+fn legacy_header_only_rollover_is_recovered_before_format_upgrade() {
+    use contextdb_store::log::{self, GroupPos, Record};
+    use contextdb_store::session::SessionRecord;
+    for has_frame in [false, true] {
+        let disk = SimDisk::new();
+        let dir = Path::new(DIR).join("sessions");
+        disk.create_dir_all(&dir).unwrap();
+        let mut prev = log::GENESIS;
+        let mut next = 1;
+        if has_frame {
+            let row = SessionRecord {
+                event: read(1),
+                prev,
+                group: GroupPos {
+                    seq: 1,
+                    idx: 0,
+                    count: 1,
+                },
+            };
+            let (frame, sum) = log::frame_with(&log::SESSION_LOG, &row.encode());
+            prev = sum;
+            next = 2;
+            let mut bytes = log::segment_header_with(&log::SESSION_LOG, 1, log::GENESIS, 1);
+            bytes.extend(frame);
+            disk.write_new(&dir.join(log::segment_name(Epoch(1))), &bytes)
+                .unwrap();
+        }
+        let empty = dir.join(log::segment_name(Epoch(next)));
+        disk.write_new(
+            &empty,
+            &log::segment_header_with(&log::SESSION_LOG, next, prev, 1),
+        )
+        .unwrap();
+        let (mut log, events) = open(&disk, 1);
+        assert_eq!(events.len(), usize::from(has_frame));
+        log.append_group(&[read(2)]).unwrap();
+        drop(log);
+        let (_, events) = open(&disk.crash(TailFate::ZeroFill, 0), 1);
+        assert_eq!(
+            events,
+            if has_frame {
+                vec![read(1), read(2)]
+            } else {
+                vec![read(2)]
+            }
+        );
     }
 }

@@ -1,0 +1,433 @@
+# P5a G6 replay: unlabelled pairs for HUMAN labelling
+# repo_url=https://github.com/pallets/click.git
+# replayed=1000 first=547a4d09255d253bf0d14759c3dbc277b38911e7 last=2247b35ea1c47c727d7a06e51fa280e12a863ff6 anchors=20
+# selection: 20 supported regular files at 61b6ffa13f3d1b471847c57b44bf0c5ac29c0244 with smallest git hash-object(path)
+# misses: not-fired same-directory changes, 212 of 3161 kept by smallest git hash-object(commit:path)
+# invalidates: y if a decision resting on this file at the parent commit must be re-validated after this commit, n otherwise; leave empty if unsure
+# git_diff_disagreements=0 
+# anchors: artwork/logo.svg docs/_static/click.png docs/_themes/click/theme.conf docs/api.rst docs/commands.rst docs/license.rst docs/options.rst docs/parameters.rst docs/prompts.rst docs/upgrading.rst examples/colors/setup.py examples/complex/complex/__init__.py examples/complex/complex/cli.py examples/imagepipe/example02.jpg examples/naval/setup.py examples/validation/validation.py setup.py tests/test_chain.py tests/test_commands.py tests/test_imports.py
+repo_url	commit	parent	path	observer	added	removed	subject	invalidates	labeler	note
+https://github.com/pallets/click.git	e865985cdf2a742dfa8958ac281e4c466a345479	fffeae408274c51b085109b97e946dc6e2c8e438	tests/test_commands.py	changed	20	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	dd51a1d1ce42f55ab96262519dfca66450d3c23b	8691636e373994c35eb5d157978e50e49ccb0709	docs/upgrading.rst	changed	28	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	dd51a1d1ce42f55ab96262519dfca66450d3c23b	8691636e373994c35eb5d157978e50e49ccb0709	tests/test_commands.py	changed	37	2	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	e41362647ac7015b1f521916bd5b0744352fc987	c10e6a1a4e1e0ce84bfe932ba7668fba28ee386d	docs/commands.rst	changed	49	0	Added some docs on return values from commands			
+https://github.com/pallets/click.git	733d5fac8cd5e5134edda339199e11ce8ffe010e	5cf7f2ddfba328070751cbda32782520d4e0d6f5	docs/commands.rst	changed	8	9	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	733d5fac8cd5e5134edda339199e11ce8ffe010e	5cf7f2ddfba328070751cbda32782520d4e0d6f5	docs/upgrading.rst	changed	28	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	733d5fac8cd5e5134edda339199e11ce8ffe010e	5cf7f2ddfba328070751cbda32782520d4e0d6f5	tests/test_chain.py	changed	7	2	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	733d5fac8cd5e5134edda339199e11ce8ffe010e	5cf7f2ddfba328070751cbda32782520d4e0d6f5	tests/test_commands.py	changed	23	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	f23951150a92a1c8461774abf30d543b3386f8d6	be17393b04c9cd478cba643d0476d915184edeac	docs/api.rst	changed	6	0	Added missing new types to the docs.			
+https://github.com/pallets/click.git	da0132f90068b5b7457bd8d8c363da0765412c1b	f23951150a92a1c8461774abf30d543b3386f8d6	tests/test_commands.py	changed	18	0	Added a test for ignoring of unknown options.			
+https://github.com/pallets/click.git	2fa23f09543d89f0cc3d871b669af2ef0d139ed7	f5bf28409e3652f220e4301c457b20228b54f2e0	docs/commands.rst	changed	1	1	Merge pull request #290 from jhermann/patch-1			
+https://github.com/pallets/click.git	6a03b346712781ecff2e3ce881fbb6ccfa75004c	2fa23f09543d89f0cc3d871b669af2ef0d139ed7	docs/commands.rst	changed	1	1	Merge pull request #291 from jhermann/patch-2			
+https://github.com/pallets/click.git	493f70144b9d0fb1db576042beb0d151ecbeba03	6a03b346712781ecff2e3ce881fbb6ccfa75004c	docs/options.rst	changed	4	0	Added --version cross reference			
+https://github.com/pallets/click.git	a25d551d47bca13938eb73c451af66479930fb5f	c3a64824718f8ea992b949f03fc8dd01c4245b43	docs/commands.rst	changed	1	1	Merge pull request #306 from bionikspoon/patch-2			
+https://github.com/pallets/click.git	898963ef8b5b1babbd201fea0763404ee6b1a43c	e1cbc252b91b952aeb065d8d716b5f70a710d0b3	docs/parameters.rst	changed	1	1	Merge pull request #250 from yuvallanger/minor_typos			
+https://github.com/pallets/click.git	6cd13a4247c2bd510ded41273d5e86de7bb98f35	898963ef8b5b1babbd201fea0763404ee6b1a43c	examples/colors/setup.py	changed	1	1	Merge pull request #294 from Jayin/typo			
+https://github.com/pallets/click.git	6cd13a4247c2bd510ded41273d5e86de7bb98f35	898963ef8b5b1babbd201fea0763404ee6b1a43c	examples/naval/setup.py	changed	1	1	Merge pull request #294 from Jayin/typo			
+https://github.com/pallets/click.git	dd0635c33cc4566ccb2e3cfb6fbf203bbcd1dd5a	64f57fea3a2d82b590e93fe29cb85c87be08a8a4	docs/options.rst	changed	3	3	Don't use uname in examples.  This fixes #268			
+https://github.com/pallets/click.git	f7c124ed82ee1307bf61be652367d8fc8097e4ed	dd0635c33cc4566ccb2e3cfb6fbf203bbcd1dd5a	docs/api.rst	changed	2	0	Added support for tuple types.  This fixes #239			
+https://github.com/pallets/click.git	f7c124ed82ee1307bf61be652367d8fc8097e4ed	dd0635c33cc4566ccb2e3cfb6fbf203bbcd1dd5a	docs/options.rst	changed	36	0	Added support for tuple types.  This fixes #239			
+https://github.com/pallets/click.git	888aec7201dac32213b59ebd55ed340044288770	b5466bd47999c6482a1c01dfb2466f35e91e0934	docs/options.rst	changed	3	3	Merge branch '4.x-maintenance'			
+https://github.com/pallets/click.git	0d9731e97c9af9e5b0f5fd8421aeb0184ad42b70	cad4ed6ce8f81d5249abb9d642089644def9446d	tests/test_chain.py	changed	0	31	Removed deprecated functionality.			
+https://github.com/pallets/click.git	0d9731e97c9af9e5b0f5fd8421aeb0184ad42b70	cad4ed6ce8f81d5249abb9d642089644def9446d	tests/test_commands.py	changed	0	17	Removed deprecated functionality.			
+https://github.com/pallets/click.git	aa9a713a1b4e07b90046c3a110cacdb697082e78	0d9731e97c9af9e5b0f5fd8421aeb0184ad42b70	docs/options.rst	changed	21	0	Merge pull request #325 from pfmoore/dynamic_default_doc			
+https://github.com/pallets/click.git	022fc7368f0f64cf3b4c2abd3f67745abf49d3fe	9c57c9e1c0dd65c9121baced96d27876c0cb1e0d	tests/test_imports.py	changed	2	1	Merge pull request #379 from mitsuhiko/feature/global-ctx			
+https://github.com/pallets/click.git	421e46acbe6b161f1c8df6ddee4857f60f45cabc	022fc7368f0f64cf3b4c2abd3f67745abf49d3fe	docs/api.rst	changed	2	0	Documented the use of get_current_context			
+https://github.com/pallets/click.git	2324202646b17da7c91d644126764950debdc8ff	fe2f525e720a6f71e8ac4079807b64df13063e8a	docs/commands.rst	changed	3	3	Merge pull request #385 from gordonfierce/Typos			
+https://github.com/pallets/click.git	dbd40696e31409a50eb4722c806b4ac1c527ca8c	412e27e9dc05827979ea023c9d91e832f4f8bf19	docs/_themes/click/theme.conf	broken	0	4	Remove shipped theme			
+https://github.com/pallets/click.git	5620b05385c3bdaeac0f0347fd2373ae1479624c	c4c9eb23243174cd1ffc9fd0162caf31e93b49ee	docs/commands.rst	changed	2	1	We're not rejecting multi commands below chained multi commands.  This fixes #415			
+https://github.com/pallets/click.git	89d3bfda52d151762e732738b828312a240bf89e	851ce7fc58d5ee57e3910a12094d3df986bb0ff8	docs/options.rst	changed	23	0	Make it possible to define aliases for the secondary option of boolean flags.  This fixes #420			
+https://github.com/pallets/click.git	8e84c1b707eb083e701875c6c9019abbf14a0d52	89d3bfda52d151762e732738b828312a240bf89e	docs/options.rst	changed	1	1	Fixed a bug in the docs			
+https://github.com/pallets/click.git	b465b722757f5a3b681cfd90f60eb3e67c8930dd	8e84c1b707eb083e701875c6c9019abbf14a0d52	docs/options.rst	changed	1	1	Merge pull request #439 from tedmiston/master			
+https://github.com/pallets/click.git	262c275d8513a377fdc741695c7ab11920fc8391	2df17b6e6642ecc8fdcbd259222ce176cf65af98	tests/test_imports.py	changed	5	0	Fixed broken tests and behavior on windows.			
+https://github.com/pallets/click.git	1a5b4e7082488f8de4a2c77c7e46299952b920c8	c55d7d24ed0a64fbb646f1f01c41eb35a89d76eb	tests/test_imports.py	changed	1	1	Allow colorama import			
+https://github.com/pallets/click.git	bf1ddce0c830a310dc5c4e47fd70feed142d60f6	7e8da4b68a5ddaebdcd7b5d58ae94e23343cf84d	tests/test_imports.py	changed	1	1	Add zlib as import to windows			
+https://github.com/pallets/click.git	64c4567d82ebca6cb98180266a14e5c42b11e4d1	bf1ddce0c830a310dc5c4e47fd70feed142d60f6	tests/test_imports.py	changed	2	1	Added time as allowed import on windows			
+https://github.com/pallets/click.git	1c7e1d3f41c1d4d79a3fc0d3559f619ecc560388	07a4f18863de6dee39fd491276649661f03d6347	tests/test_chain.py	changed	43	0	Disallow arguments in chain mode and no longer expose leftover args.			
+https://github.com/pallets/click.git	e68766c35ab134af2db2abf7cbd6f31e9b25d150	1c7e1d3f41c1d4d79a3fc0d3559f619ecc560388	tests/test_chain.py	changed	25	3	Support non optional arguments on commands.			
+https://github.com/pallets/click.git	0a2919f34fcbc635d8530b4c5b60bf119b2bcedb	e68766c35ab134af2db2abf7cbd6f31e9b25d150	docs/commands.rst	changed	22	0	Implemented nesting below chain commands.			
+https://github.com/pallets/click.git	0a2919f34fcbc635d8530b4c5b60bf119b2bcedb	e68766c35ab134af2db2abf7cbd6f31e9b25d150	tests/test_chain.py	changed	38	6	Implemented nesting below chain commands.			
+https://github.com/pallets/click.git	50cf34531fcdf54f8d9df41c573f37f6f67e8273	5f98f570c08a11e607cccfd9c1b787c69a6a67b7	docs/api.rst	changed	2	0	Added BadArgumentUsage to docs			
+https://github.com/pallets/click.git	6fcda3e5fcddd9001b314e83a1e0546bd22c78c2	a6a69647227f90816e4bf3599ea536c0f57aef80	docs/commands.rst	changed	3	20	Merge branch '6.x-maintenance'			
+https://github.com/pallets/click.git	6fcda3e5fcddd9001b314e83a1e0546bd22c78c2	a6a69647227f90816e4bf3599ea536c0f57aef80	tests/test_chain.py	changed	1	0	Merge branch '6.x-maintenance'			
+https://github.com/pallets/click.git	2489a7e871cf6a59837d24e304e109da4ae12384	0d48b2fbd256c1c692e3f3ba4c22b102f21f82f7	docs/commands.rst	changed	1	1	Merge pull request #550 from quobit/pallets-reallocation			
+https://github.com/pallets/click.git	2489a7e871cf6a59837d24e304e109da4ae12384	0d48b2fbd256c1c692e3f3ba4c22b102f21f82f7	setup.py	changed	1	1	Merge pull request #550 from quobit/pallets-reallocation			
+https://github.com/pallets/click.git	cdea8fc46a95bde18944351d012e70f89494f73e	dac66dca75d22db826938426d4ba311e1b44de6a	docs/parameters.rst	changed	3	0	Merge pull request #538 from DenisCarriere/master			
+https://github.com/pallets/click.git	702acf7858bd1fe7213b20df98a6970ac4814db7	30fc626263db82e9f339ca8810d207ab089d5575	tests/test_imports.py	changed	1	1	Merge branch '6.x-maintenance'			
+https://github.com/pallets/click.git	b5239afafe6e36f53defabb392ac5264e0f5eb6b	a50befdc3ac475826af75e48fd48b21530851176	docs/commands.rst	changed	1	1	Fix typos in docs (#623)			
+https://github.com/pallets/click.git	b5239afafe6e36f53defabb392ac5264e0f5eb6b	a50befdc3ac475826af75e48fd48b21530851176	docs/upgrading.rst	changed	1	1	Fix typos in docs (#623)			
+https://github.com/pallets/click.git	e634d7f78b906294fd21fb8b166fa4a71746b76b	945b4d38a323e8957df04ca371e7e032f930179e	docs/options.rst	changed	12	2	Merge pull request #799 from ericfrederich/option_names			
+https://github.com/pallets/click.git	752ff79d680fceb26d2a93f1eef376d90823ec47	3ded26d6068fb3ed1155a33db04c1bcac48b1c1e	docs/parameters.rst	changed	2	2	Merge pull request #842 from axu2/master			
+https://github.com/pallets/click.git	3a6d3da15ae5c0672dd5884a2ec229a428058783	132d66ac7d69a2b0e8f218a4cd39e50be3e0bcb9	examples/validation/validation.py	changed	1	1	Fix invalid import in urlparse import			
+https://github.com/pallets/click.git	55682f6f5348f5220a557f89c3a796321a52aebf	c7ef4bab075479830a349f9ee2020b7a953c27ff	docs/commands.rst	changed	1	1	Fix typo (synching -> syncing)			
+https://github.com/pallets/click.git	5d1df0e042b2f8b0dee8f6dd9ce74edce331a950	7a10fe1fbcba466714cfaadcc6c51cdcb656568e	tests/test_commands.py	changed	16	2	Underscores are now replaced by dashes in commands			
+https://github.com/pallets/click.git	c67daae57d15508784a700faf95bb9579ce94bad	570db30db88ec079adae7afdcb5593b521ac08b2	docs/options.rst	changed	5	0	Improve docs for Choice type (addresses issue #892) (#900)			
+https://github.com/pallets/click.git	d97c93fa8628dad5527478e644fcc219f3c3242a	54935507d3bafa63df24db566c268d11789c403b	tests/test_imports.py	changed	0	1	Remove leftover print function in test used for previous debugging (#876)			
+https://github.com/pallets/click.git	a87829d2c9707fb67d9a33a9f522a5d6c2b11967	7eb990fab5783b32c7028b0aa8a752e6862d0997	tests/test_imports.py	changed	1	1	feat: Move fcntl into outer scope for side effects			
+https://github.com/pallets/click.git	61494320c58f1f24612183e281d5cc11ac12d44e	a87829d2c9707fb67d9a33a9f522a5d6c2b11967	setup.py	changed	13	2	Merge pull request #976 from lepture/patch-versions			
+https://github.com/pallets/click.git	ba465d9513c5df4d1bd60a8ebd281d03b0c6bd1c	4cc1b9e938a42bfd97c46f4ff193f48e770f6160	setup.py	changed	1	0	Merge pull request #967 from jdufresne/pyreq			
+https://github.com/pallets/click.git	df1a8f57c3e6467ae277ba487c962239745f392e	3f664988e6ca2a04532695068f6be1c8e32f2402	setup.py	changed	8	4	Merge pull request #990 from dougharris/click-readme			
+https://github.com/pallets/click.git	9c456ec2679418442b71b2c1a5e4e62f0b41cbda	df1a8f57c3e6467ae277ba487c962239745f392e	tests/test_commands.py	changed	48	0	Merge pull request #874 from rgreinho/ISSUE-873/variable-precedence			
+https://github.com/pallets/click.git	43cb9864680283af37416d3b6ac186fab9bd73ff	d2818ec89873ac8ff3e158b1e0829bcc25e5a543	setup.py	changed	5	0	Merge pull request #991 from dawran6/docs-#975			
+https://github.com/pallets/click.git	b4d2d3202d5b81746bc93cb7a2044c5773a21afc	bd597172d7d6c7bd6d0a89ea89c0fd234452b290	tests/test_commands.py	changed	7	1	Merge pull request #1002 from fdavis/customize_short_width			
+https://github.com/pallets/click.git	bc53a964691844d33675beb60d1d9921312258ef	b4d2d3202d5b81746bc93cb7a2044c5773a21afc	docs/options.rst	changed	28	0	Merge pull request #996 from dougharris/lambda-844-547			
+https://github.com/pallets/click.git	bc53a964691844d33675beb60d1d9921312258ef	b4d2d3202d5b81746bc93cb7a2044c5773a21afc	setup.py	changed	11	5	Merge pull request #996 from dougharris/lambda-844-547			
+https://github.com/pallets/click.git	1dee2552f3555b4299f00d03b4bd971f1ce89555	fb0a7a7b369c50d1c7c100316370edef6db2b8d5	tests/test_commands.py	changed	16	50	Merge pull request #1005 from pallets/deprecated-flag			
+https://github.com/pallets/click.git	ea213fc5051d88254c67557c182590012004f655	895bb96e779d5c8683c9d116713317c80f40762c	tests/test_commands.py	changed	2	8	Merge pull request #1008 from zacbir/short-help			
+https://github.com/pallets/click.git	bf307371b3b5eda1b3170b58e6f89df3913336c4	692cb32d7af42123af2dfe0035dc328585dccffb	docs/parameters.rst	changed	18	10	Merge pull request #1009 from dougharris/parameter-949			
+https://github.com/pallets/click.git	0650d3659fbce0c880a8c300104bd4c74daef8bd	39e46e09cb0d61394da6ec26c05541ac9a50ed00	docs/options.rst	changed	27	0	Merge pull request #1011 from dougharris/auto-envvar-501			
+https://github.com/pallets/click.git	c9146862440fb6a58c7efc8d9a483f2359feabad	f27a8dfee2d89c0d9787ed0deaf2d0ea50fadc8e	docs/options.rst	changed	22	0	Merge pull request #1016 from dawran6/issue-725			
+https://github.com/pallets/click.git	c9146862440fb6a58c7efc8d9a483f2359feabad	f27a8dfee2d89c0d9787ed0deaf2d0ea50fadc8e	docs/parameters.rst	changed	2	0	Merge pull request #1016 from dawran6/issue-725			
+https://github.com/pallets/click.git	b10c52a9192ec0686e09da145b0dc81ae8118549	d37ff750f4ba4aa5af6104f5fcaa5d81dcc227d6	docs/options.rst	changed	10	1	Merge pull request #1022 from pallets/514-document-required			
+https://github.com/pallets/click.git	03e0133a39606dd6b5c1065d5bb23c84c25c4fbb	373a3aef2373192f89768f83b87293c9e11b4a1f	docs/options.rst	changed	3	3	Follow PEP8 recommendation for param naming (#1073)			
+https://github.com/pallets/click.git	dbc785f86aa5b73aa14aca911379addff77823e3	03e0133a39606dd6b5c1065d5bb23c84c25c4fbb	setup.py	changed	1	1	Merge pull request #1078 from dbieber/patch-1			
+https://github.com/pallets/click.git	a0e0328e142f63a6e98e69ae20220a51142251d3	56314dbdc6075307d2104b2ae640186acb81a8ef	docs/commands.rst	changed	4	0	Merge pull request #1092 from sirosen/docfix-example			
+https://github.com/pallets/click.git	fb3e9d2edb95c3ac5e77071e7efeb3f42c53a37e	c2ad12138e24df63ed08d60b4304727e9b752db0	docs/parameters.rst	changed	3	0	Merge pull request #1055 from ZenithDK/patch-1			
+https://github.com/pallets/click.git	b1b8c48345d8accc4dea262b8a41ac5ac1de3af2	8df9a6b2847b23de5c65dcb16f715a7691c60743	docs/_static/click.png	broken	-	-	Merge pull request #1100 from pallets/sphinx			
+https://github.com/pallets/click.git	b1b8c48345d8accc4dea262b8a41ac5ac1de3af2	8df9a6b2847b23de5c65dcb16f715a7691c60743	docs/options.rst	changed	2	2	Merge pull request #1100 from pallets/sphinx			
+https://github.com/pallets/click.git	b1b8c48345d8accc4dea262b8a41ac5ac1de3af2	8df9a6b2847b23de5c65dcb16f715a7691c60743	setup.py	changed	3	1	Merge pull request #1100 from pallets/sphinx			
+https://github.com/pallets/click.git	2c622eed402c64e1645db3904c2410f6c05fbf19	3e17a3d22c6463f0948f52b0bc85b8800f6801a5	docs/parameters.rst	changed	3	0	Merge pull request #1099 from sirosen/type-datetime			
+https://github.com/pallets/click.git	2c622eed402c64e1645db3904c2410f6c05fbf19	3e17a3d22c6463f0948f52b0bc85b8800f6801a5	tests/test_imports.py	changed	1	1	Merge pull request #1099 from sirosen/type-datetime			
+https://github.com/pallets/click.git	b4d25f807e8a98f87bc60b76839e83302a5d9f3d	a589835a5b656eec4bace076ac7e947662c1cc68	docs/license.rst	changed	2	1	Merge pull request #1120 from pallets/meta			
+https://github.com/pallets/click.git	b4d25f807e8a98f87bc60b76839e83302a5d9f3d	a589835a5b656eec4bace076ac7e947662c1cc68	setup.py	changed	32	45	Merge pull request #1120 from pallets/meta			
+https://github.com/pallets/click.git	0d95fb0d234d2bfe0a29f673399b72b4b42e1fb2	2e856a5281a29eb4293059b37427643c3d52a19a	setup.py	changed	1	1	revert to lowercase name "click"			
+https://github.com/pallets/click.git	c16ff82166736748407c2fb00d4de34abc1a10ee	71938765f97d28555af547ff1e19df645714d83c	docs/commands.rst	changed	1	1	Merge pull request #1209 from M5oul/master			
+https://github.com/pallets/click.git	d64eddae7d59cebd24b5100d72147fcf2e7cd1dc	49fe8fb9459a13aeec0d24a5997167f84c88d26f	setup.py	changed	3	3	standardize license			
+https://github.com/pallets/click.git	a43832228f19d041050940e513652e4e28461ab9	93b1699cde5fbafe8a237f8f0d21c8f687b78f2f	docs/commands.rst	changed	1	1	Merge branch '7.x'			
+https://github.com/pallets/click.git	a43832228f19d041050940e513652e4e28461ab9	93b1699cde5fbafe8a237f8f0d21c8f687b78f2f	docs/parameters.rst	changed	20	10	Merge branch '7.x'			
+https://github.com/pallets/click.git	a43832228f19d041050940e513652e4e28461ab9	93b1699cde5fbafe8a237f8f0d21c8f687b78f2f	examples/complex/complex/cli.py	changed	3	3	Merge branch '7.x'			
+https://github.com/pallets/click.git	a43832228f19d041050940e513652e4e28461ab9	93b1699cde5fbafe8a237f8f0d21c8f687b78f2f	tests/test_commands.py	changed	10	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	ffcce4f0dd1adbc364b78ec5c99acde8ef3ed8df	7d11997002f1087ee7492b457a79a0e39901721e	docs/parameters.rst	changed	2	2	Merge branch '7.x'			
+https://github.com/pallets/click.git	11abf2bff0f48b7f7b04b38b6a70fb102ef17662	9c5769e2c372e506c6efa16d4da0f08150ea1a34	docs/options.rst	changed	10	2	Merge branch '7.x'			
+https://github.com/pallets/click.git	6944450c5331f2d652d342650b6d9b3b52404baa	11abf2bff0f48b7f7b04b38b6a70fb102ef17662	docs/options.rst	changed	4	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	22697863f0a252082226068290eff3d57f79a3ec	cd35e790c1e41485c18d3e8b5d0891c0280cc96f	docs/commands.rst	changed	15	6	Merge branch '7.x'			
+https://github.com/pallets/click.git	22697863f0a252082226068290eff3d57f79a3ec	cd35e790c1e41485c18d3e8b5d0891c0280cc96f	docs/options.rst	changed	21	6	Merge branch '7.x'			
+https://github.com/pallets/click.git	8b971f73743aa3bec1f09414377d3d01369de1bd	f800a6f69e668f5bca874c2ad065d6b12bc450b4	docs/options.rst	changed	7	4	Merge branch '7.x'			
+https://github.com/pallets/click.git	8b971f73743aa3bec1f09414377d3d01369de1bd	f800a6f69e668f5bca874c2ad065d6b12bc450b4	docs/upgrading.rst	changed	31	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	289913bb608994558ac9132a9f2eefb6bc2c8b7d	8b971f73743aa3bec1f09414377d3d01369de1bd	docs/commands.rst	changed	1	1	Merge pull request #1201 from yu-iskw/modify-doc			
+https://github.com/pallets/click.git	c6ef735953c7263e0e1737a1a165f879030998e5	289913bb608994558ac9132a9f2eefb6bc2c8b7d	docs/options.rst	changed	2	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	c6ef735953c7263e0e1737a1a165f879030998e5	289913bb608994558ac9132a9f2eefb6bc2c8b7d	docs/parameters.rst	changed	2	1	Merge branch '7.x'			
+https://github.com/pallets/click.git	c6ef735953c7263e0e1737a1a165f879030998e5	289913bb608994558ac9132a9f2eefb6bc2c8b7d	tests/test_imports.py	changed	1	1	Merge branch '7.x'			
+https://github.com/pallets/click.git	8f36eab80a6175cad73450d43b7dc5815656a1b6	466d0add86f48502db9c02c32e30287d39ab866b	docs/license.rst	changed	2	12	Merge branch '7.x'			
+https://github.com/pallets/click.git	8f36eab80a6175cad73450d43b7dc5815656a1b6	466d0add86f48502db9c02c32e30287d39ab866b	docs/options.rst	changed	26	6	Merge branch '7.x'			
+https://github.com/pallets/click.git	8f36eab80a6175cad73450d43b7dc5815656a1b6	466d0add86f48502db9c02c32e30287d39ab866b	docs/parameters.rst	changed	12	20	Merge branch '7.x'			
+https://github.com/pallets/click.git	8f36eab80a6175cad73450d43b7dc5815656a1b6	466d0add86f48502db9c02c32e30287d39ab866b	setup.py	changed	1	8	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	examples/colors/setup.py	changed	7	7	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	examples/complex/complex/cli.py	changed	14	15	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	examples/naval/setup.py	changed	6	8	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	examples/validation/validation.py	changed	23	15	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	setup.py	changed	6	3	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	tests/test_chain.py	changed	70	92	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	tests/test_commands.py	changed	90	82	Merge branch '7.x'			
+https://github.com/pallets/click.git	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	8f36eab80a6175cad73450d43b7dc5815656a1b6	tests/test_imports.py	changed	31	14	Merge branch '7.x'			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	docs/commands.rst	changed	5	5	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	docs/options.rst	changed	22	18	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	examples/complex/complex/cli.py	changed	2	6	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	examples/validation/validation.py	changed	6	10	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	setup.py	changed	1	38	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	tests/test_chain.py	changed	7	8	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	tests/test_commands.py	changed	5	6	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	19fdc8509a1b946c088512e0e5e388a8d012f0ce	tests/test_imports.py	changed	2	7	Merge pull request #1532 from pallets/drop-python2			
+https://github.com/pallets/click.git	bce4ea4ba54e15959cb412d6793634e0c9b24491	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	docs/options.rst	changed	1	1	Merge branch '7.x'			
+https://github.com/pallets/click.git	bce4ea4ba54e15959cb412d6793634e0c9b24491	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	tests/test_imports.py	changed	0	1	Merge branch '7.x'			
+https://github.com/pallets/click.git	fb1ca91ab00a2ce12da84addc459e1983aac2fcf	f3e55b6e2351d506470ccb9ed719eedb34b4c5b4	tests/test_commands.py	changed	16	0	Merge pull request #1615 from MLH-Fellowship/issue1422			
+https://github.com/pallets/click.git	28154558840b43864acc688ed9248db1c4007a12	5eaa4c5cba417fb4b65e5b9f5810e6043a312594	docs/parameters.rst	changed	4	4	Merge pull request #1630 from jwodder/more-bools			
+https://github.com/pallets/click.git	6271cee2e8b2cf9a392377271bc9ed8345ce77c8	28154558840b43864acc688ed9248db1c4007a12	tests/test_chain.py	changed	19	0	Merge pull request #1621 from IamCathal/result-callback-invocation-1178			
+https://github.com/pallets/click.git	d75ea3345b5fe7b4a162f46e98a6170aef77bf28	97fde8bf50058c19a77d4de46b9c54b1731b1750	tests/test_commands.py	changed	1	1	Merge pull request #938 from txomon/feature/make-extendable			
+https://github.com/pallets/click.git	ca75bab76829009cc9b0bcfa015f6987840598b6	01fc51114abda48a2c8bb5d0fc12b867cf83020f	docs/options.rst	changed	16	21	Merge pull request #1303 from robintully/issue_1110_open_interval			
+https://github.com/pallets/click.git	6c8301e0ceeee124dc4ae3a51591c5810dc39840	47ecf34af4f4b761eb66a15b1d07e5fc4c319992	docs/api.rst	changed	18	0	Merge pull request #1622 from MLH-Fellowship/1484-redesign-completion			
+https://github.com/pallets/click.git	861e04788aae85b54320e5124eb99ccf97049898	d15d0cdf4f59ea0a0bf6f8a82449e042bc5f9732	docs/api.rst	changed	5	0	Merge pull request #1535 from alanbato/parameter-source-enum			
+https://github.com/pallets/click.git	861e04788aae85b54320e5124eb99ccf97049898	d15d0cdf4f59ea0a0bf6f8a82449e042bc5f9732	tests/test_imports.py	changed	1	1	Merge pull request #1535 from alanbato/parameter-source-enum			
+https://github.com/pallets/click.git	8efb348e2bc820aeba60d4cce6939708c6b2b11c	7332f00ed4c27d8da041788ca6a7aa405f062c76	docs/options.rst	changed	51	0	Merge pull request #1618 from MLH-Fellowship/prompt-required			
+https://github.com/pallets/click.git	297150c7566a38fb672828a36b681792513d99b0	801a29f1a85db0845d1277d8e031800b003eff61	docs/options.rst	changed	2	0	Added examples of default to boolean flags section (#1697)			
+https://github.com/pallets/click.git	829f3831554f42972200cdff79213ae781833021	6fe4a8d6c3c8e8ad65d79fe1dc7cc732dba0b0ae	docs/api.rst	changed	2	0	add FloatRange to API docs (#1719)			
+https://github.com/pallets/click.git	b41940747860a13e1d12b54d2d55b0cec57f0ce3	b8a33bf050ce41a398538d03dab6c8450ae76f28	tests/test_imports.py	changed	2	0	Merge pull request #1772 from aucampia/iwana-typing-000			
+https://github.com/pallets/click.git	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	b905ebc4becd7fd1a74c4c5d698c03d80d6bdc8d	docs/options.rst	changed	36	27	Merge pull request #1783 from pallets/fix-docs-examples			
+https://github.com/pallets/click.git	890e984174ffd16ac5510ec7fe21263f5ca7c65f	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	examples/colors/setup.py	changed	1	5	Merge pull request #1784 from pallets/windows-requires-colorama			
+https://github.com/pallets/click.git	890e984174ffd16ac5510ec7fe21263f5ca7c65f	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	setup.py	changed	1	1	Merge pull request #1784 from pallets/windows-requires-colorama			
+https://github.com/pallets/click.git	890e984174ffd16ac5510ec7fe21263f5ca7c65f	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	tests/test_imports.py	changed	1	2	Merge pull request #1784 from pallets/windows-requires-colorama			
+https://github.com/pallets/click.git	80086c4b393f2e5532c9ad35b79fee653aa47730	98e471fb871f211dd40b1bea80942acb7bb9f176	docs/options.rst	changed	12	7	Merge pull request #1785 from MLH-Fellowship/sanitize-input			
+https://github.com/pallets/click.git	a6fea31dbbb0a753aa47a06fc870d6ef91a3e3da	1cb86096124299579156f2c983efe05585f1a01b	docs/api.rst	changed	3	0	Merge pull request #1807 from pallets/pass-meta			
+https://github.com/pallets/click.git	08583da150d9df25f1566c7390ebf7fa4a2a9395	bf3a945b3a220589c67d55dcb73cc1c9a9a175b3	tests/test_commands.py	changed	2	2	Merge pull request #1816 from BALaka-18/fix-deprecation-notice			
+https://github.com/pallets/click.git	c4542263a96dd067ed1ded12a83553da05bb61dd	c0f9c06aa123e75466829bd41985a44a70b6c625	tests/test_imports.py	changed	1	0	Merge pull request #1829 from MLH-Fellowship/add-i18n			
+https://github.com/pallets/click.git	e3594e7f8a76dd15109d29570a6f263e56e412f2	6c7624491911f0b18f869e5d0a989506e7b416f8	tests/test_commands.py	changed	22	0	Merge pull request #1840 from MLH-Fellowship/context-forward			
+https://github.com/pallets/click.git	0dc6d74df5c984ff923f5d17e97bf94a21b3a3cd	e3594e7f8a76dd15109d29570a6f263e56e412f2	docs/commands.rst	changed	2	2	Merge pull request #1848 from pallets/rename-result-callback			
+https://github.com/pallets/click.git	0dc6d74df5c984ff923f5d17e97bf94a21b3a3cd	e3594e7f8a76dd15109d29570a6f263e56e412f2	docs/upgrading.rst	changed	1	1	Merge pull request #1848 from pallets/rename-result-callback			
+https://github.com/pallets/click.git	0dc6d74df5c984ff923f5d17e97bf94a21b3a3cd	e3594e7f8a76dd15109d29570a6f263e56e412f2	tests/test_chain.py	changed	2	2	Merge pull request #1848 from pallets/rename-result-callback			
+https://github.com/pallets/click.git	8a04bb0f3e9dff149e966c74902e3bc8801e7a72	93551dd44ced28fae4bd404cf24ec89b589e6568	docs/commands.rst	changed	1	1	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	29df8795dc146ddea328e458068185d3314820e5	e4301614347d20b90d7fad943a52e9f19bee6be9	docs/parameters.rst	changed	8	7	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	29df8795dc146ddea328e458068185d3314820e5	e4301614347d20b90d7fad943a52e9f19bee6be9	setup.py	changed	7	1	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	29df8795dc146ddea328e458068185d3314820e5	e4301614347d20b90d7fad943a52e9f19bee6be9	tests/test_commands.py	changed	14	0	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	ce152bd7215038f762ee918e6e181a5309ad57c9	ff72d7d50cae327786b73415f0f4dc348996215c	docs/api.rst	changed	2	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	5d759e0ab383136f9869cdb5e14f00c78b38a9c9	68e65ee2bf3e057a99d1192cc256cc2cb2a12203	docs/options.rst	changed	21	0	Merge pull request #1998 from MLH-Fellowship/1971-hide-defaults			
+https://github.com/pallets/click.git	65eceb08e392e74dcc761be2090e951274ccbe36	0a81393fdf41edb0ab9d2f527eccdc8ce38d7d42	tests/test_commands.py	changed	9	7	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	6411f425fae545f42795665af4162006b36c5e4a	4b4e2bdab832c1e970b9acc1cd2ead101d6e0308	docs/api.rst	changed	0	2	Merge pull request #2130 from pallets/remove-deprecated-code			
+https://github.com/pallets/click.git	051d57cef4ce59212dc1175ad4550743bf47d840	2198a8c3bfcbfd211dc14c7627c6aea1ba0152e4	docs/options.rst	changed	4	4	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	1c42559832d31e9411766673f472c0893eacf9ba	5828a1645f566df15d8ee40d0c06c63ccc1e5475	tests/test_chain.py	changed	28	31	Merge pull request #1858 from Glyphack/organize-tests-test-chain			
+https://github.com/pallets/click.git	bf8c03e81f31a8ad0742a191532f15ad549232fa	6ef334011ea413505b431ebe88fc547bb5ca8de2	tests/test_commands.py	changed	24	38	Merge pull request #1873 from israteneda/organize-command-tests			
+https://github.com/pallets/click.git	c01e2b8ed17d3ea65981bc62784363d0e38e3092	4262661a0fffabe3803f1bd876b19244f587dafa	tests/test_commands.py	changed	14	0	Merge pull request #2151 from stephenfin/store-untruncated-help			
+https://github.com/pallets/click.git	19be092b6db4e4300e31906498e354ec0adf870c	bf9da4838986af3bc09a1b16974d154c61dcbe3f	tests/test_chain.py	changed	4	4	Merge pull request #2217 from pallets/group-return			
+https://github.com/pallets/click.git	ef11be6e49e19a055fe7e5a89f0f1f4062c68dba	d251cb0abc9b0dbda2402d4d831c18718cfb51bf	tests/test_commands.py	changed	59	0	Merge pull request #2041 from spanglerco/shell-completion-option-values			
+https://github.com/pallets/click.git	347529dde549e5c832aefce799ccee2fd5667944	cba52fa76135af2edf46c154203b47106f898eb3	setup.py	broken	0	9	switch to pyproject.toml (#2438)			
+https://github.com/pallets/click.git	3fcf3380570d1d0bcefe9c07f1921ba4fd2754ad	2de3b317733f3510d18143328124202ff3d46670	docs/commands.rst	changed	3	5	switch to flit build backend (#2543)			
+https://github.com/pallets/click.git	3fcf3380570d1d0bcefe9c07f1921ba4fd2754ad	2de3b317733f3510d18143328124202ff3d46670	examples/colors/setup.py	broken	0	13	switch to flit build backend (#2543)			
+https://github.com/pallets/click.git	3fcf3380570d1d0bcefe9c07f1921ba4fd2754ad	2de3b317733f3510d18143328124202ff3d46670	examples/naval/setup.py	broken	0	13	switch to flit build backend (#2543)			
+https://github.com/pallets/click.git	d9af5cfa009c927a96d10ed38a3e37979876a12e	187666a07b249838ef3f1bba4252bb1823b718f2	tests/test_commands.py	changed	12	14	Merge branch '8.1.x'			
+https://github.com/pallets/click.git	f45198a3bcaf41d72d31273f9e6a2e3dfeccd19b	d9af5cfa009c927a96d10ed38a3e37979876a12e	docs/options.rst	changed	1	1	Fix typo in options docs: here -> here's (#2569)			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	docs/commands.rst	changed	134	165	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	docs/upgrading.rst	changed	4	4	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	examples/complex/complex/cli.py	changed	1	1	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	tests/test_chain.py	changed	2	2	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	tests/test_commands.py	changed	2	2	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	56db54650fd083cc35bc4891ffbda6e5e08e2762	988c683963b14ced1b32a8cda9f9b466c32d9df1	tests/test_imports.py	changed	2	0	enable deferred evaluation of annotations (#2270)			
+https://github.com/pallets/click.git	883feba5840d27198b4d98b08b042cddc7744781	56db54650fd083cc35bc4891ffbda6e5e08e2762	docs/upgrading.rst	broken	0	131	remove old upgrading notes			
+https://github.com/pallets/click.git	a3277513d7340d8a0e29076fe2769a8837f756ae	883feba5840d27198b4d98b08b042cddc7744781	docs/options.rst	changed	0	8	remove old upgrading notes			
+https://github.com/pallets/click.git	9c5e989d52509498ce78a4015ebc7d9408f70c56	b63ace28d50b53e74b5260f6cb357ccfe5560133	tests/test_commands.py	changed	1	1	remove suffixes from generated command name (#2604)			
+https://github.com/pallets/click.git	1a3baf77d4882f23c9f50995073c6c916c07dff0	93b7ab57817311eb0c24b6112759f2f90507ea4c	tests/test_imports.py	changed	0	1	use ruff lint and format (#2658)			
+https://github.com/pallets/click.git	73cfe126d82f13b8cb102a5cb7da185cca6b7934	f8857cb03268b5b952b88b2acb3e11d9f0f7b6e4	docs/license.rst	changed	2	1	Merge branch '8.1.x'			
+https://github.com/pallets/click.git	4271fe283dc9365563aebb369ada8d20eee015a8	1787497713fa389435ed732c9b26274c3cdc458d	docs/api.rst	changed	1	0	feat: new method for choice fail (#2622)			
+https://github.com/pallets/click.git	d8763b93021c416549b5f8b4b5497234619410db	4271fe283dc9365563aebb369ada8d20eee015a8	tests/test_commands.py	changed	4	8	Help shown via no_args_is_help results in exit code 2, was 0 (#1489)			
+https://github.com/pallets/click.git	d791537317947448a3960662d00acf160eff2602	0ef55fda47bb3d0dece21197d81d8d72a4250e73	docs/commands.rst	changed	2	1	Merge stable into main (#2799)			
+https://github.com/pallets/click.git	d791537317947448a3960662d00acf160eff2602	0ef55fda47bb3d0dece21197d81d8d72a4250e73	docs/parameters.rst	changed	48	54	Merge stable into main (#2799)			
+https://github.com/pallets/click.git	5961d31fb566f089ad468a5b26a32f1ebfa7f63e	fde47b4b4f978f179b9dff34583cb2b99021f482	tests/test_commands.py	changed	13	5	Introduce Parameter.deprecated + Command.deprecated message customization (#2271)			
+https://github.com/pallets/click.git	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	8a47580a00f3404e7071b9ecfec3692a1e18309f	docs/options.rst	changed	14	6	Expand `Choice` token normalization + make generic (#2796)			
+https://github.com/pallets/click.git	82089af2e66f5150edd1355f390f7b5e4028aeff	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	docs/api.rst	changed	1	0	Rewrite first half of options docs (#2825)			
+https://github.com/pallets/click.git	82089af2e66f5150edd1355f390f7b5e4028aeff	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	docs/options.rst	changed	146	346	Rewrite first half of options docs (#2825)			
+https://github.com/pallets/click.git	82089af2e66f5150edd1355f390f7b5e4028aeff	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	docs/parameters.rst	changed	3	84	Rewrite first half of options docs (#2825)			
+https://github.com/pallets/click.git	854cfb14c68fd6aadd56ecf454758115cb4d83eb	5dd628854c0b61bbdc07f22004c5da8fa8ee9481	docs/api.rst	changed	6	0	Rewrite testing docs and move from rst to myst (#2857)			
+https://github.com/pallets/click.git	0bf333e1b77b4ae0e85d387531b38930fc657f12	854cfb14c68fd6aadd56ecf454758115cb4d83eb	docs/commands.rst	changed	6	117	Rewrite Commands and Groups docs. (#2838)			
+https://github.com/pallets/click.git	0bf333e1b77b4ae0e85d387531b38930fc657f12	854cfb14c68fd6aadd56ecf454758115cb4d83eb	docs/parameters.rst	changed	2	0	Rewrite Commands and Groups docs. (#2838)			
+https://github.com/pallets/click.git	ab21233fc8f9e29d4194956d643af8bc180c7153	f84395c517c3c3c9e793f7988fd3f954da293ec6	docs/options.rst	changed	29	353	Rewrite second half of options docs (#2848)			
+https://github.com/pallets/click.git	ab21233fc8f9e29d4194956d643af8bc180c7153	f84395c517c3c3c9e793f7988fd3f954da293ec6	docs/prompts.rst	changed	116	2	Rewrite second half of options docs (#2848)			
+https://github.com/pallets/click.git	b7c0ab471c339488766d9413349947b2a7b21543	ab21233fc8f9e29d4194956d643af8bc180c7153	tests/test_commands.py	changed	132	0	Merge `stable` into `main`; Release 8.2.0 (#2873)			
+https://github.com/pallets/click.git	b7c0ab471c339488766d9413349947b2a7b21543	ab21233fc8f9e29d4194956d643af8bc180c7153	tests/test_imports.py	changed	1	0	Merge `stable` into `main`; Release 8.2.0 (#2873)			
+https://github.com/pallets/click.git	937c68dd15130c4ca85011cb72fdb0a7d18fc77e	dce3f9e9828f26936cfd80c69fb59e253b34415b	docs/options.rst	broken	0	411	Convert options docs to md. (#2924)			
+https://github.com/pallets/click.git	262bdf02288daf9a37b9e815b44acafd62b5c6fe	cfa6f4ad3e0078db43f866246b483544afa33ed3	tests/test_chain.py	changed	2	2	Raise an exception on end of input in CliRunner (#2934)			
+https://github.com/pallets/click.git	a6cc378f26f81a76f8aee82bc35c1416dd33040f	3a917b93aa11216905d392c19fe67e729377ae44	docs/parameters.rst	broken	0	58	Convert parameters file to md. (#2953)			
+https://github.com/pallets/click.git	d2e0fb5cde8dddfdeeea91cf942aa7432def0b24	5e2e191026c16ede856afbea941c0c3f90d62298	artwork/logo.svg	broken	0	75	new logo (#2974)			
+https://github.com/pallets/click.git	565f36d5bc4a15d304337b749e113fb4477b1843	5c1239b0116b66492cdd0848144ab3c78a04495a	tests/test_imports.py	changed	17	16	Fix reconciliation of envvar with `default`, `flag_value` and `type` parameters for flag options (#2956)			
+https://github.com/pallets/click.git	1f4002096439d6661f1df5ceff7eccd3862153ac	4f936ac1981645488f396953bc59e50445de00b6	tests/test_imports.py	changed	0	1	Properly lazily import shutil (#3023)			
+https://github.com/pallets/click.git	5b0b7b46f009e52a28fc845d02929d6422178b5d	701b313160be12752e49b3f7cea32402c0969a69	docs/prompts.rst	broken	0	162	Move Prompts doc from reST to MyST (#3034)			
+https://github.com/pallets/click.git	81a482fbfdd5a553cf4704f822ade04c3b102fbc	23780fa3efcc471137aca7c6b4624164f760a647	tests/test_chain.py	changed	2	2	Merge branch 'main' into stable			
+https://github.com/pallets/click.git	6a1c0d077311f180b356965914e2de5b9e0fdb44	7d7183604158f064390539d83d4a19a978c6b08a	tests/test_commands.py	changed	37	9	Hide `Sentinel.UNSET` values for defaults processed by `Context.invoke` (#3068)			
+https://github.com/pallets/click.git	61117afdac70c10d0a74248e931e1ca22f32b524	27aaed3fe5bcd6adedd6e91de234914af9859cf1	docs/api.rst	broken	0	217	Convert api.rst to api.md (#3092)			
+https://github.com/pallets/click.git	413f76f37dcdb2c475a800870d3f8c1c623238d6	61117afdac70c10d0a74248e931e1ca22f32b524	docs/license.rst	broken	0	5	Move License and Handling-files doc pages from reST to MyST (#3093)			
+https://github.com/pallets/click.git	feffea5ca2537ed36a1d699d3536a65c676fc5c1	a9e62f548af4934a109eae38b588a228102d7058	tests/test_imports.py	changed	9	1	fix windows import check			
+https://github.com/pallets/click.git	e3c87be8c1de04e8795f97aceabb6326e7342928	89af4ae2d682e8ab9f14a036bad19e8990d828d4	docs/commands.rst	broken	0	428	Move Commands doc from reST to MyST (#3243)			
+https://github.com/pallets/click.git	8a2b48901a08b3d2ec3a9bbd151948a9765368c6	30a7f7c8e6cf40c1a09f22ac83377c6ae1d201b5	examples/validation/validation.py	changed	2	2	`ParamType` and other typing improvements (#3371)			
+https://github.com/pallets/click.git	8a2b48901a08b3d2ec3a9bbd151948a9765368c6	30a7f7c8e6cf40c1a09f22ac83377c6ae1d201b5	tests/test_imports.py	changed	2	0	`ParamType` and other typing improvements (#3371)			
+https://github.com/pallets/click.git	831c8f0948af519e45b90801d7430ff25451f972	19fd4d6e18bc9fce451f92f422696b11169faa57	tests/test_commands.py	changed	32	0	Add NoSuchCommand exception with suggestions for misspelled commands (#3228)			
+https://github.com/pallets/click.git	1a994adbb114d402275a614942e2f838a654e648	6a141c3681027e8124ce5a3c70e608dbbebffafb	tests/test_commands.py	changed	43	0	Merge stable into main (#3521)			
+https://github.com/pallets/click.git	9c4dfdaebe0e6b2aabc566eb81f6f10eb5cd6ea1	00e592cea702e0b2caa0dee42489fdb1c22cd845	tests/test_commands.py	changed	50	0	Sort help args to make them reproducible (#3728)			
+https://github.com/pallets/click.git	7332f00ed4c27d8da041788ca6a7aa405f062c76	c067af761a70a6cbb91fa49083a41511207297da	tests/test_commands.py	not-fired	0	0	Merge pull request #1549 from ewjoachim/default-map-show-default-1548			
+https://github.com/pallets/click.git	2aecb2d71084ef724b7ee61d7dae1b46540b288c	937c68dd15130c4ca85011cb72fdb0a7d18fc77e	docs/license.rst	not-fired	0	0	Make distinct sections for advanced patterns and extending click. (#2925)			
+https://github.com/pallets/click.git	937c68dd15130c4ca85011cb72fdb0a7d18fc77e	dce3f9e9828f26936cfd80c69fb59e253b34415b	docs/parameters.rst	not-fired	0	0	Convert options docs to md. (#2924)			
+https://github.com/pallets/click.git	a5cb82f5df32a851a71ade3906e329f50b8cbc09	452935115a4073a074069d5428db998766886b8b	docs/parameters.rst	not-fired	0	0	Randomized and parallel tests (#3151)			
+https://github.com/pallets/click.git	bc53a964691844d33675beb60d1d9921312258ef	b4d2d3202d5b81746bc93cb7a2044c5773a21afc	docs/upgrading.rst	not-fired	0	0	Merge pull request #996 from dougharris/lambda-844-547			
+https://github.com/pallets/click.git	cfa01eeb7894a408af70b29d28c0b24f8680f9fb	333c28d79cd982990ee98eef61ec20ab1a4f38ba	tests/test_chain.py	not-fired	0	0	Deprecate `isolated_filesystem` and document its limits (#3704)			
+https://github.com/pallets/click.git	06b2a678741131fd577ce170e23e5ca0aeba0309	3cbaa76b6014be7427d1ab06b4af40f01e7c278e	docs/parameters.rst	not-fired	0	0	Deprecate parameter names that are: not a Python identifier, or a Python Keyword, or not lower-cased (#3866)			
+https://github.com/pallets/click.git	c3535905c77a29afc84861b29d3ad366ce5451bd	bc36cd1a2b3bc18f401a98476154dbc5a2d212c9	tests/test_commands.py	not-fired	0	0	Fix broken fish completion and multiline help string			
+https://github.com/pallets/click.git	be28b6c6f9d001f230614b5f9be2c50b30c6cb3a	31d19ba9c3e04d518888f68d8ebe3add6e5abc4b	tests/test_commands.py	not-fired	0	0	Merge pull request #930 from stopthatcow/feature/925			
+https://github.com/pallets/click.git	3be1f33c8e0b13295853f6aa64d1f7412b5312df	1f4002096439d6661f1df5ceff7eccd3862153ac	docs/api.rst	not-fired	0	0	Shell completion overrides are documented as taking keyword arguments (#2854)			
+https://github.com/pallets/click.git	752ff79d680fceb26d2a93f1eef376d90823ec47	3ded26d6068fb3ed1155a33db04c1bcac48b1c1e	setup.py	not-fired	0	0	Merge pull request #842 from axu2/master			
+https://github.com/pallets/click.git	31184ff9e251258d1006db74b914322e0fab9d2b	ebcd548d50662bc8fa4f8b9ec7fe13cb8310bfaa	docs/prompts.rst	not-fired	0	0	Add link at bottom of docs pages to myst parser docs (#3153)			
+https://github.com/pallets/click.git	1472e3d697215039f499cb0b51d8bea6a9aa3144	af584b212c25f8479dcedf116f5895ee92c71f2c	setup.py	not-fired	0	0	Merge pull request #1354 from JoelEager/fix-progress-bar			
+https://github.com/pallets/click.git	289913bb608994558ac9132a9f2eefb6bc2c8b7d	8b971f73743aa3bec1f09414377d3d01369de1bd	docs/parameters.rst	not-fired	0	0	Merge pull request #1201 from yu-iskw/modify-doc			
+https://github.com/pallets/click.git	3bf974cc5274fd73a928daaaff708f10ac01ab16	789ba880b1bf234d0ee0927b2ce8e715420170d8	setup.py	not-fired	0	0	Merge pull request #809 from forkbong/bright-colors			
+https://github.com/pallets/click.git	4851f7ca51291a746973be7e3a6647029b4ced72	da0132f90068b5b7457bd8d8c363da0765412c1b	docs/prompts.rst	not-fired	0	0	Added example on ignoring of unknown options.			
+https://github.com/pallets/click.git	04964ab1651c0f7880d60dfe01d236cfb5184d32	f1c2ce9a7407d1c62fcba2251204d336f718f353	tests/test_imports.py	not-fired	0	0	Merge branch 'pr/212'			
+https://github.com/pallets/click.git	d959898db264aaf07e70ad4eafa254286f9a5185	ba745ac64037b7d4cdd0abce10446c0a2861935f	docs/prompts.rst	not-fired	0	0	Add capture mode to `CliRunner` and revert default `fileno` exposure (#3391)			
+https://github.com/pallets/click.git	b5f59881ac37eda92ae7e90f1debd63ad00a825a	ae5386bac1a19d2a8fd0d8f8e3dcf090607cbb9b	docs/api.rst	not-fired	0	0	Merge pull request #566 from jmorganc/patch-1			
+https://github.com/pallets/click.git	3e17a3d22c6463f0948f52b0bc85b8800f6801a5	752c5e4b6623d97369076b6c03015af1041ea931	setup.py	not-fired	0	0	Merge pull request #1105 from sirosen/bugfix/autoenv-uppercase			
+https://github.com/pallets/click.git	497d1b6f00a4a9061eacd5a5823987b9c605071f	a6cc378f26f81a76f8aee82bc35c1416dd33040f	docs/license.rst	not-fired	0	0	Fix version added and version changed in options docs. (#2957)			
+https://github.com/pallets/click.git	878de46100e9c29aea9dab5b385b8116863cb5e3	c8111c2de803e43b14538bc9603ef703ec884a83	docs/upgrading.rst	not-fired	0	0	Move Click-Concepts doc from reST to MyST (#3260)			
+https://github.com/pallets/click.git	44fd6394b72c1186feae31e793cd1196e1024fe2	737bfbd3122d96d41924323a3f45a8021c30d4c8	tests/test_chain.py	not-fired	0	0	Merge branch 'main' into stable			
+https://github.com/pallets/click.git	421e46acbe6b161f1c8df6ddee4857f60f45cabc	022fc7368f0f64cf3b4c2abd3f67745abf49d3fe	docs/parameters.rst	not-fired	0	0	Documented the use of get_current_context			
+https://github.com/pallets/click.git	f23951150a92a1c8461774abf30d543b3386f8d6	be17393b04c9cd478cba643d0476d915184edeac	docs/upgrading.rst	not-fired	0	0	Added missing new types to the docs.			
+https://github.com/pallets/click.git	28b85640e8058bdf859e84d3be87aebe1d440fde	da0ebcb54330fd9fecaa325577f4bb9f68a2106a	setup.py	not-fired	0	0	Merge pull request #1027 from pallets/ci			
+https://github.com/pallets/click.git	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	8a47580a00f3404e7071b9ecfec3692a1e18309f	tests/test_commands.py	not-fired	0	0	Expand `Choice` token normalization + make generic (#2796)			
+https://github.com/pallets/click.git	bce4ea4ba54e15959cb412d6793634e0c9b24491	97de2c97275f52adc5c6ef8bb8aa993ce997fe7e	docs/license.rst	not-fired	0	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	86d6b6b3525ae7a29c6ea8c79eddac30b006dcf5	d5484790593c49f91f6d0e90c8f1b0d55eea3816	docs/commands.rst	not-fired	0	0	Move Utils and Unicode-support docs from reST to MyST (#2960)			
+https://github.com/pallets/click.git	565f36d5bc4a15d304337b749e113fb4477b1843	5c1239b0116b66492cdd0848144ab3c78a04495a	docs/commands.rst	not-fired	0	0	Fix reconciliation of envvar with `default`, `flag_value` and `type` parameters for flag options (#2956)			
+https://github.com/pallets/click.git	a7d2a8d93fc4fd503877ea17ec9380dfe93af128	878de46100e9c29aea9dab5b385b8116863cb5e3	docs/commands.rst	not-fired	0	0	docs: add standalone application guide with Briefcase (#3315)			
+https://github.com/pallets/click.git	c326df95e9e3da0425360e030413f6a3ee25fdee	a8c05427602d12842c53ce48b03b5d6b5c0c6693	tests/test_chain.py	not-fired	0	0	Fix closing of callbacks on CLI exit (#2680)			
+https://github.com/pallets/click.git	89af4ae2d682e8ab9f14a036bad19e8990d828d4	32010b9e9a33fa4981de7052c1ae1a71770613ef	tests/test_commands.py	not-fired	0	0	Expose original file descriptor in `CliRunner` (#3244)			
+https://github.com/pallets/click.git	a9b0cbc0415adfb2fec79cbd93ee34d0ba1b19ce	43018a78a9f558bd7e846775b6c369789a6f4bb5	docs/prompts.rst	not-fired	0	0	Merge pull request #265 from MrTact/patch-1			
+https://github.com/pallets/click.git	28154558840b43864acc688ed9248db1c4007a12	5eaa4c5cba417fb4b65e5b9f5810e6043a312594	docs/prompts.rst	not-fired	0	0	Merge pull request #1630 from jwodder/more-bools			
+https://github.com/pallets/click.git	7cc7434b18928ae9128c4ee2fedeed4c44e75002	bc53a964691844d33675beb60d1d9921312258ef	docs/parameters.rst	not-fired	0	0	Merge pull request #1003 from dougharris/options-741			
+https://github.com/pallets/click.git	752ff79d680fceb26d2a93f1eef376d90823ec47	3ded26d6068fb3ed1155a33db04c1bcac48b1c1e	docs/prompts.rst	not-fired	0	0	Merge pull request #842 from axu2/master			
+https://github.com/pallets/click.git	cbd7a4109da16ce58f54c2a618b4c986e3041fcf	fc5c7f45da0a4443f60ba2d322fe4bf829977739	docs/commands.rst	not-fired	0	0	Run Flask's test suite in the nightly workflow (#3768)			
+https://github.com/pallets/click.git	831c8f0948af519e45b90801d7430ff25451f972	19fd4d6e18bc9fce451f92f422696b11169faa57	tests/test_imports.py	not-fired	0	0	Add NoSuchCommand exception with suggestions for misspelled commands (#3228)			
+https://github.com/pallets/click.git	c69643b60cf971cd5d8e5d3902632807ceab9b8f	c5cced7b3096804567688df645194e3ed3dfa88b	docs/prompts.rst	not-fired	0	0	Add file-like pager: `click.get_pager_file()` (#1572)			
+https://github.com/pallets/click.git	a7d2a8d93fc4fd503877ea17ec9380dfe93af128	878de46100e9c29aea9dab5b385b8116863cb5e3	docs/upgrading.rst	not-fired	0	0	docs: add standalone application guide with Briefcase (#3315)			
+https://github.com/pallets/click.git	9da1791476fe79ce77aa7a2a2db370c91a455251	c2c2bacddc1d625e9a0f606f227f356df9d2b172	tests/test_commands.py	not-fired	0	0	Error on nargs=-1 for options.  This fixes #222			
+https://github.com/pallets/click.git	c067af761a70a6cbb91fa49083a41511207297da	b631e5a5794369f03d57719a446a65e423366f36	tests/test_chain.py	not-fired	0	0	Merge pull request #1687 from pallets/multiple-tuple			
+https://github.com/pallets/click.git	8416c6fc6dfd37be9cc5f2901a87be1b6904d224	505e48531d5db8332550a371c598a6edc753ebce	docs/parameters.rst	not-fired	0	0	Alter readthedocs to prep for building to build html, htmlzip, and pdf docs.  (#2950)			
+https://github.com/pallets/click.git	1a4d8c1bb1e8f8e214ede7223bd2c05dc2ce006a	02046e7a19480f85fff7e4577486518abe47e401	tests/test_chain.py	not-fired	0	0	Fix metavar for Choice options when show_choices=False (#2365)			
+https://github.com/pallets/click.git	719690a5792aceab7801d26b1805fcbe4cc5f802	b41940747860a13e1d12b54d2d55b0cec57f0ce3	tests/test_chain.py	not-fired	0	0	Merge pull request #1402 from yurihs/add-repeat-behavior-to-prompt			
+https://github.com/pallets/click.git	1a994adbb114d402275a614942e2f838a654e648	6a141c3681027e8124ce5a3c70e608dbbebffafb	docs/options.rst	not-fired	0	0	Merge stable into main (#3521)			
+https://github.com/pallets/click.git	7df2f82305f20f1611a9668b38d26933b648d807	b551fe85714c906565303fae98136d7c72b252ea	setup.py	not-fired	0	0	Add built-in PowerShell shell completion support (#3637)			
+https://github.com/pallets/click.git	c6042bf2607c5be22b1efef2e42a94ffd281434c	260f50df43efc2615c6631e81393617208cc82c5	docs/upgrading.rst	not-fired	0	0	Merge pull request #1243 from bittner/master			
+https://github.com/pallets/click.git	17251573cde0f6d00f1b49badc6bc0f0d5c111bd	2e1c74264b8f8966b31a3d713358f753d6ea1b13	docs/prompts.rst	not-fired	0	0	Fix entrypoints docs (#2923)			
+https://github.com/pallets/click.git	89af4ae2d682e8ab9f14a036bad19e8990d828d4	32010b9e9a33fa4981de7052c1ae1a71770613ef	docs/commands.rst	not-fired	0	0	Expose original file descriptor in `CliRunner` (#3244)			
+https://github.com/pallets/click.git	f14b75063fb36b9208b13a920326926363616b39	9982faee85f2715a9cde03639f8c0382561c09ce	tests/test_imports.py	not-fired	0	0	update dev dependencies			
+https://github.com/pallets/click.git	a6fea31dbbb0a753aa47a06fc870d6ef91a3e3da	1cb86096124299579156f2c983efe05585f1a01b	docs/commands.rst	not-fired	0	0	Merge pull request #1807 from pallets/pass-meta			
+https://github.com/pallets/click.git	752ff79d680fceb26d2a93f1eef376d90823ec47	3ded26d6068fb3ed1155a33db04c1bcac48b1c1e	docs/commands.rst	not-fired	0	0	Merge pull request #842 from axu2/master			
+https://github.com/pallets/click.git	655918a61e22cade722dacb9bf798e86b13093af	e8e4b32f5034b8e6df9f4d5ba7ed952da9394a76	tests/test_commands.py	not-fired	0	0	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	81efdc9da4c43d7474170c5bd7c74e910496faac	bb7be1f6a91f3fd1267d1a6d68771273d593f9c7	docs/options.rst	not-fired	0	0	revise 'Options' documentation (#3192)			
+https://github.com/pallets/click.git	8efb348e2bc820aeba60d4cce6939708c6b2b11c	7332f00ed4c27d8da041788ca6a7aa405f062c76	tests/test_imports.py	not-fired	0	0	Merge pull request #1618 from MLH-Fellowship/prompt-required			
+https://github.com/pallets/click.git	6c454c88b76f7a0be396dba72513bd316cd141e6	6944450c5331f2d652d342650b6d9b3b52404baa	tests/test_commands.py	not-fired	0	0	Merge pull request #1445 from tirkarthi/fix-syntax-warning			
+https://github.com/pallets/click.git	4507fd537e93ce661ef96a122149e36104e84c61	b3f0a13d260d953ff24ddc4be604daa8b8089607	docs/upgrading.rst	not-fired	0	0	Merge pull request #208 from willingc/master			
+https://github.com/pallets/click.git	28650344c54dd54e673d3e9a35e76bf9f4bedf8d	316d58ef45d29eb9865679260a52315647d259ca	docs/license.rst	not-fired	0	0	svg logo			
+https://github.com/pallets/click.git	c69643b60cf971cd5d8e5d3902632807ceab9b8f	c5cced7b3096804567688df645194e3ed3dfa88b	docs/commands.rst	not-fired	0	0	Add file-like pager: `click.get_pager_file()` (#1572)			
+https://github.com/pallets/click.git	a6e0d2936891030f5092c9869c7391104f6721d9	1a4d8c1bb1e8f8e214ede7223bd2c05dc2ce006a	tests/test_imports.py	not-fired	0	0	Hide default value when show_default is False (#2509)			
+https://github.com/pallets/click.git	1a3baf77d4882f23c9f50995073c6c916c07dff0	93b7ab57817311eb0c24b6112759f2f90507ea4c	tests/test_commands.py	not-fired	0	0	use ruff lint and format (#2658)			
+https://github.com/pallets/click.git	cf8df8af644908183a52c8371006428d618dd632	123dd717439d8620d8d6be5574d2c9f007952326	docs/prompts.rst	not-fired	0	0	Merge branch '6.x'			
+https://github.com/pallets/click.git	bc36cd1a2b3bc18f401a98476154dbc5a2d212c9	dbf4d14c712750c31e15916b659925683150533b	setup.py	not-fired	0	0	Merge branch 'stable'			
+https://github.com/pallets/click.git	b4d25f807e8a98f87bc60b76839e83302a5d9f3d	a589835a5b656eec4bace076ac7e947662c1cc68	docs/api.rst	not-fired	0	0	Merge pull request #1120 from pallets/meta			
+https://github.com/pallets/click.git	c9e94136b39b1fad4a47ac0d4478fa372bd07ff8	c938ac0a9602350463bcac02a075900f45400cf8	setup.py	not-fired	0	0	Fix dev version 8.4.1 (#3446)			
+https://github.com/pallets/click.git	733d5fac8cd5e5134edda339199e11ce8ffe010e	5cf7f2ddfba328070751cbda32782520d4e0d6f5	docs/license.rst	not-fired	0	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	a9b0cbc0415adfb2fec79cbd93ee34d0ba1b19ce	43018a78a9f558bd7e846775b6c369789a6f4bb5	docs/parameters.rst	not-fired	0	0	Merge pull request #265 from MrTact/patch-1			
+https://github.com/pallets/click.git	528fd7a798abe0077060c5720e13791a34167f66	c096a10e8b59e48f77c65372a9c17f8226c128c5	docs/commands.rst	not-fired	0	0	Move Setuptools and Shell-completion docs from reST to MyST (#2987)			
+https://github.com/pallets/click.git	0805f60cfc7a48b9a951733a81639e7fda430152	80086c4b393f2e5532c9ad35b79fee653aa47730	tests/test_imports.py	not-fired	0	0	Merge pull request #1793 from MLH-Fellowship/jupyter-windows-support			
+https://github.com/pallets/click.git	94c191ca6c9598865fc5672b85cf138845b337d5	16fc00e2f4a2717a521084f193709a6058afc693	docs/options.rst	not-fired	0	0	Add `@custom_version_option`, freeze `@version_option` (#3581)			
+https://github.com/pallets/click.git	11ca58bc8772e8e6e48134ed6377950ab2d7f123	1ddbed44ec3c8b73dd050e0699f820d34c1a3457	docs/commands.rst	not-fired	0	0	Merge pull request #408 from untitaker/contrib-docs			
+https://github.com/pallets/click.git	2534940b3a4cf91258ee446c95b6567056640aaa	5f337705f68bdfa66d7c7a9fe7fc5d6bfd48db94	docs/upgrading.rst	not-fired	0	0	Added link to example github issue.			
+https://github.com/pallets/click.git	7d1996456583a0e1550afd4826fac1aec70c895b	0d95fb0d234d2bfe0a29f673399b72b4b42e1fb2	docs/license.rst	not-fired	0	0	Merge pull request #1161 from jdufresne/easy			
+https://github.com/pallets/click.git	051d57cef4ce59212dc1175ad4550743bf47d840	2198a8c3bfcbfd211dc14c7627c6aea1ba0152e4	docs/commands.rst	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	868b61157e7144b44c967a7e3e92c78ab4ffb231	8d4051e9e57be1bfb5421e3eb5a93b4b42077b0c	docs/license.rst	not-fired	0	0	Very short description of exit codes and how to access them (#3112)			
+https://github.com/pallets/click.git	71094d6a4d146ab43e5a3a673c01e9c60f80a239	2489a7e871cf6a59837d24e304e109da4ae12384	setup.py	not-fired	0	0	Don't ping IRC about CI			
+https://github.com/pallets/click.git	c0f9c06aa123e75466829bd41985a44a70b6c625	d334d8220a96e6488deded07a7a41ad80dfa3dc5	tests/test_chain.py	not-fired	0	0	Merge pull request #1822 from rbanffy/overline-italic			
+https://github.com/pallets/click.git	655918a61e22cade722dacb9bf798e86b13093af	e8e4b32f5034b8e6df9f4d5ba7ed952da9394a76	docs/prompts.rst	not-fired	0	0	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	fb0a7a7b369c50d1c7c100316370edef6db2b8d5	c70d4636831e391016895587f7ed10e96f49773e	docs/license.rst	not-fired	0	0	Merge pull request #883 from jacobtolar/doc-cleanup			
+https://github.com/pallets/click.git	1339fd3323357119a9c7a6326c788f80295954ce	5df10013f7ed8bad94da1e82d58e3711eec1afb3	setup.py	not-fired	0	0	Add missing unreleased 8.3.3 section			
+https://github.com/pallets/click.git	8bd8b4a074c55c03b6eb5666edc44a9c43df38a2	d777956105fde08e01dd895dde2b86ccdf558d59	setup.py	not-fired	0	0	add codespell pre-commit hook (#3373)			
+https://github.com/pallets/click.git	262bdf02288daf9a37b9e815b44acafd62b5c6fe	cfa6f4ad3e0078db43f866246b483544afa33ed3	tests/test_imports.py	not-fired	0	0	Raise an exception on end of input in CliRunner (#2934)			
+https://github.com/pallets/click.git	5f2ff4faf627dc9d0925cffb7d9b8f3162fbdaad	430c50a3b6dca4e23936389513d2099b0af865cf	tests/test_chain.py	not-fired	0	0	Merge pull request #755 from stopthatcow/feature/bash_autocompletion_6.6			
+https://github.com/pallets/click.git	06b2a678741131fd577ce170e23e5ca0aeba0309	3cbaa76b6014be7427d1ab06b4af40f01e7c278e	tests/test_chain.py	not-fired	0	0	Deprecate parameter names that are: not a Python identifier, or a Python Keyword, or not lower-cased (#3866)			
+https://github.com/pallets/click.git	22697863f0a252082226068290eff3d57f79a3ec	cd35e790c1e41485c18d3e8b5d0891c0280cc96f	docs/prompts.rst	not-fired	0	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	b8a33bf050ce41a398538d03dab6c8450ae76f28	90a6c78ae574de35d3783e0d575b688a12f09a3d	docs/license.rst	not-fired	0	0	Merge pull request #1715 from MLH-Fellowship/maaz/issue-395			
+https://github.com/pallets/click.git	9db53b98915ac4bf540e3e5cf99c7b500f6a90c3	a43b9477c20fe38c9cb6234858a145c2d3f63a17	docs/parameters.rst	not-fired	0	0	Merge pull request #835 from vivekanand1101/patch-1			
+https://github.com/pallets/click.git	c01e2b8ed17d3ea65981bc62784363d0e38e3092	4262661a0fffabe3803f1bd876b19244f587dafa	setup.py	not-fired	0	0	Merge pull request #2151 from stephenfin/store-untruncated-help			
+https://github.com/pallets/click.git	5e2e191026c16ede856afbea941c0c3f90d62298	d1a80aa95cc207f50da1c438af742b7edad02267	setup.py	not-fired	0	0	remove slsa provenance (#2973)			
+https://github.com/pallets/click.git	890e984174ffd16ac5510ec7fe21263f5ca7c65f	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	docs/parameters.rst	not-fired	0	0	Merge pull request #1784 from pallets/windows-requires-colorama			
+https://github.com/pallets/click.git	438430de5fcf2570eade160489ca003e911204fd	a1972b36b4016a1b3e6e94c5143aa813fc76138b	docs/license.rst	not-fired	0	0	Merge pull request #242 from jaymartin7/patch-1			
+https://github.com/pallets/click.git	2c8cd3ac958a7eb316d67f2d316c27086c4c0369	e1fd5946ab26aaf372009eaff1acf947140b40fb	docs/upgrading.rst	not-fired	0	0	Add FAQ entry about `UnicodeEncodeError` on Windows (#3778)			
+https://github.com/pallets/click.git	890e984174ffd16ac5510ec7fe21263f5ca7c65f	ea3bb6f1bf5db675f2dec0350f57e704da6ea00b	tests/test_chain.py	not-fired	0	0	Merge pull request #1784 from pallets/windows-requires-colorama			
+https://github.com/pallets/click.git	5f337705f68bdfa66d7c7a9fe7fc5d6bfd48db94	36f83d91e27b5b88ee806cb40f284658e2f9cdb5	docs/options.rst	not-fired	0	0	Warn about the use of unicode_literals			
+https://github.com/pallets/click.git	bc53a964691844d33675beb60d1d9921312258ef	b4d2d3202d5b81746bc93cb7a2044c5773a21afc	docs/parameters.rst	not-fired	0	0	Merge pull request #996 from dougharris/lambda-844-547			
+https://github.com/pallets/click.git	9e9fe41a53d885d96e43dec7cd9eb69e352f801a	6411f425fae545f42795665af4162006b36c5e4a	setup.py	not-fired	0	0	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	42e2821ba3b7b5763f04c4642a83f0b36cd726d5	289979557a95a9237192dade9f2ad138165302cf	docs/license.rst	not-fired	0	0	Merge pull request #557 from Nudies/master			
+https://github.com/pallets/click.git	b4d25f807e8a98f87bc60b76839e83302a5d9f3d	a589835a5b656eec4bace076ac7e947662c1cc68	docs/options.rst	not-fired	0	0	Merge pull request #1120 from pallets/meta			
+https://github.com/pallets/click.git	c326df95e9e3da0425360e030413f6a3ee25fdee	a8c05427602d12842c53ce48b03b5d6b5c0c6693	tests/test_commands.py	not-fired	0	0	Fix closing of callbacks on CLI exit (#2680)			
+https://github.com/pallets/click.git	3f664988e6ca2a04532695068f6be1c8e32f2402	ba465d9513c5df4d1bd60a8ebd281d03b0c6bd1c	tests/test_commands.py	not-fired	0	0	Merge pull request #878 from jdufresne/resource-warning			
+https://github.com/pallets/click.git	8a04bb0f3e9dff149e966c74902e3bc8801e7a72	93551dd44ced28fae4bd404cf24ec89b589e6568	docs/license.rst	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	ac655f8ac8a13cd45ce96bdc296bd857654088f0	5215fc1030ed911c0c67b18e2fcad95fc173dd0e	tests/test_chain.py	not-fired	0	0	Merge pull request #1872 from janLuke/fix/formatter_write_text			
+https://github.com/pallets/click.git	a9a218cd523dfc41743eeae7a94d1ba763b64b1e	c9e94136b39b1fad4a47ac0d4478fa372bd07ff8	docs/commands.rst	not-fired	0	0	Merge branch 'stable'			
+https://github.com/pallets/click.git	3a917b93aa11216905d392c19fe67e729377ae44	8416c6fc6dfd37be9cc5f2901a87be1b6904d224	docs/commands.rst	not-fired	0	0	Align docs index header levels. (#2951)			
+https://github.com/pallets/click.git	f634bd0176e705b1e8f47b590d08c51882068161	15437749aa27c0b0c8f0c6a3511af2f5b802b6b7	tests/test_commands.py	not-fired	0	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	cdea8fc46a95bde18944351d012e70f89494f73e	dac66dca75d22db826938426d4ba311e1b44de6a	docs/api.rst	not-fired	0	0	Merge pull request #538 from DenisCarriere/master			
+https://github.com/pallets/click.git	5ba2320454065a78dbb4176e582ab21c990d358c	d14ee193d01096113d5de0428b8552bcd5f368e9	setup.py	not-fired	0	0	Merge pull request #2212 from matejcik/type-hints			
+https://github.com/pallets/click.git	1458800409ed12076f18451889b0857db36aa522	04ef3a6f473deb2499721a8d11f92a7d2c0912f2	tests/test_chain.py	not-fired	0	0	Fix speculative empty string check (#3299)			
+https://github.com/pallets/click.git	b47b11755f45788878b7206bcbbceb4a324b9906	3978d0e3d9fc8e967126324552f2e4de0d753eeb	setup.py	not-fired	0	0	Fixed invisible progressbars.			
+https://github.com/pallets/click.git	421e46acbe6b161f1c8df6ddee4857f60f45cabc	022fc7368f0f64cf3b4c2abd3f67745abf49d3fe	setup.py	not-fired	0	0	Documented the use of get_current_context			
+https://github.com/pallets/click.git	b03f211e602d915f413068eba87ff08469b38477	c8da1fcc2cb4523c1fb5bef7f0ca82394dde1efd	tests/test_chain.py	not-fired	0	0	Auto-detect `type=UNPROCESSED` when `flag_value` has non-basic types (#3363)			
+https://github.com/pallets/click.git	1ea6a75059979af2aff6223a03552dfa1a6862f5	3cb997329c8a30b41a23022b877583a26f39ce72	tests/test_imports.py	not-fired	0	0	Merge pull request #994 from dsully/issue-926			
+https://github.com/pallets/click.git	d15d0cdf4f59ea0a0bf6f8a82449e042bc5f9732	bc3dd4796f6db8a0fe6ee03872ecebbc0d06a576	tests/test_imports.py	not-fired	0	0	Merge pull request #1683 from pallets/complete-order			
+https://github.com/pallets/click.git	8056132bfe09d59eb7f4cb199a87e63ec634d052	d65f32f7c2ad67950fb15516504c5118b131bb43	tests/test_imports.py	not-fired	0	0	Merge pull request #359 from markbt/help-formatting			
+https://github.com/pallets/click.git	a6cc378f26f81a76f8aee82bc35c1416dd33040f	3a917b93aa11216905d392c19fe67e729377ae44	docs/upgrading.rst	not-fired	0	0	Convert parameters file to md. (#2953)			
+https://github.com/pallets/click.git	00e592cea702e0b2caa0dee42489fdb1c22cd845	5aa8ac43527f91c4c801a50b485c09576715d340	docs/upgrading.rst	not-fired	0	0	Pre-8.5.0 release changelog and doc fixes (#3697)			
+https://github.com/pallets/click.git	c3a64824718f8ea992b949f03fc8dd01c4245b43	85d1121f2c7a4dc30d61928c6937c499daf1aadd	docs/parameters.rst	not-fired	0	0	Merge pull request #307 from bionikspoon/patch-3			
+https://github.com/pallets/click.git	a589835a5b656eec4bace076ac7e947662c1cc68	065653e7996a82e219cf2d0ce90fec7b0574ba36	setup.py	not-fired	0	0	Merge pull request #830 from segevfiner/not-enough-space-workaround			
+https://github.com/pallets/click.git	498f8826040fd6644d0f410c4d574df09c35d4b2	f14b75063fb36b9208b13a920326926363616b39	examples/imagepipe/example02.jpg	not-fired	0	0	drop end of life python versions (#2893)			
+https://github.com/pallets/click.git	a2623d0278dc6cc4e800e08503d29663d074d6d5	6707116ab7c37282ac3bc4938f2d30aeca7bd67d	docs/prompts.rst	not-fired	0	0	Move Extending-click page from reST to MyST (#3106)			
+https://github.com/pallets/click.git	61117afdac70c10d0a74248e931e1ca22f32b524	27aaed3fe5bcd6adedd6e91de234914af9859cf1	docs/upgrading.rst	not-fired	0	0	Convert api.rst to api.md (#3092)			
+https://github.com/pallets/click.git	89d3bfda52d151762e732738b828312a240bf89e	851ce7fc58d5ee57e3910a12094d3df986bb0ff8	tests/test_commands.py	not-fired	0	0	Make it possible to define aliases for the secondary option of boolean flags.  This fixes #420			
+https://github.com/pallets/click.git	3480d2c0d7259a73bca9358d30ebbe9d3fffd395	c9633645dd5f568e9ab6a1cf39df9a77b0c83ca2	setup.py	not-fired	0	0	Added changelog entry			
+https://github.com/pallets/click.git	8a1b1a33d739be05b7e91251e3c0dde77c5e152f	4fc0e90e1c19faf82bc18f8551eb1ed78dc738ac	docs/options.rst	not-fired	0	0	Merge `stable` into `main` after `CHANGES` rST to Markdown conversion (#3563)			
+https://github.com/pallets/click.git	8f36eab80a6175cad73450d43b7dc5815656a1b6	466d0add86f48502db9c02c32e30287d39ab866b	docs/prompts.rst	not-fired	0	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	f0c4e4f0d22691c5bb35e1b3bf180d2c4e08f2e1	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	tests/test_imports.py	not-fired	0	0	Merge pull request #1492 from pallets/deprecate-legacy-callback			
+https://github.com/pallets/click.git	edcd2dc240f7f97ca5ef5b3c1f43c34234e2fee3	f5e47a6fc29c515c5c23bab297e1454c054844cb	examples/imagepipe/example02.jpg	not-fired	0	0	deprecate base classes `BaseCommand` and `MultiCommand` (#2591)			
+https://github.com/pallets/click.git	b1b4449cda6767f022372890998d6b0eb895d041	da4a50807a0eba898fb359a422ab38f67f54d56e	docs/prompts.rst	not-fired	0	0	Merge pull request #889 from stefreak/master			
+https://github.com/pallets/click.git	a4763ef93734ccfea497ea10bf0870d588132432	297150c7566a38fb672828a36b681792513d99b0	setup.py	not-fired	0	0	Merge pull request #1695 from srafi1/help-summary			
+https://github.com/pallets/click.git	380008389b32ca2b7de7c73f670a9eee1562004e	fcd85032cff78aa536a6d2b455fb83bfcc02b228	tests/test_imports.py	not-fired	0	0	Give a UserWarning when Parameter is overriden by name (#2397)			
+https://github.com/pallets/click.git	29a68cac7f557a6eb1ea1e944c227ee014c74dcb	0a9c496967e5e021a2d1831b7c80d2761dda687a	docs/api.rst	not-fired	0	0	Move Option-decorators doc from reST to MyST (#3063)			
+https://github.com/pallets/click.git	051d57cef4ce59212dc1175ad4550743bf47d840	2198a8c3bfcbfd211dc14c7627c6aea1ba0152e4	docs/parameters.rst	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	9c4dfdaebe0e6b2aabc566eb81f6f10eb5cd6ea1	00e592cea702e0b2caa0dee42489fdb1c22cd845	tests/test_chain.py	not-fired	0	0	Sort help args to make them reproducible (#3728)			
+https://github.com/pallets/click.git	166b31261f55ba3126456bbc2ff9e16142115e56	08ecfd0e7c238a2444886d239de6d0e9d83530ec	tests/test_chain.py	not-fired	0	0	Merge pull request #1964 from janluke/fix/show_default-priority			
+https://github.com/pallets/click.git	ef93b49174540e72c16ad194c39947974f3d5c29	61494320c58f1f24612183e281d5cc11ac12d44e	docs/license.rst	not-fired	0	0	Merge pull request #989 from ettanany/pypi			
+https://github.com/pallets/click.git	a6fea31dbbb0a753aa47a06fc870d6ef91a3e3da	1cb86096124299579156f2c983efe05585f1a01b	docs/upgrading.rst	not-fired	0	0	Merge pull request #1807 from pallets/pass-meta			
+https://github.com/pallets/click.git	373a3aef2373192f89768f83b87293c9e11b4a1f	6e7d6d6a18342c8345b8c08c151ef9896be3e641	docs/api.rst	not-fired	0	0	Merge pull request #1071 from bblackifyme/master			
+https://github.com/pallets/click.git	8b971f73743aa3bec1f09414377d3d01369de1bd	f800a6f69e668f5bca874c2ad065d6b12bc450b4	setup.py	not-fired	0	0	Merge branch '7.x'			
+https://github.com/pallets/click.git	308cc08a711f1ec372fd7fa5acca8e8a1a04ee70	4866bd82f0ea70032b0f0ef0a10972d9a47cfb70	docs/api.rst	not-fired	0	0	Merge pull request #219 from ryanhiebert/option-like-arguments			
+https://github.com/pallets/click.git	b5239afafe6e36f53defabb392ac5264e0f5eb6b	a50befdc3ac475826af75e48fd48b21530851176	docs/api.rst	not-fired	0	0	Fix typos in docs (#623)			
+https://github.com/pallets/click.git	655918a61e22cade722dacb9bf798e86b13093af	e8e4b32f5034b8e6df9f4d5ba7ed952da9394a76	docs/license.rst	not-fired	0	0	Merge branch '8.0.x'			
+https://github.com/pallets/click.git	55682f6f5348f5220a557f89c3a796321a52aebf	c7ef4bab075479830a349f9ee2020b7a953c27ff	docs/prompts.rst	not-fired	0	0	Fix typo (synching -> syncing)			
+https://github.com/pallets/click.git	cfa01eeb7894a408af70b29d28c0b24f8680f9fb	333c28d79cd982990ee98eef61ec20ab1a4f38ba	docs/commands.rst	not-fired	0	0	Deprecate `isolated_filesystem` and document its limits (#3704)			
+https://github.com/pallets/click.git	c9146862440fb6a58c7efc8d9a483f2359feabad	f27a8dfee2d89c0d9787ed0deaf2d0ea50fadc8e	docs/license.rst	not-fired	0	0	Merge pull request #1016 from dawran6/issue-725			
+https://github.com/pallets/click.git	7b4e59cd9392ce9d32fda091f510b4be7e8ca76c	a2623d0278dc6cc4e800e08503d29663d074d6d5	docs/api.rst	not-fired	0	0	Document help page exit codes (#3122)			
+https://github.com/pallets/click.git	189d616fdfda7bac177595155ffce7e066427443	8056132bfe09d59eb7f4cb199a87e63ec634d052	tests/test_commands.py	not-fired	0	0	Merge pull request #363 from torfuspolymorphus/fix_362			
+https://github.com/pallets/click.git	fd4b3d882ff4514df96f55c9d3586cbc55f4cac8	56e79c9675101a46d0865a4f83be780801c4aaa7	docs/license.rst	not-fired	0	0	Merge pull request #1855 from guifelix/patch-1			
+https://github.com/pallets/click.git	dd51a1d1ce42f55ab96262519dfca66450d3c23b	8691636e373994c35eb5d157978e50e49ccb0709	tests/test_imports.py	not-fired	0	0	Merge branch '3.x-maintenance'			
+https://github.com/pallets/click.git	2e856a5281a29eb4293059b37427643c3d52a19a	9848366c69916e5767c68ebd059ef0c172ddb7b5	docs/options.rst	not-fired	0	0	Merge pull request #1131 from bast/typo			
+https://github.com/pallets/click.git	cdea8fc46a95bde18944351d012e70f89494f73e	dac66dca75d22db826938426d4ba311e1b44de6a	docs/prompts.rst	not-fired	0	0	Merge pull request #538 from DenisCarriere/master			
+https://github.com/pallets/click.git	c01e2b8ed17d3ea65981bc62784363d0e38e3092	4262661a0fffabe3803f1bd876b19244f587dafa	tests/test_chain.py	not-fired	0	0	Merge pull request #2151 from stephenfin/store-untruncated-help			
+https://github.com/pallets/click.git	c6042bf2607c5be22b1efef2e42a94ffd281434c	260f50df43efc2615c6631e81393617208cc82c5	docs/commands.rst	not-fired	0	0	Merge pull request #1243 from bittner/master			
+https://github.com/pallets/click.git	5f2ff4faf627dc9d0925cffb7d9b8f3162fbdaad	430c50a3b6dca4e23936389513d2099b0af865cf	docs/upgrading.rst	not-fired	0	0	Merge pull request #755 from stopthatcow/feature/bash_autocompletion_6.6			
+https://github.com/pallets/click.git	6bd8e56de957a423a707362cecfe2d5560afba0b	14472ffcd80dd86d47ddc08341168152540ee6f2	docs/license.rst	not-fired	0	0	Merge branch '8.1.x'			
+https://github.com/pallets/click.git	b91bb9548a5617b1197add95e084d569f57149c3	ea70da487b05d6bb758d472a3a9ffab4a5b7fcd5	tests/test_commands.py	not-fired	0	0	Provide altered context to callbacks to hide `UNSET` values as `None` (#3137)			
+https://github.com/pallets/click.git	4ece17a107d7b2e8bc3bd14356c2b53038fe41cf	8a47580a00f3404e7071b9ecfec3692a1e18309f	docs/license.rst	not-fired	0	0	Expand `Choice` token normalization + make generic (#2796)			
+https://github.com/pallets/click.git	89af4ae2d682e8ab9f14a036bad19e8990d828d4	32010b9e9a33fa4981de7052c1ae1a71770613ef	tests/test_chain.py	not-fired	0	0	Expose original file descriptor in `CliRunner` (#3244)			
+https://github.com/pallets/click.git	1a4d8c1bb1e8f8e214ede7223bd2c05dc2ce006a	02046e7a19480f85fff7e4577486518abe47e401	setup.py	not-fired	0	0	Fix metavar for Choice options when show_choices=False (#2365)			
+https://github.com/pallets/click.git	7df2f82305f20f1611a9668b38d26933b648d807	b551fe85714c906565303fae98136d7c72b252ea	tests/test_commands.py	not-fired	0	0	Add built-in PowerShell shell completion support (#3637)			
+https://github.com/pallets/click.git	0a7e6ef50ab6c2ea626bba085fe0871a9807bb22	5aeff2d5990918a4493c2d02b150e5210f70a5cb	setup.py	not-fired	0	0	Merge pull request #483 from nchammas/patch-1			
+https://github.com/pallets/click.git	fb1ca91ab00a2ce12da84addc459e1983aac2fcf	f3e55b6e2351d506470ccb9ed719eedb34b4c5b4	tests/test_imports.py	not-fired	0	0	Merge pull request #1615 from MLH-Fellowship/issue1422			
+https://github.com/pallets/click.git	63702ff6c36b5886cb3a92275afbee567ae78b5b	8e98529f56b9dd5ae8ef826b73917cc086be56ad	docs/options.rst	not-fired	0	0	delete directory .DS_Store (#1938)			
+https://github.com/pallets/click.git	b8a33bf050ce41a398538d03dab6c8450ae76f28	90a6c78ae574de35d3783e0d575b688a12f09a3d	tests/test_commands.py	not-fired	0	0	Merge pull request #1715 from MLH-Fellowship/maaz/issue-395			
+https://github.com/pallets/click.git	1a3baf77d4882f23c9f50995073c6c916c07dff0	93b7ab57817311eb0c24b6112759f2f90507ea4c	tests/test_chain.py	not-fired	0	0	use ruff lint and format (#2658)			
+https://github.com/pallets/click.git	dd0635c33cc4566ccb2e3cfb6fbf203bbcd1dd5a	64f57fea3a2d82b590e93fe29cb85c87be08a8a4	docs/commands.rst	not-fired	0	0	Don't use uname in examples.  This fixes #268			
+https://github.com/pallets/click.git	91e5bc36924a3cfbcadcf68d9cb37db37981de72	0b1e32b0d6d44590f0dae2e28b99bd7ccb6579f7	docs/options.rst	not-fired	0	0	Merge pull request #1329 from joshuastorck/PR-1264			
+https://github.com/pallets/click.git	3a917b93aa11216905d392c19fe67e729377ae44	8416c6fc6dfd37be9cc5f2901a87be1b6904d224	docs/license.rst	not-fired	0	0	Align docs index header levels. (#2951)			
+https://github.com/pallets/click.git	06b2a678741131fd577ce170e23e5ca0aeba0309	3cbaa76b6014be7427d1ab06b4af40f01e7c278e	docs/license.rst	not-fired	0	0	Deprecate parameter names that are: not a Python identifier, or a Python Keyword, or not lower-cased (#3866)			
+https://github.com/pallets/click.git	a97412d7faedd2f01e59e9be2faa58eb4f7e80b8	5b0b7b46f009e52a28fc845d02929d6422178b5d	docs/options.rst	not-fired	0	0	Improve discoverability of Context.max_content_width (#3011)			
+https://github.com/pallets/click.git	430c50a3b6dca4e23936389513d2099b0af865cf	c3da86160ff25617d60947ed81c4c520fb495145	docs/commands.rst	not-fired	0	0	Merge pull request #681 from pgkelley4/master			
+https://github.com/pallets/click.git	7a10fe1fbcba466714cfaadcc6c51cdcb656568e	72f1f3e20834d05832cdfc361ca401d586c371f8	setup.py	not-fired	0	0	Added pytest cache to gitignore			
+https://github.com/pallets/click.git	c096a10e8b59e48f77c65372a9c17f8226c128c5	0be2bd385064053bb75f92db317de128db729d52	tests/test_imports.py	not-fired	0	0	test: add two new tests for `Parameter.__init__` (recreation of #2861) (#3012)			
+https://github.com/pallets/click.git	a0d426d89434fcade5e96545d5203682c4fc5249	6b1f11ddd64e2a577d4e32b315356ebcd3d5434b	tests/test_chain.py	not-fired	0	0	Merge branch '4.x-maintenance'			
+https://github.com/pallets/click.git	493f70144b9d0fb1db576042beb0d151ecbeba03	6a03b346712781ecff2e3ce881fbb6ccfa75004c	docs/parameters.rst	not-fired	0	0	Added --version cross reference			
+https://github.com/pallets/click.git	ce152bd7215038f762ee918e6e181a5309ad57c9	ff72d7d50cae327786b73415f0f4dc348996215c	docs/parameters.rst	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	03e0133a39606dd6b5c1065d5bb23c84c25c4fbb	373a3aef2373192f89768f83b87293c9e11b4a1f	docs/api.rst	not-fired	0	0	Follow PEP8 recommendation for param naming (#1073)			
+https://github.com/pallets/click.git	f0c4e4f0d22691c5bb35e1b3bf180d2c4e08f2e1	7239794a610f3ccae3aaf8bfe273ac70cc58ff07	setup.py	not-fired	0	0	Merge pull request #1492 from pallets/deprecate-legacy-callback			
+https://github.com/pallets/click.git	94c191ca6c9598865fc5672b85cf138845b337d5	16fc00e2f4a2717a521084f193709a6058afc693	tests/test_commands.py	not-fired	0	0	Add `@custom_version_option`, freeze `@version_option` (#3581)			
+https://github.com/pallets/click.git	31184ff9e251258d1006db74b914322e0fab9d2b	ebcd548d50662bc8fa4f8b9ec7fe13cb8310bfaa	docs/options.rst	not-fired	0	0	Add link at bottom of docs pages to myst parser docs (#3153)			
+https://github.com/pallets/click.git	b5239afafe6e36f53defabb392ac5264e0f5eb6b	a50befdc3ac475826af75e48fd48b21530851176	docs/options.rst	not-fired	0	0	Fix typos in docs (#623)			
+https://github.com/pallets/click.git	c2c2bacddc1d625e9a0f606f227f356df9d2b172	438430de5fcf2570eade160489ca003e911204fd	tests/test_commands.py	not-fired	0	0	Merge pull request #240 from sjagoe/fix-help-wrapping			
+https://github.com/pallets/click.git	cf31c154b76ce61c301fc6e8f6efc79610291dc3	b465b722757f5a3b681cfd90f60eb3e67c8930dd	setup.py	not-fired	0	0	Print out supported locales in the python 3 error.  This improves #448			
+https://github.com/pallets/click.git	ec8226954e2657324e7a25fec6657e4fbde33bcb	3619563d9bf8763360d3f0d95eb76e43f26dea5e	setup.py	not-fired	0	0	Dual-option value arbitration: `first` vs. `last` vs. `most explicit` policy (#3404)			
+https://github.com/pallets/click.git	d91e035a318fc5d593109feb1b299f719d9c5639	2bfc05df3d720814c7cea78170377ef01be58b54	docs/commands.rst	not-fired	0	0	Merge pull request #398 from dastergon/patch-1			
+https://github.com/pallets/click.git	923d197b56caa9ffea21edeef5baf1816585b099	47ed2ee918fb0a3a87a9574424dcf37ad175502c	setup.py	not-fired	0	0	[pre-commit.ci] pre-commit autoupdate (#2739)			
+https://github.com/pallets/click.git	67f39e4ff9093ee347207d1cc1abe0130c21268e	5a441c1c5cd2a1cf99322af802b818acb8573dd3	tests/test_commands.py	not-fired	0	0	Merge branch 'Rovanion-master'			
+https://github.com/pallets/click.git	8a04bb0f3e9dff149e966c74902e3bc8801e7a72	93551dd44ced28fae4bd404cf24ec89b589e6568	setup.py	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	7147f41d0fd6676a8c0410875f43250dc8e54dc8	257153925b67fcd16d98367438d951ecbaf02240	tests/test_commands.py	not-fired	0	0	Merge pull request #1405 from energizah/commands-list			
+https://github.com/pallets/click.git	ffeddbaf0c8226201136593d29324c951f2b2fa3	fd4b3d882ff4514df96f55c9d3586cbc55f4cac8	tests/test_imports.py	not-fired	0	0	Merge pull request #1856 from pallets/typing			
+https://github.com/pallets/click.git	b06c9c778a134c53bfc6dc93955842da56bc04cb	750ba75c1e114d557bd948a1742eff33dc668df4	tests/test_commands.py	not-fired	0	0	Merge branch '4.x-maintenance'			
+https://github.com/pallets/click.git	1c3dfacddcb73bb256d0e604e239cfd4c75f71f2	3a2585cb70bb43897b9fa2d749421d8b99db1e87	tests/test_imports.py	not-fired	0	0	Merge pull request #285 from slafs/optional-param-cls			
+https://github.com/pallets/click.git	6fcda3e5fcddd9001b314e83a1e0546bd22c78c2	a6a69647227f90816e4bf3599ea536c0f57aef80	docs/api.rst	not-fired	0	0	Merge branch '6.x-maintenance'			
+https://github.com/pallets/click.git	7f1d70c54565ec978f49dc78a65299f9e94cd01d	5620b05385c3bdaeac0f0347fd2373ae1479624c	tests/test_chain.py	not-fired	0	0	Disallow nargs=-1 with a default set.			
+https://github.com/pallets/click.git	bf8c03e81f31a8ad0742a191532f15ad549232fa	6ef334011ea413505b431ebe88fc547bb5ca8de2	tests/test_imports.py	not-fired	0	0	Merge pull request #1873 from israteneda/organize-command-tests			
+https://github.com/pallets/click.git	7332f00ed4c27d8da041788ca6a7aa405f062c76	c067af761a70a6cbb91fa49083a41511207297da	setup.py	not-fired	0	0	Merge pull request #1549 from ewjoachim/default-map-show-default-1548			
+https://github.com/pallets/click.git	25edc1e31360efba4f64c8c3c540bbbcfb7876da	0cd28d6548f92e46396e0ffdd19ec5ea75b4b5e4	tests/test_commands.py	not-fired	0	0	Add parametrized tests for `should_strip_ansi` (#2731)			
+https://github.com/pallets/click.git	5b0b7b46f009e52a28fc845d02929d6422178b5d	701b313160be12752e49b3f7cea32402c0969a69	docs/upgrading.rst	not-fired	0	0	Move Prompts doc from reST to MyST (#3034)			
+https://github.com/pallets/click.git	257153925b67fcd16d98367438d951ecbaf02240	10103e3835a381185f786745c0281237f0b238ae	tests/test_chain.py	not-fired	0	0	Merge pull request #1497 from jyscao/clirunner_stdin_fix			
+https://github.com/pallets/click.git	9c5e989d52509498ce78a4015ebc7d9408f70c56	b63ace28d50b53e74b5260f6cb357ccfe5560133	tests/test_chain.py	not-fired	0	0	remove suffixes from generated command name (#2604)			
+https://github.com/pallets/click.git	b0538dffe889ff5d03934927c31a9b71e5129848	cd7b51cf98b8ac1d773ac726326a041bf4eafc14	setup.py	not-fired	0	0	Merge branch '8.1.x'			
+https://github.com/pallets/click.git	19fd4d6e18bc9fce451f92f422696b11169faa57	c69643b60cf971cd5d8e5d3902632807ceab9b8f	setup.py	not-fired	0	0	Fix: Ensure fish completion handles multiline help strings correctly (#3126)			
+https://github.com/pallets/click.git	c78265ad51b426ef6c2a9ae39d92c172d30ade82	ab80d1df893b59f25b4eb18e9351207966cc217e	setup.py	not-fired	0	0	Merge pull request #1825 from BALaka-18/resolve-path-1813			
+https://github.com/pallets/click.git	d8763b93021c416549b5f8b4b5497234619410db	4271fe283dc9365563aebb369ada8d20eee015a8	setup.py	not-fired	0	0	Help shown via no_args_is_help results in exit code 2, was 0 (#1489)			
+https://github.com/pallets/click.git	c3687bf1d2d5c175ee50dc083fce5b19de152de0	5d759e0ab383136f9869cdb5e14f00c78b38a9c9	tests/test_chain.py	not-fired	0	0	Merge remote-tracking branch 'origin/8.0.x'			
+https://github.com/pallets/click.git	19be092b6db4e4300e31906498e354ec0adf870c	bf9da4838986af3bc09a1b16974d154c61dcbe3f	tests/test_commands.py	not-fired	0	0	Merge pull request #2217 from pallets/group-return			
+https://github.com/pallets/click.git	7b4e59cd9392ce9d32fda091f510b4be7e8ca76c	a2623d0278dc6cc4e800e08503d29663d074d6d5	docs/license.rst	not-fired	0	0	Document help page exit codes (#3122)			
+https://github.com/pallets/click.git	b28bc4c6439d7b01c011e72c09d80574fe75b85b	7dd9b12b0d22e5a8a8674488684fd2bb799f2945	setup.py	not-fired	0	0	Merge pull request #1755 from b3n4kh/show_defaults_string_value			
+https://github.com/pallets/click.git	563b1a7116a6806e699d31d327dd9bca93c40cb3	2a35358d654b25e8042c6a85f46946c06444239a	docs/api.rst	not-fired	0	0	Merge pull request #1191 from smurfix/upstream2			
+https://github.com/pallets/click.git	98e471fb871f211dd40b1bea80942acb7bb9f176	890e984174ffd16ac5510ec7fe21263f5ca7c65f	docs/license.rst	not-fired	0	0	Merge pull request #1792 from pallets/consistency			
+https://github.com/pallets/click.git	861e04788aae85b54320e5124eb99ccf97049898	d15d0cdf4f59ea0a0bf6f8a82449e042bc5f9732	docs/commands.rst	not-fired	0	0	Merge pull request #1535 from alanbato/parameter-source-enum			

@@ -427,6 +427,17 @@ pub fn scan_with<R: Record>(
     dir: &Path,
     format: u32,
 ) -> std::io::Result<Scan<R>> {
+    scan_with_formats(spec, disk, dir, format, format)
+}
+/// Explicit reader compatibility range; record decoding uses each segment's
+/// actual version. The op_log keeps its existing exact-version migration path.
+pub fn scan_with_formats<R: Record>(
+    spec: &Spec,
+    disk: &dyn Durability,
+    dir: &Path,
+    min_format: u32,
+    format: u32,
+) -> std::io::Result<Scan<R>> {
     let mut out = Scan::default();
     let segs = segments(disk, dir)?;
     let mut prev = GENESIS;
@@ -458,7 +469,7 @@ pub fn scan_with<R: Record>(
             out.newer_format = Some(header.format);
             return Ok(out);
         }
-        if header.format < format {
+        if header.format < min_format {
             out.older_format = Some(header.format);
             return Ok(out);
         }
@@ -468,8 +479,8 @@ pub fn scan_with<R: Record>(
         }
         let mut pos = HEADER_LEN;
         while pos < bytes.len() {
-            let parsed =
-                parse_frame_with::<R>(spec, &bytes, pos, format).and_then(|(row, sum, end)| {
+            let parsed = parse_frame_with::<R>(spec, &bytes, pos, header.format).and_then(
+                |(row, sum, end)| {
                     if row.prev() != prev {
                         return Err(FrameFault::Chain);
                     }
@@ -483,7 +494,8 @@ pub fn scan_with<R: Record>(
                         return Err(FrameFault::Group);
                     }
                     Ok((row, sum, end))
-                });
+                },
+            );
             match parsed {
                 Ok((row, sum, end)) => {
                     let g = row.group();
@@ -523,7 +535,7 @@ pub fn scan_with<R: Record>(
                         Some(o) => (o.seq, o.start, o.first_frame),
                         None => (last_seq + 1, pos as u64, out.frames.len()),
                     };
-                    let later = later_group::<R>(spec, &bytes, pos + 1, format, g_seq);
+                    let later = later_group::<R>(spec, &bytes, pos + 1, header.format, g_seq);
                     if later {
                         out.broken = Some((Epoch(next), fault));
                         return Ok(out);

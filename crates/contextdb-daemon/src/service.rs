@@ -12,7 +12,7 @@ use contextdb_model::*;
 use contextdb_store::recall::RecallIndex;
 use contextdb_store::{
     Durability, Payload, StoreError,
-    session::{Layer, SessionEvent, SessionLog},
+    session::{Layer, RootProof, SessionEvent, SessionLog},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -47,6 +47,7 @@ struct AgentState {
     /// Live required read per logical (a newer read by this agent
     /// supersedes its older one).
     required: BTreeMap<LogicalId, LedgerEntry>,
+    proofs: BTreeMap<LogicalId, RootProof>,
     /// Supersessions not yet reported by `ctx_check`: (logical, old, new).
     superseded: Vec<(LogicalId, RevisionId, RevisionId)>,
     session_cert: Option<Certificate>,
@@ -75,6 +76,7 @@ struct Session {
     known_agents: BTreeSet<String>,
     /// Certificates issued to this session (recall and session certificates).
     certs: Vec<Certificate>,
+    proof_history: Vec<RootProof>,
     /// Durable events of this session name epochs the log no longer holds
     /// in the same form (e.g. after `ctx doctor --truncate-before`): its
     /// ledger and handles may name reallocated ids (P3 review finding 2).
@@ -118,6 +120,10 @@ const ENDED_KEPT: usize = 256;
 pub struct Service<D: Durability> {
     pub actor: ActorHandle<D>,
     sessions: Mutex<BTreeMap<SessionId, Arc<Mutex<Session>>>>,
+    pub(crate) anchor_routes: Mutex<Option<std::path::PathBuf>>,
+    /// Opened routed worktrees by root, with the identity they were opened
+    /// at; a leaf lock never held across another lock.
+    pub(crate) anchor_repos: Mutex<BTreeMap<String, crate::anchors::OpenedRepo>>,
     hooks: Mutex<Hooks>,
     /// Serialises outbox deliveries (stream marks) across sweeper and hooks.
     facts_lock: Mutex<()>,
@@ -218,6 +224,11 @@ fn handle_of(cert: &Certificate, index: usize) -> String {
     format!("{hex}.{index}")
 }
 impl<D: Durability + Clone + 'static> Service<D> {
+    /// Operator-selected routing configuration. It is never accepted from an
+    /// agent request or inferred from a record body.
+    pub fn set_anchor_routes(&self, path: std::path::PathBuf) {
+        *self.anchor_routes.lock().expect("routes") = Some(path);
+    }
     /// Starts the session-log writer and replays the session log into memory.
     ///
     /// Fails when a newly detected log cut cannot be made durable: serving
@@ -258,6 +269,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let service = Self {
             actor,
             sessions: Mutex::new(BTreeMap::new()),
+            anchor_routes: Mutex::new(None),
+            anchor_repos: Mutex::new(BTreeMap::new()),
             hooks: Mutex::new(Hooks::default()),
             facts_lock: Mutex::new(()),
             attach_lock: Mutex::new(()),
@@ -356,6 +369,21 @@ impl<D: Durability + Clone + 'static> Service<D> {
                                 required,
                                 epoch,
                             });
+                    }
+                }
+                SessionEvent::RootProof { agent, proof } => {
+                    if proof.cert.issued_epoch > tail
+                        || snap.log.checksum_at(proof.cert.issued_epoch).ok()
+                            != Some(proof.cert.log_checksum_at_issue)
+                    {
+                        broken(&map, &proof.cert.session_id);
+                    }
+                    if let Some(s) = map.get(&proof.cert.session_id)
+                        && let Some(root) = proof.cert.entries.first()
+                    {
+                        let mut s = s.lock().expect("session");
+                        s.proof_history.push((*proof).clone());
+                        s.agent(&agent).proofs.insert(root.logical, *proof);
                     }
                 }
                 SessionEvent::CertIssued { cert } => {
@@ -760,6 +788,20 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => err(&code(&e), format!("{e:?}")),
                 }
             }
+            Request::AnchorState { scope } => self.anchor_state(id, &scope, &snap),
+            Request::CheckAnchors {
+                scope,
+                paths,
+                expected_head,
+                expected_position,
+            } => self.check_anchors(
+                id,
+                &scope,
+                &paths,
+                &expected_head,
+                &expected_position,
+                &snap,
+            ),
             Request::Status => Response::Status {
                 revisions: db.revision_count() as u64,
                 logicals: db.logical_count() as u64,
@@ -1088,12 +1130,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Err(e) => submit_err(e),
         }
     }
-    fn item(&self, db: &Db, l: LogicalId, r: RevisionId, handle: Option<String>) -> Item {
+    fn item_at(
+        &self,
+        db: &Db,
+        l: LogicalId,
+        r: RevisionId,
+        handle: Option<String>,
+        live: &BTreeMap<String, Vec<u8>>,
+    ) -> Item {
         let (key, kind, _) = db.logical_info(l).expect("existing logical");
         let state = db.node(r).expect("existing revision");
-        let summary = db
-            .summary_at(r, &BTreeMap::new())
-            .expect("existing revision");
+        let summary = db.summary_at(r, live).expect("existing revision");
         Item {
             logical: l,
             key,
@@ -1200,11 +1247,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         found.sort();
         found.truncate(limit);
+        let live = self.anchor_live(db);
         let mut items = Vec::new();
         let mut withheld = Vec::new();
         for (_, l) in found {
             let r = db.head(l).expect("existing logical");
-            let item = self.item(db, l, r, None);
+            let item = self.item_at(db, l, r, None, &live);
             if mode == Mode::Certified && item.summary != Summary::Certified {
                 withheld.push(item); // I6: never presented as certified
             } else {
@@ -1240,7 +1288,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Ok(r) => r,
                 Err(r) => return r,
             };
-            if let Ok(cert) = db.issue_certificate(&request, &entries, &BTreeMap::new()) {
+            for entry in &entries {
+                if let Ok(cert) = db.issue_certificate(&request, std::slice::from_ref(entry), &live)
+                {
+                    let proof = self.root_proof(cert, db);
+                    s.proof_history.push(proof.clone());
+                    s.agent(&agent).proofs.insert(entry.logical, proof.clone());
+                    events.push(SessionEvent::RootProof {
+                        agent: agent.clone(),
+                        proof: Box::new(proof),
+                    });
+                }
+            }
+            if let Ok(cert) = db.issue_certificate(&request, &entries, &live) {
                 for (n, item) in items.iter_mut().enumerate() {
                     item.handle = Some(handle_of(&cert, n));
                 }
@@ -1304,7 +1364,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(v) => v,
             Err(resp) => return resp,
         };
-        let item = self.item(db, l, r, None);
+        let live = self.anchor_live(db);
+        let item = self.item_at(db, l, r, None, &live);
         let certified = item.summary == Summary::Certified && db.head(l) == Some(r);
         let required = mode == Mode::Certified && certified;
         let entry = LedgerEntry {
@@ -1316,7 +1377,30 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             let mut s = s.lock().expect("session");
             s.agent(&agent).record(entry.clone());
-            self.log(vec![read_event(session, &agent, &entry)]);
+            let mut events = vec![read_event(session, &agent, &entry)];
+            if required {
+                let request = match self.issue_request(session, &s, snap.epoch, false) {
+                    Ok(r) => r,
+                    Err(r) => return r,
+                };
+                let item = CertItem {
+                    logical: l,
+                    rev: r,
+                    required: true,
+                    via: Via::Head,
+                    since_epoch: snap.epoch,
+                };
+                if let Ok(cert) = db.issue_certificate(&request, &[item], &live) {
+                    let proof = self.root_proof(cert, db);
+                    s.proof_history.push(proof.clone());
+                    s.agent(&agent).proofs.insert(l, proof.clone());
+                    events.push(SessionEvent::RootProof {
+                        agent: agent.clone(),
+                        proof: Box::new(proof),
+                    });
+                }
+            }
+            self.log(events);
         }
         if mode == Mode::Certified && !certified {
             // CertifiedCurrent fails closed, without payload (T07e).
@@ -1572,12 +1656,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
             let Some(mut c) = s.certs.iter().find(|c| c.cert_id == id).cloned() else {
                 return err("UnknownRef", "certificate not issued to this session");
             };
+            let returned = c.clone();
             c.strict_no_aba |= strict_req;
             return match validate(&c) {
                 Ok(v) => Response::Check {
                     decision: decision(&v),
                     validation: v,
-                    cert: Some(Box::new(c)),
+                    cert: Some(Box::new(returned)),
                     superseded: Vec::new(),
                     gate: None,
                     updates_pending: 0,
@@ -1624,6 +1709,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut strict = strict_req;
         let mut prior: Option<Validation> = None;
         if let Some(mut current) = s.agents.get(&agent).and_then(|a| a.session_cert.clone()) {
+            let strict_upgrade = strict_req && !current.strict_no_aba;
             current.strict_no_aba |= strict_req;
             strict = current.strict_no_aba;
             let live_entries: Vec<CertItem> = current
@@ -1657,6 +1743,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 let mut adopted = current.clone();
                 if let Validation::ValidRecertified { new_cert, .. } = &v {
                     adopted = (**new_cert).clone();
+                }
+                if strict_upgrade {
+                    adopted.cert_id = *blake3::hash(&adopted.body_bytes()).as_bytes();
+                }
+                if strict_upgrade || matches!(v, Validation::ValidRecertified { .. }) {
                     s.certs.push(adopted.clone());
                     s.agent(&agent).session_cert = Some(adopted.clone());
                     self.log(vec![
@@ -1682,7 +1773,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     // Only an adopted recertification logged anything this
                     // check must make durable; an unchanged certificate already
                     // is (ADR 0010 G5: no session-log sync on steady checks).
-                    if matches!(v, Validation::ValidRecertified { .. })
+                    if (strict_upgrade || matches!(v, Validation::ValidRecertified { .. }))
                         && let Err(r) = self.flush()
                     {
                         return r;
@@ -1708,10 +1799,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 rev: e.rev,
                 required: true,
                 via: Via::Head,
-                since_epoch: since
-                    .get(&(e.logical, e.rev))
-                    .copied()
-                    .unwrap_or(snap.epoch),
+                since_epoch: since.get(&(e.logical, e.rev)).copied().unwrap_or(e.epoch),
             })
             .collect();
         let request = match self.issue_request(session, &s, snap.epoch, strict) {
@@ -1802,7 +1890,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let (session, s, agent, _) = bound.clone();
-        let mut response = self.check(bound, cert_id, live, strict, snap);
+        let mut live = live;
+        // A caller cannot replace failed local evidence with a fresh position.
+        for scope in snap
+            .db
+            .inputs()
+            .logicals
+            .iter()
+            .filter(|l| l.kind == RecordKind::CodeAnchor)
+            .map(|l| &l.scope_lane)
+        {
+            live.remove(scope);
+        }
+        live.extend(self.anchor_live(&snap.db));
+        let mut response =
+            match self.proof_check(&bound, cert_id, action.as_ref(), strict, &live, snap) {
+                Some(response) => response,
+                None => self.check(bound, cert_id, live.clone(), strict, snap),
+            };
         let at = unix_now();
         if let Response::Check {
             validation,
@@ -1814,12 +1919,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             {
                 let s = s.lock().expect("session");
-                *updates_pending = update_items(&s, &agent, &snap.db).len() as u32;
+                *updates_pending = update_items(&s, &agent, &snap.db, &live).len() as u32;
                 if !matches!(
                     validation,
                     Validation::Valid | Validation::ValidRecertified { .. }
                 ) {
-                    *named = named_reads(&s, &agent, &snap.db);
+                    *named = named_reads(&s, &agent, &snap.db, &live);
                 }
             }
             if let Some(mode) = mode {
@@ -1870,6 +1975,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         max_items: usize,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
+        let live = self.anchor_live(&snap.db);
         let mut s = s.lock().expect("session");
         if let Some(token) = ack {
             let st = s.agent(&agent);
@@ -1887,7 +1993,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }]);
             }
         }
-        let mut items = update_items(&s, &agent, &snap.db);
+        let mut items = update_items(&s, &agent, &snap.db, &live);
         let max = if max_items == 0 { 50 } else { max_items };
         let more = items.len() > max;
         items.truncate(max);
@@ -2151,10 +2257,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// Advisory SessionStart briefing (ADR 0010 §4.5): adds no ledger entry.
     fn briefing(&self, budget: usize, snap: &Arc<Snapshot<D>>) -> Response {
         let db = &snap.db;
+        let live = self.anchor_live(db);
         let (mut stale, mut pending, mut conflicted) = (0u32, 0u32, 0u32);
         for l in (0..db.logical_count() as u32).map(LogicalId) {
             let Some(r) = db.head(l) else { continue };
-            match db.summary_at(r, &BTreeMap::new()) {
+            match db.summary_at(r, &live) {
                 Ok(Summary::Stale(_)) => stale += 1,
                 Ok(Summary::Pending(_)) => pending += 1,
                 Ok(Summary::Conflicted) => conflicted += 1,
@@ -2176,7 +2283,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     continue;
                 }
                 let Some(r) = db.head(*l) else { continue };
-                let item = self.item(db, *l, r, None);
+                let item = self.item_at(db, *l, r, None, &live);
                 used += item.key.len() + 48;
                 if used > budget {
                     break 'rows;
@@ -2222,6 +2329,7 @@ impl Session {
             agents: BTreeMap::new(),
             known_agents: BTreeSet::new(),
             certs: Vec::new(),
+            proof_history: Vec::new(),
             log_broken: false,
             broken_durable: false,
         }
@@ -2316,13 +2424,18 @@ fn unix_now() -> u64 {
 }
 /// Reads in `agent`'s view that are no longer certified at their logical's
 /// head, with the agent that read each (warn/deny reasons, ADR 0010 §6.1).
-fn named_reads(s: &Session, agent: &Agent, db: &Db) -> Vec<NamedRead> {
+fn named_reads(
+    s: &Session,
+    agent: &Agent,
+    db: &Db,
+    live: &BTreeMap<String, Vec<u8>>,
+) -> Vec<NamedRead> {
     s.view_with_agents(agent)
         .into_values()
         .filter_map(|(who, e)| {
             let current = db.head(e.logical);
             let summary = db
-                .summary_at(current.unwrap_or(e.rev), &BTreeMap::new())
+                .summary_at(current.unwrap_or(e.rev), live)
                 .unwrap_or(Summary::Unavailable);
             if current == Some(e.rev) && summary == Summary::Certified {
                 return None;
@@ -2340,7 +2453,12 @@ fn named_reads(s: &Session, agent: &Agent, db: &Db) -> Vec<NamedRead> {
 /// Entries of `agent`'s view whose head or status changed since they were
 /// last reported to it (ADR 0010 §4.4). A required read was certified at
 /// its revision when it was made.
-fn update_items(s: &Session, agent: &Agent, db: &Db) -> Vec<UpdateItem> {
+fn update_items(
+    s: &Session,
+    agent: &Agent,
+    db: &Db,
+    live: &BTreeMap<String, Vec<u8>>,
+) -> Vec<UpdateItem> {
     let reported = s.agents.get(agent).map(|a| &a.reported);
     let mut items: Vec<UpdateItem> = s
         .view(agent)
@@ -2348,7 +2466,7 @@ fn update_items(s: &Session, agent: &Agent, db: &Db) -> Vec<UpdateItem> {
         .filter_map(|e| {
             let current = db.head(e.logical);
             let summary = db
-                .summary_at(current.unwrap_or(e.rev), &BTreeMap::new())
+                .summary_at(current.unwrap_or(e.rev), live)
                 .unwrap_or(Summary::Unavailable);
             let last = reported
                 .and_then(|r| r.get(&e.logical).cloned())
@@ -2451,6 +2569,7 @@ impl Pending {
                     matches!(
                         e,
                         SessionEvent::Start { .. }
+                            | SessionEvent::RootProof { .. }
                             | SessionEvent::CertIssued { .. }
                             | SessionEvent::SessionCert { .. }
                             | SessionEvent::LogBroken { .. }
@@ -2529,3 +2648,5 @@ fn indexer<D: Durability>(
         let _ = recall.lock().expect("recall").update(epoch, &entries);
     }
 }
+
+include!("anchor_checks.rs");

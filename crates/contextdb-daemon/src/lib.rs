@@ -15,3 +15,6 @@ pub use contextdb_proto::proto;
 pub mod server;
 #[cfg(not(loom))]
 pub mod service;
+
+#[cfg(not(loom))]
+mod anchors;

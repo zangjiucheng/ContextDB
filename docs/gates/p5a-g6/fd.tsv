@@ -1,0 +1,845 @@
+# P5a G6 replay: unlabelled pairs for HUMAN labelling
+# repo_url=https://github.com/sharkdp/fd.git
+# replayed=1000 first=a0505bd4df82dc2203195d4f651a5ab7227987d0 last=cfed17a2bc4a2a27eeb90932b94f4c5680a78741 anchors=20
+# selection: 20 supported regular files at 630749f706957635e982267ed9ef3bb2fc9e5e59 with smallest git hash-object(path)
+# misses: not-fired same-directory changes, 418 of 3253 kept by smallest git hash-object(commit:path)
+# invalidates: y if a decision resting on this file at the parent commit must be re-validated after this commit, n otherwise; leave empty if unsure
+# git_diff_disagreements=0 
+# anchors: .gitignore .snapcraft.yaml build.rs ci/before_deploy.bash ci/before_install.bash ci/script.bash doc/.gitattributes doc/fd.1 doc/screencast.sh doc/screencast.svg src/app.rs src/exec/job.rs src/exec/mod.rs src/exit_codes.rs src/fshelper/mod.rs src/internal/filter/mod.rs src/internal/mod.rs src/internal/opts.rs src/output.rs src/walk.rs
+repo_url	commit	parent	path	observer	added	removed	subject	invalidates	labeler	note
+https://github.com/sharkdp/fd.git	a0505bd4df82dc2203195d4f651a5ab7227987d0	630749f706957635e982267ed9ef3bb2fc9e5e59	src/exec/job.rs	changed	7	2	Expose exit status from `--exec-batch <cmd>`			
+https://github.com/sharkdp/fd.git	a0505bd4df82dc2203195d4f651a5ab7227987d0	630749f706957635e982267ed9ef3bb2fc9e5e59	src/exec/mod.rs	changed	7	3	Expose exit status from `--exec-batch <cmd>`			
+https://github.com/sharkdp/fd.git	a0505bd4df82dc2203195d4f651a5ab7227987d0	630749f706957635e982267ed9ef3bb2fc9e5e59	src/exit_codes.rs	changed	2	0	Expose exit status from `--exec-batch <cmd>`			
+https://github.com/sharkdp/fd.git	a0505bd4df82dc2203195d4f651a5ab7227987d0	630749f706957635e982267ed9ef3bb2fc9e5e59	src/walk.rs	changed	10	4	Expose exit status from `--exec-batch <cmd>`			
+https://github.com/sharkdp/fd.git	24e108e1ad85371759963918b2fe48e3be74f81f	1d16cd855e7f677a9acffd3848e5ba18082c7816	src/app.rs	changed	10	0	Add path-separator option.			
+https://github.com/sharkdp/fd.git	24e108e1ad85371759963918b2fe48e3be74f81f	1d16cd855e7f677a9acffd3848e5ba18082c7816	src/internal/opts.rs	changed	3	0	Add path-separator option.			
+https://github.com/sharkdp/fd.git	24e108e1ad85371759963918b2fe48e3be74f81f	1d16cd855e7f677a9acffd3848e5ba18082c7816	src/output.rs	changed	15	1	Add path-separator option.			
+https://github.com/sharkdp/fd.git	3857fa8f62b115aa8bd9bcab3d01da503b175c82	24e108e1ad85371759963918b2fe48e3be74f81f	src/app.rs	changed	2	1	Amend clap configuration for path-separator.			
+https://github.com/sharkdp/fd.git	29bf9d731dd914782f92dcf1c578cecc99489ebb	3857fa8f62b115aa8bd9bcab3d01da503b175c82	src/app.rs	changed	1	2	Handle any string replacement.			
+https://github.com/sharkdp/fd.git	29bf9d731dd914782f92dcf1c578cecc99489ebb	3857fa8f62b115aa8bd9bcab3d01da503b175c82	src/internal/opts.rs	changed	1	1	Handle any string replacement.			
+https://github.com/sharkdp/fd.git	29bf9d731dd914782f92dcf1c578cecc99489ebb	3857fa8f62b115aa8bd9bcab3d01da503b175c82	src/output.rs	changed	2	8	Handle any string replacement.			
+https://github.com/sharkdp/fd.git	e3af9b0307a2b9c74e266ac8966b7b3f2a4c8b59	29bf9d731dd914782f92dcf1c578cecc99489ebb	src/output.rs	changed	11	8	Factor into a helper function; adapt to print_entry_uncolorized.			
+https://github.com/sharkdp/fd.git	8f86a06c1a4ff59d850a1491d2610c974627ed8b	761c4452636c46e972cc62cd6339d030802e86fa	src/app.rs	changed	2	1	Extend help text			
+https://github.com/sharkdp/fd.git	f14b854bc123c0ae62d0fd2816624114a2753328	8f86a06c1a4ff59d850a1491d2610c974627ed8b	src/output.rs	changed	9	7	Use existing Cow pointer			
+https://github.com/sharkdp/fd.git	2545aaabd2974eb471c5b01f84fc625797298c31	3599a30ee28fcd91ad3eb2f2881bbfc48c93f433	src/walk.rs	changed	6	1	Exit immediately when Ctrl-C has been pressed twice			
+https://github.com/sharkdp/fd.git	641594c2c6339019eeb4ec960466b1be232c3fef	2545aaabd2974eb471c5b01f84fc625797298c31	src/internal/mod.rs	changed	19	1	Use regex::bytes::* instead of regex::*			
+https://github.com/sharkdp/fd.git	641594c2c6339019eeb4ec960466b1be232c3fef	2545aaabd2974eb471c5b01f84fc625797298c31	src/internal/opts.rs	changed	1	1	Use regex::bytes::* instead of regex::*			
+https://github.com/sharkdp/fd.git	641594c2c6339019eeb4ec960466b1be232c3fef	2545aaabd2974eb471c5b01f84fc625797298c31	src/walk.rs	changed	18	13	Use regex::bytes::* instead of regex::*			
+https://github.com/sharkdp/fd.git	d5da615c175daf6bee64ff6649336b65dc8d62f5	641594c2c6339019eeb4ec960466b1be232c3fef	src/app.rs	changed	9	0	Implement glob-based searches			
+https://github.com/sharkdp/fd.git	d5da615c175daf6bee64ff6649336b65dc8d62f5	641594c2c6339019eeb4ec960466b1be232c3fef	src/internal/mod.rs	changed	8	2	Implement glob-based searches			
+https://github.com/sharkdp/fd.git	eac20a813256ecdd387c28d32abee26b5da66c35	d5da615c175daf6bee64ff6649336b65dc8d62f5	src/app.rs	changed	10	1	Add --regex option to override --glob			
+https://github.com/sharkdp/fd.git	08fcd7ce59dffc1e6673cb7872c03224a4f283b9	50fca2dca2c6487424f5e6853be8fae7522f28d1	src/walk.rs	changed	6	8	Make --changed-within/before work for directories			
+https://github.com/sharkdp/fd.git	fe79b8ce0afbf5d1041ce4b503c31381097d5380	25a728529d4a93368d7e5ec1f56a7728fdc0a162	doc/fd.1	changed	6	0	Update man page			
+https://github.com/sharkdp/fd.git	9cc0c8ed57003617ff6c8bb8a30301049b20989b	a991ed4488b5ef77b7d637eca694f32f71e0807b	build.rs	changed	1	1	Fix build script after update			
+https://github.com/sharkdp/fd.git	33f385692d9083c27b8354ddfe823d812f78ff97	b027b2c32285253b5866f934acc66fcd695ea649	src/app.rs	changed	1	1	Add `-u` alias to long --help only			
+https://github.com/sharkdp/fd.git	59c27baf0f1ed8ac441d316946ef37d28b23281b	33f385692d9083c27b8354ddfe823d812f78ff97	doc/fd.1	changed	3	0	Expand help for `-u`, add to manpage			
+https://github.com/sharkdp/fd.git	59c27baf0f1ed8ac441d316946ef37d28b23281b	33f385692d9083c27b8354ddfe823d812f78ff97	src/app.rs	changed	3	2	Expand help for `-u`, add to manpage			
+https://github.com/sharkdp/fd.git	d48aeda6b2ba1af019e66b182ca45a59047b33c0	59c27baf0f1ed8ac441d316946ef37d28b23281b	src/walk.rs	changed	1	6	Apply clippy suggestions			
+https://github.com/sharkdp/fd.git	266499800b7ae3a29a9ccef4ba24fe195763a3e2	94916709743ab7e06756f9cdd7a3ed24ea5c29df	src/app.rs	changed	21	13	Fix idempotent flags			
+https://github.com/sharkdp/fd.git	a6ed0fc5ef53082956dac7e7def8443fb3cab7f7	266499800b7ae3a29a9ccef4ba24fe195763a3e2	src/app.rs	changed	37	7	Fix CI error			
+https://github.com/sharkdp/fd.git	c60cf9c1a818b404ba31776806ebc8790172164c	c14a00436704097f5e3effab1c5084c60944d011	doc/fd.1	changed	4	0	Update man page			
+https://github.com/sharkdp/fd.git	0895027ed6e40cc02418a691f0d078602f8fe6f5	c60cf9c1a818b404ba31776806ebc8790172164c	doc/fd.1	changed	9	3	Add 'glob' syntax link as well			
+https://github.com/sharkdp/fd.git	32fdbb1eae5200b028d12c37e298c13f08ce4454	19e5d6e36e07fbe9c14736de9fb78cd53a9abd86	src/app.rs	changed	2	2	Fixed typos, occurence to occurrence, seach to search			
+https://github.com/sharkdp/fd.git	fb205f505766a615d356d33fc77c6b9de8559731	32fdbb1eae5200b028d12c37e298c13f08ce4454	src/app.rs	changed	13	0	Allow changing current working directory of fd			
+https://github.com/sharkdp/fd.git	762f551ff481875d0a5240dc374636e2e926772e	fb205f505766a615d356d33fc77c6b9de8559731	src/app.rs	changed	4	3	Update --help text			
+https://github.com/sharkdp/fd.git	0f27485faf89064581aede41369d48faf872451a	762f551ff481875d0a5240dc374636e2e926772e	src/walk.rs	changed	6	4	Quit immediately if the channel::send call failed			
+https://github.com/sharkdp/fd.git	8796de57b592ee90c687847a064be4fadd427e6c	0f27485faf89064581aede41369d48faf872451a	src/app.rs	changed	6	0	Add same file system functionality			
+https://github.com/sharkdp/fd.git	8796de57b592ee90c687847a064be4fadd427e6c	0f27485faf89064581aede41369d48faf872451a	src/internal/opts.rs	changed	3	0	Add same file system functionality			
+https://github.com/sharkdp/fd.git	8796de57b592ee90c687847a064be4fadd427e6c	0f27485faf89064581aede41369d48faf872451a	src/walk.rs	changed	2	0	Add same file system functionality			
+https://github.com/sharkdp/fd.git	94993ca6c2af04df8861dee7d85b438f8e812327	3e0325cc601c5974febc2355d024c700d780b959	src/app.rs	changed	2	2	Rename `--same-file-system` to `--one-file-system`			
+https://github.com/sharkdp/fd.git	94993ca6c2af04df8861dee7d85b438f8e812327	3e0325cc601c5974febc2355d024c700d780b959	src/internal/opts.rs	changed	1	1	Rename `--same-file-system` to `--one-file-system`			
+https://github.com/sharkdp/fd.git	94993ca6c2af04df8861dee7d85b438f8e812327	3e0325cc601c5974febc2355d024c700d780b959	src/walk.rs	changed	1	1	Rename `--same-file-system` to `--one-file-system`			
+https://github.com/sharkdp/fd.git	dea1fbe72267eb58ad9f7e40d99dbf9159b1c65f	94993ca6c2af04df8861dee7d85b438f8e812327	src/app.rs	changed	20	8	Restrict `--one-file-system` to supported systems			
+https://github.com/sharkdp/fd.git	dea1fbe72267eb58ad9f7e40d99dbf9159b1c65f	94993ca6c2af04df8861dee7d85b438f8e812327	src/walk.rs	changed	2	2	Restrict `--one-file-system` to supported systems			
+https://github.com/sharkdp/fd.git	6f7d10870ca3834c7d15202d96b10575915964a2	dea1fbe72267eb58ad9f7e40d99dbf9159b1c65f	src/app.rs	changed	6	1	Add aliases for `--one-file-system`			
+https://github.com/sharkdp/fd.git	ed6c184020c43082e4ac9433e4f3141d6eadc06b	6f7d10870ca3834c7d15202d96b10575915964a2	src/app.rs	changed	2	2	Shorten `cfg!()` checks			
+https://github.com/sharkdp/fd.git	cd2dc5714ede67e34b0b7e8f4edf61671b70eb54	2828d90f9984b2fe470e6d6650d52523f5848122	src/app.rs	changed	1	1	Compare `--one-file-system` to find's -mount/-xdev			
+https://github.com/sharkdp/fd.git	a9c7696ecc09e3f0cf00b95d3acc9416c67df0f3	9a34ba6a0c5e5890208f54dd7f51c42ff8c3def0	src/app.rs	changed	5	6	Small stylistic change			
+https://github.com/sharkdp/fd.git	c001dd47a754c3edd1b7f84061950f31a24ac148	a9c7696ecc09e3f0cf00b95d3acc9416c67df0f3	src/app.rs	changed	2	1	Hide --one-file-system from the short help text			
+https://github.com/sharkdp/fd.git	f7d19385569a7719d2b89bca3736c8eda400584a	328c6640be2ed3ba7adc800065b6cf2703dcd693	src/walk.rs	changed	1	2	Formatting			
+https://github.com/sharkdp/fd.git	320d7fca0a91f106094fbb304890611d34e470c7	f7d19385569a7719d2b89bca3736c8eda400584a	src/exec/mod.rs	changed	4	2	Sort search results when using -X option			
+https://github.com/sharkdp/fd.git	b63e43b40fb5f0e6e87d1d404050282f15814921	56289041a68b497eba31f193f05dea420c31d8a8	.snapcraft.yaml	broken	0	29	Remove .snapcraft.yaml. This never worked.			
+https://github.com/sharkdp/fd.git	2f18903b293eaee4060a0589fa35ee03fb90bf86	b63e43b40fb5f0e6e87d1d404050282f15814921	src/app.rs	changed	1	1	Fix zsh autocompletion problem, closes #487			
+https://github.com/sharkdp/fd.git	fa7d49282bf2d7b893c5dfe296893f7fc8507a58	2f18903b293eaee4060a0589fa35ee03fb90bf86	src/exec/mod.rs	changed	2	2	Restun exit code for generate_and_execute?			
+https://github.com/sharkdp/fd.git	7213f5a88ecf860e0a08d34f8869a1fa6e99a346	fa7d49282bf2d7b893c5dfe296893f7fc8507a58	src/exec/job.rs	changed	7	4	Add collection of job & thread exit codes + default to ExitCode::Error if any ExitCode::Error			
+https://github.com/sharkdp/fd.git	7213f5a88ecf860e0a08d34f8869a1fa6e99a346	fa7d49282bf2d7b893c5dfe296893f7fc8507a58	src/exit_codes.rs	changed	15	3	Add collection of job & thread exit codes + default to ExitCode::Error if any ExitCode::Error			
+https://github.com/sharkdp/fd.git	7213f5a88ecf860e0a08d34f8869a1fa6e99a346	fa7d49282bf2d7b893c5dfe296893f7fc8507a58	src/walk.rs	changed	3	2	Add collection of job & thread exit codes + default to ExitCode::Error if any ExitCode::Error			
+https://github.com/sharkdp/fd.git	e46998278ada8d8c8ef82d4cdf793874dfc8d4dc	7213f5a88ecf860e0a08d34f8869a1fa6e99a346	src/exec/job.rs	changed	1	1	Fix typo in a job.rs comment			
+https://github.com/sharkdp/fd.git	b23cfc383f8ce3fe4f0ed0023c01ce4731569833	e46998278ada8d8c8ef82d4cdf793874dfc8d4dc	src/exit_codes.rs	changed	6	6	Switch back from Self to ExitCode			
+https://github.com/sharkdp/fd.git	a5fe138a2506c4fc11367160ea8abc09d466691a	b23cfc383f8ce3fe4f0ed0023c01ce4731569833	src/exit_codes.rs	changed	8	4	Extract ExitCode::is_error helper			
+https://github.com/sharkdp/fd.git	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	a5fe138a2506c4fc11367160ea8abc09d466691a	src/exec/job.rs	changed	2	2	Extract error_if_any_error as free function			
+https://github.com/sharkdp/fd.git	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	a5fe138a2506c4fc11367160ea8abc09d466691a	src/exit_codes.rs	changed	7	7	Extract error_if_any_error as free function			
+https://github.com/sharkdp/fd.git	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	a5fe138a2506c4fc11367160ea8abc09d466691a	src/walk.rs	changed	2	2	Extract error_if_any_error as free function			
+https://github.com/sharkdp/fd.git	232e3937f291dd3376a2391839a54cf11e484642	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	src/exec/job.rs	changed	2	2	Rename error_if_any_error to merge_exitcodes			
+https://github.com/sharkdp/fd.git	232e3937f291dd3376a2391839a54cf11e484642	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	src/exit_codes.rs	changed	1	1	Rename error_if_any_error to merge_exitcodes			
+https://github.com/sharkdp/fd.git	232e3937f291dd3376a2391839a54cf11e484642	e23398e6d04585290a8b57c2b0ebfc3072a6fadb	src/walk.rs	changed	2	2	Rename error_if_any_error to merge_exitcodes			
+https://github.com/sharkdp/fd.git	0f2429cabcb591df74fc2ab3e32b3ac967264f6d	232e3937f291dd3376a2391839a54cf11e484642	src/exec/job.rs	changed	1	1	Add unit tests for merge_exitcodes			
+https://github.com/sharkdp/fd.git	0f2429cabcb591df74fc2ab3e32b3ac967264f6d	232e3937f291dd3376a2391839a54cf11e484642	src/exit_codes.rs	changed	28	0	Add unit tests for merge_exitcodes			
+https://github.com/sharkdp/fd.git	0f2429cabcb591df74fc2ab3e32b3ac967264f6d	232e3937f291dd3376a2391839a54cf11e484642	src/walk.rs	changed	1	1	Add unit tests for merge_exitcodes			
+https://github.com/sharkdp/fd.git	9d73402ef2a62f41d94838fc77e8e01a66047f13	06434f229b5edd156c127e072a3db88a6aa6443c	src/walk.rs	changed	39	3	walk: catch ignore NotFound error in the case of a broken symlink			
+https://github.com/sharkdp/fd.git	8cea65c1b85c2ab17b8091d017c6ca15d3d6632d	9d73402ef2a62f41d94838fc77e8e01a66047f13	src/walk.rs	changed	4	8	Simplify match statement			
+https://github.com/sharkdp/fd.git	82e6562cfc5f964668cbce764db20518d3a6131f	8cea65c1b85c2ab17b8091d017c6ca15d3d6632d	src/walk.rs	changed	5	6	Further simplify the code			
+https://github.com/sharkdp/fd.git	d6034119ae540dd062f36eeea0cd1ac0bf6a0cd8	82e6562cfc5f964668cbce764db20518d3a6131f	src/walk.rs	changed	1	0	Add comment for broken symlinks			
+https://github.com/sharkdp/fd.git	bfc8c42444725793ebb313b3003a090a619028fb	918dfc6ef0d772ef1d9987d70774e1b358b53c88	src/walk.rs	changed	3	35	Revert back to master state			
+https://github.com/sharkdp/fd.git	bbf0f1cc1f2531ea042aeae6806ce38d26125499	bfc8c42444725793ebb313b3003a090a619028fb	src/fshelper/mod.rs	changed	2	2	New implementation of broken-symlink handling			
+https://github.com/sharkdp/fd.git	bbf0f1cc1f2531ea042aeae6806ce38d26125499	bfc8c42444725793ebb313b3003a090a619028fb	src/walk.rs	changed	54	6	New implementation of broken-symlink handling			
+https://github.com/sharkdp/fd.git	81dee25438a4fc40e69f610e760d7a2aab117de6	bbf0f1cc1f2531ea042aeae6806ce38d26125499	src/walk.rs	changed	6	1	Add additional check for symlink			
+https://github.com/sharkdp/fd.git	d05e7171d4e2f8feb7d5402026b02aa67a9f9b91	81dee25438a4fc40e69f610e760d7a2aab117de6	src/walk.rs	changed	2	1	Fix for older versions of Rust			
+https://github.com/sharkdp/fd.git	cab4981b11fe8a4a16e0e3596f2b8986a2b87d35	104600e64207c5ea56c8b6f2f3f5a1a5175d402a	doc/fd.1	changed	3	0	Add --one-file-system and aliases to man page (#548)			
+https://github.com/sharkdp/fd.git	44605d55dd2edd8d3563504587ed81c45ebc2c82	e5e14f31c45ea74dea4ad5e6ec06346f3ad5cd88	src/walk.rs	changed	2	4	Use .to_string() instead of .description()			
+https://github.com/sharkdp/fd.git	dd07bc9ef1f721ab6c5a1b3611b6ac19402361e2	2340bab32afe9c9540b0f79b86f0bc5d0e3c42db	build.rs	changed	2	2	Bump min. required Rust version to 1.36			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	doc/fd.1	changed	3	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	src/app.rs	changed	11	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	src/internal/opts.rs	changed	3	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	src/walk.rs	changed	10	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	1714d416e232b99ce2a9480818811d816aeaf68a	doc/fd.1	changed	6	0	Add `-l`/`--list` option			
+https://github.com/sharkdp/fd.git	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	1714d416e232b99ce2a9480818811d816aeaf68a	src/app.rs	changed	17	3	Add `-l`/`--list` option			
+https://github.com/sharkdp/fd.git	c9dc61771149704bf8b0f5dbe9245e8b2f7a3390	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	doc/fd.1	changed	1	1	Rename --list to --list-details			
+https://github.com/sharkdp/fd.git	c9dc61771149704bf8b0f5dbe9245e8b2f7a3390	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	src/app.rs	changed	7	7	Rename --list to --list-details			
+https://github.com/sharkdp/fd.git	33df48ebe466d8184351a65c82e8477c4e4ef5bb	c9dc61771149704bf8b0f5dbe9245e8b2f7a3390	doc/fd.1	changed	2	2	Remove claim about unique search results			
+https://github.com/sharkdp/fd.git	33df48ebe466d8184351a65c82e8477c4e4ef5bb	c9dc61771149704bf8b0f5dbe9245e8b2f7a3390	src/app.rs	changed	2	2	Remove claim about unique search results			
+https://github.com/sharkdp/fd.git	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	33df48ebe466d8184351a65c82e8477c4e4ef5bb	src/walk.rs	changed	2	2	Solve clippy issues			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	build.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/app.rs	changed	0	7	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/exec/job.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/exec/mod.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/fshelper/mod.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/internal/mod.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/output.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	4274075f6f4976329e42f8a63f17effc8a37e5c6	b9d0e72f701f5e1bf701292cbe6064ddc6b4aaa0	src/walk.rs	changed	0	8	Remove outdated license headers (not strictly required by Apache-2.0)			
+https://github.com/sharkdp/fd.git	e42ddda5a6d46af8556c2f22711e9bd1d820d223	289d6443a774847769defddf6c89847245540e53	src/exec/job.rs	changed	1	1	Clean up exit code handling			
+https://github.com/sharkdp/fd.git	e42ddda5a6d46af8556c2f22711e9bd1d820d223	289d6443a774847769defddf6c89847245540e53	src/exit_codes.rs	changed	26	13	Clean up exit code handling			
+https://github.com/sharkdp/fd.git	e42ddda5a6d46af8556c2f22711e9bd1d820d223	289d6443a774847769defddf6c89847245540e53	src/walk.rs	changed	1	1	Clean up exit code handling			
+https://github.com/sharkdp/fd.git	e2a7d3446b2aa7e77e53c4da5bbc86ff8801beb9	e42ddda5a6d46af8556c2f22711e9bd1d820d223	src/app.rs	changed	301	293	Inline the help texts			
+https://github.com/sharkdp/fd.git	938dafda284bd2225c3388218ddc4eb843fa7e35	e2a7d3446b2aa7e77e53c4da5bbc86ff8801beb9	src/app.rs	changed	0	8	Clean up unused help texts			
+https://github.com/sharkdp/fd.git	2cfb1a2bb2ba521f5ecc71ddf4ee5f662e8a7332	938dafda284bd2225c3388218ddc4eb843fa7e35	src/app.rs	changed	1	1	Adapt --list-details help message			
+https://github.com/sharkdp/fd.git	5c27ab1a06c0fddb576b90c1cec44f53208860dc	2cfb1a2bb2ba521f5ecc71ddf4ee5f662e8a7332	src/internal/mod.rs	changed	0	3	Move filetypes up from 'internal'			
+https://github.com/sharkdp/fd.git	5c27ab1a06c0fddb576b90c1cec44f53208860dc	2cfb1a2bb2ba521f5ecc71ddf4ee5f662e8a7332	src/internal/opts.rs	changed	2	4	Move filetypes up from 'internal'			
+https://github.com/sharkdp/fd.git	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	5c27ab1a06c0fddb576b90c1cec44f53208860dc	src/internal/filter/mod.rs	broken	0	5	Move filter up from internal			
+https://github.com/sharkdp/fd.git	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	5c27ab1a06c0fddb576b90c1cec44f53208860dc	src/internal/mod.rs	changed	0	1	Move filter up from internal			
+https://github.com/sharkdp/fd.git	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	5c27ab1a06c0fddb576b90c1cec44f53208860dc	src/internal/opts.rs	changed	1	1	Move filter up from internal			
+https://github.com/sharkdp/fd.git	65096a653ea85ae9cf28620876f6ac549605dc24	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	src/internal/mod.rs	changed	0	2	Move FdOptions to Options			
+https://github.com/sharkdp/fd.git	65096a653ea85ae9cf28620876f6ac549605dc24	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	src/internal/opts.rs	broken	0	85	Move FdOptions to Options			
+https://github.com/sharkdp/fd.git	65096a653ea85ae9cf28620876f6ac549605dc24	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	src/output.rs	changed	5	5	Move FdOptions to Options			
+https://github.com/sharkdp/fd.git	65096a653ea85ae9cf28620876f6ac549605dc24	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	src/walk.rs	changed	5	4	Move FdOptions to Options			
+https://github.com/sharkdp/fd.git	a3060f952edc6347a1da8e2dff6d0fab2725f494	65096a653ea85ae9cf28620876f6ac549605dc24	src/internal/mod.rs	changed	0	11	Move error macros to error.rs			
+https://github.com/sharkdp/fd.git	809fd8fb78f9633a22f66633c28bd13f3c56a785	a3060f952edc6347a1da8e2dff6d0fab2725f494	src/internal/mod.rs	changed	0	36	Move regex helpers to new module			
+https://github.com/sharkdp/fd.git	c79d1638f5caa5f9554c971168737ea2305ff33c	9ef9bf7b80aac54fe6767255a7b39ba6e673d4d9	src/internal/mod.rs	changed	0	3	Move MAX_BUFFER_LENGTH			
+https://github.com/sharkdp/fd.git	c79d1638f5caa5f9554c971168737ea2305ff33c	9ef9bf7b80aac54fe6767255a7b39ba6e673d4d9	src/walk.rs	changed	4	1	Move MAX_BUFFER_LENGTH			
+https://github.com/sharkdp/fd.git	342d12db3ff317f22347d4d8edb349d39e269194	c79d1638f5caa5f9554c971168737ea2305ff33c	src/internal/mod.rs	changed	1	116	Remove possibility to use '--exec <cmd>' with a single dash			
+https://github.com/sharkdp/fd.git	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	342d12db3ff317f22347d4d8edb349d39e269194	src/fshelper/mod.rs	changed	18	0	Remove 'internal' module			
+https://github.com/sharkdp/fd.git	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	342d12db3ff317f22347d4d8edb349d39e269194	src/internal/mod.rs	broken	0	18	Remove 'internal' module			
+https://github.com/sharkdp/fd.git	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	342d12db3ff317f22347d4d8edb349d39e269194	src/walk.rs	changed	2	3	Remove 'internal' module			
+https://github.com/sharkdp/fd.git	b415d7234b29a635f1989bdd6d51132ac4844559	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	src/fshelper/mod.rs	broken	0	84	Rename fshelper to filesystem			
+https://github.com/sharkdp/fd.git	b415d7234b29a635f1989bdd6d51132ac4844559	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	src/walk.rs	changed	6	6	Rename fshelper to filesystem			
+https://github.com/sharkdp/fd.git	556c40e1f41ae83131861b45b137fcfd025bb6d9	b415d7234b29a635f1989bdd6d51132ac4844559	src/output.rs	changed	5	14	Move strip_current_dir			
+https://github.com/sharkdp/fd.git	bce95274e34f88ca5a861aac1d9e2d407f864fcf	af9d8082a1be2a560c3a85ca8c7b71828ccdf31b	src/exec/mod.rs	changed	6	3	Proper error handling in main.rs			
+https://github.com/sharkdp/fd.git	4590ae8535c70632e2f5e77eb95ef9ff18e63088	bce95274e34f88ca5a861aac1d9e2d407f864fcf	src/exec/job.rs	changed	8	5	Proper error handling within walk.rs			
+https://github.com/sharkdp/fd.git	4590ae8535c70632e2f5e77eb95ef9ff18e63088	bce95274e34f88ca5a861aac1d9e2d407f864fcf	src/walk.rs	changed	24	29	Proper error handling within walk.rs			
+https://github.com/sharkdp/fd.git	f9372b55d55b0d998586eb3d81702e30c7c74440	4590ae8535c70632e2f5e77eb95ef9ff18e63088	src/exec/mod.rs	changed	0	1	Remove irrelevant TODO			
+https://github.com/sharkdp/fd.git	53557ef471f009c56d6dfe04666a10f4f094a505	f9372b55d55b0d998586eb3d81702e30c7c74440	build.rs	changed	2	1	Clean up include order			
+https://github.com/sharkdp/fd.git	4815ee416ee4c5708170f673b37b3211ee9b5f68	53557ef471f009c56d6dfe04666a10f4f094a505	src/walk.rs	changed	3	3	Remove process::exit instance			
+https://github.com/sharkdp/fd.git	a85f33cf98d8f0c773eed0f05a39a0e35813acac	4815ee416ee4c5708170f673b37b3211ee9b5f68	build.rs	changed	5	5	Clean up build.rs			
+https://github.com/sharkdp/fd.git	2ea77e7cdc8e11c467b83aa88db8bc8af462e276	a85f33cf98d8f0c773eed0f05a39a0e35813acac	src/output.rs	changed	7	13	Add TODOs, move function			
+https://github.com/sharkdp/fd.git	e44f2f854084c1e69f334ce1a99188f8b960ed4f	2ea77e7cdc8e11c467b83aa88db8bc8af462e276	src/output.rs	changed	8	4	Rewrite replace_path_separator function			
+https://github.com/sharkdp/fd.git	ed45d1c5afa00a9e09d08f678ae12f75f8dae242	e44f2f854084c1e69f334ce1a99188f8b960ed4f	src/exec/mod.rs	changed	12	17	Remove duplicate 'strip prefix' function			
+https://github.com/sharkdp/fd.git	439548c25ade41299de99672a69e774f0700db54	ed45d1c5afa00a9e09d08f678ae12f75f8dae242	src/exec/mod.rs	changed	1	1	panic => unreachable			
+https://github.com/sharkdp/fd.git	7e3c69c0968a5bccc312e2871bd60c784f4c02db	439548c25ade41299de99672a69e774f0700db54	src/exec/mod.rs	changed	18	18	Reimplement dirname, basename, remove_extension for OsStr			
+https://github.com/sharkdp/fd.git	6c9e743d43ff2daff39aeab0796ae713bb544263	ea21df3f765daebe363ae4260daabdedc9287bb5	src/output.rs	changed	34	2	Print path as raw bytes, allowing invalid UTF-8 filenames to be passed to other processes			
+https://github.com/sharkdp/fd.git	2bab4a22494e3f10da0b708da7a1eebaa483b727	95eae0012663d6dd13fbfaa679707f5b4a6db826	doc/fd.1	changed	3	0	Add alias -1 for --max-results=1			
+https://github.com/sharkdp/fd.git	2bab4a22494e3f10da0b708da7a1eebaa483b727	95eae0012663d6dd13fbfaa679707f5b4a6db826	src/app.rs	changed	9	0	Add alias -1 for --max-results=1			
+https://github.com/sharkdp/fd.git	d63c63be8cf8b6ecf75c1b5b8a2033ec7bb899f9	47974b64795996dfe0adc06dadfe791efca25416	doc/fd.1	changed	6	0	Add --min-depth and --exact-depth			
+https://github.com/sharkdp/fd.git	d63c63be8cf8b6ecf75c1b5b8a2033ec7bb899f9	47974b64795996dfe0adc06dadfe791efca25416	src/app.rs	changed	25	1	Add --min-depth and --exact-depth			
+https://github.com/sharkdp/fd.git	d63c63be8cf8b6ecf75c1b5b8a2033ec7bb899f9	47974b64795996dfe0adc06dadfe791efca25416	src/walk.rs	changed	13	0	Add --min-depth and --exact-depth			
+https://github.com/sharkdp/fd.git	cb56add1d876e7ed5cdbacb49b4318e4a5c807d0	4287cddc00741c077e45325e489231d5b8b18058	doc/fd.1	changed	4	0	Add new `--type socket` and `--type pipe` filters			
+https://github.com/sharkdp/fd.git	cb56add1d876e7ed5cdbacb49b4318e4a5c807d0	4287cddc00741c077e45325e489231d5b8b18058	src/app.rs	changed	8	2	Add new `--type socket` and `--type pipe` filters			
+https://github.com/sharkdp/fd.git	cb56add1d876e7ed5cdbacb49b4318e4a5c807d0	4287cddc00741c077e45325e489231d5b8b18058	src/walk.rs	changed	7	1	Add new `--type socket` and `--type pipe` filters			
+https://github.com/sharkdp/fd.git	1a96544b29d6beaed780ef5571b9458653e98475	ee1a9f567f30a9b514ea73a80f845843b4a80008	src/app.rs	changed	2	2	Remove two options from short -h help text			
+https://github.com/sharkdp/fd.git	0335cc362b2c830c24b957504a7cb1f7cd623a44	a06efe141824ee1a1cf74e9b78169691168371cf	src/app.rs	changed	7	2	Do not allow list-details in combination with -1			
+https://github.com/sharkdp/fd.git	4f4330167a875fdba7775542dc2898855b558668	f31fb9bf68b0f4fb678bbea63d62fa4cac303995	src/exec/mod.rs	changed	1	1	Fix some clippy lints, and format			
+https://github.com/sharkdp/fd.git	4f4330167a875fdba7775542dc2898855b558668	f31fb9bf68b0f4fb678bbea63d62fa4cac303995	src/output.rs	changed	1	1	Fix some clippy lints, and format			
+https://github.com/sharkdp/fd.git	4f9a02400aee49b632fedb0c5500993cd4e1138e	30cb4adc6152379fbac15854f1d42ac028c23d58	src/app.rs	changed	9	0	[ownership] add --owner arg parsing and storage			
+https://github.com/sharkdp/fd.git	d7cc34e36f945bc7d47c5254a933881e1de39e63	4f9a02400aee49b632fedb0c5500993cd4e1138e	src/walk.rs	changed	13	0	[ownership] depend on users 0.10.0 on unix; parse user and group names			
+https://github.com/sharkdp/fd.git	6a68ac8c27ba6d67f1429cc65fded3fa61564900	09cdf9831d1e2e514a9bf33e80cbda94b586b37b	src/app.rs	changed	12	1	[ownership] add help text for --owner			
+https://github.com/sharkdp/fd.git	a9dc45ecb1e2245578ec7a748db8777a19784781	1a16003cca821f577f783656c048b23ca9e0b039	doc/fd.1	changed	9	0	[ownership] document --owner in manpage and changelog			
+https://github.com/sharkdp/fd.git	79d5a5bdc532b4988a180431ef545e10f7598446	a9dc45ecb1e2245578ec7a748db8777a19784781	doc/fd.1	changed	11	4	Add global fdignore support			
+https://github.com/sharkdp/fd.git	79d5a5bdc532b4988a180431ef545e10f7598446	a9dc45ecb1e2245578ec7a748db8777a19784781	src/app.rs	changed	7	1	Add global fdignore support			
+https://github.com/sharkdp/fd.git	79d5a5bdc532b4988a180431ef545e10f7598446	a9dc45ecb1e2245578ec7a748db8777a19784781	src/walk.rs	changed	29	0	Add global fdignore support			
+https://github.com/sharkdp/fd.git	3283a7b345fdd350f41a346cbb49a52e0081d2ec	4cafb289515b96d402653a6acf886a40481dfe55	src/walk.rs	changed	1	2	Fix warning			
+https://github.com/sharkdp/fd.git	e3c77ef7f55a974ae529e6a4344a0b9503058921	c0592e276eaad85bfc04d692447fde90db63a0bb	doc/fd.1	changed	2	2	Update --size documentation			
+https://github.com/sharkdp/fd.git	e3c77ef7f55a974ae529e6a4344a0b9503058921	c0592e276eaad85bfc04d692447fde90db63a0bb	src/app.rs	changed	9	9	Update --size documentation			
+https://github.com/sharkdp/fd.git	c8746f621608662f113a7ce379964d9491331257	c761d51dfbed7e60ace843d37b6e735bbbedba7c	ci/script.bash	changed	1	1	Use macOS 10.15.4 (Catalina) for Travis build			
+https://github.com/sharkdp/fd.git	1d1eefdb7be684550d17cd550f149339cc9c2c2b	c8746f621608662f113a7ce379964d9491331257	ci/script.bash	changed	1	1	Disable jemalloc on macOS			
+https://github.com/sharkdp/fd.git	74c3431a2bf74ce78c26974f3cc07570e1d3baf3	1b4e1e9c1a3dfd7ecacfdd2d3cdb75326a14ff99	src/app.rs	changed	2	0	improve time option usage (#645)			
+https://github.com/sharkdp/fd.git	ef1bfc750862b751de1e235a5bf7e112c5378187	a38da63a345da0c19c8be62072759cd8a5f24df0	build.rs	changed	0	1	Add native Zsh completion			
+https://github.com/sharkdp/fd.git	ef1bfc750862b751de1e235a5bf7e112c5378187	a38da63a345da0c19c8be62072759cd8a5f24df0	ci/before_deploy.bash	changed	2	2	Add native Zsh completion			
+https://github.com/sharkdp/fd.git	99934ab98ce1247b789956eb969ff437ae553da7	633d486ac1d7a305a434e94ab0ef03d8a54c4d54	doc/fd.1	changed	14	0	add --base-directory, --path-separator, and --search-path to the man page			
+https://github.com/sharkdp/fd.git	99934ab98ce1247b789956eb969ff437ae553da7	633d486ac1d7a305a434e94ab0ef03d8a54c4d54	src/app.rs	changed	1	1	add --base-directory, --path-separator, and --search-path to the man page			
+https://github.com/sharkdp/fd.git	e852009876da66efd68cef92e820dc63dac3ed60	99934ab98ce1247b789956eb969ff437ae553da7	doc/fd.1	changed	3	0	Add NO_COLOR to the man page			
+https://github.com/sharkdp/fd.git	fd1ddc9d08010dfcba5b979963891a8f5f568fbf	e852009876da66efd68cef92e820dc63dac3ed60	src/walk.rs	changed	2	2	Change dependency dirs to dirs-next			
+https://github.com/sharkdp/fd.git	ec4cc981fcf47dbf5eb654ece3950543605ef383	06eb231fbd6481956fea95800f04169d119c802c	doc/fd.1	changed	3	0	Add --prune flag			
+https://github.com/sharkdp/fd.git	ec4cc981fcf47dbf5eb654ece3950543605ef383	06eb231fbd6481956fea95800f04169d119c802c	src/app.rs	changed	7	0	Add --prune flag			
+https://github.com/sharkdp/fd.git	ec4cc981fcf47dbf5eb654ece3950543605ef383	06eb231fbd6481956fea95800f04169d119c802c	src/walk.rs	changed	5	0	Add --prune flag			
+https://github.com/sharkdp/fd.git	b2fa188029eb9d1450ab83053700995fc938d160	e0adb45d082d8318ab284e208d59b8e3b53fc2d8	src/walk.rs	changed	18	10	Avoid panic when sending errors after receiver shutdown			
+https://github.com/sharkdp/fd.git	24402dda7ce50f140d19dea69209cda4e41ed88e	4f8697c40739f1d7388fc54145e42fecebddf8ae	doc/fd.1	changed	2	4	Remove .UE and .UR to fix url display on macos			
+https://github.com/sharkdp/fd.git	2338b3bc81a1fbcc7caaba836a2d3fdd4b3c6b9a	9412648ee92cdc3295070f5b410d3a3407ecd0e2	doc/fd.1	changed	1	1	Fix typo in fd.1			
+https://github.com/sharkdp/fd.git	e97a1e90cb0ff2fddafda3df7470a6be58ebae6e	2338b3bc81a1fbcc7caaba836a2d3fdd4b3c6b9a	doc/fd.1	changed	2	0	Add exact size support to the --size filter (#669)			
+https://github.com/sharkdp/fd.git	e97a1e90cb0ff2fddafda3df7470a6be58ebae6e	2338b3bc81a1fbcc7caaba836a2d3fdd4b3c6b9a	src/app.rs	changed	2	1	Add exact size support to the --size filter (#669)			
+https://github.com/sharkdp/fd.git	2cd3de8b94726b69203a1dbcbcb96205c5db9ee8	6830b3dee950b9c11e66f9fba5f8090f3f0deb0d	src/app.rs	changed	8	1	Use NO_COLOR env variable check also for help screen			
+https://github.com/sharkdp/fd.git	441a235a0fa9e0dd23a4413cad27c750e75f5f8c	2cd3de8b94726b69203a1dbcbcb96205c5db9ee8	src/output.rs	changed	0	1	Simplify code a bit (suggestions by clippy)			
+https://github.com/sharkdp/fd.git	ea48a969455967c2fe9a1134b4d45171cb94940b	f2fec4509934504e194a605c5582f3920e6f99c7	src/app.rs	changed	5	6	Run cargo fmt			
+https://github.com/sharkdp/fd.git	296300ce46744f0b21527c0316da3e38812f5d18	ea48a969455967c2fe9a1134b4d45171cb94940b	build.rs	changed	1	1	Fix clippy suggestions			
+https://github.com/sharkdp/fd.git	d205a7ff9e40430458348b0408bb4e529eb8b280	296300ce46744f0b21527c0316da3e38812f5d18	doc/fd.1	changed	3	0	Improve --exclude help text, closes #661			
+https://github.com/sharkdp/fd.git	d205a7ff9e40430458348b0408bb4e529eb8b280	296300ce46744f0b21527c0316da3e38812f5d18	src/app.rs	changed	4	1	Improve --exclude help text, closes #661			
+https://github.com/sharkdp/fd.git	d2659de7820b337c4cd82a06cba5277d346a02e8	d205a7ff9e40430458348b0408bb4e529eb8b280	doc/fd.1	changed	3	0	Improve --extension help text, closes #673			
+https://github.com/sharkdp/fd.git	d2659de7820b337c4cd82a06cba5277d346a02e8	d205a7ff9e40430458348b0408bb4e529eb8b280	src/app.rs	changed	3	1	Improve --extension help text, closes #673			
+https://github.com/sharkdp/fd.git	ecfd8cea410b4c989e85c8e3561d944916415b85	d2659de7820b337c4cd82a06cba5277d346a02e8	src/app.rs	changed	6	2	Update --help text regarding pattern, closes #684			
+https://github.com/sharkdp/fd.git	17bd256ae6e4a8322552024e7d70644927912650	ecfd8cea410b4c989e85c8e3561d944916415b85	doc/fd.1	changed	2	1	Improve --fixed-strings help text, closes #627			
+https://github.com/sharkdp/fd.git	17bd256ae6e4a8322552024e7d70644927912650	ecfd8cea410b4c989e85c8e3561d944916415b85	src/app.rs	changed	3	1	Improve --fixed-strings help text, closes #627			
+https://github.com/sharkdp/fd.git	9bc20e38b169e880eeeb6fba59c31cd201cf4081	6a3aae52fdc60c6bc4b08d4122c7d91b2578c648	doc/fd.1	changed	1	1	fixed: typographic error in help			
+https://github.com/sharkdp/fd.git	b928af7d9c4c174791cb23a58bbc4e724c2fbb9b	9bc20e38b169e880eeeb6fba59c31cd201cf4081	doc/fd.1	changed	1	1	fix typo (#723)			
+https://github.com/sharkdp/fd.git	64bde11887ea73be24c54ad39f2fbc4d692a5288	b928af7d9c4c174791cb23a58bbc4e724c2fbb9b	doc/fd.1	changed	1	1	Try to clarify the documentation for -x command			
+https://github.com/sharkdp/fd.git	5d2e011e90f8908ad42aac13bf2f49a008ec1ad1	64bde11887ea73be24c54ad39f2fbc4d692a5288	doc/fd.1	changed	1	1	change documentation message after feedbacks			
+https://github.com/sharkdp/fd.git	eb28030f87b3a902ede93c46fffa7880dcea3249	5d2e011e90f8908ad42aac13bf2f49a008ec1ad1	src/app.rs	changed	2	2	include similar change to src/app.rs after feeback			
+https://github.com/sharkdp/fd.git	85fb7389af5643a1125f6ef109d1c54ae18e1bd3	eb28030f87b3a902ede93c46fffa7880dcea3249	src/app.rs	changed	1	1	Shorter help text for `--exec`			
+https://github.com/sharkdp/fd.git	b8089f8d5842dff6b4a42bf5dfdeb24c02b71d76	85fb7389af5643a1125f6ef109d1c54ae18e1bd3	src/output.rs	changed	1	1	hide private func			
+https://github.com/sharkdp/fd.git	8a532e51969ddbe1a8850e7e3e4e060cd64035e0	b8089f8d5842dff6b4a42bf5dfdeb24c02b71d76	src/exec/mod.rs	changed	148	28	use custom --path-separator in arguments to --exec			
+https://github.com/sharkdp/fd.git	cf7dd43f80fb455fe7907c026fae5404f832868b	4ebb3bbc81fd30afabb8f4115e6719c6a527c11d	src/app.rs	changed	1	0	Hide --print0 from the short help text			
+https://github.com/sharkdp/fd.git	cb385a4822dfa4df452da2b4aa9d6c5d3e87ca91	efc71bc00b66afdbd570ad0ada21569e2a81cdae	src/app.rs	changed	7	4	Issue 624 newer older help text (#733)			
+https://github.com/sharkdp/fd.git	1d85e31260051e7672cc8f574123690113f1f95d	024309f37850415ae01415d850daaca6c30e7146	ci/before_deploy.bash	broken	0	179	Migrate to GitHub actions			
+https://github.com/sharkdp/fd.git	1d85e31260051e7672cc8f574123690113f1f95d	024309f37850415ae01415d850daaca6c30e7146	ci/before_install.bash	broken	0	26	Migrate to GitHub actions			
+https://github.com/sharkdp/fd.git	1d85e31260051e7672cc8f574123690113f1f95d	024309f37850415ae01415d850daaca6c30e7146	ci/script.bash	broken	0	11	Migrate to GitHub actions			
+https://github.com/sharkdp/fd.git	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	db30bfc2b7be33d4ab1ee9599defa0394534069e	build.rs	changed	1	1	Fix clippy warnings			
+https://github.com/sharkdp/fd.git	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	db30bfc2b7be33d4ab1ee9599defa0394534069e	src/exec/mod.rs	changed	1	4	Fix clippy warnings			
+https://github.com/sharkdp/fd.git	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	db30bfc2b7be33d4ab1ee9599defa0394534069e	src/exit_codes.rs	changed	6	6	Fix clippy warnings			
+https://github.com/sharkdp/fd.git	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	db30bfc2b7be33d4ab1ee9599defa0394534069e	src/output.rs	changed	3	3	Fix clippy warnings			
+https://github.com/sharkdp/fd.git	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	db30bfc2b7be33d4ab1ee9599defa0394534069e	src/walk.rs	changed	4	4	Fix clippy warnings			
+https://github.com/sharkdp/fd.git	a7a4499d1d4b9a02a44087137639006a1d3c3c21	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	src/output.rs	changed	4	4	Fix unneeded references			
+https://github.com/sharkdp/fd.git	a7a4499d1d4b9a02a44087137639006a1d3c3c21	2a2126c40a6330d5dc54c6c3a54e58d0637b101c	src/walk.rs	changed	1	1	Fix unneeded references			
+https://github.com/sharkdp/fd.git	b507449146be2fb113ab117f05ed46ccd2fcb94f	d9697d14867c59dad487bb202c23840a430a6bb0	src/output.rs	changed	9	3	Handle IO errors based on type, closes #737			
+https://github.com/sharkdp/fd.git	b5344dac304b5938d8a41c91bf6c1e2dc00d8984	018556a367e2a4534385575dbcf7e8ebd7f83aca	doc/fd.1	changed	49	5	Improve -x/-X help text and man page description			
+https://github.com/sharkdp/fd.git	b5344dac304b5938d8a41c91bf6c1e2dc00d8984	018556a367e2a4534385575dbcf7e8ebd7f83aca	src/app.rs	changed	26	14	Improve -x/-X help text and man page description			
+https://github.com/sharkdp/fd.git	4e04d132153f8b374fef7dad7738a556853a5b0a	c37592b0b7396d84db02182880b94828572b9ed5	src/walk.rs	changed	8	14	Fix return out of match pattern			
+https://github.com/sharkdp/fd.git	ba60a163fe0b8808a87118a7967c5e17da45a9d8	4e04d132153f8b374fef7dad7738a556853a5b0a	doc/fd.1	changed	10	4	Use local times for time functions			
+https://github.com/sharkdp/fd.git	115ae93df944d6c08f26e3c20e06e36e0aaba396	c06c9952b61f35a7881b399cd21d0a4f821e7055	src/walk.rs	changed	1	21	Refactor file types check to be on impl of FileTypes			
+https://github.com/sharkdp/fd.git	1795e0e9dd268da8057adbaa7184440dd78d1047	500f404c4fc4c71abd609451408cf90519337fa3	doc/fd.1	changed	1	0	Add documentation and examples of ** in glob mode			
+https://github.com/sharkdp/fd.git	394e967b5fa2d6b19068ff34bef0ecbd1591c490	0f0fa76c81dc95bbd7a9097b62698352af640940	src/exec/job.rs	changed	5	3	No buffering cmd output when running on 1 thread			
+https://github.com/sharkdp/fd.git	394e967b5fa2d6b19068ff34bef0ecbd1591c490	0f0fa76c81dc95bbd7a9097b62698352af640940	src/exec/mod.rs	changed	4	4	No buffering cmd output when running on 1 thread			
+https://github.com/sharkdp/fd.git	394e967b5fa2d6b19068ff34bef0ecbd1591c490	0f0fa76c81dc95bbd7a9097b62698352af640940	src/walk.rs	changed	7	3	No buffering cmd output when running on 1 thread			
+https://github.com/sharkdp/fd.git	154cd6e32971e63ecfcffd8a62d4fecd88e75651	394e967b5fa2d6b19068ff34bef0ecbd1591c490	src/walk.rs	changed	1	0	Clarifying comments			
+https://github.com/sharkdp/fd.git	e4730603d05802e402f7139f0f889f034352155f	154cd6e32971e63ecfcffd8a62d4fecd88e75651	src/exec/job.rs	changed	5	5	Address feedback for removing buffering when running on a single thread			
+https://github.com/sharkdp/fd.git	e4730603d05802e402f7139f0f889f034352155f	154cd6e32971e63ecfcffd8a62d4fecd88e75651	src/exec/mod.rs	changed	9	4	Address feedback for removing buffering when running on a single thread			
+https://github.com/sharkdp/fd.git	e4730603d05802e402f7139f0f889f034352155f	154cd6e32971e63ecfcffd8a62d4fecd88e75651	src/walk.rs	changed	11	8	Address feedback for removing buffering when running on a single thread			
+https://github.com/sharkdp/fd.git	5b4869a940ecba3afef71894b019507d9d271474	049232439ab1bc19b08739eb29852ab967eb7d6c	src/exec/mod.rs	changed	2	2	fix spelling			
+https://github.com/sharkdp/fd.git	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	5b4869a940ecba3afef71894b019507d9d271474	doc/screencast.sh	changed	1	1	fix whitespace			
+https://github.com/sharkdp/fd.git	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	doc/fd.1	changed	7	0	Add -q/--quiet/--has-match flag (#813)			
+https://github.com/sharkdp/fd.git	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	src/app.rs	changed	14	0	Add -q/--quiet/--has-match flag (#813)			
+https://github.com/sharkdp/fd.git	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	src/exit_codes.rs	changed	3	1	Add -q/--quiet/--has-match flag (#813)			
+https://github.com/sharkdp/fd.git	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	src/walk.rs	changed	9	1	Add -q/--quiet/--has-match flag (#813)			
+https://github.com/sharkdp/fd.git	1b52948e42e612638131f376fee7415e08c4a38c	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	doc/fd.1	changed	10	4	Add better documentation of vcs-ignore files.			
+https://github.com/sharkdp/fd.git	78e21395b8d31f20d67149915c001436e89f3b96	1b52948e42e612638131f376fee7415e08c4a38c	doc/fd.1	changed	20	8	Make list of ignore files for `--no-ignore` more explicit			
+https://github.com/sharkdp/fd.git	476d4049389fdd61038243ec3d7f82b7dd02f5dc	3ba90dd7685a73923a3a872c4ffc8756a198d755	src/app.rs	changed	10	0	Merge pull request #817 from will459/add_no_ignore_parent			
+https://github.com/sharkdp/fd.git	476d4049389fdd61038243ec3d7f82b7dd02f5dc	3ba90dd7685a73923a3a872c4ffc8756a198d755	src/walk.rs	changed	1	1	Merge pull request #817 from will459/add_no_ignore_parent			
+https://github.com/sharkdp/fd.git	04fac46c5c9894953b18ad246bfae021becb7ec9	e0d03d170e6956f87d748edc11a6c55d01dfd128	src/app.rs	changed	22	1	Merge pull request #857 from exploide/short-help-completion			
+https://github.com/sharkdp/fd.git	a64a607fd89a4454203dc4ecf32de114e7b6e36b	00eb6461cb2da687d1d0750a45efe9380c7e39b2	build.rs	changed	1	1	Bump MSRV to 1.53			
+https://github.com/sharkdp/fd.git	45a86459b2275814bd455bf2710506644b7061c1	a64a607fd89a4454203dc4ecf32de114e7b6e36b	src/exec/job.rs	changed	1	1	Refactor: `merge_exit_codes` now takes an `impl IntoIterator<Item = ExitCode>`			
+https://github.com/sharkdp/fd.git	45a86459b2275814bd455bf2710506644b7061c1	a64a607fd89a4454203dc4ecf32de114e7b6e36b	src/exit_codes.rs	changed	10	10	Refactor: `merge_exit_codes` now takes an `impl IntoIterator<Item = ExitCode>`			
+https://github.com/sharkdp/fd.git	45a86459b2275814bd455bf2710506644b7061c1	a64a607fd89a4454203dc4ecf32de114e7b6e36b	src/walk.rs	changed	5	6	Refactor: `merge_exit_codes` now takes an `impl IntoIterator<Item = ExitCode>`			
+https://github.com/sharkdp/fd.git	3de948ae0dcc6894580ccd1a0b433f0bd7e859ab	45a86459b2275814bd455bf2710506644b7061c1	src/walk.rs	changed	12	15	Refactor: use some nice Rust methods in buffering code			
+https://github.com/sharkdp/fd.git	02e98501125f199e78f555856ef81577053f93bf	b8c575cc8f6e3e00537fe4c436805af099320fc0	src/output.rs	changed	6	6	Refactor: Rename `Options` to `Config`			
+https://github.com/sharkdp/fd.git	02e98501125f199e78f555856ef81577053f93bf	b8c575cc8f6e3e00537fe4c436805af099320fc0	src/walk.rs	changed	4	4	Refactor: Rename `Options` to `Config`			
+https://github.com/sharkdp/fd.git	7b5b3ec47b98984121e2665c7bad5274cb8db796	02e98501125f199e78f555856ef81577053f93bf	src/walk.rs	changed	42	22	walk: Add a cache for DirEntry metadata			
+https://github.com/sharkdp/fd.git	17dd2a6dfec1ca2086c3d279f5c458758bc9a71b	7b5b3ec47b98984121e2665c7bad5274cb8db796	doc/fd.1	changed	6	0	Implement `--batch-size` (#866)			
+https://github.com/sharkdp/fd.git	17dd2a6dfec1ca2086c3d279f5c458758bc9a71b	7b5b3ec47b98984121e2665c7bad5274cb8db796	src/app.rs	changed	15	0	Implement `--batch-size` (#866)			
+https://github.com/sharkdp/fd.git	17dd2a6dfec1ca2086c3d279f5c458758bc9a71b	7b5b3ec47b98984121e2665c7bad5274cb8db796	src/exec/job.rs	changed	14	1	Implement `--batch-size` (#866)			
+https://github.com/sharkdp/fd.git	17dd2a6dfec1ca2086c3d279f5c458758bc9a71b	7b5b3ec47b98984121e2665c7bad5274cb8db796	src/walk.rs	changed	7	1	Implement `--batch-size` (#866)			
+https://github.com/sharkdp/fd.git	2570fbd04e058ed449e95b2583e7145c40e9c925	690976380db1f11f6ed848761a2931e1424318d4	src/app.rs	changed	2	1	Add longer help text for --prune, closes #727			
+https://github.com/sharkdp/fd.git	a539181f1f50a36575cfe775f6fa9c9e3719cc78	2570fbd04e058ed449e95b2583e7145c40e9c925	doc/fd.1	changed	6	2	Merge pull request #822 from Asha20/pr/opposing-options			
+https://github.com/sharkdp/fd.git	a539181f1f50a36575cfe775f6fa9c9e3719cc78	2570fbd04e058ed449e95b2583e7145c40e9c925	src/app.rs	changed	55	5	Merge pull request #822 from Asha20/pr/opposing-options			
+https://github.com/sharkdp/fd.git	21fd01307313e7442670f6f2047371e465c53bba	a539181f1f50a36575cfe775f6fa9c9e3719cc78	src/app.rs	changed	4	3	Improve --full-path documentation, closes #839			
+https://github.com/sharkdp/fd.git	66e3ccc5e185f334b51f64b9d7d126645e12bb52	21fd01307313e7442670f6f2047371e465c53bba	src/output.rs	changed	40	20	Don't color each path component separately			
+https://github.com/sharkdp/fd.git	088e42deef5a8aa49bcb3b80ba3ef18f42af9d4b	ecdaf58e7f16609089bc9f91c3d964d11e9a7466	doc/fd.1	changed	27	5	Improve --type help text			
+https://github.com/sharkdp/fd.git	088e42deef5a8aa49bcb3b80ba3ef18f42af9d4b	ecdaf58e7f16609089bc9f91c3d964d11e9a7466	src/app.rs	changed	26	4	Improve --type help text			
+https://github.com/sharkdp/fd.git	2b1bf471b1e503f076838faa9ba57c64a989c66c	cab31e280bcdcd1b367ef36837d0f7c26bfbb878	src/exit_codes.rs	changed	7	0	Add an exit() method to ExitCode			
+https://github.com/sharkdp/fd.git	2b1bf471b1e503f076838faa9ba57c64a989c66c	cab31e280bcdcd1b367ef36837d0f7c26bfbb878	src/output.rs	changed	3	4	Add an exit() method to ExitCode			
+https://github.com/sharkdp/fd.git	2b1bf471b1e503f076838faa9ba57c64a989c66c	cab31e280bcdcd1b367ef36837d0f7c26bfbb878	src/walk.rs	changed	2	5	Add an exit() method to ExitCode			
+https://github.com/sharkdp/fd.git	fe992706ae78f59b8dac6e55834bc69ed08a3b02	2b1bf471b1e503f076838faa9ba57c64a989c66c	src/exit_codes.rs	changed	13	0	Raise SIGINT when dying by ^C			
+https://github.com/sharkdp/fd.git	f32060b0de34b52c255027aea12ac5ce53e40d6e	fe992706ae78f59b8dac6e55834bc69ed08a3b02	doc/fd.1	changed	2	2	Change time comparisons to exclusive			
+https://github.com/sharkdp/fd.git	0484486f3f704aecadd35b574f1ab179ce03bcd8	f32060b0de34b52c255027aea12ac5ce53e40d6e	src/exec/mod.rs	changed	3	4	Remove `lazy_static` from dependencies			
+https://github.com/sharkdp/fd.git	b211ded5dee8809129a4c61d4a58289974c6e12d	0484486f3f704aecadd35b574f1ab179ce03bcd8	src/app.rs	changed	11	0	Merge pull request #861 from jcaplan/no-strip/760			
+https://github.com/sharkdp/fd.git	b211ded5dee8809129a4c61d4a58289974c6e12d	0484486f3f704aecadd35b574f1ab179ce03bcd8	src/exec/mod.rs	changed	1	4	Merge pull request #861 from jcaplan/no-strip/760			
+https://github.com/sharkdp/fd.git	b211ded5dee8809129a4c61d4a58289974c6e12d	0484486f3f704aecadd35b574f1ab179ce03bcd8	src/output.rs	changed	3	3	Merge pull request #861 from jcaplan/no-strip/760			
+https://github.com/sharkdp/fd.git	feac240eb50ebbd422bbfe61ebecb4edf9d29a59	fba6db5096f8564a54fcc10d04c4eae1db4defa7	src/exec/job.rs	changed	2	2	Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	feac240eb50ebbd422bbfe61ebecb4edf9d29a59	fba6db5096f8564a54fcc10d04c4eae1db4defa7	src/output.rs	changed	14	14	Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	feac240eb50ebbd422bbfe61ebecb4edf9d29a59	fba6db5096f8564a54fcc10d04c4eae1db4defa7	src/walk.rs	changed	26	15	Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	e990a13405883581e174d484a9f55c7451023bd1	7b7876e7012665b558a9873d505b8d7e2e6c8e5e	src/output.rs	changed	2	1	squash! Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	e990a13405883581e174d484a9f55c7451023bd1	7b7876e7012665b558a9873d505b8d7e2e6c8e5e	src/walk.rs	changed	2	0	squash! Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	f219da4b3a9af4139098502486bae1cc38c1a2a7	e990a13405883581e174d484a9f55c7451023bd1	src/walk.rs	changed	2	8	Use non-sync channel			
+https://github.com/sharkdp/fd.git	7fe4bfaacb7e248b7db980f5b31508843ef0d5f9	1a6638ba236457a36661c164a715d15d937dc86a	src/exec/job.rs	changed	2	1	Merge pull request #895 from tavianator/receiver-buffer			
+https://github.com/sharkdp/fd.git	7fe4bfaacb7e248b7db980f5b31508843ef0d5f9	1a6638ba236457a36661c164a715d15d937dc86a	src/walk.rs	changed	160	85	Merge pull request #895 from tavianator/receiver-buffer			
+https://github.com/sharkdp/fd.git	81669f4c10a70a1c105ae487fa20cb2d686d0d1a	5ea7cb7a05db0712f8d7073f0aa98a16bdcf7f7d	src/output.rs	changed	2	15	Merge pull request #902 from tavianator/quit-senders			
+https://github.com/sharkdp/fd.git	81669f4c10a70a1c105ae487fa20cb2d686d0d1a	5ea7cb7a05db0712f8d7073f0aa98a16bdcf7f7d	src/walk.rs	changed	42	19	Merge pull request #902 from tavianator/quit-senders			
+https://github.com/sharkdp/fd.git	b7e077320dfd8293e593e72e2b437b12b4845146	81669f4c10a70a1c105ae487fa20cb2d686d0d1a	src/walk.rs	changed	1	1	Fix logic for --no-ignore-parent (#908)			
+https://github.com/sharkdp/fd.git	30add71233a9e9088d9ce2915e516b77e5b00372	dade9736acd08c062bb81434fa1f5fa065179b5e	doc/fd.1	changed	13	1	Update manpage to match --help output			
+https://github.com/sharkdp/fd.git	ccc6cc54b29d005f7a285a130482e9d7ab3544d0	aa1c0250b7053a88f2adb6ba7e2cf8c2f912a2a6	src/exec/job.rs	changed	1	2	Merge pull request #916 from tavianator/revert-crossbeam			
+https://github.com/sharkdp/fd.git	ccc6cc54b29d005f7a285a130482e9d7ab3544d0	aa1c0250b7053a88f2adb6ba7e2cf8c2f912a2a6	src/walk.rs	changed	7	3	Merge pull request #916 from tavianator/revert-crossbeam			
+https://github.com/sharkdp/fd.git	125cb81a5bc7b35005fbc9299052763d682915c1	ec38e23d582e5e35cdeb5e57d5e3d86468ae2724	build.rs	changed	8	5	Merge pull request #929 from tmccombs/clap-upgrade			
+https://github.com/sharkdp/fd.git	125cb81a5bc7b35005fbc9299052763d682915c1	ec38e23d582e5e35cdeb5e57d5e3d86468ae2724	src/app.rs	changed	130	120	Merge pull request #929 from tmccombs/clap-upgrade			
+https://github.com/sharkdp/fd.git	7db25a7b23fefdee8b8fe1e479b91d32704441cb	5ec55eed969b6ed277cf3d8282474d2dd99e8a6a	src/app.rs	changed	4	4	Merge pull request #967 from tmccombs/clap-upgrade			
+https://github.com/sharkdp/fd.git	b29e87ec30261d92d694b40c955e739f21d5c45a	7db25a7b23fefdee8b8fe1e479b91d32704441cb	doc/fd.1	changed	5	0	Merge pull request #976 from tmccombs/regex-doc			
+https://github.com/sharkdp/fd.git	6e5c8d9c20f6006592ba34f237eabef7389c7c5c	b29e87ec30261d92d694b40c955e739f21d5c45a	src/walk.rs	changed	2	8	Fix some clippy warnings			
+https://github.com/sharkdp/fd.git	ba473fc92571ed0bb4a4815c457ff504e2519eb0	6e5c8d9c20f6006592ba34f237eabef7389c7c5c	build.rs	changed	1	1	Bump lscolors from 0.8.1 to 0.9.0			
+https://github.com/sharkdp/fd.git	0aee9b0fd950fbe4862f92e1445966a995ca06ee	45f490a407fb012b6ac6c1e92c5eaca02f5ee9e1	src/app.rs	changed	2	0	Support multiple `--exec` instances			
+https://github.com/sharkdp/fd.git	0aee9b0fd950fbe4862f92e1445966a995ca06ee	45f490a407fb012b6ac6c1e92c5eaca02f5ee9e1	src/exec/job.rs	changed	6	6	Support multiple `--exec` instances			
+https://github.com/sharkdp/fd.git	0aee9b0fd950fbe4862f92e1445966a995ca06ee	45f490a407fb012b6ac6c1e92c5eaca02f5ee9e1	src/exec/mod.rs	changed	158	97	Support multiple `--exec` instances			
+https://github.com/sharkdp/fd.git	f27332ee8d08df574e91b8e4df75080ce0211d57	0aee9b0fd950fbe4862f92e1445966a995ca06ee	src/exec/mod.rs	changed	6	6	Fix clippy lints			
+https://github.com/sharkdp/fd.git	e54e3520356bcf600ec3c2dfb738c4b98754bad9	f27332ee8d08df574e91b8e4df75080ce0211d57	doc/fd.1	changed	6	0	Add  description of multiple --exec to man page			
+https://github.com/sharkdp/fd.git	9fb0c5d372062d6193798519526cb7b14ea24fcc	e54e3520356bcf600ec3c2dfb738c4b98754bad9	src/exec/job.rs	changed	2	3	Group together output from multi exec commands			
+https://github.com/sharkdp/fd.git	9fb0c5d372062d6193798519526cb7b14ea24fcc	e54e3520356bcf600ec3c2dfb738c4b98754bad9	src/exec/mod.rs	changed	15	23	Group together output from multi exec commands			
+https://github.com/sharkdp/fd.git	9fb0c5d372062d6193798519526cb7b14ea24fcc	e54e3520356bcf600ec3c2dfb738c4b98754bad9	src/walk.rs	changed	1	7	Group together output from multi exec commands			
+https://github.com/sharkdp/fd.git	c577b0838b2e8da07c266f19ffb52dfee7a53f1a	5a12a5e421d5ffcec145fb2a7b0fbfa7250c129f	src/exec/mod.rs	changed	40	25	Error out if no args provided to --exec or --exec-batch			
+https://github.com/sharkdp/fd.git	cbf3f11cf88884af8aff8c47f41c1ec12edf79c6	306cd99273125adb13af74c7801b6fab747fef5d	src/app.rs	changed	4	4	Make -u idempotent			
+https://github.com/sharkdp/fd.git	f57206a3a13c76ad0d5eae22c2f53b42ca600040	f823eac67285013dcf58d3e1cada278f20fac058	doc/fd.1	changed	1	1	Update help text and man page			
+https://github.com/sharkdp/fd.git	f57206a3a13c76ad0d5eae22c2f53b42ca600040	f823eac67285013dcf58d3e1cada278f20fac058	src/app.rs	changed	3	3	Update help text and man page			
+https://github.com/sharkdp/fd.git	de27835264d02ecddcde2fe8b2edeac668494dc5	dcde6d358f857bd24b8f0d7a31973f1789a93ead	src/exec/job.rs	changed	14	12	Merge pull request #812 from yyogo/master			
+https://github.com/sharkdp/fd.git	de27835264d02ecddcde2fe8b2edeac668494dc5	dcde6d358f857bd24b8f0d7a31973f1789a93ead	src/output.rs	changed	56	17	Merge pull request #812 from yyogo/master			
+https://github.com/sharkdp/fd.git	de27835264d02ecddcde2fe8b2edeac668494dc5	dcde6d358f857bd24b8f0d7a31973f1789a93ead	src/walk.rs	changed	10	67	Merge pull request #812 from yyogo/master			
+https://github.com/sharkdp/fd.git	16acdeb6ce36985190af366f9ec3d792553e90d8	6782c21d52c6b19bfde3c9b665ecf036d17b18ed	doc/fd.1	changed	0	6	remove description of --batch-size flag from EXAMPLES subsection			
+https://github.com/sharkdp/fd.git	40b368e76187ac6fbe0e0f4c590a7af28cd1a1b7	16acdeb6ce36985190af366f9ec3d792553e90d8	src/exec/job.rs	changed	1	12	exec: Execute batches before they get too long			
+https://github.com/sharkdp/fd.git	40b368e76187ac6fbe0e0f4c590a7af28cd1a1b7	16acdeb6ce36985190af366f9ec3d792553e90d8	src/exec/mod.rs	changed	112	45	exec: Execute batches before they get too long			
+https://github.com/sharkdp/fd.git	8b96a1e99cad6cd0e007088c41e04549405c6bcd	f52dec11a49317a72547d38414c20e97d78e4b16	doc/fd.1	changed	2	1	Update documentation of --batch-size feature			
+https://github.com/sharkdp/fd.git	8b96a1e99cad6cd0e007088c41e04549405c6bcd	f52dec11a49317a72547d38414c20e97d78e4b16	src/app.rs	changed	3	1	Update documentation of --batch-size feature			
+https://github.com/sharkdp/fd.git	b82e48f6daaf2370da47c0e85fc968d83a31de15	c47501ef7ccb3a2f3a0e99b089d16bb3b3d94f60	doc/screencast.sh	changed	4	2	Update screencast			
+https://github.com/sharkdp/fd.git	b82e48f6daaf2370da47c0e85fc968d83a31de15	c47501ef7ccb3a2f3a0e99b089d16bb3b3d94f60	doc/screencast.svg	changed	1	1	Update screencast			
+https://github.com/sharkdp/fd.git	f227bb291ae9e5890309bea45e55df2795441656	b82e48f6daaf2370da47c0e85fc968d83a31de15	doc/screencast.sh	changed	2	0	apply workaround for #1003			
+https://github.com/sharkdp/fd.git	f227bb291ae9e5890309bea45e55df2795441656	b82e48f6daaf2370da47c0e85fc968d83a31de15	doc/screencast.svg	changed	1	1	apply workaround for #1003			
+https://github.com/sharkdp/fd.git	90e860c7a591d6ed40b9392c2088a22f5d297ae6	c7370ca82c25f899f4e7528b3ec8b35bfdeb4ccc	build.rs	changed	1	1	Update msrv			
+https://github.com/sharkdp/fd.git	c127dc89a57d25e58c500167837843bb38bcd952	c48586de08c678b506f74d5a394baf3a8d15256a	doc/fd.1	changed	2	0	Add a link back the Github page to address #1052			
+https://github.com/sharkdp/fd.git	97dfd8b428b150b1c41633835393c3e84101092c	c127dc89a57d25e58c500167837843bb38bcd952	doc/fd.1	changed	1	1	Simplify some wording			
+https://github.com/sharkdp/fd.git	fcf8099587e78e9eee6e7bcc741a1b16c747fbbc	97dfd8b428b150b1c41633835393c3e84101092c	src/app.rs	changed	3	3	Add Github URL to `--help` also			
+https://github.com/sharkdp/fd.git	cb91a5c848f1150c6e2e2dde3d6700d3e2ac4d72	fcf8099587e78e9eee6e7bcc741a1b16c747fbbc	src/app.rs	changed	2	3	Simplify some whitespace on lines			
+https://github.com/sharkdp/fd.git	2569317ee876ae5be8fe8657114c9acb5f63af3e	cb91a5c848f1150c6e2e2dde3d6700d3e2ac4d72	doc/fd.1	changed	1	1	Revert changes in help text, add /issues in manpage			
+https://github.com/sharkdp/fd.git	2569317ee876ae5be8fe8657114c9acb5f63af3e	cb91a5c848f1150c6e2e2dde3d6700d3e2ac4d72	src/app.rs	changed	3	2	Revert changes in help text, add /issues in manpage			
+https://github.com/sharkdp/fd.git	9ea882d7cca53e15900cdba7f3a91126a6aa5475	f63c4634710af20d8d8d8f6eb8bbbd1466c97af1	src/exec/mod.rs	changed	1	1	Fix clippy suggestions			
+https://github.com/sharkdp/fd.git	9ea882d7cca53e15900cdba7f3a91126a6aa5475	f63c4634710af20d8d8d8f6eb8bbbd1466c97af1	src/exit_codes.rs	changed	1	1	Fix clippy suggestions			
+https://github.com/sharkdp/fd.git	4419401b6c221f18eab98a58664ff2d75950a8be	e46d402ed1a1bd1774a570f915bc3e8ddb5b5206	src/app.rs	changed	3	3	Enable --strip-cwd-prefix by default except with -0			
+https://github.com/sharkdp/fd.git	12142008df0a367bf2119f1752de05f6ada6061a	8ccf21437b3af81bb74307b4f1ea91b415a6cc3b	src/app.rs	changed	3	0	Add a link back to Github to `--help` (but not `-h`)			
+https://github.com/sharkdp/fd.git	e3e6057434371edf5e6927e5131ec0cb07a27a20	12142008df0a367bf2119f1752de05f6ada6061a	src/app.rs	changed	1	1	Minor adaptation to help text			
+https://github.com/sharkdp/fd.git	4ffc34956f9a00d3d5279758feabb5862f5dc9c4	5039d2db99149dfe44380dbb8e3cc8f4ddd3e25f	src/app.rs	changed	4	2	Make --strip-cwd-prefix apply to -x/-X			
+https://github.com/sharkdp/fd.git	4ffc34956f9a00d3d5279758feabb5862f5dc9c4	5039d2db99149dfe44380dbb8e3cc8f4ddd3e25f	src/exec/job.rs	changed	15	13	Make --strip-cwd-prefix apply to -x/-X			
+https://github.com/sharkdp/fd.git	4ffc34956f9a00d3d5279758feabb5862f5dc9c4	5039d2db99149dfe44380dbb8e3cc8f4ddd3e25f	src/output.rs	changed	3	14	Make --strip-cwd-prefix apply to -x/-X			
+https://github.com/sharkdp/fd.git	4ffc34956f9a00d3d5279758feabb5862f5dc9c4	5039d2db99149dfe44380dbb8e3cc8f4ddd3e25f	src/walk.rs	changed	3	13	Make --strip-cwd-prefix apply to -x/-X			
+https://github.com/sharkdp/fd.git	7917c0088715c370b12b8b2551d1e477ea478d48	c9f4dec2ed3535f33f1b21181361eb2f7c6cc161	src/output.rs	changed	1	1	dir_entry: Implement lscolors::Colorable			
+https://github.com/sharkdp/fd.git	17d849df6c1d8660aa9faf6ec2bdaae455a4417e	b2c8888a501d4cf2679c7af595fa5cb935b06dc6	src/output.rs	changed	2	2	Compute colors in parallel			
+https://github.com/sharkdp/fd.git	17d849df6c1d8660aa9faf6ec2bdaae455a4417e	b2c8888a501d4cf2679c7af595fa5cb935b06dc6	src/walk.rs	changed	7	0	Compute colors in parallel			
+https://github.com/sharkdp/fd.git	cd8ec44abf0a61d3686609ad6e705b3f5efa8181	17d849df6c1d8660aa9faf6ec2bdaae455a4417e	src/walk.rs	changed	2	2	Address review comments			
+https://github.com/sharkdp/fd.git	93e54884202723255395664ac2f0926f42f09ecd	cd8ec44abf0a61d3686609ad6e705b3f5efa8181	src/walk.rs	changed	6	9	walk: Simplify the code in scan() a bit			
+https://github.com/sharkdp/fd.git	5bb7a52704175ad0d1a545646c96bd72cd1f4c58	93e54884202723255395664ac2f0926f42f09ecd	src/exec/job.rs	changed	4	8	walk: Switch back to crossbeam-channel			
+https://github.com/sharkdp/fd.git	5bb7a52704175ad0d1a545646c96bd72cd1f4c58	93e54884202723255395664ac2f0926f42f09ecd	src/walk.rs	changed	4	10	walk: Switch back to crossbeam-channel			
+https://github.com/sharkdp/fd.git	527840526396341f027b17f4d51eeb5ecdf8eacb	5bb7a52704175ad0d1a545646c96bd72cd1f4c58	src/walk.rs	changed	4	2	walk: Use a bounded queue.			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	.gitignore	changed	1	0	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	build.rs	changed	1	22	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	src/app.rs	broken	0	779	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	src/exec/job.rs	changed	2	1	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	src/exec/mod.rs	changed	19	26	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	src/walk.rs	changed	0	1	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	b57ed11f65e4d3fc4007eb5d041062c2f1901115	831fe666fa9dccb98ffc7618edebb042297b1c00	src/exec/mod.rs	changed	11	3	Merge pull request #1137 from amesgen/batch-exit-code			
+https://github.com/sharkdp/fd.git	fbef976b92493cdb4a3bffbf1c26da21d2edb21b	567ce2640f78164798e4b1a5358608b0ef03f488	src/walk.rs	changed	3	0	Merge pull request #1159 from tmccombs/silence-large-variant			
+https://github.com/sharkdp/fd.git	9e88f91c2275449a95f06fd33b2be5c18e358e7f	bba7e0acd85b2f89eff058815fcb80f642d54fb6	src/exec/mod.rs	changed	3	3	Merge pull request #1168 from tmccombs/clippy-fixes-2			
+https://github.com/sharkdp/fd.git	8dda4998304e4fef04bc0119aa7114d47969129a	db2590dca56a180d51ec73a3dc41963e454452cc	doc/fd.1	changed	9	3	Merge pull request #1176 from tmccombs/changed-after			
+https://github.com/sharkdp/fd.git	c9d39684758d0d898082370d5c5fe7e8aef3a385	8dda4998304e4fef04bc0119aa7114d47969129a	src/walk.rs	changed	9	6	Merge pull request #1139 from Uthar/master			
+https://github.com/sharkdp/fd.git	6e3eb26af3e8a7c46bb444b7bd30825cf095d668	4a66d8fcd8dba61aa1ef1b0a8d80a0b644abc941	src/output.rs	changed	3	3	Merge pull request #1192 from tmccombs/ansi-term-deprecated			
+https://github.com/sharkdp/fd.git	af9daff4eea5162c9a4fd5e7ab4e10f9b784310e	503ede7535d0f9d45c1fb27905c2ef49ec24b6cc	src/walk.rs	changed	1	0	Merge pull request #1216 from vegerot/pr1216			
+https://github.com/sharkdp/fd.git	73a693ef28edcfac5f78adc40c0fc5c0f7fcf1bc	9955e20d01ae9b01dfadda68f172f0bacc9e44a1	build.rs	changed	1	1	Merge pull request #1244 from tmccombs/grouped-occurrences			
+https://github.com/sharkdp/fd.git	73a693ef28edcfac5f78adc40c0fc5c0f7fcf1bc	9955e20d01ae9b01dfadda68f172f0bacc9e44a1	src/exec/mod.rs	changed	6	4	Merge pull request #1244 from tmccombs/grouped-occurrences			
+https://github.com/sharkdp/fd.git	284ee3d0c6d33e1e21cb52fc35b36ab643da7e75	002645d7ac3833256b267c5e4624c159dd0f60d0	doc/fd.1	changed	8	0	Merge pull request #1263 from jpcirrus/patch-1			
+https://github.com/sharkdp/fd.git	e4bca1033c0570c10dc3c290182d093940d5b1bd	3ac2e13a2570187f1314d39249fabe7011eabe87	src/exec/job.rs	changed	4	4	Merge pull request #1283 from tmccombs/new-rust-version			
+https://github.com/sharkdp/fd.git	e4bca1033c0570c10dc3c290182d093940d5b1bd	3ac2e13a2570187f1314d39249fabe7011eabe87	src/exec/mod.rs	changed	3	3	Merge pull request #1283 from tmccombs/new-rust-version			
+https://github.com/sharkdp/fd.git	e4bca1033c0570c10dc3c290182d093940d5b1bd	3ac2e13a2570187f1314d39249fabe7011eabe87	src/walk.rs	changed	14	19	Merge pull request #1283 from tmccombs/new-rust-version			
+https://github.com/sharkdp/fd.git	161ee643991dd8281caf0989a2b9651fc78094db	bae0a1bfa6333b32aa4f79b065fd74e84fe69300	doc/fd.1	changed	5	0	Merge pull request #1285 from tmccombs/doc-update			
+https://github.com/sharkdp/fd.git	a0370aaf25ab990827802a55f0cb7bfa44b36cc8	d6e9cbfff302ba8427514196cc0e52a7e17d9a38	src/exec/mod.rs	changed	6	5	Merge pull request #1333 from tmccombs/rust-170			
+https://github.com/sharkdp/fd.git	3ae04546eafe6d38ed8bc0d967d8f2dc38892579	a0370aaf25ab990827802a55f0cb7bfa44b36cc8	src/walk.rs	changed	11	19	Replace `dirs-next` crate with `etcetera` crate			
+https://github.com/sharkdp/fd.git	3ed4ea7538fee17d6b3a00eb89f16737225f42f3	6b5fe1c6344e9e2dc979ab3ce797e755c63a5159	src/walk.rs	changed	7	0	Merge pull request #1396 from skoriop/default-ignore-git-folder			
+https://github.com/sharkdp/fd.git	36bc84041b0e4bca758abb248e18538b75c4774a	3ed4ea7538fee17d6b3a00eb89f16737225f42f3	doc/fd.1	changed	4	0	Support character and block device file types			
+https://github.com/sharkdp/fd.git	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	a11f8426d4e88ccc3745cc27b700aeb5ede39013	doc/fd.1	changed	5	0	feat: Add a way to escape { and }in exec templates.			
+https://github.com/sharkdp/fd.git	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	a11f8426d4e88ccc3745cc27b700aeb5ede39013	src/exec/mod.rs	changed	28	43	feat: Add a way to escape { and }in exec templates.			
+https://github.com/sharkdp/fd.git	069b1816259a7b89c9a9fa248b3840fb7cc5104f	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	doc/fd.1	changed	6	4	Fix documentation for brace escapes			
+https://github.com/sharkdp/fd.git	53fd416c47e0d1a5311c4a2217c7c0ccbe444505	5e0018fb1fa197e7fd8d5fb526649db8c64267f6	doc/fd.1	changed	12	0	docs: Document exclusion of .git/			
+https://github.com/sharkdp/fd.git	53fd416c47e0d1a5311c4a2217c7c0ccbe444505	5e0018fb1fa197e7fd8d5fb526649db8c64267f6	src/walk.rs	changed	1	1	docs: Document exclusion of .git/			
+https://github.com/sharkdp/fd.git	08910e4e3f6e4820b546e2933616df0ef017d2d8	889765960797a46b3c875e6947c698c2e70dacc6	doc/fd.1	changed	1	2	docs: Some tweaks from review			
+https://github.com/sharkdp/fd.git	c6fcdbe000d2ac0161eaba524f020d6ccdbc50d5	306dacd0b41c52392d49e2a24564c94790168782	doc/fd.1	changed	7	0	docs: Explicitly warn against relying on result order for exec			
+https://github.com/sharkdp/fd.git	8b5532d8dd89d932d304f9adbcac8d723682973a	c6fcdbe000d2ac0161eaba524f020d6ccdbc50d5	doc/fd.1	changed	1	1	Merge pull request #1409 from marcospb19/fix-docs-typo			
+https://github.com/sharkdp/fd.git	8bbbd7679b7eaf8782559c0320fc6cc86314319f	cd32a3827dd1323796ab6e6a44c47cc325f64a16	src/walk.rs	changed	336	312	walk: New WorkerState struct shared by the worker threads			
+https://github.com/sharkdp/fd.git	84f032eba80a41c08a52daef7d7ffbec4dcf6146	5903dec28998978f71d9c0618fe6d20697871d16	src/exec/job.rs	changed	16	15	Merge pull request #1422 from tavianator/batch			
+https://github.com/sharkdp/fd.git	84f032eba80a41c08a52daef7d7ffbec4dcf6146	5903dec28998978f71d9c0618fe6d20697871d16	src/walk.rs	changed	129	37	Merge pull request #1422 from tavianator/batch			
+https://github.com/sharkdp/fd.git	16c2d1e1d05e815ef5b564cb7710b80853b75066	fea16227248fe806095ab69ede11f1031c2f40e6	src/walk.rs	changed	6	2	walk: Flush stdout in batches			
+https://github.com/sharkdp/fd.git	14ed0238754d32496cf7a4de3259e750bd779e6b	58284b8dbe4b3697f7f5970ad02dc14230bf8888	doc/fd.1	changed	1	1	Merge pull request #1464 from Ato2207/dir_alias			
+https://github.com/sharkdp/fd.git	4efc05ef27c9977478c02b30d528c5084ab8662d	3b2fd158b5ef4ba5f8cccddc2d2efb1de24b6c47	src/walk.rs	changed	3	3	Merge pull request #1510 from garlic-hub/clippy			
+https://github.com/sharkdp/fd.git	68fe31da3f5da5d8d5b997d8919dc97e6eafead5	b8744626e7274c630773ca1d9fee598ed34982d2	src/walk.rs	changed	1	1	Merge pull request #1517 from one230six/master			
+https://github.com/sharkdp/fd.git	85cbea8dcb6ca5c4de7402373b6b83ba146ca682	bc6782624ef8d886c267c0f698e3895d9657df0e	doc/fd.1	changed	8	4	Merge pull request #1494 from nabellows/master			
+https://github.com/sharkdp/fd.git	31f28397514995d7d24a35a649299a0fca8d93c0	8eb047945ef2fb83000c0d7db0c17d935c6871d7	doc/fd.1	changed	23	5	Merge pull request #1540 from tmccombs/revert-git-ignore			
+https://github.com/sharkdp/fd.git	31f28397514995d7d24a35a649299a0fca8d93c0	8eb047945ef2fb83000c0d7db0c17d935c6871d7	src/walk.rs	changed	0	4	Merge pull request #1540 from tmccombs/revert-git-ignore			
+https://github.com/sharkdp/fd.git	6becb6618576084878b54dea53d3920600d67e00	1a1f057e5deecbfe57a67b9af6b553f2ead2197e	doc/fd.1	changed	14	3	Merge pull request #1445 from tmccombs/cwd-prefix			
+https://github.com/sharkdp/fd.git	ea22cbd7127f01b8e01a6fb7ece786ea43a7b7f1	6becb6618576084878b54dea53d3920600d67e00	doc/fd.1	changed	30	33	Merge pull request #1043 from tmccombs/format-option			
+https://github.com/sharkdp/fd.git	ea22cbd7127f01b8e01a6fb7ece786ea43a7b7f1	6becb6618576084878b54dea53d3920600d67e00	src/exec/mod.rs	changed	25	134	Merge pull request #1043 from tmccombs/format-option			
+https://github.com/sharkdp/fd.git	ea22cbd7127f01b8e01a6fb7ece786ea43a7b7f1	6becb6618576084878b54dea53d3920600d67e00	src/output.rs	changed	21	1	Merge pull request #1043 from tmccombs/format-option			
+https://github.com/sharkdp/fd.git	cfced9787ee544d99f36e455762defec87c6be16	9cefd79ef4a0e6f9d8dfb560f95921e46fe59e1c	doc/fd.1	changed	18	0	Merge pull request #1571 from tmccombs/hyperlink			
+https://github.com/sharkdp/fd.git	cfced9787ee544d99f36e455762defec87c6be16	9cefd79ef4a0e6f9d8dfb560f95921e46fe59e1c	src/output.rs	changed	25	30	Merge pull request #1571 from tmccombs/hyperlink			
+https://github.com/sharkdp/fd.git	cfced9787ee544d99f36e455762defec87c6be16	9cefd79ef4a0e6f9d8dfb560f95921e46fe59e1c	src/walk.rs	changed	6	1	Merge pull request #1571 from tmccombs/hyperlink			
+https://github.com/sharkdp/fd.git	202e32953c645c234d7c4db7183b053061da4230	3d0d1865c8fd5f8fa20742fe01d9af399bece093	build.rs	changed	1	1	Merge pull request #1627 from hamirmahal/style/simplify-string-formatting-for-readability			
+https://github.com/sharkdp/fd.git	202e32953c645c234d7c4db7183b053061da4230	3d0d1865c8fd5f8fa20742fe01d9af399bece093	src/output.rs	changed	2	2	Merge pull request #1627 from hamirmahal/style/simplify-string-formatting-for-readability			
+https://github.com/sharkdp/fd.git	202e32953c645c234d7c4db7183b053061da4230	3d0d1865c8fd5f8fa20742fe01d9af399bece093	src/walk.rs	changed	3	6	Merge pull request #1627 from hamirmahal/style/simplify-string-formatting-for-readability			
+https://github.com/sharkdp/fd.git	564a61588d966e9865cb028ca8fbb5470a0a85b0	86d6e2d45fd4ffd175f41ac805ca3dc4ee924f0b	src/output.rs	changed	1	1	Merge pull request #1663 from tmccombs/more-troubleshooting			
+https://github.com/sharkdp/fd.git	564a61588d966e9865cb028ca8fbb5470a0a85b0	86d6e2d45fd4ffd175f41ac805ca3dc4ee924f0b	src/walk.rs	changed	1	1	Merge pull request #1663 from tmccombs/more-troubleshooting			
+https://github.com/sharkdp/fd.git	edafedbbc730552ff25676577c5a898c35909963	5f606ad6e2c2843bcc9f771c2220063e1ab7fd1a	doc/fd.1	changed	2	2	Merge pull request #1704 from vp-elitnet/changed_opt_doc_fix			
+https://github.com/sharkdp/fd.git	efe499ac0dfc193a34d065e4d3e71d17f4646e9b	494eef044c8daa3be6b65e0a882df06725c302c3	doc/fd.1	changed	12	2	Merge pull request #1717 from tmccombs/doc-better			
+https://github.com/sharkdp/fd.git	8d254c53371f3b604fc04d357f9ee29689096ce6	4344a265407e551bc9580238951f0ec350e57ad3	build.rs	broken	0	12	Merge pull request #1796 from sorairolake/remove-build-rs			
+https://github.com/sharkdp/fd.git	54fa0112f5469c626049ae10cc0348f23e5b5dc5	8c9c6bec75aeb938eec5a538c00d2527f3af15f6	doc/fd.1	changed	1	1	Merge pull request #1808 from sivaramsk/master			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	doc/fd.1	changed	7	0	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	src/exec/job.rs	changed	1	4	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	src/exec/mod.rs	changed	3	3	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	src/walk.rs	changed	2	4	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	src/exec/job.rs	changed	1	1	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	src/exec/mod.rs	changed	2	2	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	src/exit_codes.rs	changed	1	1	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	src/output.rs	changed	5	5	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	src/walk.rs	changed	51	50	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	bf81fb98fae7731a11ad7ae4927d7083de02310c	9508153471aa6014755d94919683937cfdc7e4b2	doc/fd.1	changed	4	0	Merge pull request #1852 from fischman/1727-ignore-contain			
+https://github.com/sharkdp/fd.git	bf81fb98fae7731a11ad7ae4927d7083de02310c	9508153471aa6014755d94919683937cfdc7e4b2	src/walk.rs	changed	13	2	Merge pull request #1852 from fischman/1727-ignore-contain			
+https://github.com/sharkdp/fd.git	cb3fad48bb2d366080efa421d8499ec968f60a6c	b691572928bf4a589c1f195c79037fdd2d2b6f07	src/walk.rs	changed	11	5	Merge pull request #1914 from tmccombs/faster-ignore-contains			
+https://github.com/sharkdp/fd.git	6d777997592b1763bff58a89a164d96bbd24b0ce	db7d448fd4f43d303bbdcd862b353bd5910de1b8	src/walk.rs	changed	20	14	Merge pull request #1917 from Xavrir/issue-1900			
+https://github.com/sharkdp/fd.git	fcd846651bd2652f7d867f15e7159d085c2e7abc	6d777997592b1763bff58a89a164d96bbd24b0ce	doc/fd.1	changed	1	1	Merge pull request #1921 from rexkirshner/fix-exclude-value-name-glob			
+https://github.com/sharkdp/fd.git	d6b44b81b67c9af8963a3631995833e29ecfb871	9d137d358df10c441e51dcacc5899e43a4bee877	src/walk.rs	changed	51	5	Merge pull request #1928 from tmccombs/full-path-fixes			
+https://github.com/sharkdp/fd.git	42b2ab8a84ddedf80eeed9079128c60161f64658	febc1b692f5521c4a5e0ddaf926700954ce4d035	doc/fd.1	changed	8	1	Merge pull request #1983 from DeflateAwning/feat-exact-i1963			
+https://github.com/sharkdp/fd.git	094446004d481605d8a85c072670e249cef3ed95	25461e5ce13dc12ff2a75993285a87e99b33db2d	doc/fd.1	changed	4	2	Merge pull request #2001 from leno23/docs/extension-help-1693			
+https://github.com/sharkdp/fd.git	95dc6454d5ca68ec84b8f0a3a42f3eccc8600df5	61c5399fa4f8acb5952022dd4530456d6262aae1	src/walk.rs	changed	16	0	Merge pull request #2037 from parneetsingh022/tests/search-str-for-entry-edge-cases			
+https://github.com/sharkdp/fd.git	b12606438ef749d8895208ff3b32f2d3874ca778	95dc6454d5ca68ec84b8f0a3a42f3eccc8600df5	src/exec/mod.rs	changed	23	10	Merge pull request #1976 from curious-rabbit/master			
+https://github.com/sharkdp/fd.git	b12606438ef749d8895208ff3b32f2d3874ca778	95dc6454d5ca68ec84b8f0a3a42f3eccc8600df5	src/output.rs	changed	14	7	Merge pull request #1976 from curious-rabbit/master			
+https://github.com/sharkdp/fd.git	c73e5e58a47d1505a3d22298893e50c13ebc293d	b12606438ef749d8895208ff3b32f2d3874ca778	src/walk.rs	changed	10	20	Merge pull request #2045 from tmccombs/io-error-handling			
+https://github.com/sharkdp/fd.git	cdea7f56331ebc7bb799aa9f718a6eee9a4a1cfc	fe0e455feea831a055599accb5ac4eea2e3d6ba1	.gitignore	changed	1	0	Merge pull request #1943 from tmccombs/archive-script			
+https://github.com/sharkdp/fd.git	24198d904a074f2943b2a3be925e53134c994734	b422e5d8c9cffaa1ae43ba68e7b97a60fb3e8ae5	src/exec/job.rs	changed	2	3	fix: Better sanitizing			
+https://github.com/sharkdp/fd.git	24198d904a074f2943b2a3be925e53134c994734	b422e5d8c9cffaa1ae43ba68e7b97a60fb3e8ae5	src/output.rs	changed	21	7	fix: Better sanitizing			
+https://github.com/sharkdp/fd.git	24198d904a074f2943b2a3be925e53134c994734	b422e5d8c9cffaa1ae43ba68e7b97a60fb3e8ae5	src/walk.rs	changed	4	5	fix: Better sanitizing			
+https://github.com/sharkdp/fd.git	468cd4371a64b5b5c4d683366793abfbb154aaeb	0e01c8ce194fde73552816d7fe5ca31fd4942549	doc/fd.1	changed	6	6	docs(exec): clarify command ordering and output grouping for -x/--exec			
+https://github.com/sharkdp/fd.git	5bbfa3eb1d1f3df78b9def10ea1c074307f9f22e	468cd4371a64b5b5c4d683366793abfbb154aaeb	doc/fd.1	changed	3	2	docs(exec): explain repeated commands for each file			
+https://github.com/sharkdp/fd.git	ce97e473ebaec49697c07daa50a7bc2b32f713d2	2797c4a6d579ebb1bac8a6b3c58ab9db90bed116	src/walk.rs	changed	33	18	Merge pull request #2039 from hexbinoct/fix/min-depth-broken-symlink			
+https://github.com/sharkdp/fd.git	9fe5cb7860163d6ed8889d014d8e00aab7e05bd5	3460b1e96c3c54ce524dd1763ff361607e323a7f	src/walk.rs	changed	50	32	Merge pull request #2143 from tmccombs/broken-symlink-refactor			
+https://github.com/sharkdp/fd.git	91f5abbfa5064346841421c0f833a222469a7a86	b6ca4e02167833c2c492de6ae9d06b56488d4696	doc/fd.1	changed	2	2	Merge pull request #2179 from ump45nose/man-no-ignore-parent			
+https://github.com/sharkdp/fd.git	c62224d2c344ed82959d6aa395e166352f85e466	9a40d21ceb4312db0ffd7ef87739b1e0872e7259	build.rs	not-fired	0	0	Update instructions for RHEL8 etc.			
+https://github.com/sharkdp/fd.git	ecdaf58e7f16609089bc9f91c3d964d11e9a7466	fc2a97208264f4cd6d092c28c0c6aac4ee6df7dd	.snapcraft.yaml	not-fired	0	0	Update to latest lscolors dependency			
+https://github.com/sharkdp/fd.git	6f2c8cdf914aca3ec19809d5b661f124d2935900	e2f90dba446d47bb496a4a28341306692e9626b6	build.rs	not-fired	0	0	Add tmccombs as maintainer			
+https://github.com/sharkdp/fd.git	8a83ad41c862dc82f6123f41e22554d78f09d99b	5feb89aa992cf12c8d9929ba600959714ba2dd13	.snapcraft.yaml	not-fired	0	0	Remove alias suggestions			
+https://github.com/sharkdp/fd.git	809fd8fb78f9633a22f66633c28bd13f3c56a785	a3060f952edc6347a1da8e2dff6d0fab2725f494	src/exit_codes.rs	not-fired	0	0	Move regex helpers to new module			
+https://github.com/sharkdp/fd.git	60889d0b995c881b593f526b76d30cdbc8252312	4b1d73d39d17c1164f966a4f43aebd47ac4ef894	build.rs	not-fired	0	0	Merge pull request #1468 from sharkdp/dependabot/cargo/tempfile-3.9.0			
+https://github.com/sharkdp/fd.git	4e04d132153f8b374fef7dad7738a556853a5b0a	c37592b0b7396d84db02182880b94828572b9ed5	src/app.rs	not-fired	0	0	Fix return out of match pattern			
+https://github.com/sharkdp/fd.git	1765d0817b4e706141115b81c29a5965630e243a	1e07fcb744a351d374f6c0bc9b1a741bd54a7d81	.snapcraft.yaml	not-fired	0	0	fix: Re-enable jemalloc by default			
+https://github.com/sharkdp/fd.git	1fed60d5c1a4c105534881f887df2a4247cd6ae3	f84c1d67c0a09bf75db1e15229be34545910a263	.gitignore	not-fired	0	0	Merge pull request #1623 from sharkdp/dependabot/cargo/libc-0.2.159			
+https://github.com/sharkdp/fd.git	c60d0076db720529ba4df167f6130297f4469d11	a07ad517517dbe32cf70377beff227244189ab48	.snapcraft.yaml	not-fired	0	0	Merge pull request #1893 from tmccombs/release-10.4.0			
+https://github.com/sharkdp/fd.git	7b5b3ec47b98984121e2665c7bad5274cb8db796	02e98501125f199e78f555856ef81577053f93bf	src/app.rs	not-fired	0	0	walk: Add a cache for DirEntry metadata			
+https://github.com/sharkdp/fd.git	328c6640be2ed3ba7adc800065b6cf2703dcd693	c001dd47a754c3edd1b7f84061950f31a24ac148	src/output.rs	not-fired	0	0	Formatting			
+https://github.com/sharkdp/fd.git	fb205f505766a615d356d33fc77c6b9de8559731	32fdbb1eae5200b028d12c37e298c13f08ce4454	src/walk.rs	not-fired	0	0	Allow changing current working directory of fd			
+https://github.com/sharkdp/fd.git	85e3adaf1800fd8cb192f7a4a2bb9000f993f5bc	9e88f91c2275449a95f06fd33b2be5c18e358e7f	src/app.rs	not-fired	0	0	Merge pull request #1170 from tmccombs/clap-improvements-2			
+https://github.com/sharkdp/fd.git	4287cddc00741c077e45325e489231d5b8b18058	0b7febc3b695753db4db845f2e7b635fcfefbcbc	src/app.rs	not-fired	0	0	Add test			
+https://github.com/sharkdp/fd.git	c4094c7a05e5464b92d779f8116dba98a280dd28	31f28397514995d7d24a35a649299a0fca8d93c0	.gitignore	not-fired	0	0	Merge pull request #1492 from AlbydST/master			
+https://github.com/sharkdp/fd.git	54603501ec690cd8ebee6c6e2bd0e386096049de	45c66e7f1b503cd58789a4d7fc8a9a025f021f4e	.snapcraft.yaml	not-fired	0	0	Bump version			
+https://github.com/sharkdp/fd.git	5bbfa3eb1d1f3df78b9def10ea1c074307f9f22e	468cd4371a64b5b5c4d683366793abfbb154aaeb	src/exit_codes.rs	not-fired	0	0	docs(exec): explain repeated commands for each file			
+https://github.com/sharkdp/fd.git	494eef044c8daa3be6b65e0a882df06725c302c3	0d680b48e8f546998a894eac3dfa1256448a437d	.snapcraft.yaml	not-fired	0	0	Merge pull request #1715 from sharkdp/update-crossbeam			
+https://github.com/sharkdp/fd.git	a0370aaf25ab990827802a55f0cb7bfa44b36cc8	d6e9cbfff302ba8427514196cc0e52a7e17d9a38	src/walk.rs	not-fired	0	0	Merge pull request #1333 from tmccombs/rust-170			
+https://github.com/sharkdp/fd.git	9529f30129e2696bc4a4027561e66c6de69b3195	266311ca33a78924dcad1fc13f99974098286ed0	src/output.rs	not-fired	0	0	fix: Respect NO_COLOR with --list-details option			
+https://github.com/sharkdp/fd.git	45a86459b2275814bd455bf2710506644b7061c1	a64a607fd89a4454203dc4ecf32de114e7b6e36b	src/exec/mod.rs	not-fired	0	0	Refactor: `merge_exit_codes` now takes an `impl IntoIterator<Item = ExitCode>`			
+https://github.com/sharkdp/fd.git	b1296d855705a956d63efdd9da82296ee9da2fa9	1550ec3ffca3e7246761cf8156c933dc16df869c	.gitignore	not-fired	0	0	Bump chrono from 0.4.19 to 0.4.22			
+https://github.com/sharkdp/fd.git	1d1eefdb7be684550d17cd550f149339cc9c2c2b	c8746f621608662f113a7ce379964d9491331257	src/exit_codes.rs	not-fired	0	0	Disable jemalloc on macOS			
+https://github.com/sharkdp/fd.git	d283aba52e737b8ac21742abd84c2046c00e9148	5423c456609e2808793a9149cadfbc3c2c438d10	build.rs	not-fired	0	0	Move command execution section			
+https://github.com/sharkdp/fd.git	fea16227248fe806095ab69ede11f1031c2f40e6	00b64f3ccbfb832ef744bb42bbdfabaf929b5ee2	.gitignore	not-fired	0	0	cli: Tweak default thread count logic			
+https://github.com/sharkdp/fd.git	ae861f7e4b5d93e181573137269cad56cfe8d36f	9f5ed8534e824b3e2a0934ff3aa0b781cb370688	.gitignore	not-fired	0	0	Merge pull request #955 from sharkdp/dependabot/cargo/libc-0.2.116			
+https://github.com/sharkdp/fd.git	70c48651916b9dab8da759c2d0087d42c56cc259	7f5bc9884f6d14d7061d074df807537191a450a6	src/walk.rs	not-fired	0	0	Set max. term width to make help texts easier to read			
+https://github.com/sharkdp/fd.git	2f813601aa86280f40f3a5d64623cd4683847a5b	aae8519a1d62781fbdcab6b60ee4a3c61454abb8	.gitignore	not-fired	0	0	Merge pull request #1340 from sharkdp/dependabot/cargo/clap_complete-4.3.1			
+https://github.com/sharkdp/fd.git	16b46710eee30ed2a651ca193539c9bc4db7c8ac	edafedbbc730552ff25676577c5a898c35909963	build.rs	not-fired	0	0	Merge pull request #1703 from sharkdp/dependabot/cargo/clap_complete-4.5.47			
+https://github.com/sharkdp/fd.git	664513123427a09f9bac8894b2b26020a61fa2ca	189d6a907a1bd9fdcdc486a68605cf783e0a9f8a	.gitignore	not-fired	0	0	Integrate regex link into text			
+https://github.com/sharkdp/fd.git	d6040b6b8fe9e519fcafd6fc6ac335b69556fa00	1765d0817b4e706141115b81c29a5965630e243a	.snapcraft.yaml	not-fired	0	0	build(deps): bump jiff from 0.2.29 to 0.2.35			
+https://github.com/sharkdp/fd.git	65096a653ea85ae9cf28620876f6ac549605dc24	9f738ad9950dc39a9f5b44c14e21ccdc1a08e1ab	src/exit_codes.rs	not-fired	0	0	Move FdOptions to Options			
+https://github.com/sharkdp/fd.git	4f8697c40739f1d7388fc54145e42fecebddf8ae	b2fa188029eb9d1450ab83053700995fc938d160	build.rs	not-fired	0	0	Update README to have updated instructions.			
+https://github.com/sharkdp/fd.git	99934ab98ce1247b789956eb969ff437ae553da7	633d486ac1d7a305a434e94ab0ef03d8a54c4d54	src/output.rs	not-fired	0	0	add --base-directory, --path-separator, and --search-path to the man page			
+https://github.com/sharkdp/fd.git	fc2a97208264f4cd6d092c28c0c6aac4ee6df7dd	66e3ccc5e185f334b51f64b9d7d126645e12bb52	.gitignore	not-fired	0	0	Add CHANGELOG entry			
+https://github.com/sharkdp/fd.git	ddf144b596f1824958e9dca7258a6bba58f3c186	498ea1cc776933e87a48b8f064c5eea0fc1e37fc	build.rs	not-fired	0	0	Merge pull request #1788 from sharkdp/dependabot/cargo/tempfile-3.21.0			
+https://github.com/sharkdp/fd.git	fdcbb2f008c4633574bb3a2418dfa8b06fb9b4a4	ac934bd7030049da282a5276fb04721959e6b9ac	src/output.rs	not-fired	0	0	Allow working directory to be nonexistent if search path is given			
+https://github.com/sharkdp/fd.git	564a61588d966e9865cb028ca8fbb5470a0a85b0	86d6e2d45fd4ffd175f41ac805ca3dc4ee924f0b	build.rs	not-fired	0	0	Merge pull request #1663 from tmccombs/more-troubleshooting			
+https://github.com/sharkdp/fd.git	47974b64795996dfe0adc06dadfe791efca25416	2bab4a22494e3f10da0b708da7a1eebaa483b727	src/output.rs	not-fired	0	0	--glob: '*' does not match on path separators			
+https://github.com/sharkdp/fd.git	0e74d5b75dfd65e756dcb934ff505682a6f18e83	90e73d72df258db32bad7a4d11154a936b05ea92	build.rs	not-fired	0	0	Merge pull request #1979 from YoshKoz/fix/pwsh-placeholder-docs			
+https://github.com/sharkdp/fd.git	10d1ecf2a2639884459f7c7df8df8f7ad3690653	47cedbb44e35cb425c3c0772f77a245252df63b2	.snapcraft.yaml	not-fired	0	0	Merge pull request #1803 from sharkdp/dependabot/cargo/tempfile-3.23.0			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	build.rs	not-fired	0	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	51002c842da9e4329b61e399f7a3e4116f6bf571	8e582971fab6d9df569d60ac558701164f0a6a22	build.rs	not-fired	0	0	Merge pull request #1417 from sharkdp/dependabot/cargo/nix-0.27.1			
+https://github.com/sharkdp/fd.git	35bc1f95fb9661ae3522b474b643dfc7a83bfd93	161ee643991dd8281caf0989a2b9651fc78094db	build.rs	not-fired	0	0	Specifically set ignore version to 0.4.20 in Cargo.toml			
+https://github.com/sharkdp/fd.git	d298ce15ccef8629a57efddac7b0f819302c6482	d6e5ee2f63a204888fd370378f41cec56860ef80	build.rs	not-fired	0	0	Merge pull request #1054 from sharkdp/dependabot/cargo/anyhow-1.0.58			
+https://github.com/sharkdp/fd.git	5ea7cb7a05db0712f8d7073f0aa98a16bdcf7f7d	7fe4bfaacb7e248b7db980f5b31508843ef0d5f9	src/app.rs	not-fired	0	0	A couple of minor recommendations from the Code Quality action (#903)			
+https://github.com/sharkdp/fd.git	7fe4bfaacb7e248b7db980f5b31508843ef0d5f9	1a6638ba236457a36661c164a715d15d937dc86a	src/app.rs	not-fired	0	0	Merge pull request #895 from tavianator/receiver-buffer			
+https://github.com/sharkdp/fd.git	71deea6671698e4074a6dd208d528e39831f1fb7	bb676df2849860bf02f02b8eea0402daa9d06e6f	.snapcraft.yaml	not-fired	0	0	Merge pull request #1632 from sharkdp/dependabot/cargo/lscolors-0.20.0			
+https://github.com/sharkdp/fd.git	45c66e7f1b503cd58789a4d7fc8a9a025f021f4e	441a235a0fa9e0dd23a4413cad27c750e75f5f8c	build.rs	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	915483bcd0f327648f70f21ce4791802b0897f22	f272180939d0923dfa20a1e14e528d5ed0a90ba7	.gitignore	not-fired	0	0	Merge pull request #1646 from sharkdp/dependabot/cargo/clap-4.5.21			
+https://github.com/sharkdp/fd.git	d05e7171d4e2f8feb7d5402026b02aa67a9f9b91	81dee25438a4fc40e69f610e760d7a2aab117de6	src/output.rs	not-fired	0	0	Fix for older versions of Rust			
+https://github.com/sharkdp/fd.git	33eb857a81cdbd9e97a3323c96fb3594f5cea342	6e96154d8649163df7a6fae0c55539108c14e148	src/walk.rs	not-fired	0	0	Cleanup			
+https://github.com/sharkdp/fd.git	04fac46c5c9894953b18ad246bfae021becb7ec9	e0d03d170e6956f87d748edc11a6c55d01dfd128	src/walk.rs	not-fired	0	0	Merge pull request #857 from exploide/short-help-completion			
+https://github.com/sharkdp/fd.git	db2590dca56a180d51ec73a3dc41963e454452cc	38cdeb041364d3a644d3cfd68daf724e0d35b29b	src/app.rs	not-fired	0	0	Merge pull request #1178 from tmccombs/windows-completion-fix			
+https://github.com/sharkdp/fd.git	d23ac06e409b15de4e045dbdb91a6a204598f99d	5558e407bebafd5669d9f606eeaaba59938d67f0	.snapcraft.yaml	not-fired	0	0	Merge pull request #1813 from tmccombs/rust-version			
+https://github.com/sharkdp/fd.git	85fb7389af5643a1125f6ef109d1c54ae18e1bd3	eb28030f87b3a902ede93c46fffa7880dcea3249	src/walk.rs	not-fired	0	0	Shorter help text for `--exec`			
+https://github.com/sharkdp/fd.git	fea16227248fe806095ab69ede11f1031c2f40e6	00b64f3ccbfb832ef744bb42bbdfabaf929b5ee2	build.rs	not-fired	0	0	cli: Tweak default thread count logic			
+https://github.com/sharkdp/fd.git	c9df4296f9ee5cda16e101ed4534ae0888e1c370	7c5cf28acee3ab22bb7983d163d34876f5f07e2f	.snapcraft.yaml	not-fired	0	0	Merge pull request #1419 from sharkdp/dependabot/cargo/clap_complete-4.4.4			
+https://github.com/sharkdp/fd.git	f57206a3a13c76ad0d5eae22c2f53b42ca600040	f823eac67285013dcf58d3e1cada278f20fac058	src/output.rs	not-fired	0	0	Update help text and man page			
+https://github.com/sharkdp/fd.git	efe499ac0dfc193a34d065e4d3e71d17f4646e9b	494eef044c8daa3be6b65e0a882df06725c302c3	build.rs	not-fired	0	0	Merge pull request #1717 from tmccombs/doc-better			
+https://github.com/sharkdp/fd.git	67aaf82d37f0d865359c8a9b627504f4978334af	f219da4b3a9af4139098502486bae1cc38c1a2a7	.snapcraft.yaml	not-fired	0	0	Update dependencies			
+https://github.com/sharkdp/fd.git	8207b3ebae78160e7593fa293e4c8c67c70dc302	27c6b5091924485b2fd4c2d784dc9cf5f91d3f5a	.snapcraft.yaml	not-fired	0	0	Merge pull request #1622 from sharkdp/dependabot/cargo/globset-0.4.15			
+https://github.com/sharkdp/fd.git	36361c39d2c210abbbacf56c60b4a6052daff0db	4349bfe9859625cf3386beb47068dcc5099fffa1	.gitignore	not-fired	0	0	Merge pull request #991 from sharkdp/dependabot/cargo/anyhow-1.0.56			
+https://github.com/sharkdp/fd.git	5b46867507b5cce8be1f80c8ca8a4d2b7d71fd91	e117a373a7032f47ab7847e32a187253788ce578	doc/.gitattributes	not-fired	0	0	Add Terminal Trove sponsorship			
+https://github.com/sharkdp/fd.git	95b4dff379e660a36de50aa15f3b302dda5a445d	c96b1af3beacaa2dba062f3108fa9aa6c1d485d6	src/walk.rs	not-fired	0	0	Merge pull request #1412 from tmccombs/limit-default-threads			
+https://github.com/sharkdp/fd.git	17d849df6c1d8660aa9faf6ec2bdaae455a4417e	b2c8888a501d4cf2679c7af595fa5cb935b06dc6	build.rs	not-fired	0	0	Compute colors in parallel			
+https://github.com/sharkdp/fd.git	7c86c7d58544021ae4ec50a171cde8585f8c65b0	addf00cb167ee6a9d8c14ddd9ca81512001af953	src/exit_codes.rs	not-fired	0	0	Merge pull request #1211 from tmccombs/fix-global-ignore			
+https://github.com/sharkdp/fd.git	831fe666fa9dccb98ffc7618edebb042297b1c00	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	src/output.rs	not-fired	0	0	Remove outdated TODO comment			
+https://github.com/sharkdp/fd.git	fcd846651bd2652f7d867f15e7159d085c2e7abc	6d777997592b1763bff58a89a164d96bbd24b0ce	src/output.rs	not-fired	0	0	Merge pull request #1921 from rexkirshner/fix-exclude-value-name-glob			
+https://github.com/sharkdp/fd.git	5e50825af23a28239d1cd15f7ab5f5c5aa1544e2	de611c8835be33fa33ce602cd7e57149e48cb52a	.snapcraft.yaml	not-fired	0	0	Merge pull request #1223 from sharkdp/dependabot/cargo/num_cpus-1.15.0			
+https://github.com/sharkdp/fd.git	aebe7537c3b20241d76a715ad70b493763791096	4356ba3c43e6701d305ddfab4a12607251eaf438	build.rs	not-fired	0	0	Bump regex-syntax from 0.6.28 to 0.6.29			
+https://github.com/sharkdp/fd.git	a0ca460901897037da015f4b4246dc303e5ce3b4	693325bcf272844ad5c8762a1768ae10eac178af	src/app.rs	not-fired	0	0	Adjust error message			
+https://github.com/sharkdp/fd.git	bf81fb98fae7731a11ad7ae4927d7083de02310c	9508153471aa6014755d94919683937cfdc7e4b2	src/exit_codes.rs	not-fired	0	0	Merge pull request #1852 from fischman/1727-ignore-contain			
+https://github.com/sharkdp/fd.git	ec38e23d582e5e35cdeb5e57d5e3d86468ae2724	56060a5b6bd06009c877acf7524b01406dd63a3e	.gitignore	not-fired	0	0	Add CHANGELOG entry			
+https://github.com/sharkdp/fd.git	1c316becf30b7671d4bea135856f95306f52ce9d	e1cb0f44a30bbb525c590de6062dd7e452f56a37	.snapcraft.yaml	not-fired	0	0	Merge pull request #1791 from sharkdp/dependabot/cargo/anyhow-1.0.99			
+https://github.com/sharkdp/fd.git	161ee643991dd8281caf0989a2b9651fc78094db	bae0a1bfa6333b32aa4f79b065fd74e84fe69300	doc/screencast.svg	not-fired	0	0	Merge pull request #1285 from tmccombs/doc-update			
+https://github.com/sharkdp/fd.git	85e3adaf1800fd8cb192f7a4a2bb9000f993f5bc	9e88f91c2275449a95f06fd33b2be5c18e358e7f	.gitignore	not-fired	0	0	Merge pull request #1170 from tmccombs/clap-improvements-2			
+https://github.com/sharkdp/fd.git	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	1714d416e232b99ce2a9480818811d816aeaf68a	doc/.gitattributes	not-fired	0	0	Add `-l`/`--list` option			
+https://github.com/sharkdp/fd.git	1a6638ba236457a36661c164a715d15d937dc86a	8772708aa7bd688e322c41745fcfc95d0f1fedda	.snapcraft.yaml	not-fired	0	0	Bump anyhow from 1.0.48 to 1.0.51 (#899)			
+https://github.com/sharkdp/fd.git	8bbbd7679b7eaf8782559c0320fc6cc86314319f	cd32a3827dd1323796ab6e6a44c47cc325f64a16	src/exit_codes.rs	not-fired	0	0	walk: New WorkerState struct shared by the worker threads			
+https://github.com/sharkdp/fd.git	59feb7d6abe1ad4ee3a0b6aef5450d2eb588b1c1	995d2f5e447491330dfdbdb70a4f8d582a4ba106	.snapcraft.yaml	not-fired	0	0	Merge pull request #1392 from sharkdp/dependabot/cargo/anyhow-1.0.75			
+https://github.com/sharkdp/fd.git	8b96a1e99cad6cd0e007088c41e04549405c6bcd	f52dec11a49317a72547d38414c20e97d78e4b16	doc/screencast.sh	not-fired	0	0	Update documentation of --batch-size feature			
+https://github.com/sharkdp/fd.git	4419401b6c221f18eab98a58664ff2d75950a8be	e46d402ed1a1bd1774a570f915bc3e8ddb5b5206	src/walk.rs	not-fired	0	0	Enable --strip-cwd-prefix by default except with -0			
+https://github.com/sharkdp/fd.git	762f551ff481875d0a5240dc374636e2e926772e	fb205f505766a615d356d33fc77c6b9de8559731	src/walk.rs	not-fired	0	0	Update --help text			
+https://github.com/sharkdp/fd.git	fcf8099587e78e9eee6e7bcc741a1b16c747fbbc	97dfd8b428b150b1c41633835393c3e84101092c	src/output.rs	not-fired	0	0	Add Github URL to `--help` also			
+https://github.com/sharkdp/fd.git	4d2472bfab484f18fd5f3bfd3fd992bbbb46a689	a851570b15bbca91f1f4ef230c6d8939f2459ecc	.gitignore	not-fired	0	0	Add documentation around regex syntax			
+https://github.com/sharkdp/fd.git	a64a607fd89a4454203dc4ecf32de114e7b6e36b	00eb6461cb2da687d1d0750a45efe9380c7e39b2	.gitignore	not-fired	0	0	Bump MSRV to 1.53			
+https://github.com/sharkdp/fd.git	5d2e011e90f8908ad42aac13bf2f49a008ec1ad1	64bde11887ea73be24c54ad39f2fbc4d692a5288	doc/screencast.svg	not-fired	0	0	change documentation message after feedbacks			
+https://github.com/sharkdp/fd.git	d48aeda6b2ba1af019e66b182ca45a59047b33c0	59c27baf0f1ed8ac441d316946ef37d28b23281b	src/exit_codes.rs	not-fired	0	0	Apply clippy suggestions			
+https://github.com/sharkdp/fd.git	639ed34791b7341aa2fe192d638f6f14eaab7088	da7ea790348c352b74c6ffb7c30b1e8b4e09a9b8	.snapcraft.yaml	not-fired	0	0	Allow use to disable jemalloc			
+https://github.com/sharkdp/fd.git	2cfb1a2bb2ba521f5ecc71ddf4ee5f662e8a7332	938dafda284bd2225c3388218ddc4eb843fa7e35	src/output.rs	not-fired	0	0	Adapt --list-details help message			
+https://github.com/sharkdp/fd.git	b415d7234b29a635f1989bdd6d51132ac4844559	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	src/output.rs	not-fired	0	0	Rename fshelper to filesystem			
+https://github.com/sharkdp/fd.git	ea48a969455967c2fe9a1134b4d45171cb94940b	f2fec4509934504e194a605c5582f3920e6f99c7	src/walk.rs	not-fired	0	0	Run cargo fmt			
+https://github.com/sharkdp/fd.git	385131765d1424a18c616e2b3b5cb3ce42a42a79	9f0fea6e21f5dfb192f456dd6fb1ff10cd1c1aa0	.gitignore	not-fired	0	0	Merge pull request #1598 from sharkdp/dependabot/cargo/version_check-0.9.5			
+https://github.com/sharkdp/fd.git	154cd6e32971e63ecfcffd8a62d4fecd88e75651	394e967b5fa2d6b19068ff34bef0ecbd1591c490	src/exec/job.rs	not-fired	0	0	Clarifying comments			
+https://github.com/sharkdp/fd.git	74c3431a2bf74ce78c26974f3cc07570e1d3baf3	1b4e1e9c1a3dfd7ecacfdd2d3cdb75326a14ff99	src/output.rs	not-fired	0	0	improve time option usage (#645)			
+https://github.com/sharkdp/fd.git	385131765d1424a18c616e2b3b5cb3ce42a42a79	9f0fea6e21f5dfb192f456dd6fb1ff10cd1c1aa0	build.rs	not-fired	0	0	Merge pull request #1598 from sharkdp/dependabot/cargo/version_check-0.9.5			
+https://github.com/sharkdp/fd.git	c48d02e0a9f50a7aeb8fa86b4b5f39588753ddab	b3399c239bfc702915606c415b5ce9f755e9d437	.gitignore	not-fired	0	0	Bump version to v8.3.2			
+https://github.com/sharkdp/fd.git	97dfd8b428b150b1c41633835393c3e84101092c	c127dc89a57d25e58c500167837843bb38bcd952	doc/screencast.svg	not-fired	0	0	Simplify some wording			
+https://github.com/sharkdp/fd.git	1d1eefdb7be684550d17cd550f149339cc9c2c2b	c8746f621608662f113a7ce379964d9491331257	.gitignore	not-fired	0	0	Disable jemalloc on macOS			
+https://github.com/sharkdp/fd.git	d5da615c175daf6bee64ff6649336b65dc8d62f5	641594c2c6339019eeb4ec960466b1be232c3fef	src/output.rs	not-fired	0	0	Implement glob-based searches			
+https://github.com/sharkdp/fd.git	99d1db8cb35349fd80174361535db9474563120f	fbef976b92493cdb4a3bffbf1c26da21d2edb21b	src/output.rs	not-fired	0	0	Merge pull request #1164 from tmccombs/owner-without-panic			
+https://github.com/sharkdp/fd.git	94993ca6c2af04df8861dee7d85b438f8e812327	3e0325cc601c5974febc2355d024c700d780b959	build.rs	not-fired	0	0	Rename `--same-file-system` to `--one-file-system`			
+https://github.com/sharkdp/fd.git	a954944d69c644a9ec2a0c10c10812ad87859916	27162c2729230ea9809f73cebba112cb229286bb	.gitignore	not-fired	0	0	Prepare 8.1.0 release			
+https://github.com/sharkdp/fd.git	d43827fe57183fa1456688c38e1db25ff4c7062c	ee673c92d375d9e5a6c126480a0383bbe3042b96	src/internal/mod.rs	not-fired	0	0	Add --max-results=<count> option			
+https://github.com/sharkdp/fd.git	16b46710eee30ed2a651ca193539c9bc4db7c8ac	edafedbbc730552ff25676577c5a898c35909963	.snapcraft.yaml	not-fired	0	0	Merge pull request #1703 from sharkdp/dependabot/cargo/clap_complete-4.5.47			
+https://github.com/sharkdp/fd.git	edafedbbc730552ff25676577c5a898c35909963	5f606ad6e2c2843bcc9f771c2220063e1ab7fd1a	doc/screencast.svg	not-fired	0	0	Merge pull request #1704 from vp-elitnet/changed_opt_doc_fix			
+https://github.com/sharkdp/fd.git	97f1558dafcd78d9dc3f410075fe6145197f64c2	f00af363d1815ca4c1fa44780ed130cd81944b56	build.rs	not-fired	0	0	Move colorized output section to 'Troubleshooting'			
+https://github.com/sharkdp/fd.git	e46d402ed1a1bd1774a570f915bc3e8ddb5b5206	9ea882d7cca53e15900cdba7f3a91126a6aa5475	src/exit_codes.rs	not-fired	0	0	Enable jemallocator on 64-bit musl builds			
+https://github.com/sharkdp/fd.git	53fd416c47e0d1a5311c4a2217c7c0ccbe444505	5e0018fb1fa197e7fd8d5fb526649db8c64267f6	src/exit_codes.rs	not-fired	0	0	docs: Document exclusion of .git/			
+https://github.com/sharkdp/fd.git	52f22557a52e3c9669db2cd1db4f9e282ff96b54	72cc9a876c301248add20220306529bf91d19f51	build.rs	not-fired	0	0	Update usage section			
+https://github.com/sharkdp/fd.git	97dfd8b428b150b1c41633835393c3e84101092c	c127dc89a57d25e58c500167837843bb38bcd952	doc/screencast.sh	not-fired	0	0	Simplify some wording			
+https://github.com/sharkdp/fd.git	e117a373a7032f47ab7847e32a187253788ce578	9cde3c12a269f094e08b32f416c0b6744c4b5f90	.snapcraft.yaml	not-fired	0	0	Merge pull request #1488 from sharkdp/dependabot/cargo/nu-ansi-term-0.50.0			
+https://github.com/sharkdp/fd.git	9350c8544d2e229e462936a5a1c5d3c1cac01df3	f55033818da86e0dd11cb04d823511453eebf2d4	src/output.rs	not-fired	0	0	Clean up cfg line			
+https://github.com/sharkdp/fd.git	7fdfd401070be74612c9c2ef16854effd0d69931	2f5ab528976f76d33d0ec39a84d3e0b00406b3b4	.gitignore	not-fired	0	0	Merge pull request #1830 from sharkdp/dependabot/cargo/ignore-0.4.25			
+https://github.com/sharkdp/fd.git	e990a13405883581e174d484a9f55c7451023bd1	7b7876e7012665b558a9873d505b8d7e2e6c8e5e	src/exit_codes.rs	not-fired	0	0	squash! Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	5147fd6aec79cc8c87a321546f1c1d1d7c4b6371	b6b16ce959f3c332150a991858ac26a6b8822a27	build.rs	not-fired	0	0	Merge pull request #1580 from sharkdp/dependabot/cargo/regex-1.10.5			
+https://github.com/sharkdp/fd.git	d9506eb2d4de3f1c8b5d229eb4b96019878121a0	d6040b6b8fe9e519fcafd6fc6ac335b69556fa00	build.rs	not-fired	0	0	build(deps): bump ignore from 0.4.31 to 0.4.33			
+https://github.com/sharkdp/fd.git	fd1ddc9d08010dfcba5b979963891a8f5f568fbf	e852009876da66efd68cef92e820dc63dac3ed60	src/app.rs	not-fired	0	0	Change dependency dirs to dirs-next			
+https://github.com/sharkdp/fd.git	45c66e7f1b503cd58789a4d7fc8a9a025f021f4e	441a235a0fa9e0dd23a4413cad27c750e75f5f8c	.snapcraft.yaml	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	d5da615c175daf6bee64ff6649336b65dc8d62f5	641594c2c6339019eeb4ec960466b1be232c3fef	.snapcraft.yaml	not-fired	0	0	Implement glob-based searches			
+https://github.com/sharkdp/fd.git	a9dc45ecb1e2245578ec7a748db8777a19784781	1a16003cca821f577f783656c048b23ca9e0b039	build.rs	not-fired	0	0	[ownership] document --owner in manpage and changelog			
+https://github.com/sharkdp/fd.git	c800c799764b2b258091c252b9a86e2f7caecd94	075c1af7d8c6dc5ddaab222a77d0670cb4c45e15	.gitignore	not-fired	0	0	Bump anyhow from 1.0.51 to 1.0.52			
+https://github.com/sharkdp/fd.git	9bd1647f8669213ea3d2de6648c1d81eca41249a	efe499ac0dfc193a34d065e4d3e71d17f4646e9b	src/exit_codes.rs	not-fired	0	0	Merge pull request #1722 from musicinmybrain/tikv			
+https://github.com/sharkdp/fd.git	2685728695c38cf44178fb4bdf6458bd7953125e	789706c3abd62f0a26083a8726a6b3b73dd953db	src/exit_codes.rs	not-fired	0	0	Add MacOS support for -l/--list-details			
+https://github.com/sharkdp/fd.git	47cedbb44e35cb425c3c0772f77a245252df63b2	b3e3977c2ba550867a64bfe2301f145085c23b48	.gitignore	not-fired	0	0	Merge pull request #1799 from ritoban23/fix-powershell-completion-collision			
+https://github.com/sharkdp/fd.git	8cea65c1b85c2ab17b8091d017c6ca15d3d6632d	9d73402ef2a62f41d94838fc77e8e01a66047f13	src/exit_codes.rs	not-fired	0	0	Simplify match statement			
+https://github.com/sharkdp/fd.git	feac240eb50ebbd422bbfe61ebecb4edf9d29a59	fba6db5096f8564a54fcc10d04c4eae1db4defa7	src/exit_codes.rs	not-fired	0	0	Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	c7370ca82c25f899f4e7528b3ec8b35bfdeb4ccc	cbc6ddeefc3410cb5fa2a64ee796e6aef93ea11c	src/exec/mod.rs	not-fired	0	0	Simplistic "Command not found" error message			
+https://github.com/sharkdp/fd.git	8eb047945ef2fb83000c0d7db0c17d935c6871d7	9fc2167cf9d390c3b3f898ccdf160c31cc9151be	src/exit_codes.rs	not-fired	0	0	Merge pull request #1541 from tavianator/clippy-is-empty			
+https://github.com/sharkdp/fd.git	3884f054f19603b64aef3f2898f6125e15599229	737b5bc42e11c4dd7e151c8869eb2f24ad8e1caf	.snapcraft.yaml	not-fired	0	0	Merge pull request #1382 from cstyles/bump-clap_complete			
+https://github.com/sharkdp/fd.git	feb969881b8dc0ff3ed7de118570da39e347501d	c06efe131787384f081f22421b63a2d4fe2efe22	.gitignore	not-fired	0	0	Bump libc from 0.2.101 to 0.2.103			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	src/app.rs	not-fired	0	0	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	194dbe20339c36879b5abb1058cdd8486b4824d9	97f1558dafcd78d9dc3f410075fe6145197f64c2	build.rs	not-fired	0	0	Move benchmark and CLI sections			
+https://github.com/sharkdp/fd.git	b674b9b820c9292660c05290ae894e0fbf670001	b19136871310b01500b4f09eadd7387b8476be47	.snapcraft.yaml	not-fired	0	0	Merge pull request #1611 from sharkdp/dependabot/cargo/clap_complete-4.5.24			
+https://github.com/sharkdp/fd.git	c6fcdbe000d2ac0161eaba524f020d6ccdbc50d5	306dacd0b41c52392d49e2a24564c94790168782	src/app.rs	not-fired	0	0	docs: Explicitly warn against relying on result order for exec			
+https://github.com/sharkdp/fd.git	d205a7ff9e40430458348b0408bb4e529eb8b280	296300ce46744f0b21527c0316da3e38812f5d18	doc/.gitattributes	not-fired	0	0	Improve --exclude help text, closes #661			
+https://github.com/sharkdp/fd.git	94993ca6c2af04df8861dee7d85b438f8e812327	3e0325cc601c5974febc2355d024c700d780b959	.snapcraft.yaml	not-fired	0	0	Rename `--same-file-system` to `--one-file-system`			
+https://github.com/sharkdp/fd.git	cf7dd43f80fb455fe7907c026fae5404f832868b	4ebb3bbc81fd30afabb8f4115e6719c6a527c11d	src/exit_codes.rs	not-fired	0	0	Hide --print0 from the short help text			
+https://github.com/sharkdp/fd.git	8a532e51969ddbe1a8850e7e3e4e060cd64035e0	b8089f8d5842dff6b4a42bf5dfdeb24c02b71d76	src/exit_codes.rs	not-fired	0	0	use custom --path-separator in arguments to --exec			
+https://github.com/sharkdp/fd.git	cb385a4822dfa4df452da2b4aa9d6c5d3e87ca91	efc71bc00b66afdbd570ad0ada21569e2a81cdae	src/exit_codes.rs	not-fired	0	0	Issue 624 newer older help text (#733)			
+https://github.com/sharkdp/fd.git	5be58f0f76326a86f324e376662bf5803422a893	8d30d6a4fe1d34008473bfb5838c8a1c9d68b8f7	.gitignore	not-fired	0	0	Merge pull request #1326 from sharkdp/dependabot/cargo/once_cell-1.17.2			
+https://github.com/sharkdp/fd.git	1a37650b2cca61c8f46fa6ec6c4b72f1356ef192	5f95a781212e3efbc6d91ae50e0ca0ce0693da50	src/walk.rs	not-fired	0	0	Merge pull request #1872 from josephadamsdev/fix-1843-windows-hyperlink-slash			
+https://github.com/sharkdp/fd.git	af9d8082a1be2a560c3a85ca8c7b71828ccdf31b	094516aec37df617cb8158d2d2ea9ed607060490	src/walk.rs	not-fired	0	0	Better error message			
+https://github.com/sharkdp/fd.git	b29e87ec30261d92d694b40c955e739f21d5c45a	7db25a7b23fefdee8b8fe1e479b91d32704441cb	doc/.gitattributes	not-fired	0	0	Merge pull request #976 from tmccombs/regex-doc			
+https://github.com/sharkdp/fd.git	e0adb45d082d8318ab284e208d59b8e3b53fc2d8	ec4cc981fcf47dbf5eb654ece3950543605ef383	src/app.rs	not-fired	0	0	Fail with error message if numeric arguments can not be parsed			
+https://github.com/sharkdp/fd.git	cfced9787ee544d99f36e455762defec87c6be16	9cefd79ef4a0e6f9d8dfb560f95921e46fe59e1c	doc/screencast.svg	not-fired	0	0	Merge pull request #1571 from tmccombs/hyperlink			
+https://github.com/sharkdp/fd.git	f63c4634710af20d8d8d8f6eb8bbbd1466c97af1	bd44c82404fb88bd96e6c261cdeae11c38b93add	.snapcraft.yaml	not-fired	0	0	update dependencies			
+https://github.com/sharkdp/fd.git	4590ae8535c70632e2f5e77eb95ef9ff18e63088	bce95274e34f88ca5a861aac1d9e2d407f864fcf	src/app.rs	not-fired	0	0	Proper error handling within walk.rs			
+https://github.com/sharkdp/fd.git	1b52948e42e612638131f376fee7415e08c4a38c	334488cab7709787ac1a7a0c6bfd4d3fd13b0cf7	doc/screencast.svg	not-fired	0	0	Add better documentation of vcs-ignore files.			
+https://github.com/sharkdp/fd.git	e2f90dba446d47bb496a4a28341306692e9626b6	5648597a617adae62500c65320f377574a1325fd	.gitignore	not-fired	0	0	Update LS_COLORS help text			
+https://github.com/sharkdp/fd.git	906e7a933ec1707bcae8e0d0711a6e688667569b	7a6cc92d6d3e9b2de8f6ae79811e53e243abf56a	.gitignore	not-fired	0	0	Merge pull request #1489 from sharkdp/dependabot/cargo/ignore-0.4.22			
+https://github.com/sharkdp/fd.git	5a154866e36fdba1473cede0f9d9a4fcff45a60c	ac3e0e18e47b793d57263c8a1af942bee1966673	.snapcraft.yaml	not-fired	0	0	Use jemalloc			
+https://github.com/sharkdp/fd.git	17fbc2dc52fd2c78f59b20ead60c2dceaaf2106b	074de44caf43e9db3b8e97c87dcfd60ccf4b6b00	.gitignore	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	4ea110d8dd0775c5c892855dd34d777125b93b99	aa35ef4e458353b64664aa4a8b5e16c60bdd1b5b	build.rs	not-fired	0	0	Merge pull request #1911 from tmccombs/release-10.4.1			
+https://github.com/sharkdp/fd.git	f823eac67285013dcf58d3e1cada278f20fac058	cbf3f11cf88884af8aff8c47f41c1ec12edf79c6	build.rs	not-fired	0	0	Update CHANGELOG.md			
+https://github.com/sharkdp/fd.git	ba473fc92571ed0bb4a4815c457ff504e2519eb0	6e5c8d9c20f6006592ba34f237eabef7389c7c5c	.snapcraft.yaml	not-fired	0	0	Bump lscolors from 0.8.1 to 0.9.0			
+https://github.com/sharkdp/fd.git	7f5bc9884f6d14d7061d074df807537191a450a6	ac35b11dc8cf7d41c89f21ee51bc5d225ca1f186	src/exit_codes.rs	not-fired	0	0	Add simple 'about' text			
+https://github.com/sharkdp/fd.git	3b7b95d0815dab6c8ffd60feec78999fcab82b99	1fed60d5c1a4c105534881f887df2a4247cd6ae3	build.rs	not-fired	0	0	Merge pull request #1625 from sharkdp/dependabot/cargo/anyhow-1.0.89			
+https://github.com/sharkdp/fd.git	90e73d72df258db32bad7a4d11154a936b05ea92	a665a3bba9abc85e80c142a7dcdb8c356b12d9c9	src/walk.rs	not-fired	0	0	Merge pull request #1959 from tmchow/osc/1958-ignore-parent			
+https://github.com/sharkdp/fd.git	8dda4998304e4fef04bc0119aa7114d47969129a	db2590dca56a180d51ec73a3dc41963e454452cc	doc/.gitattributes	not-fired	0	0	Merge pull request #1176 from tmccombs/changed-after			
+https://github.com/sharkdp/fd.git	5776a05a24c58a32e0b94b0037debb63c0d00f89	2250bb0ad13bf2ab93f4d56977811e648b3f62dc	.snapcraft.yaml	not-fired	0	0	Merge pull request #1986 from sharkdp/dependabot/cargo/jiff-0.2.24			
+https://github.com/sharkdp/fd.git	a539181f1f50a36575cfe775f6fa9c9e3719cc78	2570fbd04e058ed449e95b2583e7145c40e9c925	src/output.rs	not-fired	0	0	Merge pull request #822 from Asha20/pr/opposing-options			
+https://github.com/sharkdp/fd.git	791a66893e55c8ed489761b2ff7e4931ed7b2dab	d298ce15ccef8629a57efddac7b0f819302c6482	.gitignore	not-fired	0	0	Merge pull request #1055 from sharkdp/dependabot/cargo/globset-0.4.9			
+https://github.com/sharkdp/fd.git	b82e48f6daaf2370da47c0e85fc968d83a31de15	c47501ef7ccb3a2f3a0e99b089d16bb3b3d94f60	doc/.gitattributes	not-fired	0	0	Update screencast			
+https://github.com/sharkdp/fd.git	f0c50befce07d2f1a073a4478ca73cf9c5b11184	7917c0088715c370b12b8b2551d1e477ea478d48	build.rs	not-fired	0	0	Add a changelog entry			
+https://github.com/sharkdp/fd.git	1a37650b2cca61c8f46fa6ec6c4b72f1356ef192	5f95a781212e3efbc6d91ae50e0ca0ce0693da50	.snapcraft.yaml	not-fired	0	0	Merge pull request #1872 from josephadamsdev/fix-1843-windows-hyperlink-slash			
+https://github.com/sharkdp/fd.git	aeb4a5fdad1109b8ef1cddfd0ad347bceef38ed7	9529f30129e2696bc4a4027561e66c6de69b3195	.gitignore	not-fired	0	0	Fixes typo in README			
+https://github.com/sharkdp/fd.git	c4094c7a05e5464b92d779f8116dba98a280dd28	31f28397514995d7d24a35a649299a0fca8d93c0	build.rs	not-fired	0	0	Merge pull request #1492 from AlbydST/master			
+https://github.com/sharkdp/fd.git	7213f5a88ecf860e0a08d34f8869a1fa6e99a346	fa7d49282bf2d7b893c5dfe296893f7fc8507a58	src/app.rs	not-fired	0	0	Add collection of job & thread exit codes + default to ExitCode::Error if any ExitCode::Error			
+https://github.com/sharkdp/fd.git	02e98501125f199e78f555856ef81577053f93bf	b8c575cc8f6e3e00537fe4c436805af099320fc0	src/exit_codes.rs	not-fired	0	0	Refactor: Rename `Options` to `Config`			
+https://github.com/sharkdp/fd.git	c577b0838b2e8da07c266f19ffb52dfee7a53f1a	5a12a5e421d5ffcec145fb2a7b0fbfa7250c129f	src/exec/job.rs	not-fired	0	0	Error out if no args provided to --exec or --exec-batch			
+https://github.com/sharkdp/fd.git	a81fef99921287501480d76ed5236625489502eb	53c338d71fbe46375937921bd9acde49524cbc71	src/exit_codes.rs	not-fired	0	0	Windows: Check for xterm-256color environment variable as a proxy for color support			
+https://github.com/sharkdp/fd.git	ddd3aae24962dce658f1ee76079ec1557cedd543	9279b1f0af0a88736cd28cff74d86afec72841d7	.gitignore	not-fired	0	0	Merge pull request #1542 from sharkdp/dependabot/cargo/nix-0.28.0			
+https://github.com/sharkdp/fd.git	a5f17db53af9be802a0b19e593b9b65db538f1d5	f1a5aa0887bdcf6c32df3c6d76f4466a19fd4f0f	.snapcraft.yaml	not-fired	0	0	CI: Run clippy on stable and use msrv setting in `clippy.toml`			
+https://github.com/sharkdp/fd.git	bf81fb98fae7731a11ad7ae4927d7083de02310c	9508153471aa6014755d94919683937cfdc7e4b2	.snapcraft.yaml	not-fired	0	0	Merge pull request #1852 from fischman/1727-ignore-contain			
+https://github.com/sharkdp/fd.git	81dee25438a4fc40e69f610e760d7a2aab117de6	bbf0f1cc1f2531ea042aeae6806ce38d26125499	src/app.rs	not-fired	0	0	Add additional check for symlink			
+https://github.com/sharkdp/fd.git	af9daff4eea5162c9a4fd5e7ab4e10f9b784310e	503ede7535d0f9d45c1fb27905c2ef49ec24b6cc	src/app.rs	not-fired	0	0	Merge pull request #1216 from vegerot/pr1216			
+https://github.com/sharkdp/fd.git	e1cb0f44a30bbb525c590de6062dd7e452f56a37	009d776db5079f31f7c4081300ab53cbd5778c24	build.rs	not-fired	0	0	Merge pull request #1792 from sharkdp/dependabot/cargo/libc-0.2.175			
+https://github.com/sharkdp/fd.git	5439326aa412f22c8e819760564a408eb06c7136	35bc1f95fb9661ae3522b474b643dfc7a83bfd93	.snapcraft.yaml	not-fired	0	0	CI updates			
+https://github.com/sharkdp/fd.git	1ac2c38b6b2c1e2906d62fd419ebe6ea71941134	eb111aa83501ac68bc2844890904c34c18a52b89	.snapcraft.yaml	not-fired	0	0	Bump libc from 0.2.116 to 0.2.119			
+https://github.com/sharkdp/fd.git	b8c575cc8f6e3e00537fe4c436805af099320fc0	3de948ae0dcc6894580ccd1a0b433f0bd7e859ab	src/walk.rs	not-fired	0	0	Refactor: extract some methods out of `run` and reorder `main.rs`			
+https://github.com/sharkdp/fd.git	ba2dde80f37214e050a684ee3093db8b7f595ff4	7f3dd940926ac1cb64ec2ad6e3fe5cf624c60487	.gitignore	not-fired	0	0	Merge pull request #1801 from sharkdp/dependabot/cargo/clap_complete-4.5.58			
+https://github.com/sharkdp/fd.git	bbd8c78861dbe8be2c05b4b2596a50240a2f3a24	9d938075122565356f333fab1bf94b7b0b924cea	build.rs	not-fired	0	0	Added installation instructions for RHEL8			
+https://github.com/sharkdp/fd.git	db2590dca56a180d51ec73a3dc41963e454452cc	38cdeb041364d3a644d3cfd68daf724e0d35b29b	src/exit_codes.rs	not-fired	0	0	Merge pull request #1178 from tmccombs/windows-completion-fix			
+https://github.com/sharkdp/fd.git	74c3431a2bf74ce78c26974f3cc07570e1d3baf3	1b4e1e9c1a3dfd7ecacfdd2d3cdb75326a14ff99	src/exit_codes.rs	not-fired	0	0	improve time option usage (#645)			
+https://github.com/sharkdp/fd.git	0884b837b28af7a60befaf857974515d9df63fcd	69521a105729c6394db03c0081bf3e96b3fda35c	.snapcraft.yaml	not-fired	0	0	Merge pull request #1310 from sharkdp/dependabot/cargo/clap_complete-4.2.1			
+https://github.com/sharkdp/fd.git	ecfd8cea410b4c989e85c8e3561d944916415b85	d2659de7820b337c4cd82a06cba5277d346a02e8	src/walk.rs	not-fired	0	0	Update --help text regarding pattern, closes #684			
+https://github.com/sharkdp/fd.git	95b4dff379e660a36de50aa15f3b302dda5a445d	c96b1af3beacaa2dba062f3108fa9aa6c1d485d6	src/exit_codes.rs	not-fired	0	0	Merge pull request #1412 from tmccombs/limit-default-threads			
+https://github.com/sharkdp/fd.git	9955e20d01ae9b01dfadda68f172f0bacc9e44a1	03052757a731086528fad879d7b3e686b20240e9	.gitignore	not-fired	0	0	Merge pull request #1253 from sharkdp/dependabot/cargo/nix-0.26.2			
+https://github.com/sharkdp/fd.git	4e2c81277ac063773424953664a986d9db9520a9	0e74d5b75dfd65e756dcb934ff505682a6f18e83	build.rs	not-fired	0	0	Merge pull request #1975 from SAY-5/fix/pattern-path-separator-v2			
+https://github.com/sharkdp/fd.git	342d12db3ff317f22347d4d8edb349d39e269194	c79d1638f5caa5f9554c971168737ea2305ff33c	src/internal/opts.rs	not-fired	0	0	Remove possibility to use '--exec <cmd>' with a single dash			
+https://github.com/sharkdp/fd.git	e3b40208d5cc3e0469f703637475a344aafdc772	16c2d1e1d05e815ef5b564cb7710b80853b75066	doc/screencast.sh	not-fired	0	0	Preprations for fd 9 release			
+https://github.com/sharkdp/fd.git	5439326aa412f22c8e819760564a408eb06c7136	35bc1f95fb9661ae3522b474b643dfc7a83bfd93	build.rs	not-fired	0	0	CI updates			
+https://github.com/sharkdp/fd.git	56c405d8e6bbd5c49e5beaf33c7d882de72900d4	99d1db8cb35349fd80174361535db9474563120f	.gitignore	not-fired	0	0	Updates for fd 8.5.2			
+https://github.com/sharkdp/fd.git	91f5abbfa5064346841421c0f833a222469a7a86	b6ca4e02167833c2c492de6ae9d06b56488d4696	doc/screencast.sh	not-fired	0	0	Merge pull request #2179 from ump45nose/man-no-ignore-parent			
+https://github.com/sharkdp/fd.git	74c3431a2bf74ce78c26974f3cc07570e1d3baf3	1b4e1e9c1a3dfd7ecacfdd2d3cdb75326a14ff99	src/walk.rs	not-fired	0	0	improve time option usage (#645)			
+https://github.com/sharkdp/fd.git	6a68ac8c27ba6d67f1429cc65fded3fa61564900	09cdf9831d1e2e514a9bf33e80cbda94b586b37b	src/walk.rs	not-fired	0	0	[ownership] add help text for --owner			
+https://github.com/sharkdp/fd.git	4e20803e7dfe20527887aabeb9ce2d9cca4155b8	5a154866e36fdba1473cede0f9d9a4fcff45a60c	src/output.rs	not-fired	0	0	Disable jemallocator on Windows			
+https://github.com/sharkdp/fd.git	e46d402ed1a1bd1774a570f915bc3e8ddb5b5206	9ea882d7cca53e15900cdba7f3a91126a6aa5475	build.rs	not-fired	0	0	Enable jemallocator on 64-bit musl builds			
+https://github.com/sharkdp/fd.git	1d16cd855e7f677a9acffd3848e5ba18082c7816	a0505bd4df82dc2203195d4f651a5ab7227987d0	src/internal/filter/mod.rs	not-fired	0	0	Fix warnings			
+https://github.com/sharkdp/fd.git	7decd53c7096780b8442749e9865ffaf098b6af0	d5253c5372975deda5e8a6795eb4bdf39c60d430	.snapcraft.yaml	not-fired	0	0	Merge pull request #1601 from sharkdp/dependabot/cargo/clap-4.5.13			
+https://github.com/sharkdp/fd.git	9f5ed8534e824b3e2a0934ff3aa0b781cb370688	c48d02e0a9f50a7aeb8fa86b4b5f39588753ddab	doc/.gitattributes	not-fired	0	0	Add temporary version of logo			
+https://github.com/sharkdp/fd.git	b2fa188029eb9d1450ab83053700995fc938d160	e0adb45d082d8318ab284e208d59b8e3b53fc2d8	.gitignore	not-fired	0	0	Avoid panic when sending errors after receiver shutdown			
+https://github.com/sharkdp/fd.git	115ae93df944d6c08f26e3c20e06e36e0aaba396	c06c9952b61f35a7881b399cd21d0a4f821e7055	src/exit_codes.rs	not-fired	0	0	Refactor file types check to be on impl of FileTypes			
+https://github.com/sharkdp/fd.git	0649c2b379a6d5b438a609487ffafb69c2fb14ce	29936f0fbae1e52984ab582b2b2c98685d6ad638	.gitignore	not-fired	0	0	Merge pull request #1568 from sharkdp/dependabot/cargo/crossbeam-channel-0.5.13			
+https://github.com/sharkdp/fd.git	c9dc61771149704bf8b0f5dbe9245e8b2f7a3390	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	doc/screencast.sh	not-fired	0	0	Rename --list to --list-details			
+https://github.com/sharkdp/fd.git	9ea882d7cca53e15900cdba7f3a91126a6aa5475	f63c4634710af20d8d8d8f6eb8bbbd1466c97af1	src/output.rs	not-fired	0	0	Fix clippy suggestions			
+https://github.com/sharkdp/fd.git	1c72f80ff5f8cd3580085f2ead6819f8cdae0b65	5b4869a940ecba3afef71894b019507d9d271474	doc/.gitattributes	not-fired	0	0	fix whitespace			
+https://github.com/sharkdp/fd.git	8ccf21437b3af81bb74307b4f1ea91b415a6cc3b	4419401b6c221f18eab98a58664ff2d75950a8be	.snapcraft.yaml	not-fired	0	0	Mention EuroLinux			
+https://github.com/sharkdp/fd.git	328c6640be2ed3ba7adc800065b6cf2703dcd693	c001dd47a754c3edd1b7f84061950f31a24ac148	src/exit_codes.rs	not-fired	0	0	Formatting			
+https://github.com/sharkdp/fd.git	24c8a829f6c92ef57082cae000b52a1d27c899a4	c71afdf0c5eb19b3ee9462a5c25b07a0c71f3317	build.rs	not-fired	0	0	Merge pull request #2145 from sharkdp/dependabot/cargo/jiff-0.2.37			
+https://github.com/sharkdp/fd.git	efe499ac0dfc193a34d065e4d3e71d17f4646e9b	494eef044c8daa3be6b65e0a882df06725c302c3	doc/screencast.svg	not-fired	0	0	Merge pull request #1717 from tmccombs/doc-better			
+https://github.com/sharkdp/fd.git	6a3aae52fdc60c6bc4b08d4122c7d91b2578c648	7dc81381b070532f941c43ffddb4ba8333c2d8b6	.snapcraft.yaml	not-fired	0	0	Bump version to v8.2.1			
+https://github.com/sharkdp/fd.git	0fc8facfb710a897bf1d649e1c815a4ef3008c94	069b1816259a7b89c9a9fa248b3840fb7cc5104f	src/output.rs	not-fired	0	0	Fix --help text			
+https://github.com/sharkdp/fd.git	85cbea8dcb6ca5c4de7402373b6b83ba146ca682	bc6782624ef8d886c267c0f698e3895d9657df0e	doc/screencast.svg	not-fired	0	0	Merge pull request #1494 from nabellows/master			
+https://github.com/sharkdp/fd.git	cb4069ec55b96799d542f2375a89aeb82f219128	69a25907ab09c2c2a49607d8ad474f4f40067a55	build.rs	not-fired	0	0	Merge pull request #2087 from sharkdp/dependabot/cargo/globset-0.4.19			
+https://github.com/sharkdp/fd.git	c001dd47a754c3edd1b7f84061950f31a24ac148	a9c7696ecc09e3f0cf00b95d3acc9416c67df0f3	src/output.rs	not-fired	0	0	Hide --one-file-system from the short help text			
+https://github.com/sharkdp/fd.git	0b7febc3b695753db4db845f2e7b635fcfefbcbc	d91100e354a43d89bbb3f2309908a1579d42e4a3	src/walk.rs	not-fired	0	0	Windows support (if GNU ls is installed)			
+https://github.com/sharkdp/fd.git	ccc6cc54b29d005f7a285a130482e9d7ab3544d0	aa1c0250b7053a88f2adb6ba7e2cf8c2f912a2a6	src/exec/mod.rs	not-fired	0	0	Merge pull request #916 from tavianator/revert-crossbeam			
+https://github.com/sharkdp/fd.git	74b850a642b6a2c50af09205c9876b4727fbe740	4202f3939ef12cafcfe93cb049643d3e267bcb49	.snapcraft.yaml	not-fired	0	0	Merge pull request #1436 from sharkdp/dependabot/cargo/clap-4.4.10			
+https://github.com/sharkdp/fd.git	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	a11f8426d4e88ccc3745cc27b700aeb5ede39013	.gitignore	not-fired	0	0	feat: Add a way to escape { and }in exec templates.			
+https://github.com/sharkdp/fd.git	13a47c3a2cc3742f0e3ebea4ea9212a1c6b6aa90	c6f9595a02750c4015df1781d313c80630608cfb	src/output.rs	not-fired	0	0	Merge pull request #1067 from tmccombs/clap-derive			
+https://github.com/sharkdp/fd.git	d9697d14867c59dad487bb202c23840a430a6bb0	515e0ee4693812626b70f95f1ca4e88cdaefd10a	src/exit_codes.rs	not-fired	0	0	Make the path-separator check Windows-only			
+https://github.com/sharkdp/fd.git	feb969881b8dc0ff3ed7de118570da39e347501d	c06efe131787384f081f22421b63a2d4fe2efe22	.snapcraft.yaml	not-fired	0	0	Bump libc from 0.2.101 to 0.2.103			
+https://github.com/sharkdp/fd.git	d491003759816f8bb264271a414159c2098d1d6c	1cfac9ff7b6d470df23b59290f76d6550e557486	build.rs	not-fired	0	0	Merge pull request #2006 from Sean-Kenneth-Doherty/codex/single-dash-search-path			
+https://github.com/sharkdp/fd.git	38cdeb041364d3a644d3cfd68daf724e0d35b29b	d89b5755d99a8e43a7166bcf70819a25aad08701	.snapcraft.yaml	not-fired	0	0	Merge pull request #1169 from Ptipiak/mention-executable-detection			
+https://github.com/sharkdp/fd.git	588e344d5bfe09d5a299ee7fa88e07605e07a4ca	e3af9b0307a2b9c74e266ac8966b7b3f2a4c8b59	src/output.rs	not-fired	0	0	Remove type annotation.			
+https://github.com/sharkdp/fd.git	5f95a781212e3efbc6d91ae50e0ca0ce0693da50	49ded38b8ae9066ed03f27340db532b47696cdab	build.rs	not-fired	0	0	Merge pull request #1870 from sharkdp/dependabot/cargo/libc-0.2.178			
+https://github.com/sharkdp/fd.git	33eb857a81cdbd9e97a3323c96fb3594f5cea342	6e96154d8649163df7a6fae0c55539108c14e148	src/output.rs	not-fired	0	0	Cleanup			
+https://github.com/sharkdp/fd.git	8958a7bd747b0ac6c2898f977d18d26e3c6c5b6a	7decd53c7096780b8442749e9865ffaf098b6af0	.gitignore	not-fired	0	0	Merge pull request #1602 from JCHacking/readme_last_version_regex			
+https://github.com/sharkdp/fd.git	da5cd12b2470296e2bd9cd6064b4aeeaa97d8a9e	1714d416e232b99ce2a9480818811d816aeaf68a	src/exit_codes.rs	not-fired	0	0	Add `-l`/`--list` option			
+https://github.com/sharkdp/fd.git	c43c931985fe98120afd6f831226ead641fb3a3b	41dc622fb5ac2439292c96f41d46356d020cbf88	.snapcraft.yaml	not-fired	0	0	Update intro			
+https://github.com/sharkdp/fd.git	b211ded5dee8809129a4c61d4a58289974c6e12d	0484486f3f704aecadd35b574f1ab179ce03bcd8	src/exit_codes.rs	not-fired	0	0	Merge pull request #861 from jcaplan/no-strip/760			
+https://github.com/sharkdp/fd.git	aeff525c300481dc3eaa57cbbe1340cf798641d0	2d398dc4a7849d6074b166482548195c187b46f7	src/output.rs	not-fired	0	0	Attempt to fix #365			
+https://github.com/sharkdp/fd.git	639ed34791b7341aa2fe192d638f6f14eaab7088	da7ea790348c352b74c6ffb7c30b1e8b4e09a9b8	src/exit_codes.rs	not-fired	0	0	Allow use to disable jemalloc			
+https://github.com/sharkdp/fd.git	a0370aaf25ab990827802a55f0cb7bfa44b36cc8	d6e9cbfff302ba8427514196cc0e52a7e17d9a38	src/app.rs	not-fired	0	0	Merge pull request #1333 from tmccombs/rust-170			
+https://github.com/sharkdp/fd.git	7b5b3ec47b98984121e2665c7bad5274cb8db796	02e98501125f199e78f555856ef81577053f93bf	src/exit_codes.rs	not-fired	0	0	walk: Add a cache for DirEntry metadata			
+https://github.com/sharkdp/fd.git	ec4cc981fcf47dbf5eb654ece3950543605ef383	06eb231fbd6481956fea95800f04169d119c802c	build.rs	not-fired	0	0	Add --prune flag			
+https://github.com/sharkdp/fd.git	d2659de7820b337c4cd82a06cba5277d346a02e8	d205a7ff9e40430458348b0408bb4e529eb8b280	doc/.gitattributes	not-fired	0	0	Improve --extension help text, closes #673			
+https://github.com/sharkdp/fd.git	9fe5cb7860163d6ed8889d014d8e00aab7e05bd5	3460b1e96c3c54ce524dd1763ff361607e323a7f	src/app.rs	not-fired	0	0	Merge pull request #2143 from tmccombs/broken-symlink-refactor			
+https://github.com/sharkdp/fd.git	42b2ab8a84ddedf80eeed9079128c60161f64658	febc1b692f5521c4a5e0ddaf926700954ce4d035	src/output.rs	not-fired	0	0	Merge pull request #1983 from DeflateAwning/feat-exact-i1963			
+https://github.com/sharkdp/fd.git	59feb7d6abe1ad4ee3a0b6aef5450d2eb588b1c1	995d2f5e447491330dfdbdb70a4f8d582a4ba106	build.rs	not-fired	0	0	Merge pull request #1392 from sharkdp/dependabot/cargo/anyhow-1.0.75			
+https://github.com/sharkdp/fd.git	4cafb289515b96d402653a6acf886a40481dfe55	79d5a5bdc532b4988a180431ef545e10f7598446	build.rs	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	42b2ab8a84ddedf80eeed9079128c60161f64658	febc1b692f5521c4a5e0ddaf926700954ce4d035	src/exit_codes.rs	not-fired	0	0	Merge pull request #1983 from DeflateAwning/feat-exact-i1963			
+https://github.com/sharkdp/fd.git	44605d55dd2edd8d3563504587ed81c45ebc2c82	e5e14f31c45ea74dea4ad5e6ec06346f3ad5cd88	src/app.rs	not-fired	0	0	Use .to_string() instead of .description()			
+https://github.com/sharkdp/fd.git	c800c799764b2b258091c252b9a86e2f7caecd94	075c1af7d8c6dc5ddaab222a77d0670cb4c45e15	build.rs	not-fired	0	0	Bump anyhow from 1.0.51 to 1.0.52			
+https://github.com/sharkdp/fd.git	5376676d07a1af31ee5f181c4208654cf8744658	4f1bcfedf32eb662fa7c67319f3a113219fc0da9	build.rs	not-fired	0	0	Merge pull request #1125 from sharkdp/dependabot/cargo/anyhow-1.0.65			
+https://github.com/sharkdp/fd.git	14dcd92fb76ca0ebc2e82671a275f67c790d25fc	24c8a829f6c92ef57082cae000b52a1d27c899a4	.snapcraft.yaml	not-fired	0	0	Merge pull request #2144 from sharkdp/dependabot/cargo/normpath-1.5.2			
+https://github.com/sharkdp/fd.git	82aa17f9fbf0fbc586c71512c7a9840823bf873c	9b8457aeb3ac6fe3c5a5861ce3f8544ae7142500	.snapcraft.yaml	not-fired	0	0	Merge pull request #1270 from sharkdp/dependabot/cargo/ctrlc-3.2.4			
+https://github.com/sharkdp/fd.git	9d73402ef2a62f41d94838fc77e8e01a66047f13	06434f229b5edd156c127e072a3db88a6aa6443c	src/output.rs	not-fired	0	0	walk: catch ignore NotFound error in the case of a broken symlink			
+https://github.com/sharkdp/fd.git	5fbfdfadb82763199127427bc88c24d74aeb3f03	52f22557a52e3c9669db2cd1db4f9e282ff96b54	src/exit_codes.rs	not-fired	0	0	fix: disable jemalloc on FreeBSD			
+https://github.com/sharkdp/fd.git	a248607beefac2137cbe068ef74898c46e0705dd	7d357a6cec60e58115bf39cd7285b3c766b9a4b3	.gitignore	not-fired	0	0	Merge pull request #1350 from tmccombs/regex-upgrade			
+https://github.com/sharkdp/fd.git	9ced5675d236782a5c145f66d8569874d73d5cfd	a0062b9a1be36a4b1072b8e476462f71c3a1f78a	.gitignore	not-fired	0	0	Merge pull request #1094 from sharkdp/dependabot/cargo/libc-0.2.132			
+https://github.com/sharkdp/fd.git	266499800b7ae3a29a9ccef4ba24fe195763a3e2	94916709743ab7e06756f9cdd7a3ed24ea5c29df	src/exit_codes.rs	not-fired	0	0	Fix idempotent flags			
+https://github.com/sharkdp/fd.git	feac240eb50ebbd422bbfe61ebecb4edf9d29a59	fba6db5096f8564a54fcc10d04c4eae1db4defa7	src/app.rs	not-fired	0	0	Add buffering to stdout when it's not a terminal			
+https://github.com/sharkdp/fd.git	fcd846651bd2652f7d867f15e7159d085c2e7abc	6d777997592b1763bff58a89a164d96bbd24b0ce	doc/screencast.svg	not-fired	0	0	Merge pull request #1921 from rexkirshner/fix-exclude-value-name-glob			
+https://github.com/sharkdp/fd.git	9508153471aa6014755d94919683937cfdc7e4b2	1a37650b2cca61c8f46fa6ec6c4b72f1356ef192	.gitignore	not-fired	0	0	Merge pull request #1862 from jylenhof/master			
+https://github.com/sharkdp/fd.git	cd14bb8a2cf8104043c1fbb2a323bc4273105e5b	7162f28a5b750240c41c07f7ccf7f1e959419a6b	.snapcraft.yaml	not-fired	0	0	Merge pull request #1358 from sharkdp/dependabot/cargo/chrono-0.4.26			
+https://github.com/sharkdp/fd.git	639ed34791b7341aa2fe192d638f6f14eaab7088	da7ea790348c352b74c6ffb7c30b1e8b4e09a9b8	src/walk.rs	not-fired	0	0	Allow use to disable jemalloc			
+https://github.com/sharkdp/fd.git	969316cc0e87171273c6ea78ca73b6ee9ac3cb20	5b46867507b5cce8be1f80c8ca8a4d2b7d71fd91	build.rs	not-fired	0	0	More whitespace			
+https://github.com/sharkdp/fd.git	c0592e276eaad85bfc04d692447fde90db63a0bb	d41a5a9e249de515e99eeb434e663f914ca06706	build.rs	not-fired	0	0	Disable caching on Travis			
+https://github.com/sharkdp/fd.git	e50cb817e1c0a18384df104b039e62666b7843aa	8207b3ebae78160e7593fa293e4c8c67c70dc302	.gitignore	not-fired	0	0	Merge pull request #1621 from sharkdp/dependabot/cargo/clap_complete-4.5.28			
+https://github.com/sharkdp/fd.git	c001dd47a754c3edd1b7f84061950f31a24ac148	a9c7696ecc09e3f0cf00b95d3acc9416c67df0f3	build.rs	not-fired	0	0	Hide --one-file-system from the short help text			
+https://github.com/sharkdp/fd.git	3cf5ac0b9a939dd7e8568f937fc26163fcc5f75b	73a693ef28edcfac5f78adc40c0fc5c0f7fcf1bc	build.rs	not-fired	0	0	Merge pull request #1256 from sitiom/patch-1			
+https://github.com/sharkdp/fd.git	296300ce46744f0b21527c0316da3e38812f5d18	ea48a969455967c2fe9a1134b4d45171cb94940b	src/walk.rs	not-fired	0	0	Fix clippy suggestions			
+https://github.com/sharkdp/fd.git	cb6295d0250ea1454ddb704c8db87f92abae18fb	a5f69579cfe9282b6342756b347ad16b197b6d1b	src/output.rs	not-fired	0	0	Move current_directory variable definition closer to usage			
+https://github.com/sharkdp/fd.git	a665a3bba9abc85e80c142a7dcdb8c356b12d9c9	607ae385f69afb275be75cf5487408e8505d4be3	src/app.rs	not-fired	0	0	Merge pull request #1953 from Rohan5commit/docs-macos-comment-20260404			
+https://github.com/sharkdp/fd.git	7c86c7d58544021ae4ec50a171cde8585f8c65b0	addf00cb167ee6a9d8c14ddd9ca81512001af953	.snapcraft.yaml	not-fired	0	0	Merge pull request #1211 from tmccombs/fix-global-ignore			
+https://github.com/sharkdp/fd.git	5a12a5e421d5ffcec145fb2a7b0fbfa7250c129f	9f39f1d75b05da4fb85fbfa9fee84428bbc7d466	src/exec/job.rs	not-fired	0	0	Use full names in command.rs			
+https://github.com/sharkdp/fd.git	aa41f342b5e7a8998d607c967ea672d5971763d3	cffed27a2e498988c2da2aba827f3c557c13f01a	.gitignore	not-fired	0	0	Merge pull request #2050 from sharkdp/dependabot/cargo/jiff-0.2.29			
+https://github.com/sharkdp/fd.git	342d12db3ff317f22347d4d8edb349d39e269194	c79d1638f5caa5f9554c971168737ea2305ff33c	src/output.rs	not-fired	0	0	Remove possibility to use '--exec <cmd>' with a single dash			
+https://github.com/sharkdp/fd.git	0895027ed6e40cc02418a691f0d078602f8fe6f5	c60cf9c1a818b404ba31776806ebc8790172164c	doc/screencast.svg	not-fired	0	0	Add 'glob' syntax link as well			
+https://github.com/sharkdp/fd.git	6830b3dee950b9c11e66f9fba5f8090f3f0deb0d	f3edaf0e4d96b99a0630d2e5a0f033879a41a7bc	src/exit_codes.rs	not-fired	0	0	Better defaults for LsColors			
+https://github.com/sharkdp/fd.git	e0cba4b700a8846629d9e6cb91fa032bdd4a249b	342d12db3ff317f22347d4d8edb349d39e269194	src/internal/opts.rs	not-fired	0	0	Remove 'internal' module			
+https://github.com/sharkdp/fd.git	3b2fd158b5ef4ba5f8cccddc2d2efb1de24b6c47	c38dbacbd08faf365e328bd539ad6cc665cf014f	build.rs	not-fired	0	0	Merge pull request #1502 from sharkdp/dependabot/cargo/tempfile-3.10.1			
+https://github.com/sharkdp/fd.git	99934ab98ce1247b789956eb969ff437ae553da7	633d486ac1d7a305a434e94ab0ef03d8a54c4d54	src/walk.rs	not-fired	0	0	add --base-directory, --path-separator, and --search-path to the man page			
+https://github.com/sharkdp/fd.git	c92290c3d782696ffc96ab04e3702497f6a3a5a9	0649c2b379a6d5b438a609487ffafb69c2fb14ce	.gitignore	not-fired	0	0	Merge pull request #1566 from sharkdp/dependabot/cargo/anyhow-1.0.86			
+https://github.com/sharkdp/fd.git	ce4e8675ed12d96be74de8e8bd7f9ba28b61c0ab	85e3adaf1800fd8cb192f7a4a2bb9000f993f5bc	src/app.rs	not-fired	0	0	Merge pull request #1173 from zappolowski/fix-completion-program-name			
+https://github.com/sharkdp/fd.git	a81fef99921287501480d76ed5236625489502eb	53c338d71fbe46375937921bd9acde49524cbc71	src/app.rs	not-fired	0	0	Windows: Check for xterm-256color environment variable as a proxy for color support			
+https://github.com/sharkdp/fd.git	3680d10e5cea75946a20dbdf5b516c96c0a02985	7aad6c9edf0d1f46eabbd13d19cab2fb9b3995c5	build.rs	not-fired	0	0	Merge pull request #1544 from sharkdp/dependabot/cargo/libc-0.2.154			
+https://github.com/sharkdp/fd.git	79d5a5bdc532b4988a180431ef545e10f7598446	a9dc45ecb1e2245578ec7a748db8777a19784781	doc/screencast.sh	not-fired	0	0	Add global fdignore support			
+https://github.com/sharkdp/fd.git	3cd73d79272206f25c86d1a30538402cbecf8b78	8c7a84ea30fefd1258e37d5f20a8c75fd77d48f9	src/exec/job.rs	not-fired	0	0	Merge pull request #1536 from bin-ly/master			
+https://github.com/sharkdp/fd.git	9907632b89c908510ae74a2ed76aa1f59b850c13	84789bfe57d7cd9caa7965f488750c96beb606d9	build.rs	not-fired	0	0	Merge pull request #1868 from sharkdp/dependabot/cargo/jiff-0.2.17			
+https://github.com/sharkdp/fd.git	aeb4a5fdad1109b8ef1cddfd0ad347bceef38ed7	9529f30129e2696bc4a4027561e66c6de69b3195	.snapcraft.yaml	not-fired	0	0	Fixes typo in README			
+https://github.com/sharkdp/fd.git	70448b00060f7281335252e066627f897aaaa38c	fc924d2e0a52a8276587fa56e26f7cb326941e54	src/walk.rs	not-fired	0	0	honor the NO_COLOR env var			
+https://github.com/sharkdp/fd.git	34d40443a4dc0c14d92e2713d9350bfe9050a301	3bbe11169a2f0091fa305fc5e98ea1c2bda84d6e	.gitignore	not-fired	0	0	Merge pull request #1668 from sharkdp/dependabot/cargo/clap_complete-4.5.44			
+https://github.com/sharkdp/fd.git	decd7f2ea3b1cf83790782e81301434835c826ae	f3e1ea150caebb65b5b1e12a80624557f740d3e3	.gitignore	not-fired	0	0	Update CHANGELOG.md			
+https://github.com/sharkdp/fd.git	b010841c6d2ecb37cb6cd9125de25b465a48eab4	9fe5cb7860163d6ed8889d014d8e00aab7e05bd5	.gitignore	not-fired	0	0	Merge pull request #2150 from nyurik/binstall			
+https://github.com/sharkdp/fd.git	15329f9cfad43a1d9bef96914e9e30af5f68eae8	95b4dff379e660a36de50aa15f3b302dda5a445d	.gitignore	not-fired	0	0	Update RHEL package info			
+https://github.com/sharkdp/fd.git	acb7f722543fa56f20ded59132145b37fff259a1	d856e785918d6fa5b8c844d20bcda0fd4d541511	src/walk.rs	not-fired	0	0	Merge pull request #1772 from sharkdp/fix-clippy-lifetime-elision			
+https://github.com/sharkdp/fd.git	a7a67e4998250edaa5aee8f66907dc67654bf715	0a3a485bd76d371afe0794b7f440e3e5e54df007	.gitignore	not-fired	0	0	Merge pull request #1889 from skane-lukas/issue-1888-fix-symlink-bash-completion			
+https://github.com/sharkdp/fd.git	e117a373a7032f47ab7847e32a187253788ce578	9cde3c12a269f094e08b32f416c0b6744c4b5f90	build.rs	not-fired	0	0	Merge pull request #1488 from sharkdp/dependabot/cargo/nu-ansi-term-0.50.0			
+https://github.com/sharkdp/fd.git	5ec55eed969b6ed277cf3d8282474d2dd99e8a6a	4e0b193ab6f813cf6123466429d7193a4d4ddbf9	.snapcraft.yaml	not-fired	0	0	Merge pull request #975 from sharkdp/dependabot/cargo/test-case-2.0.0			
+https://github.com/sharkdp/fd.git	14ed0238754d32496cf7a4de3259e750bd779e6b	58284b8dbe4b3697f7f5970ad02dc14230bf8888	src/output.rs	not-fired	0	0	Merge pull request #1464 from Ato2207/dir_alias			
+https://github.com/sharkdp/fd.git	266311ca33a78924dcad1fc13f99974098286ed0	07343b5baff84bc120c951b352166782e9fcdda1	.gitignore	not-fired	0	0	Merge pull request #1454 from tavianator/thats-a-lot-of-issues			
+https://github.com/sharkdp/fd.git	69521a105729c6394db03c0081bf3e96b3fda35c	59a487b5242bf8ca4c425ba328e8082a9e4a11ec	.gitignore	not-fired	0	0	Merge pull request #1307 from sharkdp/dependabot/cargo/crossbeam-channel-0.5.8			
+https://github.com/sharkdp/fd.git	1a6638ba236457a36661c164a715d15d937dc86a	8772708aa7bd688e322c41745fcfc95d0f1fedda	build.rs	not-fired	0	0	Bump anyhow from 1.0.48 to 1.0.51 (#899)			
+https://github.com/sharkdp/fd.git	ad1b26760195efcb718b0eb05018740fc0af24e2	04829c287d6aeb2bc988b28468984d7a7a6a3e33	.snapcraft.yaml	not-fired	0	0	Bump filetime from 0.2.13 to 0.2.14			
+https://github.com/sharkdp/fd.git	bce95274e34f88ca5a861aac1d9e2d407f864fcf	af9d8082a1be2a560c3a85ca8c7b71828ccdf31b	.gitignore	not-fired	0	0	Proper error handling in main.rs			
+https://github.com/sharkdp/fd.git	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	a11f8426d4e88ccc3745cc27b700aeb5ede39013	src/walk.rs	not-fired	0	0	feat: Add a way to escape { and }in exec templates.			
+https://github.com/sharkdp/fd.git	2569317ee876ae5be8fe8657114c9acb5f63af3e	cb91a5c848f1150c6e2e2dde3d6700d3e2ac4d72	doc/screencast.svg	not-fired	0	0	Revert changes in help text, add /issues in manpage			
+https://github.com/sharkdp/fd.git	cfced9787ee544d99f36e455762defec87c6be16	9cefd79ef4a0e6f9d8dfb560f95921e46fe59e1c	doc/.gitattributes	not-fired	0	0	Merge pull request #1571 from tmccombs/hyperlink			
+https://github.com/sharkdp/fd.git	2340bab32afe9c9540b0f79b86f0bc5d0e3c42db	4a237c591edf607ef8ec4569e2d774955974ff40	.gitignore	not-fired	0	0	Update README			
+https://github.com/sharkdp/fd.git	906e7a933ec1707bcae8e0d0711a6e688667569b	7a6cc92d6d3e9b2de8f6ae79811e53e243abf56a	build.rs	not-fired	0	0	Merge pull request #1489 from sharkdp/dependabot/cargo/ignore-0.4.22			
+https://github.com/sharkdp/fd.git	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	97b3b0404e399639bc3ad008d3d2d92b62d2de0c	build.rs	not-fired	0	0	Merge pull request #1810 from Sambhram1/master			
+https://github.com/sharkdp/fd.git	a3060f952edc6347a1da8e2dff6d0fab2725f494	65096a653ea85ae9cf28620876f6ac549605dc24	src/app.rs	not-fired	0	0	Move error macros to error.rs			
+https://github.com/sharkdp/fd.git	8f510265fc82ce729f6b06d07a93ee73d90c4974	6e3eb26af3e8a7c46bb444b7bd30825cf095d668	build.rs	not-fired	0	0	Merge pull request #1191 from sharkdp/chrono-without-time			
+https://github.com/sharkdp/fd.git	371794047abaefd8edc79454c51c3061cc2d1eaa	c43c931985fe98120afd6f831226ead641fb3a3b	.snapcraft.yaml	not-fired	0	0	Update features section			
+https://github.com/sharkdp/fd.git	9d3cb699354804b3ea76c972d021474ea934fca5	da9af8c1eb2d935b6668d7cb1e65cda101f9071f	src/app.rs	not-fired	0	0	Minor refactoring			
+https://github.com/sharkdp/fd.git	cab4981b11fe8a4a16e0e3596f2b8986a2b87d35	104600e64207c5ea56c8b6f2f3f5a1a5175d402a	doc/screencast.sh	not-fired	0	0	Add --one-file-system and aliases to man page (#548)			
+https://github.com/sharkdp/fd.git	47974b64795996dfe0adc06dadfe791efca25416	2bab4a22494e3f10da0b708da7a1eebaa483b727	src/walk.rs	not-fired	0	0	--glob: '*' does not match on path separators			
+https://github.com/sharkdp/fd.git	84789bfe57d7cd9caa7965f488750c96beb606d9	f5b4171631c7615435b3e2275fff768c99e3c4f3	.gitignore	not-fired	0	0	Merge pull request #1864 from sergii4/update-clap-complete-4.5.62			
+https://github.com/sharkdp/fd.git	5423c456609e2808793a9149cadfbc3c2c438d10	98738d2ac16f037e04a0ff0cd5f60ea0a8f336a1	build.rs	not-fired	0	0	Update command execution section			
+https://github.com/sharkdp/fd.git	acb7f722543fa56f20ded59132145b37fff259a1	d856e785918d6fa5b8c844d20bcda0fd4d541511	src/exit_codes.rs	not-fired	0	0	Merge pull request #1772 from sharkdp/fix-clippy-lifetime-elision			
+https://github.com/sharkdp/fd.git	14ed0238754d32496cf7a4de3259e750bd779e6b	58284b8dbe4b3697f7f5970ad02dc14230bf8888	src/exit_codes.rs	not-fired	0	0	Merge pull request #1464 from Ato2207/dir_alias			
+https://github.com/sharkdp/fd.git	5fc341832d9610bee66f14777ae84b7d72f351c9	dd07bc9ef1f721ab6c5a1b3611b6ac19402361e2	build.rs	not-fired	0	0	Update lscolors dependency, closes #552			
+https://github.com/sharkdp/fd.git	c96b1af3beacaa2dba062f3108fa9aa6c1d485d6	8b5532d8dd89d932d304f9adbcac8d723682973a	src/walk.rs	not-fired	0	0	Merge pull request #1410 from tmccombs/available-parallelism			
+https://github.com/sharkdp/fd.git	ed45d1c5afa00a9e09d08f678ae12f75f8dae242	e44f2f854084c1e69f334ce1a99188f8b960ed4f	src/output.rs	not-fired	0	0	Remove duplicate 'strip prefix' function			
+https://github.com/sharkdp/fd.git	1a37650b2cca61c8f46fa6ec6c4b72f1356ef192	5f95a781212e3efbc6d91ae50e0ca0ce0693da50	.gitignore	not-fired	0	0	Merge pull request #1872 from josephadamsdev/fix-1843-windows-hyperlink-slash			
+https://github.com/sharkdp/fd.git	3857fa8f62b115aa8bd9bcab3d01da503b175c82	24e108e1ad85371759963918b2fe48e3be74f81f	src/exit_codes.rs	not-fired	0	0	Amend clap configuration for path-separator.			
+https://github.com/sharkdp/fd.git	32fdbb1eae5200b028d12c37e298c13f08ce4454	19e5d6e36e07fbe9c14736de9fb78cd53a9abd86	src/walk.rs	not-fired	0	0	Fixed typos, occurence to occurrence, seach to search			
+https://github.com/sharkdp/fd.git	3bbe11169a2f0091fa305fc5e98ea1c2bda84d6e	d0e2c3d33b07143bb0a59dbf42ffa19be3c5ff44	.snapcraft.yaml	not-fired	0	0	Merge pull request #1669 from sharkdp/dependabot/cargo/clap-4.5.27			
+https://github.com/sharkdp/fd.git	03052757a731086528fad879d7b3e686b20240e9	af9daff4eea5162c9a4fd5e7ab4e10f9b784310e	build.rs	not-fired	0	0	Merge pull request #1252 from sharkdp/dependabot/cargo/regex-1.7.1			
+https://github.com/sharkdp/fd.git	8ecfdfee434e95c3371a39ecd8b3a8f3be5a19cf	614e637dbc8c1e13741d4af58baab44b79c35f46	src/app.rs	not-fired	0	0	Merge pull request #1171 from tmccombs/clap-derive-comments			
+https://github.com/sharkdp/fd.git	fd1ddc9d08010dfcba5b979963891a8f5f568fbf	e852009876da66efd68cef92e820dc63dac3ed60	.snapcraft.yaml	not-fired	0	0	Change dependency dirs to dirs-next			
+https://github.com/sharkdp/fd.git	5423c456609e2808793a9149cadfbc3c2c438d10	98738d2ac16f037e04a0ff0cd5f60ea0a8f336a1	.gitignore	not-fired	0	0	Update command execution section			
+https://github.com/sharkdp/fd.git	024309f37850415ae01415d850daaca6c30e7146	ac4ded5b2700890c75f9cf474c1838aa4368807a	build.rs	not-fired	0	0	Add comment to README about making sure .local/bin is on PATH (#797)			
+https://github.com/sharkdp/fd.git	cd32a3827dd1323796ab6e6a44c47cc325f64a16	66c0637c905d630bafeb87a95d4016073eda02e8	build.rs	not-fired	0	0	Update lockfile			
+https://github.com/sharkdp/fd.git	5a154866e36fdba1473cede0f9d9a4fcff45a60c	ac3e0e18e47b793d57263c8a1af942bee1966673	.gitignore	not-fired	0	0	Use jemalloc			
+https://github.com/sharkdp/fd.git	c09586715449d9e2147816524c72bdda45bbbb0a	324005fb3a98edaef355cc51ef5c437fd7c20c24	build.rs	not-fired	0	0	Merge pull request #1268 from sharkdp/dependabot/cargo/clap_complete-4.1.4			
+https://github.com/sharkdp/fd.git	31f28397514995d7d24a35a649299a0fca8d93c0	8eb047945ef2fb83000c0d7db0c17d935c6871d7	src/app.rs	not-fired	0	0	Merge pull request #1540 from tmccombs/revert-git-ignore			
+https://github.com/sharkdp/fd.git	2b0f609a480881a78da6123d996d6730d48f0a89	803d1fd38bf675016aac007e701587347ab84a2e	src/app.rs	not-fired	0	0	Merge pull request #1692 from tmccombs/jiff-more			
+https://github.com/sharkdp/fd.git	266499800b7ae3a29a9ccef4ba24fe195763a3e2	94916709743ab7e06756f9cdd7a3ed24ea5c29df	src/output.rs	not-fired	0	0	Fix idempotent flags			
+https://github.com/sharkdp/fd.git	30add71233a9e9088d9ce2915e516b77e5b00372	dade9736acd08c062bb81434fa1f5fa065179b5e	doc/screencast.sh	not-fired	0	0	Update manpage to match --help output			
+https://github.com/sharkdp/fd.git	1a96544b29d6beaed780ef5571b9458653e98475	ee1a9f567f30a9b514ea73a80f845843b4a80008	src/exit_codes.rs	not-fired	0	0	Remove two options from short -h help text			
+https://github.com/sharkdp/fd.git	e50cb817e1c0a18384df104b039e62666b7843aa	8207b3ebae78160e7593fa293e4c8c67c70dc302	.snapcraft.yaml	not-fired	0	0	Merge pull request #1621 from sharkdp/dependabot/cargo/clap_complete-4.5.28			
+https://github.com/sharkdp/fd.git	a954944d69c644a9ec2a0c10c10812ad87859916	27162c2729230ea9809f73cebba112cb229286bb	.snapcraft.yaml	not-fired	0	0	Prepare 8.1.0 release			
+https://github.com/sharkdp/fd.git	ee195f4dd64b10b645dbcf8ec4aa752622cb4d8e	0f1f9676dcf7bc5af814469a74a0d878449cde80	.snapcraft.yaml	not-fired	0	0	Merge pull request #2082 from nikolauspschuetz/fix-changed-time-overflow-panic			
+https://github.com/sharkdp/fd.git	5b4869a940ecba3afef71894b019507d9d271474	049232439ab1bc19b08739eb29852ab967eb7d6c	src/exec/job.rs	not-fired	0	0	fix spelling			
+https://github.com/sharkdp/fd.git	f14b854bc123c0ae62d0fd2816624114a2753328	8f86a06c1a4ff59d850a1491d2610c974627ed8b	src/app.rs	not-fired	0	0	Use existing Cow pointer			
+https://github.com/sharkdp/fd.git	7fdfd401070be74612c9c2ef16854effd0d69931	2f5ab528976f76d33d0ec39a84d3e0b00406b3b4	.snapcraft.yaml	not-fired	0	0	Merge pull request #1830 from sharkdp/dependabot/cargo/ignore-0.4.25			
+https://github.com/sharkdp/fd.git	115ae93df944d6c08f26e3c20e06e36e0aaba396	c06c9952b61f35a7881b399cd21d0a4f821e7055	src/output.rs	not-fired	0	0	Refactor file types check to be on impl of FileTypes			
+https://github.com/sharkdp/fd.git	394e967b5fa2d6b19068ff34bef0ecbd1591c490	0f0fa76c81dc95bbd7a9097b62698352af640940	src/output.rs	not-fired	0	0	No buffering cmd output when running on 1 thread			
+https://github.com/sharkdp/fd.git	595c1af4b6f9b099283d9d6dbca0629886f02e56	69e3f1a6e64edd7ce0d952733e1ddbee3e1dca4f	.gitignore	not-fired	0	0	Merge pull request #1684 from sharkdp/dependabot/cargo/globset-0.4.16			
+https://github.com/sharkdp/fd.git	37b67767a29078a95196ba2033dba45817cea2ea	1c316becf30b7671d4bea135856f95306f52ce9d	.snapcraft.yaml	not-fired	0	0	Update README			
+https://github.com/sharkdp/fd.git	fc240f7b2accfd07f2c1a1e33c9cc6d983abb19d	93cdb2628e89dd5831eee22b8df697aea00eca3b	src/exit_codes.rs	not-fired	0	0	Merge pull request #1394 from final-israel/make_max_results_one_conflict_with_exec			
+https://github.com/sharkdp/fd.git	af9daff4eea5162c9a4fd5e7ab4e10f9b784310e	503ede7535d0f9d45c1fb27905c2ef49ec24b6cc	build.rs	not-fired	0	0	Merge pull request #1216 from vegerot/pr1216			
+https://github.com/sharkdp/fd.git	0aee9b0fd950fbe4862f92e1445966a995ca06ee	45f490a407fb012b6ac6c1e92c5eaca02f5ee9e1	src/walk.rs	not-fired	0	0	Support multiple `--exec` instances			
+https://github.com/sharkdp/fd.git	664708501560988052abb7e1791dcdaec6f7e1ef	6af8f092ee20f23b4d3cd891be8b77068284d9a8	src/walk.rs	not-fired	0	0	Add test for gitignore workaround			
+https://github.com/sharkdp/fd.git	79d1435c6883de875ff703b55e2f438afb896fa8	5147fd6aec79cc8c87a321546f1c1d1d7c4b6371	.snapcraft.yaml	not-fired	0	0	Merge pull request #1581 from sharkdp/dependabot/cargo/lscolors-0.18.0			
+https://github.com/sharkdp/fd.git	61c5399fa4f8acb5952022dd4530456d6262aae1	126be9869993f7b99d08eac287c06c5b418bd2c3	.snapcraft.yaml	not-fired	0	0	Merge pull request #2036 from greymoth-jp/fix/and-pattern-path-separator			
+https://github.com/sharkdp/fd.git	c96b1af3beacaa2dba062f3108fa9aa6c1d485d6	8b5532d8dd89d932d304f9adbcac8d723682973a	src/app.rs	not-fired	0	0	Merge pull request #1410 from tmccombs/available-parallelism			
+https://github.com/sharkdp/fd.git	b7fe2ce91b522f7bc1fdf7d86e1d52ac4a99fd69	ba35c5ea67d995dfd12001678af7d4533c7d5458	src/output.rs	not-fired	0	0	Merge pull request #1742 from nealsid/remove-illumos-jemalloc			
+https://github.com/sharkdp/fd.git	c001dd47a754c3edd1b7f84061950f31a24ac148	a9c7696ecc09e3f0cf00b95d3acc9416c67df0f3	src/walk.rs	not-fired	0	0	Hide --one-file-system from the short help text			
+https://github.com/sharkdp/fd.git	d9b69c84057bd271cf4c9d0fc104e9921120ccc4	a11f8426d4e88ccc3745cc27b700aeb5ede39013	.snapcraft.yaml	not-fired	0	0	feat: Add a way to escape { and }in exec templates.			
+https://github.com/sharkdp/fd.git	c48d02e0a9f50a7aeb8fa86b4b5f39588753ddab	b3399c239bfc702915606c415b5ce9f755e9d437	.snapcraft.yaml	not-fired	0	0	Bump version to v8.3.2			
+https://github.com/sharkdp/fd.git	44605d55dd2edd8d3563504587ed81c45ebc2c82	e5e14f31c45ea74dea4ad5e6ec06346f3ad5cd88	src/output.rs	not-fired	0	0	Use .to_string() instead of .description()			
+https://github.com/sharkdp/fd.git	3d0d1865c8fd5f8fa20742fe01d9af399bece093	3b7b95d0815dab6c8ffd60feec78999fcab82b99	build.rs	not-fired	0	0	Merge pull request #1617 from cstyles/add-mindepth-alias			
+https://github.com/sharkdp/fd.git	54fa0112f5469c626049ae10cc0348f23e5b5dc5	8c9c6bec75aeb938eec5a538c00d2527f3af15f6	src/exit_codes.rs	not-fired	0	0	Merge pull request #1808 from sivaramsk/master			
+https://github.com/sharkdp/fd.git	5f606ad6e2c2843bcc9f771c2220063e1ab7fd1a	c644330a52425161492e62132f05896e4604a014	.gitignore	not-fired	0	0	Merge pull request #1701 from sharkdp/dependabot/cargo/jiff-0.2.5			
+https://github.com/sharkdp/fd.git	27c6b5091924485b2fd4c2d784dc9cf5f91d3f5a	8e0bd33af7c31ce30d5f03b608bfb65f82a95b2b	src/walk.rs	not-fired	0	0	Fix a new clippy warning			
+https://github.com/sharkdp/fd.git	1e07fcb744a351d374f6c0bc9b1a741bd54a7d81	cdea7f56331ebc7bb799aa9f718a6eee9a4a1cfc	.snapcraft.yaml	not-fired	0	0	Merge pull request #2106 from tmccombs/fix-error-newlines			
+https://github.com/sharkdp/fd.git	c7cf2d110438eb42bf58fbf059190a00f8111cf5	91eaff056fde0e4121b8fb60444278015bb7770d	build.rs	not-fired	0	0	Revert using 'cleanup', we are still using dpl v1			
+https://github.com/sharkdp/fd.git	f2fec4509934504e194a605c5582f3920e6f99c7	4faa201c89fc9c1043d4d00c256c9d980c55dfec	.snapcraft.yaml	not-fired	0	0	Update dirs-next and users dependency			
+https://github.com/sharkdp/fd.git	12165c73f876b0ae21d533d4901d9c1abb725f2e	70c48651916b9dab8da759c2d0087d42c56cc259	src/output.rs	not-fired	0	0	Reorder command line options			
+https://github.com/sharkdp/fd.git	ac3e0e18e47b793d57263c8a1af942bee1966673	9cc0c8ed57003617ff6c8bb8a30301049b20989b	.snapcraft.yaml	not-fired	0	0	Update lscolors for compatible ansi_term versions			
+https://github.com/sharkdp/fd.git	8bbbd7679b7eaf8782559c0320fc6cc86314319f	cd32a3827dd1323796ab6e6a44c47cc325f64a16	src/app.rs	not-fired	0	0	walk: New WorkerState struct shared by the worker threads			
+https://github.com/sharkdp/fd.git	0fc8facfb710a897bf1d649e1c815a4ef3008c94	069b1816259a7b89c9a9fa248b3840fb7cc5104f	src/app.rs	not-fired	0	0	Fix --help text			
+https://github.com/sharkdp/fd.git	f31fb9bf68b0f4fb678bbea63d62fa4cac303995	b22285ffe4efad08399b9dd7946b02e0a7cb4e21	build.rs	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	567ce2640f78164798e4b1a5358608b0ef03f488	527fe9e262051e9e57b41b1aa22bee5fff3ea362	.snapcraft.yaml	not-fired	0	0	Update CHANGELOG			
+https://github.com/sharkdp/fd.git	04829c287d6aeb2bc988b28468984d7a7a6a3e33	ca92bea0d7e0e9ffae563ce013931d8deeb07848	build.rs	not-fired	0	0	Bump anyhow from 1.0.35 to 1.0.42			
+https://github.com/sharkdp/fd.git	5a154866e36fdba1473cede0f9d9a4fcff45a60c	ac3e0e18e47b793d57263c8a1af942bee1966673	src/app.rs	not-fired	0	0	Use jemalloc			
+https://github.com/sharkdp/fd.git	0f2429cabcb591df74fc2ab3e32b3ac967264f6d	232e3937f291dd3376a2391839a54cf11e484642	src/output.rs	not-fired	0	0	Add unit tests for merge_exitcodes			
+https://github.com/sharkdp/fd.git	9a40d21ceb4312db0ffd7ef87739b1e0872e7259	2f813601aa86280f40f3a5d64623cd4683847a5b	.snapcraft.yaml	not-fired	0	0	Merge pull request #1351 from frisoft/master			
+https://github.com/sharkdp/fd.git	27c6b5091924485b2fd4c2d784dc9cf5f91d3f5a	8e0bd33af7c31ce30d5f03b608bfb65f82a95b2b	src/output.rs	not-fired	0	0	Fix a new clippy warning			
+https://github.com/sharkdp/fd.git	6e3eb26af3e8a7c46bb444b7bd30825cf095d668	4a66d8fcd8dba61aa1ef1b0a8d80a0b644abc941	src/app.rs	not-fired	0	0	Merge pull request #1192 from tmccombs/ansi-term-deprecated			
+https://github.com/sharkdp/fd.git	6e3eb26af3e8a7c46bb444b7bd30825cf095d668	4a66d8fcd8dba61aa1ef1b0a8d80a0b644abc941	src/exit_codes.rs	not-fired	0	0	Merge pull request #1192 from tmccombs/ansi-term-deprecated			
+https://github.com/sharkdp/fd.git	e6aa8e82f6910840531326a91e9a9b97314330cb	978866d9839d3f58269caf6f4a04f23cca8ae97f	.gitignore	not-fired	0	0	Add Upcoming Release to changelog			
+https://github.com/sharkdp/fd.git	45a86459b2275814bd455bf2710506644b7061c1	a64a607fd89a4454203dc4ecf32de114e7b6e36b	src/app.rs	not-fired	0	0	Refactor: `merge_exit_codes` now takes an `impl IntoIterator<Item = ExitCode>`			
+https://github.com/sharkdp/fd.git	59c27baf0f1ed8ac441d316946ef37d28b23281b	33f385692d9083c27b8354ddfe823d812f78ff97	src/output.rs	not-fired	0	0	Expand help for `-u`, add to manpage			
+https://github.com/sharkdp/fd.git	5648597a617adae62500c65320f377574a1325fd	b3258e00df4e974e98760c7c8e0a0f88b0cc0597	build.rs	not-fired	0	0	Bump version to 8.1.1			
+https://github.com/sharkdp/fd.git	5558e407bebafd5669d9f606eeaaba59938d67f0	f77b693db2bf284768efdbe9f67e21b4c3e53b6a	doc/screencast.sh	not-fired	0	0	Merge pull request #1805 from tmccombs/exec-nuls			
+https://github.com/sharkdp/fd.git	b422e5d8c9cffaa1ae43ba68e7b97a60fb3e8ae5	bb80489efb9fe2bdeabe1844feb5ee0af6fc9b1c	src/app.rs	not-fired	0	0	fix: allow hyphen-leading --format templates			
+https://github.com/sharkdp/fd.git	62e5b11d8ccd5b4c33cb29f44625f93b98797ce5	4327c3628090ae89bd2dd24ab6dc9da3fb726d19	.snapcraft.yaml	not-fired	0	0	Merge pull request #1656 from sharkdp/dependabot/cargo/crossbeam-channel-0.5.14			
+https://github.com/sharkdp/fd.git	c04ab7474412af9e1fced0b5b3d6cd46a40399fb	8fdfc6c2efe28932038543d1604438ae4deb2a4f	.snapcraft.yaml	not-fired	0	0	Merge pull request #1219 from sharkdp/dependabot/cargo/anyhow-1.0.68			
+https://github.com/sharkdp/fd.git	24c8a829f6c92ef57082cae000b52a1d27c899a4	c71afdf0c5eb19b3ee9462a5c25b07a0c71f3317	.snapcraft.yaml	not-fired	0	0	Merge pull request #2145 from sharkdp/dependabot/cargo/jiff-0.2.37			
+https://github.com/sharkdp/fd.git	075c1af7d8c6dc5ddaab222a77d0670cb4c45e15	fbebaa299d177d492a10b5a1540bedf329244ff9	build.rs	not-fired	0	0	Bump num_cpus from 1.13.0 to 1.13.1 (#927)			
+https://github.com/sharkdp/fd.git	284ee3d0c6d33e1e21cb52fc35b36ab643da7e75	002645d7ac3833256b267c5e4624c159dd0f60d0	doc/screencast.svg	not-fired	0	0	Merge pull request #1263 from jpcirrus/patch-1			
+https://github.com/sharkdp/fd.git	476d4049389fdd61038243ec3d7f82b7dd02f5dc	3ba90dd7685a73923a3a872c4ffc8756a198d755	src/output.rs	not-fired	0	0	Merge pull request #817 from will459/add_no_ignore_parent			
+https://github.com/sharkdp/fd.git	d5da615c175daf6bee64ff6649336b65dc8d62f5	641594c2c6339019eeb4ec960466b1be232c3fef	.gitignore	not-fired	0	0	Implement glob-based searches			
+https://github.com/sharkdp/fd.git	ec4cc981fcf47dbf5eb654ece3950543605ef383	06eb231fbd6481956fea95800f04169d119c802c	doc/.gitattributes	not-fired	0	0	Add --prune flag			
+https://github.com/sharkdp/fd.git	868c3a34e26f56fa36264293bbdf890485672f31	ee195f4dd64b10b645dbcf8ec4aa752622cb4d8e	.gitignore	not-fired	0	0	Merge pull request #2083 from sharkdp/dependabot/cargo/libc-0.2.189			
+https://github.com/sharkdp/fd.git	ee195f4dd64b10b645dbcf8ec4aa752622cb4d8e	0f1f9676dcf7bc5af814469a74a0d878449cde80	build.rs	not-fired	0	0	Merge pull request #2082 from nikolauspschuetz/fix-changed-time-overflow-panic			
+https://github.com/sharkdp/fd.git	12165c73f876b0ae21d533d4901d9c1abb725f2e	70c48651916b9dab8da759c2d0087d42c56cc259	src/exit_codes.rs	not-fired	0	0	Reorder command line options			
+https://github.com/sharkdp/fd.git	47cedbb44e35cb425c3c0772f77a245252df63b2	b3e3977c2ba550867a64bfe2301f145085c23b48	build.rs	not-fired	0	0	Merge pull request #1799 from ritoban23/fix-powershell-completion-collision			
+https://github.com/sharkdp/fd.git	0335cc362b2c830c24b957504a7cb1f7cd623a44	a06efe141824ee1a1cf74e9b78169691168371cf	src/output.rs	not-fired	0	0	Do not allow list-details in combination with -1			
+https://github.com/sharkdp/fd.git	e5145ffb985ab1fdd72b680806dff4fc00c1877f	30add71233a9e9088d9ce2915e516b77e5b00372	src/app.rs	not-fired	0	0	fix: disable jemalloc on risc-v target			
+https://github.com/sharkdp/fd.git	aa41f342b5e7a8998d607c967ea672d5971763d3	cffed27a2e498988c2da2aba827f3c557c13f01a	build.rs	not-fired	0	0	Merge pull request #2050 from sharkdp/dependabot/cargo/jiff-0.2.29			
+https://github.com/sharkdp/fd.git	db6fc44d05ae1f1f6f8b3da720212a09c00e271e	90de7242c7ee5c6926dc9ae0c922d5df971b0289	build.rs	not-fired	0	0	Add packaging status to README			
+https://github.com/sharkdp/fd.git	0aee9b0fd950fbe4862f92e1445966a995ca06ee	45f490a407fb012b6ac6c1e92c5eaca02f5ee9e1	build.rs	not-fired	0	0	Support multiple `--exec` instances			
+https://github.com/sharkdp/fd.git	4efc05ef27c9977478c02b30d528c5084ab8662d	3b2fd158b5ef4ba5f8cccddc2d2efb1de24b6c47	src/exec/job.rs	not-fired	0	0	Merge pull request #1510 from garlic-hub/clippy			
+https://github.com/sharkdp/fd.git	803d1fd38bf675016aac007e701587347ab84a2e	a4fdad6ff781b5b496c837fde24001b0e46973d6	.gitignore	not-fired	0	0	Merge pull request #1690 from sorairolake/replace-humantime-with-jiff			
+https://github.com/sharkdp/fd.git	c2e5075316a3022a3f6fa059d17dee1d12505d16	e5145ffb985ab1fdd72b680806dff4fc00c1877f	.gitignore	not-fired	0	0	Bump once_cell from 1.8.0 to 1.9.0 (#925)			
+https://github.com/sharkdp/fd.git	369a71a4c57b2103a5d5e63ab8cbd1ee2daf8560	5a5852e15b44d4917a6098b1c01d3bb535b7717f	.snapcraft.yaml	not-fired	0	0	Merge pull request #2064 from WilliamLeony/fix-readme-bash-fence			
+https://github.com/sharkdp/fd.git	564a61588d966e9865cb028ca8fbb5470a0a85b0	86d6e2d45fd4ffd175f41ac805ca3dc4ee924f0b	src/exit_codes.rs	not-fired	0	0	Merge pull request #1663 from tmccombs/more-troubleshooting			
+https://github.com/sharkdp/fd.git	2d9c8dab3165c74679a4e7d81af2e7db019b447f	161f3ba7cd7b7e30ba51ac76905a646148f95de6	.gitignore	not-fired	0	0	Merge pull request #1855 from sharkdp/dependabot/cargo/clap-4.5.53			
+https://github.com/sharkdp/fd.git	0fd7ec5c2a5d59616c272fd5438f3187e3685412	ba473fc92571ed0bb4a4815c457ff504e2519eb0	build.rs	not-fired	0	0	Fix missing clap feature			
+https://github.com/sharkdp/fd.git	42b2ab8a84ddedf80eeed9079128c60161f64658	febc1b692f5521c4a5e0ddaf926700954ce4d035	src/app.rs	not-fired	0	0	Merge pull request #1983 from DeflateAwning/feat-exact-i1963			
+https://github.com/sharkdp/fd.git	d8a808c0e38db65075fcdc3850a40860378e3d5e	c92290c3d782696ffc96ab04e3702497f6a3a5a9	.snapcraft.yaml	not-fired	0	0	Merge pull request #1569 from sharkdp/dependabot/cargo/libc-0.2.155			
+https://github.com/sharkdp/fd.git	d991beb942281f96f96b02b53af4084083023417	2aa966cb3cf7799d01391dc6d4f41124d213eae3	build.rs	not-fired	0	0	Merge pull request #1189 from tmccombs/tempfile			
+https://github.com/sharkdp/fd.git	189d6a907a1bd9fdcdc486a68605cf783e0a9f8a	8a83ad41c862dc82f6123f41e22554d78f09d99b	.gitignore	not-fired	0	0	Move and update Parallel command execution section			
+https://github.com/sharkdp/fd.git	686318c005090b9a1c67496ba310ccfeb42832ac	c04ab7474412af9e1fced0b5b3d6cd46a40399fb	.gitignore	not-fired	0	0	Merge pull request #1221 from sharkdp/dependabot/cargo/nix-0.25.0			
+https://github.com/sharkdp/fd.git	54fa0112f5469c626049ae10cc0348f23e5b5dc5	8c9c6bec75aeb938eec5a538c00d2527f3af15f6	src/output.rs	not-fired	0	0	Merge pull request #1808 from sivaramsk/master			
+https://github.com/sharkdp/fd.git	072c9e56e11b19523b2cb6099017ac89b2e49b03	f7bb60aba5b1f9b0fdc38790787c2210749a6f03	.gitignore	not-fired	0	0	Bump normpath from 1.1.0 to 1.1.1			
+https://github.com/sharkdp/fd.git	85e3adaf1800fd8cb192f7a4a2bb9000f993f5bc	9e88f91c2275449a95f06fd33b2be5c18e358e7f	src/walk.rs	not-fired	0	0	Merge pull request #1170 from tmccombs/clap-improvements-2			
+https://github.com/sharkdp/fd.git	1a37650b2cca61c8f46fa6ec6c4b72f1356ef192	5f95a781212e3efbc6d91ae50e0ca0ce0693da50	build.rs	not-fired	0	0	Merge pull request #1872 from josephadamsdev/fix-1843-windows-hyperlink-slash			

@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.0 · Date: 2026-10-21 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.1 · Date: 2026-10-21 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -212,7 +212,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 **SD14 UNKNOWN 的两种来源。**
 - (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P10 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
-- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD、outbox 中未投递的 PostToolUse 事件）。若读取结果或 certificate 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。
+- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD、outbox 中未投递的 PostToolUse 事件）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、未覆盖的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest；outbox hint 单独保守否决。hint cutoff 必须在首次采样前原子取得，扫描只能覆盖此 cutoff，期间到达的 hint 不得在扫描结束时清除。具体编码与上限见 ADR 0011。
 
 两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，若闭包内任一 scope 的 watermark 自签发后推进，判为 `Invalid`。
 
@@ -226,7 +226,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 **SD18 CodeAnchor（P5 起）。**
 1. logical 键 `code:<repo>/<path>[#<symbol>]`，kind = CodeAnchor。
-2. revision 内容：P5a 为工作树文件的 `git hash-object`（不是 HEAD 中的 blob）；P5b 起为 `(path, symbol, normalized_span_hash)`。
+2. revision 内容：P5a 为工作树原始字节的 `git hash-object --no-filters --stdin`（不是 HEAD 中的 blob，忽略 clean/EOL filter）；支持 SHA1/SHA256，规范 descriptor 含 repo-id、相对路径、算法和完整 OID，ContentHash = BLAKE3(descriptor)，编码与支持域见 ADR 0011（所有父目录 symlink 拒绝）；P5b 起为 `(path, symbol, normalized_span_hash)`。
 3. **写入通道**：CodeAnchor logical 的 `CreateLogical / AddRevision / SetHead / AssertBase / RetractBase` 只接受可信 observer 通道（P3 起 daemon 按 transport 区分 `observer` 与 `agent` 通道，P9 之前即生效）；其他来源返回 `KindRestricted`。CodeAnchor 不得作为规则结论（§2.5）。
 4. **revision 身份**：以 `(logical, content)` 去重——相同内容复用已有 RevisionId（`SetHead` 回指），从而 ABA 恢复（SD12）对锚点成立；新锚点 revision 以 `adopt_as_base=true` 创建。
 5. **observer 分类**：内容未变 → no-op；内容变化 → `SetHead`（下游由各自 incidence kind 决定：`Cur` → STALE；`Sem` → PENDING；`Pin` → `STALE(SupersededPinnedPremise)`）；文件/symbol 消失或歧义（0 个或多个匹配）→ 对当前锚点 revision `RetractBase` + `AnchorBroken` artifact；恢复时 `AssertBase`。observer **不按变化位置替依赖方选择状态**。git rename 识别为删除 + 新锚点，`AnchorBroken` 附带 rebind 建议。
@@ -574,7 +574,8 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `contextdb-anchors` observer：由 git post-commit / post-checkout / post-merge hook、PostToolUse、fs watch 驱动，经 observer 通道提交；多个来源经 CAS 串行化。
 - revision = 工作树文件 `git hash-object`；`(logical, content)` 去重；分类见 SD18.5；`ObserverWatermark` Op。
 - 读取 / validate 时的 freshness 判定（SD14b）。
-- PreToolUse 启用**按路径过滤**：取锚定目标路径且在证书中的条目。
+- PreToolUse 启用**按路径过滤**：按 required root 的原始与当前 observation/path support 闭包并集筛选；保留原始 per-root proof 的日志关联与 strict 窗口，不重新签发以掩盖 ABA。未知路径、文件别名不确定、Bash 与未锚定根保守纳入全量检查（ADR 0011）。
+- Git range/pre-push 为点时检查：range 仅选路径；遍历所有相关当前 head，不限会话读集；签发时开始新的 strict 窗口，不宣称整个 Git range 的历史 ABA。pre-push 处理所有 ref pair；仅接受当前 HEAD 且全部注册文件原始字节/类型与该提交一致，其余 Unknown；所有非 Valid 结果硬门控（ADR 0011）。
 
 **Gate P5a**
 - G2：T42a（锚定文件修改 → Cur 依赖 STALE、Sem 依赖 PENDING）、T42c（Pin 指向旧锚点 → `STALE(SupersededPinnedPremise)`）、T43（删除 → AnchorBroken + 下游 STALE）、T43b、T44（watermark 落后 → `PENDING(ObservationLag)` / certificate Unknown）、T46b（删除后以相同内容恢复 → 同一 RevisionId，下游恢复，计数器 == oracle）、T46c（PreToolUse 按路径过滤）、S13-rows-e2e（ObservationLag 行）。
@@ -859,6 +860,8 @@ Certificate {
 
 `required=false`（advisory）条目只报告各自当前状态，不参与聚合。
 
+**P5a proof 与兼容性（ADR 0011）**：effective vector 保持上述 Sem→h 语义；freshness 与 watermark 审计另用 SD14b 的 observation support 双分支闭包。持久化每个 required root 首次认证时的证书、原始 observation scopes/paths 与 watermark baseline；选择路径不得重置 since_epoch，合并所选向量时仍检查 Ambiguous，共享 scope 采用最早窗口。旧证书无 root proof 时，过滤检查及任何 strict/历史 observation 检查（含全量与显式 cert_id）返回 Unknown{MissingBaseline}，直至显式重读；不得由当前闭包伪造旧证明。非 strict 全量检查可使用完整当前闭包。Certificate 现有 canonical bytes 不变；新增 session root-proof event，协议版本 3。新 reader 接受 format-1，写新事件前强制 rollover 为 format-2（不按大小延后）；旧 reader 在截断前拒绝未来段头，不支持降级写回。
+
 **TOCTOU 声明**：certificate 只在 ContextDB 事务边界内成立；外部资源（文件系统、部署）不与本库原子提交，因此仍需条件写入、幂等、租约或补偿；PreToolUse 校验缩小但不消除窗口。
 
 ### 6.5 Hook 契约
@@ -868,11 +871,11 @@ Certificate {
 | SessionStart | 注册 session，钉住 repo/branch/HEAD；注入预算内 advisory briefing 与 PENDING/STALE 摘要（不记入读集）；certificate 在首次校验时签发（ADR 0010 A2） | daemon 不可达：跳过注入并提示 |
 | SubagentStart / SubagentStop | 子 agent 与根共用 session、按 agent 分视图（继承根视图；读入根视图）；SubagentStop 只做 drift（ADR 0010 A1） | 同上 |
 | UserPromptSubmit | 对比读集与当前状态；有翻转时注入 `<context_update epoch=…>` 增量 | fail-open |
-| PreToolUse（Edit/Write/ApplyPatch/Bash） | P4：校验整个会话证书；P5a 起：取锚定目标路径且在证书中的条目 → `ctx_check` → `permissionDecision` + ≤ 480B 理由；默认 warn | 超时可配置，默认 fail-open |
+| PreToolUse（Edit/Write/ApplyPatch/Bash） | P4：校验整个会话证书；P5a 起：按 ADR 0011 选取 required-root 原始/当前 support 闭包涉及目标路径的证明；保留原 strict 窗口；未知路径与 Bash 全量 → `ctx_check` → `permissionDecision` + ≤ 480B 理由；默认 warn | 超时可配置，默认 fail-open |
 | PostToolUse（Edit/Write/Bash） | 写集合记录；锚点重算入队（Bash 的副作用只能经 git diff 事后检测） | 异步 |
 | Stop / PreCompact / SessionEnd | 冲刷 outbox；declared-vs-done drift → `DriftReport`（P4：session log 记录，A3） | — |
 | git post-commit / post-checkout / post-merge | observer 同步锚点 head 与 watermark | — |
-| pre-push / CI | `ctx check --strict --range origin/main..HEAD`（P5a 起；P4 为按会话 `--strict` 与可选 `--all`，ADR 0010 A4）；STALE / CONFLICTED → 非零退出 | 唯一默认硬门控点 |
+| pre-push / CI | `ctx check --strict --range origin/main..HEAD`（P5a 起；P4 为按会话 `--strict` 与可选 `--all`，ADR 0010 A4）；range 为点时证明、不声明 Git 范围历史 ABA；所有非 Valid（含 Unknown/Empty）→ 非零退出 | 唯一默认硬门控点 |
 
 ### 6.6 CLI
 
@@ -1253,6 +1256,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.1 | 2026-10-21 | P5a G0 ADR 0011：raw Git OID descriptor/BLAKE3 身份、完整 manifest 与 pre-capture hint cutoff 分离、Sem asserted p 与 head h 的 observation support 闭包、缺 live evidence fail-closed、持久 per-root 历史 proof/路径别名保守回退、旧 strict baseline 缺失 Unknown、range 点时证书与全部可达当前 roots/pushed-tree 限制、协议 3 与 session format 2 强制 rollover/旧格式只读兼容；固定资源上限及 PROP12 coverage。P4 A11 顺序约束不变 |
 | 1.6.0 | 2026-10-21 | P4 G0（ADR 0010，独立复核三轮后）：A1 subagent 与根共用 session、按 agent 分视图；A2 SessionStart 注入 advisory briefing，证书首次校验时签发；A3 P4 的 DriftReport 记入 session log（`OpenArtifact` 需目标 revision）；A4 pre-push `--range` 移至 P5a；A5 outbox `packet_id = (stream, seq)`；A6 MCP `context_update` 为不消费的 peek；A7 MCP 调用按 harness tool-call id 绑定；A8 session log 领域扩展为会话事实与遥测，仍不参与内核状态；A9 `read_ledger` 增加 `agent`；A10 session 证书按 agent 视图签发；A11（项目所有者决定）P4 的 G6 dogfood 需 ≥ 2 周真实使用，其余 Gate 层通过后可并行开始 P5a 的 G0 与实现，但 P4 只有在 dogfood 报告通过后才算 Passed，P5a 的 Gate 也不得早于 P4 通过 |
 | 1.5.4 | 2026-10-20 | ADR 0009（项目所有者决定）：L1/L2 从查询缓存改为维护列，状态从 query cache 移入 hot；按 ADR 0005 同一规则重新校准：hot ≤ 90、query cache ≤ 32 B/incidence，范围预算总和 172 B/incidence（原 171） |
 | 1.5.3 | 2026-10-20 | ADR 0008 确认轮：先校验时跳过读集中已被取代的条目，并作为取代 diff 报告，使冲突后重读即可恢复（T32 流程）；共享 vector 项的 strict 区间从最早的 `since_epoch` 起算。P3 G0 通过 |

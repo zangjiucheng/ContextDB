@@ -1,5 +1,7 @@
 # Implementation status
 
+**P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.3). G0–G4, G7, G8 and the independent review pass; G5 needs a quiet rerun and an owner decision, G6 needs ≥ 200 human labels on the prepared replay pairs, review finding M2 (outbox growth) needs an ADR amendment, and P5a cannot pass before P4.
+
 **P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). G6 dogfood (≥ 2 weeks, ≥ 2 parallel agents) is run by the project owner; P4 passes only with that report.
 
 **Gate P3 passed** (2026-10-21) after independent review, a closure check and a closure confirmation ([P3 gate](gates/P3.md),

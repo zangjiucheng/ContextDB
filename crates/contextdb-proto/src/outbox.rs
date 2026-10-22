@@ -200,6 +200,107 @@ fn lock(f: File, nonblocking: bool) -> io::Result<Option<Flock<File>>> {
     }
 }
 impl Outbox {
+    /// P5a observation cutoff, acquired before capture. Unlike `dirty`, this
+    /// fails closed on corrupt/lost state. ACKs/truncation do not change the
+    /// monotonically allocated sequence; no session fact enters a watermark.
+    pub fn observation_cutoff(&self) -> io::Result<std::collections::BTreeMap<Stream, (u64, u64)>> {
+        self.observation_cutoff_until(Instant::now() + Duration::from_secs(5))
+    }
+    pub fn observation_cutoff_until(
+        &self,
+        deadline: Instant,
+    ) -> io::Result<std::collections::BTreeMap<Stream, (u64, u64)>> {
+        fn check(deadline: Instant) -> io::Result<()> {
+            if Instant::now() >= deadline {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "outbox cutoff deadline",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        check(deadline)?;
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+            Err(e) => return Err(e),
+        };
+        let mut streams = std::collections::BTreeSet::new();
+        for entry in entries {
+            check(deadline)?;
+            let name = entry?.file_name();
+            let name = name.to_string_lossy();
+            let Some((prefix, suffix)) = name.rsplit_once('.') else {
+                continue;
+            };
+            if !matches!(suffix, "seq" | "log" | "state" | "ack") {
+                continue;
+            }
+            let mut stream = [0u8; 16];
+            if prefix.len() != 32
+                || !prefix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(io::Error::other("invalid outbox stream"));
+            }
+            for (k, byte) in stream.iter_mut().enumerate() {
+                *byte =
+                    u8::from_str_radix(&prefix[2 * k..2 * k + 2], 16).map_err(io::Error::other)?;
+            }
+            streams.insert(stream);
+            if streams.len() > 1000 {
+                return Err(io::Error::other("outbox stream limit"));
+            }
+        }
+        let mut cutoffs = std::collections::BTreeMap::new();
+        for stream in streams {
+            check(deadline)?;
+            let file = File::open(self.path(&stream, "seq"))?;
+            let Some(mut guard) = lock(file, true)? else {
+                return Err(io::Error::other("outbox append in progress"));
+            };
+            let mut bytes = Vec::new();
+            Read::by_ref(&mut *guard).take(9).read_to_end(&mut bytes)?;
+            if !bytes.is_empty() && bytes.len() != 8 {
+                return Err(io::Error::other("corrupt outbox sequence"));
+            }
+            let next = if bytes.is_empty() {
+                0
+            } else {
+                u64::from_le_bytes(bytes.try_into().expect("8"))
+            };
+            let mut log = Vec::new();
+            File::open(self.path(&stream, "log"))?
+                .take(LOG_CAP + BATCH_BYTES as u64 + 1)
+                .read_to_end(&mut log)?;
+            if log.len() as u64 > LOG_CAP + BATCH_BYTES as u64 {
+                return Err(io::Error::other("outbox byte limit"));
+            }
+            let packets = scan(&log);
+            if packets.iter().flat_map(record).collect::<Vec<_>>() != log {
+                return Err(io::Error::other("corrupt outbox log"));
+            }
+            let last = packets.last().map_or(0, |p| p.seq);
+            let mut state = Vec::new();
+            File::open(self.path(&stream, "state"))?
+                .take((1 << 20) + 1)
+                .read_to_end(&mut state)?;
+            if state.len() > 1 << 20 {
+                return Err(io::Error::other("outbox state limit"));
+            }
+            let state = StreamState::from_bytes(&state).map_err(io::Error::other)?;
+            // A dropped fact has no recoverable path/position. Do not clear its
+            // uncertainty through ACK or a normal scan.
+            if state.dropped != 0 {
+                return Err(io::Error::other("outbox facts dropped"));
+            }
+            cutoffs.insert(stream, (next.saturating_sub(1).max(last), state.dropped));
+        }
+        check(deadline)?;
+        Ok(cutoffs)
+    }
     pub fn new(data_dir: &Path) -> Self {
         Self {
             dir: data_dir.join("outbox"),

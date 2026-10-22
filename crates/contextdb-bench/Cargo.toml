@@ -12,6 +12,7 @@ default-run = "contextdb-bench"
 workspace = true
 
 [dependencies]
+contextdb-anchors.workspace = true
 contextdb-core.workspace = true
 contextdb-model.workspace = true
 contextdb-testkit.workspace = true

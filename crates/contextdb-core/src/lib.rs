@@ -398,7 +398,31 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     ) -> Result<CommitResult, TxError> {
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
+        // Rebind mutates a RuleId's premises. Retain only its pre-change rows
+        // so historical observation closures never traverse today's incidences.
+        let rebound: std::collections::BTreeMap<_, _> = b
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Rebind {
+                    rule: RuleRef::Existing(rule),
+                    ..
+                } if rule.index() < self.rules.len() => {
+                    Some((*rule, self.view().premises(*rule).collect::<Vec<_>>()))
+                }
+                _ => None,
+            })
+            .collect();
         let result = self.commit_inner(b, blobs);
+        if let Ok(committed) = &result {
+            for (rule, old) in rebound {
+                self.changes
+                    .rebindings
+                    .entry(rule)
+                    .or_default()
+                    .push((committed.epoch, old));
+            }
+        }
         #[cfg(feature = "timing")]
         if result.is_ok() {
             self.timing = Some(CommitTiming {

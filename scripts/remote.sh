@@ -34,7 +34,7 @@ need_toolchain() {
 sync_tree() {
   remote "mkdir -p $dir/src $dir/logs"
   # Fuzz state is excluded so a sync never deletes it under a running job.
-  rsync -az --delete --exclude target --exclude results --exclude .git \
+  rsync -az --delete --exclude target --exclude results --exclude .git --exclude .contextdb --exclude .codex --exclude .claude \
     --exclude fuzz/artifacts --exclude fuzz/corpus --exclude fuzz/coverage ./ "$host:$dir/src/"
 }
 case ${1:-} in

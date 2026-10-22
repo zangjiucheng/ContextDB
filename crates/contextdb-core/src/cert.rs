@@ -13,6 +13,7 @@ pub(crate) struct ChangeLog {
     heads: BTreeMap<LogicalId, Vec<Epoch>>,
     base: BTreeMap<RevisionId, Vec<Epoch>>,
     watermarks: BTreeMap<String, Vec<Epoch>>,
+    pub(crate) rebindings: BTreeMap<RuleId, Vec<(Epoch, Vec<Incidence>)>>,
 }
 impl ChangeLog {
     /// `old_revisions`: revisions that existed before `epoch`. Creating a
@@ -43,7 +44,20 @@ impl ChangeLog {
     }
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::{btree_slots, vec_bytes as b};
-        btree_slots(self.heads.len()) * std::mem::size_of::<(LogicalId, Vec<Epoch>)>()
+        btree_slots(self.rebindings.len())
+            * std::mem::size_of::<(RuleId, Vec<(Epoch, Vec<Incidence>)>)>()
+            + self
+                .rebindings
+                .values()
+                .map(|rows| {
+                    b(rows)
+                        + rows
+                            .iter()
+                            .map(|(_, incidences)| b(incidences))
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
+            + btree_slots(self.heads.len()) * std::mem::size_of::<(LogicalId, Vec<Epoch>)>()
             + self.heads.values().map(b).sum::<usize>()
             + btree_slots(self.base.len()) * std::mem::size_of::<(RevisionId, Vec<Epoch>)>()
             + self.base.values().map(b).sum::<usize>()
@@ -108,26 +122,104 @@ pub struct HistoryUnavailable {
 }
 
 impl<M: Maintainer, S: StatsSink> Db<M, S> {
-    /// SD13 summary of `r` with the read-time observation dimension (SD14b):
-    /// a CodeAnchor whose scope has a `live_pos` different from the committed
-    /// watermark is lagging. A scope missing from `live_pos` is fresh.
+    /// Revision support for read-time observation/path proofs. Sem needs both
+    /// its asserted revision and its current head; this is NOT the effective
+    /// vector (which intentionally represents Sem with only its head).
+    pub fn observation_support(&self, roots: &[RevisionId]) -> Result<Vec<RevisionId>, TxError> {
+        let view = self.view();
+        let mut seen = BTreeSet::new();
+        let mut stack = roots.to_vec();
+        while let Some(r) = stack.pop() {
+            let node = self.node(r)?;
+            if !seen.insert(r) {
+                continue;
+            }
+            if let Some(Witness::Rule(j)) = node.witness[2] {
+                for p in view.premises(j) {
+                    if p.kind == EdgeKind::Ref {
+                        continue;
+                    }
+                    stack.push(p.premise);
+                    if p.kind == EdgeKind::Sem {
+                        stack.push(view.head(view.revision_logical(p.premise)));
+                    }
+                }
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+    fn observation_scopes_at(
+        &self,
+        root: RevisionId,
+        epoch: Epoch,
+    ) -> Result<BTreeSet<String>, HistoryUnavailable> {
+        let view = self.view();
+        let mut stack = vec![root];
+        let mut seen = BTreeSet::new();
+        let mut scopes = BTreeSet::new();
+        while let Some(r) = stack.pop() {
+            if !seen.insert(r) {
+                continue;
+            }
+            let node = self
+                .read_historical(r, epoch)
+                .map_err(|_| HistoryUnavailable { since: epoch })?;
+            let logical = self.revisions.logical(r);
+            if self.logicals.kind(logical) == RecordKind::CodeAnchor {
+                scopes.insert(self.logicals.scope_lane(logical).to_owned());
+            }
+            if let Some(Witness::Rule(rule)) = node.witness[2] {
+                for p in self
+                    .changes
+                    .rebindings
+                    .get(&rule)
+                    .and_then(|rows| rows.iter().find(|(changed, _)| *changed > epoch))
+                    .map(|(_, old)| old.clone())
+                    .unwrap_or_else(|| view.premises(rule).collect())
+                {
+                    if p.kind != EdgeKind::Ref {
+                        stack.push(p.premise);
+                    }
+                    if p.kind == EdgeKind::Sem {
+                        stack.push(
+                            self.read_snapshot(view.revision_logical(p.premise), epoch)
+                                .map_err(|_| HistoryUnavailable { since: epoch })?
+                                .0,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(scopes)
+    }
+    pub fn observation_scopes(&self, roots: &[RevisionId]) -> Result<BTreeSet<String>, TxError> {
+        Ok(self
+            .observation_support(roots)?
+            .into_iter()
+            .filter_map(|r| {
+                let l = self.revisions.logical(r);
+                (self.logicals.kind(l) == RecordKind::CodeAnchor)
+                    .then(|| self.logicals.scope_lane(l).to_owned())
+            })
+            .collect())
+    }
+    /// Missing evidence is lagging from P5a onward (SD14b). Freshness is
+    /// evaluated across the full observation support, never cached in L0/L1/L2.
     pub fn summary_at(
         &self,
         r: RevisionId,
         live_pos: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Summary, TxError> {
         let mut dim = self.node(r)?.dimensions;
-        let l = self.revisions.logical(r);
-        if self.logicals.kind(l) == RecordKind::CodeAnchor {
-            let scope = self.logicals.scope_lane(l);
-            if live_pos
-                .get(scope)
-                .is_some_and(|v| self.tables.watermarks.get(scope) != Some(v))
-            {
-                dim.observation = Observation::Lagging;
+        let scopes = self.observation_scopes(&[r])?;
+        if !scopes.is_empty() {
+            dim.observation = if scopes.iter().any(|s| {
+                live_pos.get(s).is_none() || self.tables.watermarks.get(s) != live_pos.get(s)
+            }) {
+                Observation::Lagging
             } else {
-                dim.observation = Observation::Fresh;
-            }
+                Observation::Fresh
+            };
         }
         Ok(contextdb_oracle::summarize(&dim))
     }
@@ -181,18 +273,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             })
             .collect())
     }
-    /// Committed watermark positions of the CodeAnchor scopes in `vector`.
-    fn vector_watermarks(&self, vector: &[VectorItem]) -> Vec<(String, Vec<u8>)> {
-        let scopes: BTreeSet<&str> = vector
-            .iter()
-            .filter(|v| self.logicals.kind(v.logical) == RecordKind::CodeAnchor)
-            .map(|v| self.logicals.scope_lane(v.logical))
-            .collect();
-        scopes
+    /// Includes scopes hidden behind an asserted Sem revision, independently
+    /// from effective-vector ambiguity checks.
+    fn support_watermarks(&self, roots: &[(RevisionId, Epoch)]) -> Vec<(String, Vec<u8>)> {
+        self.observation_scopes(&roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
+            .expect("checked roots")
             .into_iter()
             .map(|s| {
-                let pos = self.tables.watermarks.get(s).cloned().unwrap_or_default();
-                (s.to_owned(), pos)
+                let pos = self.tables.watermarks.get(&s).cloned().unwrap_or_default();
+                (s, pos)
             })
             .collect()
     }
@@ -244,7 +333,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             issued_epoch: self.epoch,
             log_checksum_at_issue: request.log_checksum,
             code_commit: request.code_commit.clone(),
-            watermarks: self.vector_watermarks(&vector),
+            watermarks: self.support_watermarks(&roots),
             entries: entries.to_vec(),
             vector,
             strict_no_aba: request.strict_no_aba,
@@ -272,6 +361,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             });
         }
         let view = self.view();
+        let mut strict_diffs = Vec::new();
         // Step 1: strict, from each vector item's own since_epoch.
         if cert.strict_no_aba {
             let mut diffs = Vec::new();
@@ -296,12 +386,30 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     });
                 }
             }
-            if !diffs.is_empty() {
-                return Ok(Validation::Invalid {
-                    reason: InvalidReason::StrictChange,
-                    diffs,
+            let mut scope_since: BTreeMap<String, Epoch> = BTreeMap::new();
+            for e in cert.entries.iter().filter(|e| e.required) {
+                for scope in self.observation_scopes_at(e.rev, cert.issued_epoch)? {
+                    let since = scope_since.entry(scope).or_insert(e.since_epoch);
+                    *since = (*since).min(e.since_epoch);
+                }
+            }
+            if cert.watermarks.iter().any(|(scope, _)| {
+                scope_since
+                    .get(scope)
+                    .is_some_and(|since| after(self.changes.watermarks.get(scope), *since))
+            }) && diffs.is_empty()
+                && let Some(e) = cert.entries.iter().find(|e| e.required)
+            {
+                diffs.push(CertDiff {
+                    logical: e.logical,
+                    cert_rev: Some(e.rev),
+                    current: self.head(e.logical),
+                    summary: self
+                        .head(e.logical)
+                        .and_then(|r| self.summary_at(r, live_pos).ok()),
                 });
             }
+            strict_diffs = diffs;
         }
         // Step 2: per required entry, the current head's summary.
         let required: Vec<&CertItem> = cert.entries.iter().filter(|e| e.required).collect();
@@ -324,9 +432,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 EntryOutcome::Denied => denied = true,
                 EntryOutcome::Invalid => invalid.push(diff()),
                 EntryOutcome::Conflicted => conflicted.push(e.logical),
-                EntryOutcome::Unknown => {
-                    lag.insert(self.logicals.scope_lane(e.logical).to_owned());
-                }
+                EntryOutcome::Unknown => {}
                 EntryOutcome::Pending => {
                     pending = true;
                     pending_rules.extend(self.pending_rules(head));
@@ -340,18 +446,27 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .map(|e| (view.head(e.logical), e.since_epoch))
             .collect();
         let recomputed = self.closure(&roots);
-        if let Ok(vector) = &recomputed {
-            for v in vector {
-                if self.logicals.kind(v.logical) == RecordKind::CodeAnchor
-                    && self.summary_at(v.rev, live_pos).expect("vector revision")
-                        == Summary::Pending(PendingReason::ObservationLag)
-                {
-                    lag.insert(self.logicals.scope_lane(v.logical).to_owned());
-                }
+        for scope in self
+            .observation_scopes(&roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
+            .expect("roots exist")
+        {
+            if live_pos.get(&scope).is_none()
+                || self.tables.watermarks.get(&scope) != live_pos.get(&scope)
+            {
+                lag.insert(scope);
             }
         }
         if denied {
             return Ok(Validation::Denied);
+        }
+        if !strict_diffs.is_empty() {
+            strict_diffs.extend(invalid);
+            strict_diffs.sort_by_key(|d| d.logical);
+            strict_diffs.dedup_by_key(|d| d.logical);
+            return Ok(Validation::Invalid {
+                reason: InvalidReason::StrictChange,
+                diffs: strict_diffs,
+            });
         }
         if !invalid.is_empty() {
             return Ok(Validation::Invalid {
@@ -406,7 +521,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut new_cert = cert.clone();
         new_cert.issued_epoch = self.epoch;
         new_cert.log_checksum_at_issue = log.current_checksum;
-        new_cert.watermarks = self.vector_watermarks(&vector);
+        new_cert.watermarks = self.support_watermarks(&roots);
         // An entry whose own closure changed is now certified via an alternative.
         for e in new_cert.entries.iter_mut().filter(|e| e.required) {
             let own = self

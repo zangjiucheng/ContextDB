@@ -98,6 +98,7 @@ def check(metadata: dict, policy: dict) -> list[str]:
         ("proto", "contextdb-proto"),
         ("hooks", "contextdb-hooks"),
         ("cli", "contextdb-cli"),
+        ("anchors", "contextdb-anchors"),
     ):
         reviewed = set(policy.get(section, {}).get("reviewed_external", []))
         if crate not in members:

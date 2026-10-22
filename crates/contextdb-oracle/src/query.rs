@@ -106,7 +106,7 @@ pub fn cert_verdict(
                     && logical.kind == RecordKind::CodeAnchor
                     && live_pos
                         .get(&logical.scope_lane)
-                        .is_some_and(|v| i.watermarks.get(&logical.scope_lane) != Some(v))
+                        .is_none_or(|v| i.watermarks.get(&logical.scope_lane) != Some(v))
                 {
                     dim.observation = Observation::Lagging;
                 }

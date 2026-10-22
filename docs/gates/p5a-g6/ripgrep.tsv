@@ -1,0 +1,101 @@
+# P5a G6 replay: unlabelled pairs for HUMAN labelling
+# repo_url=https://github.com/BurntSushi/ripgrep.git
+# replayed=1000 first=709ca91f503e4cef777352f2abafaa421d02668b last=3fce3b5bb0236da2df6d99672afb8a719642eca7 anchors=20
+# selection: 20 supported regular files at 9c220f9a9beae685f3d5d9850edd90b058f1c502 with smallest git hash-object(path)
+# misses: not-fired same-directory changes, 46 of 240 kept by smallest git hash-object(commit:path)
+# invalidates: y if a decision resting on this file at the parent commit must be re-validated after this commit, n otherwise; leave empty if unsure
+# git_diff_disagreements=0 
+# anchors: benchsuite/runs/2016-09-17-ubuntu1604-ec2/summary benchsuite/runs/2016-09-22-archlinux-cheetah/summary benchsuite/runs/2016-12-24-archlinux-cheetah-glibc-jemalloc/raw.csv ci/install.sh ci/test_complete.sh globset/benches/bench.rs grep-printer/src/summary.rs grep-regex/src/ast.rs grep-regex/src/matcher.rs grep-regex/src/non_matching.rs grep-searcher/src/macros.rs grep-searcher/src/sink.rs ignore/examples/walk.rs ignore/tests/gitignore_matched_path_or_any_parents_tests.gitignore src/path_printer.rs src/search.rs tests/data/sherlock-nul.txt tests/data/sherlock.gz tests/misc.rs tests/multiline.rs
+repo_url	commit	parent	path	observer	added	removed	subject	invalidates	labeler	note
+https://github.com/BurntSushi/ripgrep.git	4de227fd9a1bbc0396c1f1e6d5209a1171fad88a	d7ce274722664169e5e530e9ef833b633b679345	grep-regex/src/non_matching.rs	changed	1	1	deps: update everything			
+https://github.com/BurntSushi/ripgrep.git	f8fb65f7e301e46d22db7d733acb9c9092c68075	98de8d248a677bbdb5ab46f53a58ceabbc24a2df	globset/benches/bench.rs	changed	0	5	globset: fix benchmarks			
+https://github.com/BurntSushi/ripgrep.git	a070722ff27c7d57d47b1766de9d253fbfe5bef9	4628d778089d0bf609462af7d5b38997fd9a014f	grep-printer/src/summary.rs	changed	8	0	cli: add --include-zero flag			
+https://github.com/BurntSushi/ripgrep.git	a070722ff27c7d57d47b1766de9d253fbfe5bef9	4628d778089d0bf609462af7d5b38997fd9a014f	tests/misc.rs	changed	31	0	cli: add --include-zero flag			
+https://github.com/BurntSushi/ripgrep.git	6a0e0147e03a0322fc8e7e959e787f7a635df906	ad97e9c93fc0687ba7a96680ddc749c1da664446	grep-regex/src/matcher.rs	changed	1	1	grep-regex: improve literal detection with -w			
+https://github.com/BurntSushi/ripgrep.git	711426a632aee0affb7009cd8e3492c4ff7273e8	01eeec56bb0a67dd402aed0f5650525076b26657	ci/test_complete.sh	changed	1	1	cli: add --no-require-git flag			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-printer/src/summary.rs	changed	60	107	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-regex/src/ast.rs	changed	1	1	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-regex/src/matcher.rs	changed	40	53	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-regex/src/non_matching.rs	changed	16	16	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-searcher/src/sink.rs	changed	16	19	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	src/path_printer.rs	changed	1	4	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	src/search.rs	changed	39	42	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	tests/misc.rs	changed	17	24	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	tests/multiline.rs	changed	22	14	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	globset/benches/bench.rs	broken	0	116	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-printer/src/summary.rs	broken	0	1060	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-regex/src/ast.rs	broken	0	263	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-regex/src/matcher.rs	broken	0	1066	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-regex/src/non_matching.rs	broken	0	128	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-searcher/src/macros.rs	broken	0	25	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	grep-searcher/src/sink.rs	broken	0	644	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	ignore/examples/walk.rs	broken	0	84	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	ignore/tests/gitignore_matched_path_or_any_parents_tests.gitignore	broken	0	216	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	src/path_printer.rs	broken	0	98	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	fdd8510fdda6109c562e479c718d42c8ecc26263	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	src/search.rs	broken	0	534	repo: move all source code in crates directory			
+https://github.com/BurntSushi/ripgrep.git	da3431b4780a2654cdbb35613ff428cdef3fc8fe	f314b0d55f2fa7c9f19b677624a19a7ba24c7cf4	ci/test_complete.sh	changed	1	1	ci: switch build to GitHub Actions			
+https://github.com/BurntSushi/ripgrep.git	c0d78240dfe4e67244767296e1f89284925d6d82	cda9acb876277c3a703ddd99c4d06db2dd2a11e2	ci/install.sh	broken	0	61	ci: remove Travis and appveyor specific stuff			
+https://github.com/BurntSushi/ripgrep.git	52ec68799ccf43f77170585a9065021a54441478	c0d78240dfe4e67244767296e1f89284925d6d82	ci/test_complete.sh	broken	0	97	ci: make script names consistent			
+https://github.com/BurntSushi/ripgrep.git	20deae6497820587ee523a72b6326356016994a6	655e33219a671dab4432c6f29785244870cc74f6	tests/misc.rs	changed	1	1	tests: fix typo in test name			
+https://github.com/BurntSushi/ripgrep.git	df7a3bfc7fe30f3e9e89d8775748b1239c5b5fc4	28f2a93caefef8018c786c80c9b47f13f62c01c3	tests/misc.rs	changed	15	0	grep-cli: support files compressed by compress(1)			
+https://github.com/BurntSushi/ripgrep.git	a28bb1e9531c238e730150c454585ed0d5ebcdb5	3ef63dacbed48e9c569722059922f37964a9494e	tests/misc.rs	changed	3	3	deps: bring in all semver updates			
+https://github.com/BurntSushi/ripgrep.git	2819212f8997fbea813fdfed1e8c6bd62674dd23	810be0b348b9e9070705329df40c1d182f6645f1	tests/misc.rs	changed	3	3	printer: tweak binary detection message format			
+https://github.com/BurntSushi/ripgrep.git	64ac2ebe0f2fe1c8967e7ec550bc32466bf40a07	46fb77c20cc46e61117d68a68bb306cc665c6da6	tests/data/sherlock-nul.txt	changed	1633	0	tests: fix tests for buffer size change			
+https://github.com/BurntSushi/ripgrep.git	94e4b8e301302097dad48b292560ce135c4d4926	2af77242c5b5186ea5ad6d05fa9aaef3d93c1603	tests/multiline.rs	changed	1	1	printer: fix --vimgrep for multi-line mode			
+https://github.com/BurntSushi/ripgrep.git	fc31aedcf3cae7a773c94a79775396759af10dd8	578e1992fa21d3612d3e613d8869dbbb16e33cbe	tests/multiline.rs	changed	5	1	printer: vimgrep now only prints one line			
+https://github.com/BurntSushi/ripgrep.git	6abb962f0d655a186972462d88d2de4e5caf4a33	6d95c130d5fb56a8641092a4808f33640bfa935c	tests/misc.rs	changed	45	0	cli: fix non-path sorting behavior			
+https://github.com/BurntSushi/ripgrep.git	3bfa125b2ea8175947360322f1429a0205be6c76	51765f2f4cbd6c561df35cf1d7d8637cf73006fa	tests/misc.rs	changed	6	0	ci: replace mips with powerpc64, aarch64 and s390x			
+https://github.com/BurntSushi/ripgrep.git	9626f167573527858f9736a3054882de87d6cd79	f7ff34fdf9d2853f9763aceb28f5dcb014728045	tests/misc.rs	changed	12	0	progress			
+https://github.com/BurntSushi/ripgrep.git	827082a33ae7d86846a103ef14fb9ff297587049	6c2a550e1ed190351707dbcb28d5085a89ac0710	tests/misc.rs	changed	2	2	ci: add more ARM build configurations to CI and release workflows			
+https://github.com/BurntSushi/ripgrep.git	60aa9f17276409257ad612fccefba13c26ed0d74	56d03a1e2f8f12a2a5fe8fcc3b1a4c5039291c9a	tests/misc.rs	changed	11	5	tests: increase sleep duration for sort file metadata tests on Windows AArch64			
+https://github.com/BurntSushi/ripgrep.git	bb8172fe9baa450ede7ff84677ab45048675fd02	64174b8e68b59e560ad459f3c11cc9c4f00964bd	tests/misc.rs	changed	1	1	style: apply rustfmt			
+https://github.com/BurntSushi/ripgrep.git	7c2161d68755e2c47db26717f6757f5099d500e4	096f79ab9824753cedd989da92076be12f0904ea	tests/misc.rs	changed	6	0	release: add binaries for `riscv64gc-unknown-linux-gnu` target			
+https://github.com/BurntSushi/ripgrep.git	924ba101eed70e4e096ba639382c73dec90c2c86	293ef80eaf0641bcfa0206e1fc142017296bac8c	tests/misc.rs	changed	7	7	test: fix `Command::current_dir` API			
+https://github.com/BurntSushi/ripgrep.git	0a88cccd5188074de96f54a4b6b44a63971ac157	cd1f981beafaeb9b61537e47e91314cea125400b	tests/misc.rs	changed	0	6	Fix compression tests in QEMU cross-compilation environments (#3248)			
+https://github.com/BurntSushi/ripgrep.git	653d7f5bd13762b97cf0bd6b7c5890cf3f54db4d	068a63ea251871b07d29434e8a6a9ba59dd0df06	tests/misc.rs	changed	62	0	ignore: add multi-root parent matcher regression tests			
+https://github.com/BurntSushi/ripgrep.git	d199058e77cbea419f072015373ab1beb0e508ee	bb0cbae3121f19e5319b28519b4c287dd49cb941	tests/multiline.rs	not-fired	0	0	cli: make `rg -vf file` behave sensibly			
+https://github.com/BurntSushi/ripgrep.git	df7a3bfc7fe30f3e9e89d8775748b1239c5b5fc4	28f2a93caefef8018c786c80c9b47f13f62c01c3	tests/multiline.rs	not-fired	0	0	grep-cli: support files compressed by compress(1)			
+https://github.com/BurntSushi/ripgrep.git	581a35e568c3acd32461d276a4cfe746524e17cd	ba965962fe2fc3513aeeaa99665f09099d92045d	tests/multiline.rs	not-fired	0	0	impl: fix --multiline anchored match bug			
+https://github.com/BurntSushi/ripgrep.git	0c3b673e4c64c6e9c580b15ff8cf9c2a21c29cbd	297b428c8c92dca2c62d57dd41ad085aa94c4aa4	src/search.rs	not-fired	0	0	cli: make ripgrep work in non-existent directories			
+https://github.com/BurntSushi/ripgrep.git	0bc4f0447b05468f043e06278a3ca2b1c5646f9b	c95f29e3ba46ef622481995ab01fd9f4e931345c	grep-searcher/src/macros.rs	not-fired	0	0	style: rustfmt everything			
+https://github.com/BurntSushi/ripgrep.git	ee23ab51736d35028c7f3eee23295429377742b4	efd9cfb2fc1f0233de9eda4c03416d32ef2c3ce8	tests/misc.rs	not-fired	0	0	printer: trim line terminator before finding submatches			
+https://github.com/BurntSushi/ripgrep.git	14f4957b3d605f14ad58bc67e54197a3084fef5a	f722268814e878b133d926143f3019c164ef4bc1	tests/misc.rs	not-fired	0	0	ignore: fix filtering searching subdir or .ignore in parent dir			
+https://github.com/BurntSushi/ripgrep.git	b0f664540889f26f8f53b699dbc870de288ec428	3dbe371fe448c1e99a568c249d7e875aad59d6a5	ci/install.sh	not-fired	0	0	ci: remove local deb build-and-publish script			
+https://github.com/BurntSushi/ripgrep.git	fc31aedcf3cae7a773c94a79775396759af10dd8	578e1992fa21d3612d3e613d8869dbbb16e33cbe	tests/misc.rs	not-fired	0	0	printer: vimgrep now only prints one line			
+https://github.com/BurntSushi/ripgrep.git	297b428c8c92dca2c62d57dd41ad085aa94c4aa4	804b43ecd8bd37fde4fc81f49d1f9bb659aeac1c	src/path_printer.rs	not-fired	0	0	cli: add --no-ignore-exclude flag			
+https://github.com/BurntSushi/ripgrep.git	297b428c8c92dca2c62d57dd41ad085aa94c4aa4	804b43ecd8bd37fde4fc81f49d1f9bb659aeac1c	src/search.rs	not-fired	0	0	cli: add --no-ignore-exclude flag			
+https://github.com/BurntSushi/ripgrep.git	578e1992fa21d3612d3e613d8869dbbb16e33cbe	46d0130597a8340c19fdd41b107c209653451698	tests/misc.rs	not-fired	0	0	cli: add --field-{context,match}-separator flags			
+https://github.com/BurntSushi/ripgrep.git	e71eedf0eb802c27541292f06676aa782be9bd21	88f46d12f1f3f7c2eac925ecb0b1c816ffddb943	tests/misc.rs	not-fired	0	0	cli: add --no-context-separator flag			
+https://github.com/BurntSushi/ripgrep.git	fa80aab6b0f854f7a88e7d982d27aec0a9402002	7c2161d68755e2c47db26717f6757f5099d500e4	tests/misc.rs	not-fired	0	0	test: add regression test for fixed gitignore bug			
+https://github.com/BurntSushi/ripgrep.git	040d8f2171b854f25544929b50ee7b059c22bef7	c81caa673b743bdac04db75c32957200bf549695	ci/test_complete.sh	not-fired	0	0	ci: improve docs for manual build-and-publish scripts			
+https://github.com/BurntSushi/ripgrep.git	9d738ad0c009e6632d75fa3d36051e5ae7f7cce6	6c5108ed17987531644518fac8c1659b0b202611	tests/multiline.rs	not-fired	0	0	regex: fix inner literal extraction that resulted in false negatives			
+https://github.com/BurntSushi/ripgrep.git	6d95c130d5fb56a8641092a4808f33640bfa935c	4782ebd5e0773465ba2c32a328250253c2b55779	tests/multiline.rs	not-fired	0	0	cli: add --stop-on-nonmatch flag			
+https://github.com/BurntSushi/ripgrep.git	581a35e568c3acd32461d276a4cfe746524e17cd	ba965962fe2fc3513aeeaa99665f09099d92045d	tests/misc.rs	not-fired	0	0	impl: fix --multiline anchored match bug			
+https://github.com/BurntSushi/ripgrep.git	805fa32d184f9b163e7355dd335abc96440f0d2b	2d518dd1f96147690c1eadf58023cec3eb0e108a	tests/misc.rs	not-fired	0	0	searcher: work around NUL line terminator bug			
+https://github.com/BurntSushi/ripgrep.git	6f2b79f5847f941aec44ed5813c0dae16c2b2946	0c3b673e4c64c6e9c580b15ff8cf9c2a21c29cbd	tests/multiline.rs	not-fired	0	0	ignore: use git commondir for sourcing .git/info/exclude			
+https://github.com/BurntSushi/ripgrep.git	6a1c3253e02427d3e7ad6389b624b1a38eae61e1	c7730d1f3a366e42fdd497a1e0db4bf090de415c	ci/test_complete.sh	not-fired	0	0	ci: fix deb build script in clean checkout			
+https://github.com/BurntSushi/ripgrep.git	52d7f474206eb517c7284448777ed839c0cae8bb	75cbe88fa2993bcb12cbbddb32670cba30527716	tests/misc.rs	not-fired	0	0	ignore: treat symbolic links to directories as directories			
+https://github.com/BurntSushi/ripgrep.git	ad97e9c93fc0687ba7a96680ddc749c1da664446	24f8a3e5ec4729c8e485547ca40157920ae64b9c	grep-regex/src/non_matching.rs	not-fired	0	0	grep-regex: improve inner literal detection			
+https://github.com/BurntSushi/ripgrep.git	0ca96e004c539e44242607fee5c4661edf27a5cd	2295061e8079b146e656526ce1b264bf8f217585	tests/multiline.rs	not-fired	0	0	printer: fix context bug when --max-count is used			
+https://github.com/BurntSushi/ripgrep.git	bf0ddc4675602bcf31fcb7b9be8eaad7141f9c76	0fb3f6a15987c4090fbea2b4deeaceaae58e8853	ci/install.sh	not-fired	0	0	ci: fix musl docker build			
+https://github.com/BurntSushi/ripgrep.git	24f8a3e5ec4729c8e485547ca40157920ae64b9c	1bdb767851d10acc9bf5b9306b7cc62cadbfe121	src/search.rs	not-fired	0	0	doc: document `all` file type			
+https://github.com/BurntSushi/ripgrep.git	f596a5d8750a6a6db1b87ad95a78667322c06cbd	556623684e99fade287f265c5f513321487dd35a	tests/misc.rs	not-fired	0	0	globset: add `allow_unclosed_class` toggle			
+https://github.com/BurntSushi/ripgrep.git	c95f29e3ba46ef622481995ab01fd9f4e931345c	3644208b0302111320083122ad4f954d587f70be	ci/install.sh	not-fired	0	0	ci: check rustfmt in Travis			
+https://github.com/BurntSushi/ripgrep.git	c8e4a84519ede79b330f9a9e2b072110d5bd0c8c	f02a50a69da131269fe0d8460e08b1fceea04ca9	tests/misc.rs	not-fired	0	0	cli: prefix all non-fatal error messages with 'rg: '			
+https://github.com/BurntSushi/ripgrep.git	297b428c8c92dca2c62d57dd41ad085aa94c4aa4	804b43ecd8bd37fde4fc81f49d1f9bb659aeac1c	tests/multiline.rs	not-fired	0	0	cli: add --no-ignore-exclude flag			
+https://github.com/BurntSushi/ripgrep.git	e6cac8b119d0d50646b3ba1aaf53e648c779901a	0f502a9439822df41b3140d944f5d03c36144ecd	tests/misc.rs	not-fired	0	0	cli: print warning if nothing was searched			
+https://github.com/BurntSushi/ripgrep.git	e6cac8b119d0d50646b3ba1aaf53e648c779901a	0f502a9439822df41b3140d944f5d03c36144ecd	tests/multiline.rs	not-fired	0	0	cli: print warning if nothing was searched			
+https://github.com/BurntSushi/ripgrep.git	7ce66f73cf7e76e9f2557922ac8e650eb02cf4ed	bc76a30c23317526441a76f99ff397f65acea607	tests/multiline.rs	not-fired	0	0	regex: update regression test			
+https://github.com/BurntSushi/ripgrep.git	126bbeab8c1cbbc1d6cb36b4c2d560574233856d	859d54270ec19f8ffc98343d9af886c10728d680	tests/misc.rs	not-fired	0	0	printer: fix handling of `has_match` for summary printer			
+https://github.com/BurntSushi/ripgrep.git	341a19e0d05bc6f0cabeb2dc756b37cfc047f8f0	fed4fea217abbc502f2e823465de903c8f2b623d	tests/multiline.rs	not-fired	0	0	regex: fix fast path for -w/--word-regexp flag (#2576)			
+https://github.com/BurntSushi/ripgrep.git	20deae6497820587ee523a72b6326356016994a6	655e33219a671dab4432c6f29785244870cc74f6	tests/multiline.rs	not-fired	0	0	tests: fix typo in test name			
+https://github.com/BurntSushi/ripgrep.git	2ed0c006fee4c441add774a711d9122a88477619	59e318f5ace48db54f37bb67c152535bc17fa153	tests/misc.rs	not-fired	0	0	flags: disable many flags when indexing is enabled			
+https://github.com/BurntSushi/ripgrep.git	6f2b79f5847f941aec44ed5813c0dae16c2b2946	0c3b673e4c64c6e9c580b15ff8cf9c2a21c29cbd	tests/misc.rs	not-fired	0	0	ignore: use git commondir for sourcing .git/info/exclude			
+https://github.com/BurntSushi/ripgrep.git	6a1c3253e02427d3e7ad6389b624b1a38eae61e1	c7730d1f3a366e42fdd497a1e0db4bf090de415c	ci/install.sh	not-fired	0	0	ci: fix deb build script in clean checkout			
+https://github.com/BurntSushi/ripgrep.git	1c4b5adb7b4a239e433d4a1dc2aa4b09ee30573d	3d6a58faffc025861a977a8c09375d96a9b1452c	tests/misc.rs	not-fired	0	0	regex: fix another inner literal bug			
+https://github.com/BurntSushi/ripgrep.git	da672f87e853d239b2f562d70c0b34d3afea6dfc	edafb612d2b93b0dc28531abf155bdd7e3bcfe63	tests/multiline.rs	not-fired	0	0	color: add italic to style attributes			
+https://github.com/BurntSushi/ripgrep.git	0373f6ddb0ed8a2adba1574e72ff7fc0e24a6da7	b44554c803dffe50af354c0eb960fa2a0fc79cec	ci/install.sh	not-fired	0	0	ci: soft-disable Travis and AppVeyor			
+https://github.com/BurntSushi/ripgrep.git	24f8a3e5ec4729c8e485547ca40157920ae64b9c	1bdb767851d10acc9bf5b9306b7cc62cadbfe121	src/path_printer.rs	not-fired	0	0	doc: document `all` file type			
+https://github.com/BurntSushi/ripgrep.git	5dc424d3027be8fac4831a55f31b5a91bd0e5312	040d8f2171b854f25544929b50ee7b059c22bef7	ci/test_complete.sh	not-fired	0	0	doc: scrub mentions of asciidoc/asciidoctor			
+https://github.com/BurntSushi/ripgrep.git	cb2f6ddc61b79b7acf59bb00a6be9f1740aa55b8	bd7a42602f090efaea228c79fce045642b1414a4	grep-regex/src/ast.rs	not-fired	0	0	deps: update to thread_local 1.0			
+https://github.com/BurntSushi/ripgrep.git	75cbe88fa2993bcb12cbbddb32670cba30527716	711426a632aee0affb7009cd8e3492c4ff7273e8	tests/multiline.rs	not-fired	0	0	cli: add --no-unicode, deprecate --no-pcre2-unicode			

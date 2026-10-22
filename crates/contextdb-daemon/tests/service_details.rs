@@ -820,7 +820,10 @@ fn check_by_certificate_id_strict_and_steady_session_certificate() {
     let r = check_with(&s, at(a), Some(rc), true, None);
     assert_eq!(validation(&r), &Validation::Valid);
     assert_eq!(cert(&r).cert_id, rc);
-    assert!(cert(&r).strict_no_aba);
+    assert!(
+        !cert(&r).strict_no_aba,
+        "strict request is a validation overlay on an immutable explicit certificate"
+    );
     let c1 = cert(&check(&s, at(a))).clone();
     assert!(!c1.strict_no_aba);
     create(&s, at(w), "unrelated", "2");
@@ -829,6 +832,23 @@ fn check_by_certificate_id_strict_and_steady_session_certificate() {
     assert_eq!(cert(&r).cert_id, c1.cert_id, "covered: not re-issued");
     let r = check_with(&s, at(a), None, true, None);
     assert!(cert(&r).strict_no_aba, "{r:?}");
+    assert_eq!(
+        cert(&r).cert_id,
+        *blake3::hash(&cert(&r).body_bytes()).as_bytes()
+    );
+    let upgraded = cert(&r).cert_id;
+    s.handle(
+        Identity {
+            channel: Channel::Admin,
+            principal: PrincipalId(0),
+        },
+        Request::Shutdown,
+    );
+    drop(s);
+    let s = service(&disk);
+    let r = check(&s, at(a));
+    assert!(cert(&r).strict_no_aba);
+    assert_eq!(cert(&r).cert_id, upgraded);
 }
 
 // -------------------------------------------------------------- updates

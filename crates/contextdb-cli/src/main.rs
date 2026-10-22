@@ -1,5 +1,6 @@
 //! `ctx`: operator commands over a durable store (SPEC §5 P2, ADR 0006) and,
 //! with a running `ctxd`, admin commands over its socket (ADR 0008 §8.3).
+mod anchors;
 mod daemon;
 mod p4;
 
@@ -161,7 +162,10 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
 fn run(args: &[String]) -> Result<u8, String> {
     let dir = |n: usize| args.get(n).map(Path::new).ok_or("missing <dir>");
     match args.first().map(String::as_str) {
+        Some("check") if args.iter().any(|a| a == "--range") => anchors::range(dir(1)?, &args[2..]),
         Some("check") => p4::check(dir(1)?, &args[2..]),
+        Some("anchors") => anchors::run(&args[1..]),
+        Some("anchors-pre-push") => anchors::pre_push(dir(1)?, dir(2)?),
         Some("policy") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             let mut rest = vec![sub];

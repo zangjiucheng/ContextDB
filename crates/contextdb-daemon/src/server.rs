@@ -112,6 +112,7 @@ impl Daemon {
             Service::with_recall(actor, log, events, Some(&recall))
                 .map_err(|e| io::Error::other(format!("session log: {e:?}")))?,
         );
+        *service.anchor_routes.lock().expect("anchor routes") = Some(dir.join("anchors.routes"));
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;

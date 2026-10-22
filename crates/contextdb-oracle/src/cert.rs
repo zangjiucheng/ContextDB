@@ -17,12 +17,12 @@ fn summary(
     live: &BTreeMap<String, Vec<u8>>,
 ) -> Summary {
     let mut dim = d.nodes[r.index()].dimensions.clone();
-    let l = &i.logicals[i.revisions[r.index()].logical.index()];
-    if l.kind == RecordKind::CodeAnchor {
-        let lagging = live
-            .get(&l.scope_lane)
-            .is_some_and(|v| i.watermarks.get(&l.scope_lane) != Some(v));
-        dim.observation = if lagging {
+    let scopes = observation_scopes(i, d, &[r]);
+    if !scopes.is_empty() {
+        dim.observation = if scopes
+            .iter()
+            .any(|s| live.get(s).is_none() || i.watermarks.get(s) != live.get(s))
+        {
             Observation::Lagging
         } else {
             Observation::Fresh
@@ -78,16 +78,45 @@ fn closure(
         })
         .collect())
 }
-fn watermarks(i: &Inputs, vector: &[VectorItem]) -> Vec<(String, Vec<u8>)> {
-    let scopes: BTreeSet<&String> = vector
-        .iter()
-        .map(|v| &i.logicals[v.logical.index()])
-        .filter(|l| l.kind == RecordKind::CodeAnchor)
-        .map(|l| &l.scope_lane)
-        .collect();
-    scopes
+fn observation_scopes(i: &Inputs, d: &DerivedSnapshot, roots: &[RevisionId]) -> BTreeSet<String> {
+    let mut reached: BTreeSet<_> = roots.iter().copied().collect();
+    loop {
+        let mut next = reached.clone();
+        for r in &reached {
+            if let Some(Witness::Rule(j)) = d.nodes[r.index()].witness[2] {
+                for p in &i.rules[j.index()].premises {
+                    if p.kind != EdgeKind::Ref {
+                        next.insert(p.premise);
+                    }
+                    if p.kind == EdgeKind::Sem {
+                        next.insert(i.heads[i.revisions[p.premise.index()].logical.index()]);
+                    }
+                }
+            }
+        }
+        if next == reached {
+            break;
+        }
+        reached = next;
+    }
+    reached
         .into_iter()
-        .map(|s| (s.clone(), i.watermarks.get(s).cloned().unwrap_or_default()))
+        .map(|r| &i.logicals[i.revisions[r.index()].logical.index()])
+        .filter(|l| l.kind == RecordKind::CodeAnchor)
+        .map(|l| l.scope_lane.clone())
+        .collect()
+}
+fn watermarks(
+    i: &Inputs,
+    d: &DerivedSnapshot,
+    roots: &[(RevisionId, Epoch)],
+) -> Vec<(String, Vec<u8>)> {
+    observation_scopes(i, d, &roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
+        .into_iter()
+        .map(|s| {
+            let pos = i.watermarks.get(&s).cloned().unwrap_or_default();
+            (s, pos)
+        })
         .collect()
 }
 /// Session-supplied fields, mirroring the engine's `IssueRequest`.
@@ -149,7 +178,7 @@ pub fn cert_issue_oracle(
         issued_epoch: Epoch(history.len() as u64 - 1),
         log_checksum_at_issue: params.log_checksum,
         code_commit: params.code_commit.clone(),
-        watermarks: watermarks(i, &vector),
+        watermarks: watermarks(i, &d, &roots),
         entries: entries.to_vec(),
         vector,
         strict_no_aba: params.strict_no_aba,
@@ -191,8 +220,9 @@ pub fn cert_validate_oracle(
     let i = history.last().expect("genesis state");
     let d = jacobi(i);
     let head = |l: LogicalId| i.heads[l.index()];
+    let mut strict_diffs = Vec::new();
     if cert.strict_no_aba {
-        let diffs: Vec<CertDiff> = cert
+        let mut diffs: Vec<CertDiff> = cert
             .vector
             .iter()
             .filter(|v| strict_moved(history, v))
@@ -203,12 +233,28 @@ pub fn cert_validate_oracle(
                 summary: Some(summary(i, &d, head(v.logical), live)),
             })
             .collect();
-        if !diffs.is_empty() {
-            return Validation::Invalid {
-                reason: InvalidReason::StrictChange,
-                diffs,
-            };
+        let at_issue = &history[cert.issued_epoch.0 as usize];
+        let derived_at_issue = jacobi(at_issue);
+        let watermark_moved = cert.entries.iter().filter(|e| e.required).any(|entry| {
+            let scopes = observation_scopes(at_issue, &derived_at_issue, &[entry.rev]);
+            (entry.since_epoch.0 as usize + 1..history.len()).any(|e| {
+                scopes.iter().any(|scope| {
+                    history[e - 1].watermarks.get(scope) != history[e].watermarks.get(scope)
+                })
+            })
+        });
+        if watermark_moved
+            && diffs.is_empty()
+            && let Some(e) = cert.entries.iter().find(|e| e.required)
+        {
+            diffs.push(CertDiff {
+                logical: e.logical,
+                cert_rev: Some(e.rev),
+                current: Some(head(e.logical)),
+                summary: Some(summary(i, &d, head(e.logical), live)),
+            });
         }
+        strict_diffs = diffs;
     }
     let required: Vec<&CertItem> = cert.entries.iter().filter(|e| e.required).collect();
     if required.is_empty() {
@@ -238,6 +284,15 @@ pub fn cert_validate_oracle(
             summary: Some(s.clone()),
         })
         .collect();
+    if !strict_diffs.is_empty() {
+        strict_diffs.extend(invalid);
+        strict_diffs.sort_by_key(|d| d.logical);
+        strict_diffs.dedup_by_key(|d| d.logical);
+        return Validation::Invalid {
+            reason: InvalidReason::StrictChange,
+            diffs: strict_diffs,
+        };
+    }
     if !invalid.is_empty() {
         return Validation::Invalid {
             reason: InvalidReason::Changed,
@@ -259,17 +314,9 @@ pub fn cert_validate_oracle(
         Ok(v) => v,
     };
     let mut lag: BTreeSet<String> = BTreeSet::new();
-    for (e, _, s) in &results {
-        if *s == Summary::Pending(PendingReason::ObservationLag) {
-            lag.insert(i.logicals[e.logical.index()].scope_lane.clone());
-        }
-    }
-    for v in &vector {
-        let l = &i.logicals[v.logical.index()];
-        if l.kind == RecordKind::CodeAnchor
-            && summary(i, &d, v.rev, live) == Summary::Pending(PendingReason::ObservationLag)
-        {
-            lag.insert(l.scope_lane.clone());
+    for scope in observation_scopes(i, &d, &roots.iter().map(|(r, _)| *r).collect::<Vec<_>>()) {
+        if live.get(&scope).is_none() || i.watermarks.get(&scope) != live.get(&scope) {
+            lag.insert(scope);
         }
     }
     if !lag.is_empty() {
@@ -317,7 +364,7 @@ pub fn cert_validate_oracle(
     new_cert.cert_id = [0; 32];
     new_cert.issued_epoch = Epoch(now);
     new_cert.log_checksum_at_issue = current_checksum;
-    new_cert.watermarks = watermarks(i, &vector);
+    new_cert.watermarks = watermarks(i, &d, &roots);
     for e in new_cert.entries.iter_mut().filter(|e| e.required) {
         let own = closure(i, &d, &[(e.rev, e.since_epoch)]).expect("sub-closure");
         if own.iter().any(|v| changed.contains(&v.logical)) {

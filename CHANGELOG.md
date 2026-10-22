@@ -100,3 +100,10 @@
   - `ctx check | policy | gating | hooks | gate-report P4 | dogfood review`.
   - `ctx-mcp` binds each call from `_meta`; `ctx_check` takes an action and peeks `context_update`.
 - P4 verification so far: T38–T41b, T66, G6 scenario; G3 properties at 10,000 seeds (two outbox seq bugs found and fixed); G4 kill points, daemon crash windows, outbox stress; G5 PreToolUse p95 ≤ 10.8 ms (budget 50 ms) after caching the repository root and skipping the session-log sync on steady checks.
+- P5a G0: ADR 0011 (file anchors, observation freshness) accepted after independent review; SPEC v1.6.1.
+- P5a implementation (ADR 0011):
+  - `contextdb-anchors`: raw-worktree Git blob OIDs (SHA-1 with collision detection, SHA-256) in canonical BLAKE3-addressed descriptors; two-sample bounded capture with O_NOFOLLOW openat walks; pure classifier; observer with watermark CAS retry.
+  - Daemon: trusted repo routing, live evidence for certified read/recall/check, observation support closure (Sem asserted and head), durable per-root proofs, path-filtered checks with conservative alias fallback, admin range check.
+  - Protocol 3 and session log format 2 (forced rollover from format 1).
+  - `ctx anchors add|scan|watch|status|hooks`, `ctx check --strict --range`, pre-push gate.
+- P5a verification: PROP12 rebuilt against Git history at 10,000 seeds; G4 interruption/crash, corrupt descriptor and race tests; live capture made parallel with cached gitlinks and repository handles (1,000 anchors: 0 → ~92% certified reads within 40 ms); `anchor_replay` for the G6 human-labelled replay (3 repos × 1,000 commits prepared); independent review fixes (nested-repo path filter, socket/`.git` probe errors, case-alias registration, watermark-first CAS, non-failing Git hooks). Gate open: G5 quiet rerun, G6 labels, outbox growth (M2), P4 dogfood.

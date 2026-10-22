@@ -3,7 +3,7 @@
 多个 AI coding agent 共用的、带失效证明的上下文数据库。决策、计划、代码锚点和证据之间的依赖存成 AND/OR justification DAG。上游被 supersede、撤回，或引用的代码改变时，下游会被精确标记为 STALE 或 PENDING，有替代支持的结论不受影响。agent 行动前用 certificate 校验自己读到的上下文仍然有效。
 
 - **权威 spec**：[`SPEC.md`](SPEC.md)
-- **当前阶段**：P0–P3 Gate 已通过。P4（hooks 与 action gating）已实现，正在走 Gate 验证；G6 dogfood（≥ 2 周真实使用）由项目所有者进行，见 [`docs/gates/P4.md`](docs/gates/P4.md)。
+- **当前阶段**：P0–P3 Gate 已通过。P4（hooks 与 action gating）已实现，正在走 Gate 验证；G6 dogfood（≥ 2 周真实使用）由项目所有者进行，见 [`docs/gates/P4.md`](docs/gates/P4.md)。P5a（文件级代码锚点）按 A11 并行实现，Gate 不早于 P4 通过，见 [`docs/gates/P5a.md`](docs/gates/P5a.md)。
 - **实现状态**：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - **决策记录**：[`docs/adr/`](docs/adr/)
 - **研究归档**（不具规范性）：[`docs/research/`](docs/research/)
@@ -140,6 +140,27 @@ ctx dogfood review <dir>         # 人工标注 warn/deny 与抽样的放行，�
 ```
 
 **升级说明**：P4 把 IPC 协议升到版本 2，P3 的 `ctx-mcp` 进程会收到 `ProtocolVersion` 错误，harness 重启它后恢复。P4 的 session log 增加了新事件，P3 二进制无法打开（不支持降级）；P3 的 session log 在 P4 下照常重放。
+
+## 文件级代码锚点（P5a）
+
+把仓库里的文件注册为 `CodeAnchor`，决策和计划可以像依赖其他记录一样依赖它们；文件内容一变，下游按依赖类型变成 STALE 或 PENDING（ADR 0011）。
+
+- **身份**：锚点 revision 是工作树**原始字节**的 Git blob OID（等同 `git hash-object --no-filters`，支持 SHA-1 / SHA-256 仓库），不经过 clean / EOL filter。内容相同就复用同一 RevisionId，所以删除后原样恢复，下游也会恢复。key 为 `code:<repo-id>/<相对路径>`，只接受小写 ASCII 路径；`..`、`.git`、symlink（包括父目录）、子模块、运行时数据目录都拒绝或判为 Broken。
+- **observer**：`ctx anchors scan|watch` 两次完整采样 HEAD 与所有注册文件，结果一致才在一个 batch 里提交内容变化与 `ObserverWatermark`（CAS，冲突时重新采样）。文件删除 → `RetractBase` + `AnchorBroken`；恢复 → 重新断言 base。
+- **freshness**：每次 certified 读取、recall 和 check，daemon 都按可信路由（`<data dir>/anchors.routes`，由 `ctx anchors add` 写入）实时采样一次；实时位置与 watermark 不一致、采样失败、超出上限（1,000 锚点 / scope、16 MiB / 文件、40 ms）、路由缺失或描述符损坏、采样期间 outbox 收到新的编辑通知（采样前先取各流的 seq 截止点）或 outbox 状态损坏，一律是 `PENDING(ObservationLag)` / 证书 `Unknown`，从不当作新鲜。
+- **按路径过滤**：Edit / Write / apply_patch 的 PreToolUse 只检查 support 闭包涉及目标路径的 required 读取（Sem 同时看断言的 premise 与当前 head，不跟 Ref）；未锚定的读取、Bash、未知或别名不确定的路径（大小写别名、硬链接、symlink）都回退为全量检查。每个 root 首次认证时的证明会持久化，过滤检查沿用原来的 strict 窗口。
+- **Git hooks 与 pre-push**：`hooks install` 为 post-commit / post-checkout / post-merge 加上一次扫描，保留并先运行原有 hook（备份为 `<hook>.contextdb-original`）；`--pre-push` 才安装硬门控。pre-push 处理所有 ref pair：被推送的提交必须就是当前 HEAD，且所有注册文件的原始字节与该提交一致，否则为 Unknown 并拒绝。
+
+```sh
+ctx anchors add <dir> <repo> <path>...   # 注册（并写入可信路由），随即扫描一次
+ctx anchors scan|watch|status <dir> <repo>
+ctx anchors hooks <dir> <repo> install [--pre-push] | uninstall
+ctx check <dir> --strict --range <a>..<b> [--repo <repo>]
+                                 # 点时检查：从 a..b 改动的已注册文件出发，覆盖所有可达的当前 head（不限会话读集），
+                                 # 新签发证书、strict 窗口从此刻开始；不声明整个 Git 范围内没有历史 ABA。非 Valid 退出 1
+```
+
+**升级说明**：P5a 把 IPC 协议升到 3，并写 format-2 的 session log 段（写第一个新事件前强制从 format-1 段切换）。P4 的 session log 在 P5a 下照常读取；P4 二进制会在截断前拒绝 format-2 段，不支持降级。P4 dogfood 期间不要用 P5a 构建覆盖 `.contextdb/bin`。
 
 研究原型与 `crates/contextdb-dd` 已从主 workspace 排除。R2 的 workspace 独立保留；
 归档的 DBSP 原型需要研究 README 所述补丁源码，主项目构建不依赖它。

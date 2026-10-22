@@ -42,7 +42,7 @@ impl Rig {
             })
             .collect();
         self.db
-            .issue_certificate(&request(strict), &items, &BTreeMap::new())
+            .issue_certificate(&request(strict), &items, &self.db.inputs().watermarks)
     }
     fn validate(&self, c: &Certificate, live: &BTreeMap<String, Vec<u8>>) -> Validation {
         self.db
@@ -140,7 +140,7 @@ fn t16_certificate_bound_to_old_head_is_invalid() {
     let cert = rig.issue(&[(0, 0)], false).unwrap();
     rig.ok(vec![revision(0, 1), head(0, 0, 1)]);
     assert_eq!(
-        rig.validate(&cert, &BTreeMap::new()),
+        rig.validate(&cert, &rig.db.inputs().watermarks),
         Validation::Invalid {
             reason: InvalidReason::Changed,
             diffs: vec![CertDiff {
@@ -167,11 +167,14 @@ fn t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid() {
     // X: v1 → v2 → v1 (ABA) across two batches.
     rig.ok(vec![revision(0, 5), head(0, 0, 2)]);
     rig.ok(vec![head(0, 2, 0)]);
-    assert_eq!(rig.validate(&loose, &BTreeMap::new()), Validation::Valid);
+    assert_eq!(
+        rig.validate(&loose, &rig.db.inputs().watermarks),
+        Validation::Valid
+    );
     let Validation::Invalid {
         reason: InvalidReason::StrictChange,
         diffs,
-    } = rig.validate(&strict, &BTreeMap::new())
+    } = rig.validate(&strict, &rig.db.inputs().watermarks)
     else {
         panic!("strict ABA must be Invalid{{StrictChange}}");
     };
@@ -179,13 +182,20 @@ fn t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid() {
 
     // Anchor base retracted and restored (observer channel) under strict.
     let mut rig = Rig::new();
-    rig.observer(vec![Op::CreateLogical {
-        key: "code:repo/a.rs".into(),
-        kind: RecordKind::CodeAnchor,
-        scope_lane: SCOPE.into(),
-        content: [7; 32],
-        adopt_as_base: true,
-    }]);
+    rig.observer(vec![
+        Op::CreateLogical {
+            key: "code:repo/a.rs".into(),
+            kind: RecordKind::CodeAnchor,
+            scope_lane: SCOPE.into(),
+            content: [7; 32],
+            adopt_as_base: true,
+        },
+        Op::ObserverWatermark {
+            scope: SCOPE.into(),
+            expected: None,
+            position: vec![1],
+        },
+    ]);
     rig.ok(vec![create("plan", false, 1)]);
     rig.ok(vec![rule(1, &[(0, EdgeKind::Cur)])]);
     let loose = rig.issue(&[(1, 1)], false).unwrap();
@@ -196,9 +206,12 @@ fn t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid() {
     rig.observer(vec![Op::AssertBase {
         rev: RevisionId(0).into(),
     }]);
-    assert_eq!(rig.validate(&loose, &BTreeMap::new()), Validation::Valid);
+    assert_eq!(
+        rig.validate(&loose, &rig.db.inputs().watermarks),
+        Validation::Valid
+    );
     assert!(matches!(
-        rig.validate(&strict, &BTreeMap::new()),
+        rig.validate(&strict, &rig.db.inputs().watermarks),
         Validation::Invalid {
             reason: InvalidReason::StrictChange,
             ..
@@ -236,23 +249,33 @@ fn t62_p3_unrelated_commits_keep_certificate_valid_and_validate_has_no_epoch() {
         rig.ok(vec![revision(1, 10 + n)]);
     }
     assert!(rig.db.epoch() > cert.issued_epoch);
-    assert_eq!(rig.validate(&cert, &BTreeMap::new()), Validation::Valid);
+    assert_eq!(
+        rig.validate(&cert, &rig.db.inputs().watermarks),
+        Validation::Valid
+    );
 }
 
 #[test]
 fn t65_verdict_priority() {
     // Invalid and Unknown together → Invalid: X superseded, the anchor lagging.
     let mut rig = Rig::new();
-    rig.observer(vec![Op::CreateLogical {
-        key: "code:repo/a.rs".into(),
-        kind: RecordKind::CodeAnchor,
-        scope_lane: SCOPE.into(),
-        content: [7; 32],
-        adopt_as_base: true,
-    }]);
+    rig.observer(vec![
+        Op::CreateLogical {
+            key: "code:repo/a.rs".into(),
+            kind: RecordKind::CodeAnchor,
+            scope_lane: SCOPE.into(),
+            content: [7; 32],
+            adopt_as_base: true,
+        },
+        Op::ObserverWatermark {
+            scope: SCOPE.into(),
+            expected: None,
+            position: vec![1],
+        },
+    ]);
     rig.observer(vec![Op::ObserverWatermark {
         scope: SCOPE.into(),
-        expected: None,
+        expected: Some(vec![1]),
         position: vec![1],
     }]);
     rig.ok(vec![create("x", true, 0), create("y", false, 1)]);
@@ -274,19 +297,26 @@ fn t65_verdict_priority() {
 
     // Pending and Unknown together → Unknown.
     let mut rig = sem_fixture();
-    rig.observer(vec![Op::CreateLogical {
-        key: "code:repo/a.rs".into(),
-        kind: RecordKind::CodeAnchor,
-        scope_lane: SCOPE.into(),
-        content: [7; 32],
-        adopt_as_base: true,
-    }]);
+    rig.observer(vec![
+        Op::CreateLogical {
+            key: "code:repo/a.rs".into(),
+            kind: RecordKind::CodeAnchor,
+            scope_lane: SCOPE.into(),
+            content: [7; 32],
+            adopt_as_base: true,
+        },
+        Op::ObserverWatermark {
+            scope: SCOPE.into(),
+            expected: None,
+            position: vec![1],
+        },
+    ]);
     rig.ok(vec![create("y", false, 3)]);
     rig.ok(vec![rule(3, &[(2, EdgeKind::Cur)])]);
     let cert = rig.issue(&[(1, 1), (3, 3)], false).unwrap();
     rig.ok(vec![revision(0, 10), head(0, 0, 4)]);
     assert!(matches!(
-        rig.validate(&cert, &BTreeMap::new()),
+        rig.validate(&cert, &rig.db.inputs().watermarks),
         Validation::Pending { .. }
     ));
     let lagging = BTreeMap::from([(SCOPE.to_owned(), vec![5])]);
@@ -301,7 +331,8 @@ fn t65_verdict_priority() {
     let strict = rig.issue(&[(1, 1)], true).unwrap();
     rig.ok(vec![revision(0, 10), head(0, 0, 2)]);
     rig.ok(vec![validate_rule(0, 0, 2)]);
-    let Validation::ValidRecertified { new_cert, diffs } = rig.validate(&loose, &BTreeMap::new())
+    let Validation::ValidRecertified { new_cert, diffs } =
+        rig.validate(&loose, &rig.db.inputs().watermarks)
     else {
         panic!("revalidated Sem head must recertify");
     };
@@ -314,10 +345,13 @@ fn t65_verdict_priority() {
             summary: Some(Summary::Certified),
         }]
     );
-    assert_eq!(rig.validate(&new_cert, &BTreeMap::new()), Validation::Valid);
+    assert_eq!(
+        rig.validate(&new_cert, &rig.db.inputs().watermarks),
+        Validation::Valid
+    );
     // Strict: the same head move is Invalid{StrictChange}, never recertified.
     assert!(matches!(
-        rig.validate(&strict, &BTreeMap::new()),
+        rig.validate(&strict, &rig.db.inputs().watermarks),
         Validation::Invalid {
             reason: InvalidReason::StrictChange,
             ..
