@@ -9,17 +9,17 @@
 #   scripts/remote.sh wait <name>         block until the job ends; exit with its code
 #   scripts/remote.sh fetch               copy remote results/ into results/remote/
 #
-# Environment: CTXDB_REMOTE (default user@remote-host:
-# the `remote` alias is a load-balanced pool whose nodes have separate /tmp, so
-# one node is pinned), CTXDB_REMOTE_DIR (/tmp/remote-ctxdb),
-# CTXDB_REMOTE_RUST (/tmp/remote-rust), CTXDB_REMOTE_JOBS (48, exported as
-# CARGO_BUILD_JOBS, MUTATION_JOBS and FUZZ_JOBS to the job; fuzz.sh runs two
-# targets, so pass FUZZ_JOBS=<half> to stay within the budget).
+# Environment: CTXDB_REMOTE (required, user@host of the Linux build host; pin
+# one node if the name is a load-balanced pool whose nodes have separate /tmp),
+# CTXDB_REMOTE_DIR (/tmp/ctxdb-remote), CTXDB_REMOTE_RUST (/tmp/ctxdb-rust),
+# CTXDB_REMOTE_JOBS (48, exported as CARGO_BUILD_JOBS, MUTATION_JOBS and
+# FUZZ_JOBS to the job; fuzz.sh runs two targets, so pass FUZZ_JOBS=<half> to
+# stay within the budget).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-host=${CTXDB_REMOTE:-user@remote-host}
-dir=${CTXDB_REMOTE_DIR:-/tmp/remote-ctxdb}
-rust=${CTXDB_REMOTE_RUST:-/tmp/remote-rust}
+host=${CTXDB_REMOTE:?set CTXDB_REMOTE=user@host (the remote Linux build host)}
+dir=${CTXDB_REMOTE_DIR:-/tmp/ctxdb-remote}
+rust=${CTXDB_REMOTE_RUST:-/tmp/ctxdb-rust}
 jobs=${CTXDB_REMOTE_JOBS:-48}
 env="export RUSTUP_HOME=$rust/rustup CARGO_HOME=$rust/cargo PATH=$rust/cargo/bin:\$PATH \
 CARGO_TARGET_DIR=$dir/target CARGO_BUILD_JOBS=$jobs MUTATION_JOBS=$jobs FUZZ_JOBS=$jobs"

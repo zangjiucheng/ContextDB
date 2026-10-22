@@ -81,4 +81,4 @@ Final: **0 surviving mutants, 0 timeouts, no exclusions.** See [p2-mutation-summ
   - stale-reason inheritance through a current Pin and through a Sem premise whose head is certified;
   - the rebuild cross-check (a test now corrupts a column and expects a panic).
 - **Rerun:** 188 mutants, 2 survivors (Sem branch), closed by a dedicated golden.
-- **Full scope on remote** at `9835b56` (AMD EPYC 9554, `--jobs 48`, `scripts/remote.sh`): counting, txn, arena, stage, memory, layers and cert, **785 mutants, 771 caught, 14 unviable, 0 survivors, 0 timeouts**, in 4 minutes ([p3-mutation-summary.json](p3-mutation-summary.json)).
+- **Full scope on the remote Linux host** at `9835b56` (AMD EPYC 9554, `--jobs 48`, `scripts/remote.sh`): counting, txn, arena, stage, memory, layers and cert, **785 mutants, 771 caught, 14 unviable, 0 survivors, 0 timeouts**, in 4 minutes ([p3-mutation-summary.json](p3-mutation-summary.json)).
