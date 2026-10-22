@@ -2,6 +2,7 @@
 
 Status: accepted, revision 0.3, 2026-10-21. G0 independent review passed.
 Revision 0.4 (2026-10-22, accepted after G0 review and closure check): §9 replaces the per-stream hint cutoff (review M2).
+Revision 0.5 (2026-10-22, owner decision): §10 redefines the G6 ground truth as AI-assisted labelling with an owner audit.
 
 ## 0. Scope and delivery
 
@@ -284,7 +285,7 @@ events, corrupted descriptors, restart without routing and concurrent wakeups.
 G5: retain P4 gate budgets; report capture/reconcile costs separately for 10/100/
 1,000 anchors, including deadline/failure outcomes rather than omitting them.
 
-G6: replay >=3 real repositories, >=1,000 commits each, with >=200 HUMAN labelled
+G6 (superseded in part by §10, r0.5: the ground truth is AI-assisted with an owner audit): replay >=3 real repositories, >=1,000 commits each, with >=200 HUMAN labelled
 anchor-change pairs and test changes only auxiliary. Record repo URLs, commit ids,
 selection rule and every unlabelled pair. Synthetic fixture success is not a
 scientific invalidation-quality result. Automated replay can prepare labels but
@@ -414,3 +415,58 @@ and `append:after-announce`; P4 outbox property (b) unchanged.
 
 **Mirrors.** §4's per-stream cutoff text is superseded by this section; SPEC
 SD14b is amended in v1.6.2.
+
+## 10. Revision 0.5 — G6 assisted ground truth (owner decision, 2026-10-22)
+
+**Context.** §7 required ≥ 200 human labels and said automated replay may
+prepare but not approve labels. The owner reviewed 84 AI-proposed labels one by
+one (80 agreed, 4 changed), judged the method adequate and decided not to label
+the rest by hand. The owner sets gate criteria (SPEC §4), so G6 is redefined
+here instead of being reinterpreted silently.
+
+**Decision.** G6 evidence for P5a is complete when all of the following hold:
+
+1. **Replay**: ≥ 3 real repositories × ≥ 1,000 first-parent commits through
+   the production daemon/observer, recording every pair (unchanged).
+2. **Assisted sample**: ≥ 200 pairs chosen by a rule fixed before labelling
+   (here: per repository × fired/not-fired stratum, the 35 smallest
+   `git hash-object(commit:path)`; not-fired pairs need the anchor at the
+   parent), each with an AI label, rationale and evidence hashes
+   (`docs/gates/p5a-g6/ai-review/`). Pairs are numbered by that hash; a tie
+   (the same `commit:path` twice in one stratum) would be broken by the
+   replay file row. The selection rule, exclusions and source and file
+   hashes are recorded (`scripts/p5a_review.py --check` verifies them).
+3. **Owner audit**: in **every stratum** (repository × fired/not-fired) the
+   owner reviews a prefix of that stratum in sample order (not a chosen
+   subset), at least 5 pairs per stratum and at least 80 in total, each saved
+   with the reviewer's name. (A global prefix is not enough: not-fired hashes
+   sort early, so the first 84 pairs held only 8 fired pairs and none from
+   ripgrep.) Agreement between the human and AI labels must be ≥ 90 % as a
+   point estimate; the Wilson 95 % lower bound is reported beside it and may
+   be below 90 %.
+4. **Final labels**: where human and AI agree, that label; where only the AI
+   labelled, the AI label. Where they **disagree** the pair is *contested*:
+   the owner was not confident the human call was better supported than the
+   AI's, so neither wins. Contested pairs are left out of the headline rates
+   and reported in a sensitivity range (rates with every contested pair
+   resolved the human way, and the AI way). They still count as
+   disagreements for the agreement figure. Human and AI-only counts are
+   always reported separately; an AI label is never written into the human
+   columns.
+5. **Report**: per stratum, the audited count, false invalidation (fired
+   pairs labelled n) or the invalidating-but-not-fired share, the human-only
+   counts, the contested sensitivity range and the number of distinct files.
+   The report states that the audit is not blind (the reviewer saw the AI
+   suggestion, so agreement is an upper bound); that most labels in each
+   stratum are unaudited AI labels; that selection has two stages (the replay
+   already hash-subsampled not-fired pairs) and excluded not-fired pairs
+   without an anchor at the parent; that the sample is stratified, so pooled
+   rates are not population rates; and that pairs cluster on few files (e.g.
+   ripgrep's 35 not-fired pairs touch 7 files), so a stratum rate can reflect
+   one or two files.
+6. **No threshold** on the rates for P5a; P5b's G6 compares against them.
+
+**Consequences.** G6 measures the method with a disclosed, non-blind audit
+rather than a fully human ground truth. A later fully human or blind relabel
+can replace it without changing anything else. `anchor_replay score --assisted
+<proposals.tsv>` computes items 3–5 and prints `p5a_g6_evidence_complete`.

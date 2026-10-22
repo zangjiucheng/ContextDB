@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "created": "2026-10-22",
+  "repo_head": "bea3e6a",
+  "provenance": "Codex AI preannotation, awaiting human review",
+  "human_labels_created": 0,
+  "selected": 210,
+  "suggestions": {
+    "n": 116,
+    "y": 94
+  },
+  "confidence": {
+    "medium": 79,
+    "high": 130,
+    "low": 1
+  },
+  "strata": {
+    "click.tsv / not-fired": 35,
+    "fd.tsv / not-fired": 35,
+    "fd.tsv / fired": 35,
+    "click.tsv / fired": 35,
+    "ripgrep.tsv / not-fired": 35,
+    "ripgrep.tsv / fired": 35
+  },
+  "excluded_missing_parent": 145,
+  "original_sources_sha256": {
+    "fd.tsv": "4e2ccb9c478c77c95125e3daecb66c0700d94a5b7459b848c1e83106f4a8feb6",
+    "ripgrep.tsv": "92dcfb59c7b0406d6f48e98a50cbeae4ba32fc0015f15880440bf59b4c7e9768",
+    "click.tsv": "cf85f6101016863b3513345f205d246ca7ee7fa05ee0cbd8691630c6e2d23369"
+  },
+  "files_sha256": {
+    "proposals.tsv": "0e4cd33f66cfd33776a5c717ed52add84789abe0ae7fafe5b155fe31de6f8d13",
+    "evidence.json.gz": "c220b0ca6e2c0607c12963af4070aad642700c52eaf018098a1abcb5ff17cbe5",
+    "excluded.tsv": "647ba6fcaf89d15b3f6a5386d74a5a25005b408096adc6236ccfaf7cbb8c371b"
+  }
+}

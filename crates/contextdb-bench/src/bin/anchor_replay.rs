@@ -5,6 +5,7 @@
 //!   anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K]
 //!   anchor_replay score <labelled.tsv>...
 //!   anchor_replay label <repos dir> <labeler> <file.tsv>...
+//!   anchor_replay score --assisted <proposals.tsv> <file.tsv>...
 //!
 //! `prepare` makes a `--shared --no-checkout` clone in a temporary directory
 //! (the source clone is never modified), starts a development daemon there
@@ -456,6 +457,248 @@ fn label(repos: &Path, labeler: &str, files: &[String]) -> Result<bool, String> 
     score(files, false)
 }
 
+/// (replay file name, repo url, commit, parent, path, observer event).
+type PairKey = (String, String, String, String, String, String);
+/// One sample stratum: repository and whether the observer fired.
+type Stratum = (String, bool);
+/// Per stratum: final y/n counts for (agreed + AI-only), the human-only
+/// labels, the contested pairs (human, ai) and the files involved.
+#[derive(Default)]
+struct Cell {
+    labels: [u32; 2],
+    human: [u32; 2],
+    contested: Vec<(String, String, String)>,
+    files: BTreeSet<String>,
+    ids: Vec<(String, bool)>,
+}
+fn pct(a: u32, b: u32) -> String {
+    if b == 0 {
+        "n/a".to_owned()
+    } else {
+        format!("{:.1}%", 100. * a as f64 / b as f64)
+    }
+}
+/// ADR 0011 §10 (r0.5): G6 from AI-proposed labels on a pre-registered
+/// stratified sample plus the owner's audit, a prefix of every stratum in
+/// sample order. Human labels are read from the replay TSVs (never written
+/// there from the AI column); disagreements are contested and only enter a
+/// sensitivity range.
+fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
+    let body = std::fs::read_to_string(proposals).map_err(|e| e.to_string())?;
+    let mut lines = body.lines();
+    let header: Vec<&str> = lines.next().ok_or("empty proposals")?.split('\t').collect();
+    let col = |name: &str| {
+        header
+            .iter()
+            .position(|h| *h == name)
+            .ok_or(format!("proposals: no column {name}"))
+    };
+    let cols = [
+        col("id")?,
+        col("source")?,
+        col("repo_url")?,
+        col("commit")?,
+        col("parent")?,
+        col("path")?,
+        col("observer")?,
+        col("ai_invalidates")?,
+    ];
+    let width = cols.iter().max().copied().unwrap_or(0) + 1;
+    let mut human: BTreeMap<PairKey, Vec<(String, String)>> = BTreeMap::new();
+    for file in files {
+        let name = Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("bad file name")?
+            .to_owned();
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        for line in text.lines().filter(|l| !l.starts_with('#') && *l != HEADER) {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() != 11 {
+                return Err(format!("{file}: malformed row"));
+            }
+            human
+                .entry((
+                    name.clone(),
+                    f[0].into(),
+                    f[1].into(),
+                    f[2].into(),
+                    f[3].into(),
+                    f[4].into(),
+                ))
+                .or_default()
+                .push((f[8].trim().to_owned(), f[9].trim().to_owned()));
+        }
+    }
+    let mut cells: BTreeMap<Stratum, Cell> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    let (mut total, mut audited, mut agreed) = (0u32, 0u32, 0u32);
+    for line in lines.filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < width {
+            return Err(format!("proposals: short row {line:?}"));
+        }
+        let [c_id, c_src, c_url, c_commit, c_parent, c_path, c_obs, c_ai] = cols;
+        let key: PairKey = (
+            f[c_src].into(),
+            f[c_url].into(),
+            f[c_commit].into(),
+            f[c_parent].into(),
+            f[c_path].into(),
+            f[c_obs].into(),
+        );
+        if !seen.insert(key.clone()) {
+            return Err(format!("{}: duplicate proposal", f[c_id]));
+        }
+        let rows = human
+            .get(&key)
+            .ok_or(format!("{}: no replay row", f[c_id]))?;
+        if rows.len() != 1 {
+            return Err(format!("{}: {} replay rows match", f[c_id], rows.len()));
+        }
+        let ai = f[c_ai].trim();
+        if !matches!(ai, "y" | "n") {
+            return Err(format!("{}: AI label {ai:?}", f[c_id]));
+        }
+        let repo = f[c_url]
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let cell = cells.entry((repo, f[c_obs] != "not-fired")).or_default();
+        cell.files.insert(f[c_path].to_owned());
+        total += 1;
+        let (label, labeler) = &rows[0];
+        let slot = |l: &str| usize::from(l == "n");
+        match (label.as_str(), labeler.is_empty()) {
+            ("y" | "n", false) => {
+                audited += 1;
+                cell.ids.push((f[c_id].to_owned(), true));
+                cell.human[slot(label)] += 1;
+                if label == ai {
+                    agreed += 1;
+                    cell.labels[slot(label)] += 1;
+                } else {
+                    cell.contested
+                        .push((f[c_id].to_owned(), label.clone(), ai.to_owned()));
+                }
+            }
+            ("", true) => {
+                cell.ids.push((f[c_id].to_owned(), false));
+                cell.labels[slot(ai)] += 1;
+            }
+            (other, _) => {
+                return Err(format!(
+                    "{}: human label {other:?} needs y/n and a labeler",
+                    f[c_id]
+                ));
+            }
+        }
+    }
+    let agreement = if audited == 0 {
+        0.0
+    } else {
+        agreed as f64 / audited as f64
+    };
+    // Wilson score interval, 95 %.
+    let wilson = if audited == 0 {
+        0.0
+    } else {
+        let (n, p, z) = (audited as f64, agreement, 1.96f64);
+        (p + z * z / (2. * n) - z * ((p * (1. - p) + z * z / (4. * n)) / n).sqrt())
+            / (1. + z * z / n)
+    };
+    let contested: usize = cells.values().map(|c| c.contested.len()).sum();
+    println!(
+        "G6 assisted (ADR 0011 §10): {total} pairs, {audited} owner-audited, {} AI-only, {contested} contested",
+        total - audited
+    );
+    println!(
+        "  agreement {agreed}/{audited} = {:.1}% (Wilson 95% lower bound {:.1}%; not blind: an upper bound; the gate uses the point estimate)",
+        100. * agreement,
+        100. * wilson
+    );
+    let mut prefix_ok = true;
+    let mut coverage_ok = true;
+    println!(
+        "  per stratum: audited | final y/n (agreed + AI-only; contested out) | human-only y/n | contested -> human / AI | files"
+    );
+    let (mut pool, mut pool_h, mut pool_a) = ([[0u32; 2]; 2], [[0u32; 2]; 2], [[0u32; 2]; 2]);
+    for ((repo, fired), c) in &cells {
+        let mut ids = c.ids.clone();
+        ids.sort();
+        let n_aud = ids.iter().filter(|(_, a)| *a).count();
+        // The audit must be the first n_aud pairs of the stratum in sample order.
+        let prefix = ids.iter().take(n_aud).all(|(_, a)| *a);
+        prefix_ok &= prefix;
+        coverage_ok &= n_aud >= 5;
+        let (mut h, mut a) = (c.labels, c.labels);
+        for (_, hl, al) in &c.contested {
+            h[usize::from(hl == "n")] += 1;
+            a[usize::from(al == "n")] += 1;
+        }
+        let rate = |v: [u32; 2]| {
+            if *fired {
+                pct(v[1], v[0] + v[1])
+            } else {
+                pct(v[0], v[0] + v[1])
+            }
+        };
+        println!(
+            "    {repo:8} {:9} audited {n_aud:2}/{:2}{} | y={:3} n={:3} {}={:6} | human y={} n={} | {} / {} | {} files",
+            if *fired { "fired" } else { "not-fired" },
+            ids.len(),
+            if prefix { "" } else { " NOT A PREFIX" },
+            c.labels[0],
+            c.labels[1],
+            if *fired { "false_inv" } else { "inval_nf" },
+            rate(c.labels),
+            c.human[0],
+            c.human[1],
+            rate(h),
+            rate(a),
+            c.files.len()
+        );
+        let k = usize::from(*fired);
+        for i in 0..2 {
+            pool[k][i] += c.labels[i];
+            pool_h[k][i] += h[i];
+            pool_a[k][i] += a[i];
+        }
+        for (id, hl, al) in &c.contested {
+            println!("      contested {id} human={hl} ai={al}");
+        }
+    }
+    let show = |p: [[u32; 2]; 2]| {
+        format!(
+            "false_invalidation={} invalidating_not_fired={}",
+            pct(p[1][1], p[1][0] + p[1][1]),
+            pct(p[0][0], p[0][0] + p[0][1])
+        )
+    };
+    println!(
+        "  pooled over the stratified sample (NOT population rates): {}",
+        show(pool)
+    );
+    println!("    contested resolved the human way: {}", show(pool_h));
+    println!("    contested resolved the AI way:    {}", show(pool_a));
+    let repos: BTreeSet<_> = cells.keys().map(|(r, _)| r.clone()).collect();
+    let complete = repos.len() >= 3
+        && total >= 200
+        && audited >= 80
+        && coverage_ok
+        && prefix_ok
+        && agreement >= 0.90;
+    println!(
+        "  criteria: repos={} (>=3) pairs={total} (>=200) audited={audited} (>=80) every stratum >=5 audited={coverage_ok} prefixes={prefix_ok} agreement>=90%={}",
+        repos.len(),
+        agreement >= 0.90
+    );
+    println!("p5a_g6_evidence_complete={complete}");
+    Ok(complete)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str, default: usize| {
@@ -472,9 +715,12 @@ fn main() {
             flag("--anchors", 20),
         )
         .map(|()| true),
+        Some("score") if args.len() >= 4 && args[1] == "--assisted" => {
+            assisted(Path::new(&args[2]), &args[3..])
+        }
         Some("score") if args.len() >= 2 => score(&args[1..], true),
         Some("label") if args.len() >= 4 => label(Path::new(&args[1]), &args[2], &args[3..]),
-        _ => Err("usage: anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K] | score <labelled.tsv>... | label <repos dir> <labeler> <file.tsv>...".into()),
+        _ => Err("usage: anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K] | score [--assisted <proposals.tsv>] <labelled.tsv>... | label <repos dir> <labeler> <file.tsv>...".into()),
     };
     match result {
         Ok(true) => {}

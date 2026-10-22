@@ -1,6 +1,6 @@
 # Implementation status
 
-**P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.4). G0–G4, G7, G8 and the independent reviews pass; G5's rule is decided (ADR rule, owner) and needs one idle-machine confirmation run; G6 needs ≥ 200 human labels on the prepared replay pairs and P5a cannot pass before P4. Review finding M2 is fixed by ADR 0011 r0.4.
+**P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.5). G0–G4, G7, G8 and the independent reviews pass; G6 (AI-assisted ground truth, ADR §10) needs 9 per-stratum audit top-ups; G5's rule is decided and needs one idle-machine confirmation run; P5a cannot pass before P4.
 
 **P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). G6 dogfood (≥ 2 weeks, ≥ 2 parallel agents) is run by the project owner; P4 passes only with that report.
 

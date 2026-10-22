@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.2 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.3 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -580,7 +580,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **Gate P5a**
 - G2：T42a（锚定文件修改 → Cur 依赖 STALE、Sem 依赖 PENDING）、T42c（Pin 指向旧锚点 → `STALE(SupersededPinnedPremise)`）、T43（删除 → AnchorBroken + 下游 STALE）、T43b、T44（watermark 落后 → `PENDING(ObservationLag)` / certificate Unknown）、T46b（删除后以相同内容恢复 → 同一 RevisionId，下游恢复，计数器 == oracle）、T46c（PreToolUse 按路径过滤）、S13-rows-e2e（ObservationLag 行）。
 - G3：PROP12（observer 输出 == 由 git 历史全量重算锚点的 oracle）。
-- G6 **commit 回放 benchmark**（≥ 3 个真实开源仓库，各 ≥ 1,000 commits）：报告文件级锚点的 false / missed invalidation 率。ground truth：≥ 200 个人工标注的锚点-变更对，测试结果变化作为辅助标签。
+- G6 **commit 回放 benchmark**（≥ 3 个真实开源仓库，各 ≥ 1,000 commits）：报告文件级锚点的 false / missed invalidation 率。ground truth（v1.6.3，owner 决定的辅助标注，ADR 0011 §10）：≥ 200 个按预先固定的分层规则抽取、由 AI 预标注（附理由与证据哈希）的锚点-变更对；owner 在每个分层（仓库 × 触发/未触发）内按样本顺序复核前缀、每层 ≥ 5 对且总数 ≥ 80 对，人工与 AI 一致率点估计 ≥ 90%（同时报告 Wilson 95% 下界）；人工与 AI 不一致的配对记为有争议：不计入主比率，单独按人工、按 AI 两种取法报告敏感性区间。按仓库 × 触发/未触发分层报告比率，并披露：非盲（复核者看得到 AI 建议）、各层多数为未复核的 AI 标签、两阶段抽样与缺 parent 的排除、分层样本不是总体等概率样本、配对集中在少数文件、AI 标签与人工标签分开计数。P5a 只报告比率、不设阈值（P5b 与之比较）。测试结果变化作为辅助标签。
 
 ### P5b — symbol 级 code anchors
 
@@ -1256,6 +1256,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.3 | 2026-10-22 | P5a G6（owner 决定）：ground truth 由「≥ 200 人工标注」改为「≥ 200 预先分层抽样的 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，不一致者记为有争议、只进敏感性区间；分层报告并披露非盲、非总体样本（ADR 0011 r0.5 §10） |
 | 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |
 | 1.6.1 | 2026-10-21 | P5a G0 ADR 0011：raw Git OID descriptor/BLAKE3 身份、完整 manifest 与 pre-capture hint cutoff 分离、Sem asserted p 与 head h 的 observation support 闭包、缺 live evidence fail-closed、持久 per-root 历史 proof/路径别名保守回退、旧 strict baseline 缺失 Unknown、range 点时证书与全部可达当前 roots/pushed-tree 限制、协议 3 与 session format 2 强制 rollover/旧格式只读兼容；固定资源上限及 PROP12 coverage。P4 A11 顺序约束不变 |
 | 1.6.0 | 2026-10-21 | P4 G0（ADR 0010，独立复核三轮后）：A1 subagent 与根共用 session、按 agent 分视图；A2 SessionStart 注入 advisory briefing，证书首次校验时签发；A3 P4 的 DriftReport 记入 session log（`OpenArtifact` 需目标 revision）；A4 pre-push `--range` 移至 P5a；A5 outbox `packet_id = (stream, seq)`；A6 MCP `context_update` 为不消费的 peek；A7 MCP 调用按 harness tool-call id 绑定；A8 session log 领域扩展为会话事实与遥测，仍不参与内核状态；A9 `read_ledger` 增加 `agent`；A10 session 证书按 agent 视图签发；A11（项目所有者决定）P4 的 G6 dogfood 需 ≥ 2 周真实使用，其余 Gate 层通过后可并行开始 P5a 的 G0 与实现，但 P4 只有在 dogfood 报告通过后才算 Passed，P5a 的 Gate 也不得早于 P4 通过 |
