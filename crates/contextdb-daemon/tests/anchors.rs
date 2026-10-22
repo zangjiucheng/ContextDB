@@ -37,8 +37,8 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        // These success goldens use the real 40ms I/O budget; parallel Git
-        // startups would intentionally exercise Unknown instead of this case.
+        // Serialised: parallel Git startups would contend for the sample
+        // deadline (2 s here; the 40 ms budget is measured by anchor_bench).
         let serial = TIMED_FIXTURE.lock().unwrap_or_else(|p| p.into_inner());
         let root = std::env::temp_dir().join(format!(
             "ctx-p5a-service-{}-{}",
@@ -79,6 +79,7 @@ impl Fixture {
             SessionLog::open(disk.clone(), Path::new("/db"), false, 1 << 20).unwrap();
         let service = Service::new(actor::spawn(store).unwrap(), log, events).unwrap();
         service.set_anchor_routes(self.data.join("anchors.routes"));
+        service.set_anchor_live_timeout(std::time::Duration::from_secs(2));
         service
     }
     fn scan(&self, s: &Service<SimDisk>, added: &[&str]) {
@@ -1181,5 +1182,48 @@ fn racing_restore_of_a_broken_anchor_loses_on_the_watermark() {
         matches!(&lost, Response::Error { code, .. } if code == "WatermarkConflict"),
         "{lost:?}"
     );
+    s.handle(ADMIN, Request::Shutdown);
+}
+/// ADR 0011 §9 end to end: the announce record gates live evidence. A failed
+/// announce (sentinel), a deleted record, or a data dir not marked for
+/// announcing appenders withhold certified reads; repair and restart restore
+/// them; 2,000 outbox streams do not.
+#[test]
+fn announce_record_gates_live_evidence() {
+    use contextdb_proto::outbox::Outbox;
+    let f = Fixture::new();
+    f.write("a.rs", "a");
+    let s = f.service();
+    f.scan(&s, &["a.rs"]);
+    roots(&s);
+    let session = f.start(&s);
+    let certified =
+        |s: &Service<SimDisk>| matches!(read(s, session, "root-a"), Response::Read { .. });
+    assert!(certified(&s));
+    let ob = Outbox::new(&f.data);
+    let out = f.data.join("outbox");
+    // Failed announce: Unknown until repaired (new epoch).
+    std::fs::File::create(out.join("announce.failed")).unwrap();
+    assert!(!certified(&s));
+    ob.repair_announce().unwrap();
+    assert!(certified(&s));
+    // Deleted record: never read as zero; ctxd start recreates it.
+    std::fs::remove_file(out.join("announce")).unwrap();
+    assert!(!certified(&s));
+    s.set_anchor_routes(f.data.join("anchors.routes"));
+    assert!(certified(&s));
+    // A data dir with streams and no marker (earlier hooks may append).
+    std::fs::remove_file(out.join("appenders")).unwrap();
+    for k in 0..2000u32 {
+        let mut stream = [0u8; 16];
+        stream[..4].copy_from_slice(&k.to_le_bytes());
+        ob.append(&stream, None, Fact::StreamEnd).unwrap();
+    }
+    s.set_anchor_routes(f.data.join("anchors.routes"));
+    assert!(!certified(&s), "streams exist and no announce-v1 marker");
+    ob.mark_appenders().unwrap();
+    // 2,000 streams cost nothing on the live path.
+    s.set_anchor_live_timeout(contextdb_anchors::capture::LIVE_TIMEOUT);
+    assert!((0..5).any(|_| certified(&s)));
     s.handle(ADMIN, Request::Shutdown);
 }

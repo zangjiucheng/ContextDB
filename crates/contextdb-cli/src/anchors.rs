@@ -91,11 +91,18 @@ fn route(dir: &Path, repo: &Repo) -> Result<(), String> {
     result.map_err(|e| e.to_string())
 }
 pub fn run(args: &[String]) -> Result<u8, String> {
-    let sub = args
-        .first()
-        .map(String::as_str)
-        .ok_or("anchors add|scan|watch|status|hooks <dir> <repo> [paths...]")?;
+    let sub = args.first().map(String::as_str).ok_or(
+        "anchors add|scan|watch|status|hooks <dir> <repo> [paths...] | repair-announce <dir>",
+    )?;
     let dir = Path::new(args.get(1).ok_or("missing data dir")?);
+    if sub == "repair-announce" {
+        // ADR 0011 §9.4: after fixing what made an announce fail.
+        contextdb_proto::outbox::Outbox::new(dir)
+            .repair_announce()
+            .map_err(|e| e.to_string())?;
+        println!("announce record repaired");
+        return Ok(0);
+    }
     let repo = Repo::open(
         Path::new(args.get(2).ok_or("missing repo root")?),
         Instant::now() + OBSERVER_TIMEOUT,

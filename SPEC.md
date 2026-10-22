@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.1 · Date: 2026-10-21 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.2 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -212,7 +212,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 **SD14 UNKNOWN 的两种来源。**
 - (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P10 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
-- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD、outbox 中未投递的 PostToolUse 事件）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、未覆盖的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest；outbox hint 单独保守否决。hint cutoff 必须在首次采样前原子取得，扫描只能覆盖此 cutoff，期间到达的 hint 不得在扫描结束时清除。具体编码与上限见 ADR 0011。
+- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
 
 两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，若闭包内任一 scope 的 watermark 自签发后推进，判为 `Invalid`。
 
@@ -1256,6 +1256,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |
 | 1.6.1 | 2026-10-21 | P5a G0 ADR 0011：raw Git OID descriptor/BLAKE3 身份、完整 manifest 与 pre-capture hint cutoff 分离、Sem asserted p 与 head h 的 observation support 闭包、缺 live evidence fail-closed、持久 per-root 历史 proof/路径别名保守回退、旧 strict baseline 缺失 Unknown、range 点时证书与全部可达当前 roots/pushed-tree 限制、协议 3 与 session format 2 强制 rollover/旧格式只读兼容；固定资源上限及 PROP12 coverage。P4 A11 顺序约束不变 |
 | 1.6.0 | 2026-10-21 | P4 G0（ADR 0010，独立复核三轮后）：A1 subagent 与根共用 session、按 agent 分视图；A2 SessionStart 注入 advisory briefing，证书首次校验时签发；A3 P4 的 DriftReport 记入 session log（`OpenArtifact` 需目标 revision）；A4 pre-push `--range` 移至 P5a；A5 outbox `packet_id = (stream, seq)`；A6 MCP `context_update` 为不消费的 peek；A7 MCP 调用按 harness tool-call id 绑定；A8 session log 领域扩展为会话事实与遥测，仍不参与内核状态；A9 `read_ledger` 增加 `agent`；A10 session 证书按 agent 视图签发；A11（项目所有者决定）P4 的 G6 dogfood 需 ≥ 2 周真实使用，其余 Gate 层通过后可并行开始 P5a 的 G0 与实现，但 P4 只有在 dogfood 报告通过后才算 Passed，P5a 的 Gate 也不得早于 P4 通过 |
 | 1.5.4 | 2026-10-20 | ADR 0009（项目所有者决定）：L1/L2 从查询缓存改为维护列，状态从 query cache 移入 hot；按 ADR 0005 同一规则重新校准：hot ≤ 90、query cache ≤ 32 B/incidence，范围预算总和 172 B/incidence（原 171） |

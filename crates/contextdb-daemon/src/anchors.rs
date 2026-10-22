@@ -3,10 +3,7 @@ use crate::{
     actor::Snapshot,
     service::{Identity, Service},
 };
-use contextdb_anchors::{
-    Repo,
-    capture::{LIVE_TIMEOUT, MAX_ANCHORS},
-};
+use contextdb_anchors::{Repo, capture::MAX_ANCHORS};
 use contextdb_core::{Db, IssueRequest, LogLink};
 use contextdb_model::*;
 use contextdb_proto::proto::*;
@@ -88,12 +85,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .collect()
     }
     fn anchor_evidence(&self, db: &Db) -> BTreeMap<String, (Vec<u8>, Vec<u8>)> {
-        let deadline = Instant::now() + LIVE_TIMEOUT;
+        let deadline = Instant::now() + *self.anchor_live_timeout.lock().expect("timeout");
         let Some(path) = self.anchor_routes.lock().expect("routes").clone() else {
             return BTreeMap::new();
         };
         let outbox = contextdb_proto::outbox::Outbox::new(path.parent().expect("route parent"));
-        let Ok(cutoff) = outbox.observation_cutoff_until(deadline) else {
+        // ADR 0011 §9: this sample covers every edit announced before it, so
+        // only an announce during sampling matters. The record is read before
+        // the first and after the last capture; the sentinel and appender
+        // marker are checked on both sides.
+        if !outbox.announce_trusted() {
+            return BTreeMap::new();
+        }
+        let Ok(announced) = outbox.announce_record() else {
             return BTreeMap::new();
         };
         let routes = (|| {
@@ -189,10 +193,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return BTreeMap::new();
         };
         live.retain(|scope, _| !invalid.contains(scope));
-        // Only the pre-capture cutoff was covered. An append during sampling
-        // must not be silently swept into that proof at the end of the scan.
         if Instant::now() > deadline
-            || outbox.observation_cutoff_until(deadline).ok().as_ref() != Some(&cutoff)
+            || outbox.announce_record().ok().as_ref() != Some(&announced)
+            || !outbox.announce_trusted()
         {
             live.clear();
         }
@@ -202,7 +205,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// identity they were opened with (saves a Git process per live sample).
     /// `root` is the route canonicalized for this sample, the same root the
     /// runtime-path check used; the cache is keyed by it.
-    fn routed_repo(&self, root: &std::path::Path, deadline: Instant) -> Option<Repo> {
+    pub(crate) fn routed_repo(&self, root: &std::path::Path, deadline: Instant) -> Option<Repo> {
+        self.cached_repo(root, deadline, true)
+    }
+    /// `remember`: only trusted routes enter the cache; other roots (a
+    /// session's repository in path filtering) may use it but not fill it.
+    pub(crate) fn cached_repo(
+        &self,
+        root: &std::path::Path,
+        deadline: Instant,
+        remember: bool,
+    ) -> Option<Repo> {
         let key = root.to_str()?;
         let cached = self.anchor_repos.lock().expect("repos").get(key).cloned();
         if let Some((identity, repo)) = cached
@@ -214,6 +227,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let repo = Repo::open(root, deadline).ok()?;
         if repo.root != root {
             return None;
+        }
+        if !remember {
+            return Some(repo);
         }
         let root = key;
         let identity = repo.identity().ok()?;

@@ -124,6 +124,8 @@ pub struct Service<D: Durability> {
     /// Opened routed worktrees by root, with the identity they were opened
     /// at; a leaf lock never held across another lock.
     pub(crate) anchor_repos: Mutex<BTreeMap<String, crate::anchors::OpenedRepo>>,
+    /// Deadline of one live anchor sample (ADR 0011 §3: 40 ms by default).
+    pub(crate) anchor_live_timeout: Mutex<std::time::Duration>,
     hooks: Mutex<Hooks>,
     /// Serialises outbox deliveries (stream marks) across sweeper and hooks.
     facts_lock: Mutex<()>,
@@ -226,7 +228,18 @@ fn handle_of(cert: &Certificate, index: usize) -> String {
 impl<D: Durability + Clone + 'static> Service<D> {
     /// Operator-selected routing configuration. It is never accepted from an
     /// agent request or inferred from a record body.
+    /// Overrides the live-sample deadline. Semantic tests use a generous
+    /// one so a cold sample on a loaded machine is not Unknown; the 40 ms
+    /// production budget is measured by `anchor_bench` on a real daemon.
+    pub fn set_anchor_live_timeout(&self, timeout: std::time::Duration) {
+        *self.anchor_live_timeout.lock().expect("timeout") = timeout;
+    }
+    /// Trusted repository routes; also prepares the outbox announce record
+    /// (ADR 0011 §9.3). A failure there only leaves live evidence Unknown.
     pub fn set_anchor_routes(&self, path: std::path::PathBuf) {
+        if let Some(dir) = path.parent() {
+            let _ = contextdb_proto::outbox::Outbox::new(dir).init_announce();
+        }
         *self.anchor_routes.lock().expect("routes") = Some(path);
     }
     /// Starts the session-log writer and replays the session log into memory.
@@ -271,6 +284,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             sessions: Mutex::new(BTreeMap::new()),
             anchor_routes: Mutex::new(None),
             anchor_repos: Mutex::new(BTreeMap::new()),
+            anchor_live_timeout: Mutex::new(contextdb_anchors::capture::LIVE_TIMEOUT),
             hooks: Mutex::new(Hooks::default()),
             facts_lock: Mutex::new(()),
             attach_lock: Mutex::new(()),

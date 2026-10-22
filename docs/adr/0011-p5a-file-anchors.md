@@ -1,6 +1,7 @@
 # ADR 0011 — P5a file anchors and observation freshness
 
 Status: accepted, revision 0.3, 2026-10-21. G0 independent review passed.
+Revision 0.4 (2026-10-22, accepted after G0 review and closure check): §9 replaces the per-stream hint cutoff (review M2).
 
 ## 0. Scope and delivery
 
@@ -152,7 +153,7 @@ must include every scope in this separate closure, even a scope hidden behind p.
 The hand-written regression has p supported by anchor scope A and h by B: changing
 A without reconciliation must make the root Unknown even while B is fresh.
 
-Pending outbox edit hints independently make affected scopes Unknown until a
+(Superseded by §9, r0.4: an O(1) announce record bracketing the sample.) Pending outbox edit hints independently make affected scopes Unknown until a
 successful stable full scan covers an explicit per-stream sequence cutoff. Atomically
 snapshot that cutoff BEFORE the first capture; only those sequence numbers can be
 covered. Hints arriving during or after sampling remain pending, never swept up
@@ -303,3 +304,113 @@ symlink rejection and missing legacy strict baselines. SPEC v1.6.1 mirrors these
 constraints. A non-implementing reviewer confirmed all findings closed on
 2026-10-21: no remaining blocker/major. G0 passed; implementation is authorised
 under A11. All implementation gates and the final independent review remain open.
+
+r0.4 (2026-10-22, §9): implementation review M2. G0 review found two majors
+(P4 appenders bypass an announce; missing/corrupt/failed record states) and
+five minors; the second draft closed them except the announce-failure path
+on a full disk, and the closure check added five wording points (announce
+before `LOG_CAP`, sentinel checked after the second read, repair and ctxd start
+under the lock, tmp cleanup). All are incorporated above.
+
+## 9. Revision 0.4 — O(1) hint cutoff (implementation review M2)
+
+**Problem.** §4 snapshots a per-stream sequence cutoff before capture and
+compares it after. That opens and reads every outbox stream twice inside the
+40 ms live budget, and errors above 1,000 streams. Streams are one per harness
+session and are never deleted (deleting one risks seq reuse when a harness
+resumes a session id), so live evidence degrades with use and, past 1,000
+sessions, every CodeAnchor-supported record is permanently Unknown: fail-closed,
+but a deterministic availability cliff.
+
+**Covering argument.** The daemon samples the worktree itself for every
+certified read and check, and a PostToolUse hint is appended only after the
+edit it reports. A hint appended *before* the first sample therefore reports
+an edit that sample already sees. The cutoff only has to prove that no edit
+hint was appended *during* sampling, which is one global question. (The
+existing code already uses the cutoff only this way: equality of the
+before/after snapshots, never per-path matching; `check_anchors` uses the same
+evidence. No other reader exists.)
+
+**Decision.**
+
+1. **Announce file.** `<data dir>/outbox/announce` holds one record: `CXAN`,
+   u32LE version = 1, 16-byte random epoch nonce, u64LE counter, BLAKE3 of the
+   preceding bytes. It is only ever replaced whole (write `announce.<pid>.tmp`,
+   then rename) under an exclusive flock on `outbox/announce.lock`, so a reader
+   sees either the old or the new record. No fsync: the value is compared only
+   within one daemon run (a reboot ends that run), so durability adds nothing.
+2. **Announce before append.** Before appending an `Action` fact (the only fact
+   that reports worktree edits) the hook takes the announce lock (lock order:
+   stream append → announce; nothing takes announce first; it is held for a
+   read, a small write and a rename, never across I/O to the daemon), reads the
+   record and writes `counter + 1`. If the record is missing, short, has
+   trailing bytes or fails its checksum, the hook writes a fresh record with a
+   new random epoch and counter 1. Then it appends as before. The announce precedes
+   the `LOG_CAP` check, so an Action fact that is then dropped was still
+   announced. A hook killed between the two steps leaves a changed record and
+   no fact: one spurious Unknown, never a missed hint. If the announce cannot be
+   written (ENOSPC, EACCES, lock error), the hook first unlinks
+   `outbox/announce` (needs no space; a sample in progress then reads it as
+   missing), then creates `outbox/announce.failed`, and only then appends the
+   fact (P4 at-least-once unchanged). If neither the unlink nor the sentinel
+   succeeds, the fact is still appended; this residual (a full disk that also
+   refuses unlink) is documented and tested.
+3. **Daemon start.** Under the announce lock, `ctxd` creates the record with a
+   fresh epoch if it is missing or corrupt, and removes stale
+   `announce.*.tmp` files left by killed hooks, before serving, so a data dir
+   that never sees an append still has live evidence. (Tmp files are ignored by
+   stream discovery: they have no stream suffix.)
+4. **Cutoff.** The daemon reads the record (lock-free; rename makes reads
+   atomic) before the first capture of the sample and again after the last
+   scope's capture. Live evidence is published only if both reads succeed,
+   decode, and are byte-equal (same epoch and counter), and
+   `outbox/announce.failed` does not exist, checked before the first read and
+   again after the second. Missing, corrupt or unequal reads
+   are Unknown; a missing file is never read as zero, so delete/recreate ABA
+   cannot pass. `announce.failed` keeps live evidence Unknown until an operator
+   fixes the cause and runs `ctx anchors repair-announce <dir>`, which, under
+   the announce lock, removes the sentinel and stale tmp files and rewrites the
+   record with a new epoch (so no hook can create a sentinel unseen in between).
+5. **Dropped facts no longer gate freshness.** r0.3 code made any stream with
+   `dropped != 0` Unknown forever. By the covering argument a dropped fact
+   reports an edit that happened before the dropping append, hence before any
+   later sample: the sample sees it. Dropped facts remain a P4 delivery and
+   telemetry concern (stream state, gate reports), not a freshness input. This
+   is a deliberate relaxation of r0.3, stated here. Migration: legacy streams
+   with `dropped > 0` stop gating live evidence.
+6. **Appenders must announce.** Every outbox appender for a data dir must be a
+   P5a-or-later hook. A pre-P5a hook binary appending to the same data dir does
+   not announce and makes live evidence unsound (the per-stream cutoff would
+   have caught it). Enforcement: (a) `ctxd` refuses to publish live evidence
+   unless `outbox/appenders` contains `announce-v1`; (b) ctxd writes it at start when
+   `outbox/` has no stream files yet (a fresh data dir has no legacy
+   appenders), and P5a `ctx hooks install`
+   writes that marker and replaces every ContextDB entry in the harness config
+   it edits, and prints that every harness using the data dir must be
+   reinstalled; (c) the operator must never point a P5a daemon or P5a hooks at
+   the live P4 dogfood data dir (`.contextdb/db`) until all of its hooks are
+   upgraded together. The marker is an operator assertion, not a proof; a
+   forgotten P4 hook in another harness config remains a documented
+   misconfiguration risk under the cooperative trust boundary (§0).
+7. **Streams.** Stream files remain (a few KiB each) and no longer affect
+   latency or availability. Stream GC stays deferred (needs a seq-reuse-safe
+   design, ADR 0010 §5); not required for correctness. The per-stream cutoff
+   and its 1,000-stream bound are removed.
+8. **Liveness.** P(Unknown) is about the Action-append rate times the sample
+   time, as before, but without the O(streams) term.
+
+**Verification.** Record round trip and every corruption (missing, short,
+trailing, checksum, wrong version); appender reinitialises a corrupt record
+with a new epoch; delete-between-reads, unequal, missing marker and
+`announce.failed` are Unknown; 2,000 streams: evidence present and within
+budget; an Action append during sampling is Unknown, a non-Action append is
+not; a P4-style unannounced append is caught only via the missing marker
+(documented); a dropped Action (log at `LOG_CAP`) is announced; announce
+failure unlinks the record before appending, and the both-fail residual;
+sentinel created during a sample; repair under the lock; crash between announce and append gives one Unknown then fresh;
+property: with concurrent appenders and samplers no sample overlapping an
+Action append publishes fresh evidence; G4 kill points `announce:before-rename`
+and `append:after-announce`; P4 outbox property (b) unchanged.
+
+**Mirrors.** §4's per-stream cutoff text is superseded by this section; SPEC
+SD14b is amended in v1.6.2.

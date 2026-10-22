@@ -199,107 +199,147 @@ fn lock(f: File, nonblocking: bool) -> io::Result<Option<Flock<File>>> {
         Err((_, e)) => Err(io::Error::from(e)),
     }
 }
-impl Outbox {
-    /// P5a observation cutoff, acquired before capture. Unlike `dirty`, this
-    /// fails closed on corrupt/lost state. ACKs/truncation do not change the
-    /// monotonically allocated sequence; no session fact enters a watermark.
-    pub fn observation_cutoff(&self) -> io::Result<std::collections::BTreeMap<Stream, (u64, u64)>> {
-        self.observation_cutoff_until(Instant::now() + Duration::from_secs(5))
+const ANNOUNCE_MAGIC: &[u8; 4] = b"CXAN";
+const ANNOUNCE_LEN: usize = 4 + 4 + 16 + 8 + 32;
+const APPENDERS: &[u8] = b"announce-v1\n";
+fn encode_announce(epoch: [u8; 16], counter: u64) -> Vec<u8> {
+    let mut b = ANNOUNCE_MAGIC.to_vec();
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&epoch);
+    b.extend_from_slice(&counter.to_le_bytes());
+    let sum = *blake3::hash(&b).as_bytes();
+    b.extend_from_slice(&sum);
+    b
+}
+fn decode_announce(b: &[u8]) -> Option<([u8; 16], u64)> {
+    (b.len() == ANNOUNCE_LEN
+        && b[..4] == *ANNOUNCE_MAGIC
+        && b[4..8] == 1u32.to_le_bytes()
+        && blake3::hash(&b[..ANNOUNCE_LEN - 32]).as_bytes()[..] == b[ANNOUNCE_LEN - 32..])
+        .then(|| {
+            (
+                b[8..24].try_into().expect("16"),
+                u64::from_le_bytes(b[24..32].try_into().expect("8")),
+            )
+        })
+}
+/// A random epoch nonce (ADR 0011 §9.1) from the OS; if that is unavailable,
+/// a hash of pid, time and an address, which still differs across records.
+fn fresh_epoch() -> [u8; 16] {
+    let mut out = [0u8; 16];
+    if File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut out))
+        .is_ok()
+    {
+        return out;
     }
-    pub fn observation_cutoff_until(
-        &self,
-        deadline: Instant,
-    ) -> io::Result<std::collections::BTreeMap<Stream, (u64, u64)>> {
-        fn check(deadline: Instant) -> io::Result<()> {
-            if Instant::now() >= deadline {
-                Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "outbox cutoff deadline",
-                ))
-            } else {
-                Ok(())
+    let mut h = blake3::Hasher::new_derive_key("contextdb announce epoch v1");
+    h.update(&std::process::id().to_le_bytes());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    h.update(&now.as_nanos().to_le_bytes());
+    h.update(&(&now as *const _ as usize).to_le_bytes());
+    h.finalize().as_bytes()[..16].try_into().expect("16")
+}
+/// Replace `dir/name` whole: write a pid-named tmp file, then rename.
+fn replace(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, dir.join(name)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+impl Outbox {
+    /// The announce record's bytes (ADR 0011 §9). Lock-free: the record is
+    /// only ever replaced whole by rename. Missing, short, trailing or
+    /// checksum-failing is an error, never "zero".
+    pub fn announce_record(&self) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        File::open(self.dir.join("announce"))?
+            .take(ANNOUNCE_LEN as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        decode_announce(&bytes)
+            .map(|_| bytes)
+            .ok_or_else(|| io::Error::other("corrupt announce record"))
+    }
+    /// Whether live evidence may rely on the announce record at all: every
+    /// appender announces (`appenders` marker) and no announce has failed.
+    pub fn announce_trusted(&self) -> bool {
+        std::fs::read(self.dir.join("appenders")).is_ok_and(|m| m == APPENDERS)
+            && matches!(
+                std::fs::symlink_metadata(self.dir.join("announce.failed")),
+                Err(e) if e.kind() == io::ErrorKind::NotFound
+            )
+    }
+    /// Operator assertion that every appender for this data dir is P5a or
+    /// later (written by `ctx hooks install`).
+    pub fn mark_appenders(&self) -> io::Result<()> {
+        self.ensure()?;
+        replace(&self.dir, "appenders", APPENDERS)
+    }
+    /// Announce before appending an Action fact (ADR 0011 §9.2): the counter
+    /// moves under the announce lock; a corrupt record restarts with a new
+    /// epoch. On failure the record is unlinked (a sample in progress then
+    /// reads it as missing) and the `announce.failed` sentinel is created.
+    fn announce(&self) {
+        // The failure branch runs under the same lock, so a concurrent
+        // `repair-announce` cannot be undone by a late unlink.
+        let guard = open_rw(&self.dir.join("announce.lock")).and_then(|f| lock(f, false));
+        let bumped = guard.as_ref().map_err(|_| ()).and_then(|_| {
+            let next = std::fs::read(self.dir.join("announce"))
+                .ok()
+                .and_then(|b| decode_announce(&b))
+                .and_then(|(epoch, n)| Some((epoch, n.checked_add(1)?)))
+                .unwrap_or_else(|| (fresh_epoch(), 1));
+            crash_point("announce:before-rename");
+            replace(&self.dir, "announce", &encode_announce(next.0, next.1)).map_err(|_| ())
+        });
+        if bumped.is_err() {
+            let _ = std::fs::remove_file(self.dir.join("announce"));
+            let _ = File::create(self.dir.join("announce.failed"));
+        }
+        drop(guard);
+    }
+    /// ctxd start (ADR 0011 §9.3), under the announce lock: a missing or
+    /// corrupt record gets a fresh epoch, stale tmp files are removed, and a
+    /// data dir without streams (no legacy appender) is marked.
+    pub fn init_announce(&self) -> io::Result<()> {
+        self.ensure()?;
+        let _guard = lock(open_rw(&self.dir.join("announce.lock"))?, false)?;
+        self.remove_announce_tmp()?;
+        if self.announce_record().is_err() {
+            replace(&self.dir, "announce", &encode_announce(fresh_epoch(), 1))?;
+        }
+        let streams = std::fs::read_dir(&self.dir)?
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".seq"));
+        if !streams && std::fs::read(self.dir.join("appenders")).is_err() {
+            replace(&self.dir, "appenders", APPENDERS)?;
+        }
+        Ok(())
+    }
+    /// `ctx anchors repair-announce`: under the announce lock, so a hook
+    /// cannot create a sentinel unseen in between.
+    pub fn repair_announce(&self) -> io::Result<()> {
+        self.ensure()?;
+        let _guard = lock(open_rw(&self.dir.join("announce.lock"))?, false)?;
+        self.remove_announce_tmp()?;
+        match std::fs::remove_file(self.dir.join("announce.failed")) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        replace(&self.dir, "announce", &encode_announce(fresh_epoch(), 1))
+    }
+    /// Best effort: one unremovable entry must not block the record.
+    fn remove_announce_tmp(&self) -> io::Result<()> {
+        for e in std::fs::read_dir(&self.dir)?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("announce.") && name.ends_with(".tmp") {
+                let _ = std::fs::remove_file(e.path());
             }
         }
-        check(deadline)?;
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
-            Err(e) => return Err(e),
-        };
-        let mut streams = std::collections::BTreeSet::new();
-        for entry in entries {
-            check(deadline)?;
-            let name = entry?.file_name();
-            let name = name.to_string_lossy();
-            let Some((prefix, suffix)) = name.rsplit_once('.') else {
-                continue;
-            };
-            if !matches!(suffix, "seq" | "log" | "state" | "ack") {
-                continue;
-            }
-            let mut stream = [0u8; 16];
-            if prefix.len() != 32
-                || !prefix
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
-                return Err(io::Error::other("invalid outbox stream"));
-            }
-            for (k, byte) in stream.iter_mut().enumerate() {
-                *byte =
-                    u8::from_str_radix(&prefix[2 * k..2 * k + 2], 16).map_err(io::Error::other)?;
-            }
-            streams.insert(stream);
-            if streams.len() > 1000 {
-                return Err(io::Error::other("outbox stream limit"));
-            }
-        }
-        let mut cutoffs = std::collections::BTreeMap::new();
-        for stream in streams {
-            check(deadline)?;
-            let file = File::open(self.path(&stream, "seq"))?;
-            let Some(mut guard) = lock(file, true)? else {
-                return Err(io::Error::other("outbox append in progress"));
-            };
-            let mut bytes = Vec::new();
-            Read::by_ref(&mut *guard).take(9).read_to_end(&mut bytes)?;
-            if !bytes.is_empty() && bytes.len() != 8 {
-                return Err(io::Error::other("corrupt outbox sequence"));
-            }
-            let next = if bytes.is_empty() {
-                0
-            } else {
-                u64::from_le_bytes(bytes.try_into().expect("8"))
-            };
-            let mut log = Vec::new();
-            File::open(self.path(&stream, "log"))?
-                .take(LOG_CAP + BATCH_BYTES as u64 + 1)
-                .read_to_end(&mut log)?;
-            if log.len() as u64 > LOG_CAP + BATCH_BYTES as u64 {
-                return Err(io::Error::other("outbox byte limit"));
-            }
-            let packets = scan(&log);
-            if packets.iter().flat_map(record).collect::<Vec<_>>() != log {
-                return Err(io::Error::other("corrupt outbox log"));
-            }
-            let last = packets.last().map_or(0, |p| p.seq);
-            let mut state = Vec::new();
-            File::open(self.path(&stream, "state"))?
-                .take((1 << 20) + 1)
-                .read_to_end(&mut state)?;
-            if state.len() > 1 << 20 {
-                return Err(io::Error::other("outbox state limit"));
-            }
-            let state = StreamState::from_bytes(&state).map_err(io::Error::other)?;
-            // A dropped fact has no recoverable path/position. Do not clear its
-            // uncertainty through ACK or a normal scan.
-            if state.dropped != 0 {
-                return Err(io::Error::other("outbox facts dropped"));
-            }
-            cutoffs.insert(stream, (next.saturating_sub(1).max(last), state.dropped));
-        }
-        check(deadline)?;
-        Ok(cutoffs)
+        Ok(())
     }
     pub fn new(data_dir: &Path) -> Self {
         Self {
@@ -335,6 +375,12 @@ impl Outbox {
     pub fn append(&self, s: &Stream, agent: Option<String>, fact: Fact) -> io::Result<Option<u64>> {
         self.ensure()?;
         let mut guard = lock(open_rw(&self.path(s, "seq"))?, false)?.expect("blocking lock");
+        // ADR 0011 §9.2: an edit is announced before it is appended, and
+        // before the LOG_CAP check, so a dropped edit is announced too.
+        if matches!(fact, Fact::Action { .. }) {
+            self.announce();
+            crash_point("append:after-announce");
+        }
         let mut log = OpenOptions::new()
             .create(true)
             .append(true)

@@ -591,6 +591,17 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
                 std::fs::write(dot.join("dir.wire"), d.to_string_lossy().into_owned().canonical_bytes())
                     .map_err(|e| e.to_string())?;
             }
+            // ADR 0011 §9.6: this hook announces edits. Every harness using
+            // the data dir must run a P5a hook before anchors are trusted.
+            if let Some(d) = &data {
+                Outbox::new(d)
+                    .mark_appenders()
+                    .map_err(|e| format!("outbox marker: {e}"))?;
+                println!(
+                    "Reinstall the hooks of every harness that uses {} (earlier hook binaries do not announce edits).",
+                    d.display()
+                );
+            }
             if harness == "codex"
                 && let Some(d) = &data
                 && let Ok(out) = std::process::Command::new("codex").arg("--version").output()

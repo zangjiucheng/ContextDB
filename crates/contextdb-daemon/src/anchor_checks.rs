@@ -386,11 +386,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return None;
         }
         let root = Path::new(root).canonicalize().ok()?;
-        let repo = contextdb_anchors::Repo::open(
+        // The same identity-checked handle cache as live sampling: no Git
+        // process per check once the repository has been opened.
+        let repo = self.cached_repo(
             &root,
-            std::time::Instant::now() + contextdb_anchors::capture::LIVE_TIMEOUT,
-        )
-        .ok()?;
+            std::time::Instant::now() + *self.anchor_live_timeout.lock().expect("timeout"),
+            false,
+        )?;
         let mut keys = BTreeSet::new();
         for target in &action.paths {
             let given = Path::new(target);
