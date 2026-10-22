@@ -367,7 +367,7 @@ fn uid() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-const SERVICE_USAGE: &str = "usage: ctx service install|uninstall|status <dir> [--no-load]";
+const SERVICE_USAGE: &str = "usage: ctx service install|uninstall|restart|status <dir> [--no-load]";
 
 /// `ctx service`: a user service (launchd on macOS, systemd --user elsewhere)
 /// that starts `ctxd <dir>` at login and restarts it after a failure.
@@ -434,6 +434,32 @@ pub fn service(args: &[String]) -> Result<u8, String> {
                 }
                 Err(e) => return Err(e.to_string()),
             }
+        }
+        "restart" => {
+            // After an upgrade: the new ctxd binary is picked up by the
+            // service manager; a ctxd not run by the service is left alone.
+            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"))?;
+            if !file.exists() {
+                return Err(format!(
+                    "no service for {}: restart a manually started ctxd with ctx shutdown, then ctx setup",
+                    dir.display()
+                ));
+            }
+            let ok = if mac {
+                run(
+                    "launchctl",
+                    &["kickstart", "-k", &format!("gui/{}/{name}", uid()?)],
+                )?
+            } else {
+                run(
+                    "systemctl",
+                    &["--user", "restart", &format!("{name}.service")],
+                )?
+            };
+            if !ok {
+                return Err(format!("the service manager could not restart {name}"));
+            }
+            println!("restarted {name}");
         }
         "status" => {
             let (file, _) = unit(&home()?, &dir, Path::new("ctxd"))?;

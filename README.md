@@ -79,8 +79,11 @@
 ## 快速开始
 
 ```sh
-# 1. 安装 ctx、ctxd、ctx-mcp、ctx-hook（需要 Rust 1.95.0，由 rust-toolchain.toml 固定）
-scripts/install.sh                 # 装到 ~/.cargo/bin；或 scripts/install.sh --root DIR
+# 1. 安装 ctx、ctxd、ctx-mcp、ctx-hook（macOS arm64 / x86_64、Linux x86_64 / arm64 的 release 构建）
+curl -fsSL https://raw.githubusercontent.com/zangjiucheng/ContextDB/main/install.sh | bash
+#    装到 ~/.local/bin，并按 checksums.txt 校验 SHA-256；可加 -s -- --version vX.Y.Z / --dir DIR / --setup
+#    仓库为 private 时需先 gh auth login（脚本会改用 gh 下载），或 clone 后运行 bash install.sh
+#    从源码安装（需要 Rust 1.95.0）：scripts/install.sh，装到 ~/.cargo/bin
 
 # 2. 在要使用的仓库里一键接入
 cd /path/to/repo
@@ -107,7 +110,9 @@ ctx status .contextdb/db                                      # 记录与会话�
 cargo run --release --manifest-path tools/ctx-ui/Cargo.toml -- .contextdb/db   # 上下文图浏览器，http://127.0.0.1:7787/
 ```
 
-升级时用同一个提交重新运行 `scripts/install.sh`，然后重启 `ctxd`（`ctx shutdown <dir>` 后由服务或下一次 `ctx setup` 拉起）：`ctxd`、`ctx-mcp` 与 `ctx-hook` 必须来自同一构建，协议版本不同会被明确拒绝。
+**升级**：重新运行安装命令，然后 `ctx service restart <dir>`（或 `ctx shutdown <dir>` 后再 `ctx setup`）。`ctxd`、`ctx-mcp` 与 `ctx-hook` 必须来自同一构建，协议版本不同会被明确拒绝。**卸载**：在各仓库运行 `ctx service uninstall <dir>` 与 `ctx hooks uninstall --harness … --project …`，再 `bash install.sh --uninstall`。
+
+**发布**：推送 `v*` 标签后，`.github/workflows/release.yml` 构建四个平台的 `contextdb-<os>-<arch>.tar.gz` 与 `checksums.txt` 并发布 release；hosted Actions 不可用时，`scripts/release.sh <tag>` 在本机构建 macOS 两个架构、在远程主机构建 Linux x86_64 后用 `gh` 发布。
 
 ## 阶段与状态
 

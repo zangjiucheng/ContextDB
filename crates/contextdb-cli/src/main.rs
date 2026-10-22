@@ -53,7 +53,7 @@ Hooks and gating (P4, ADR 0010):
 Setup (one repository; binaries installed together, scripts/install.sh):
   ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-start]
                                        data dir, ctxd, project MCP config, hooks
-  ctx service install|uninstall|status <dir> [--no-load]
+  ctx service install|uninstall|restart|status <dir> [--no-load]
                                        launchd (macOS) / systemd --user service
                                        keeping ctxd running
   ctx --help | --version

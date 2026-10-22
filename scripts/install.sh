@@ -11,7 +11,7 @@ if [[ ${1:-} == --root ]]; then
   root=(--root "${2:?usage: scripts/install.sh [--root DIR]}")
 fi
 for spec in contextdb-daemon:ctxd contextdb-mcp:ctx-mcp contextdb-hooks:ctx-hook contextdb-cli:ctx; do
-  cargo install --locked --force --path "crates/${spec%%:*}" --bin "${spec##*:}" "${root[@]}"
+  cargo install --locked --force --path "crates/${spec%%:*}" --bin "${spec##*:}" ${root[@]+"${root[@]}"}
 done
 bin=${2:-${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}}/bin
 echo

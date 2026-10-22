@@ -1,0 +1,86 @@
+name: Release
+
+# A v* tag builds ctx, ctxd, ctx-mcp and ctx-hook for each platform, uploads
+# contextdb-<os>-<arch>.tar.gz plus checksums.txt to a GitHub release, and
+# publishes it (a full release, not a pre-release: GitHub's "latest" skips
+# pre-releases, and install.sh downloads the latest release by default).
+# Only the preinstalled gh CLI is used (no third-party release actions).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  draft:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft unless it exists
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "ContextDB $TAG" \
+              --notes "Install: curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh | bash -s -- --version $TAG"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, optional: false }
+          - { os: macos-latest, target: x86_64-apple-darwin, optional: false }
+          # Older glibc than ubuntu-latest, so the binary runs on more distros.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, optional: false }
+          # Arm Linux runners are not available to every plan; never blocks a release.
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, optional: true }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup toolchain install 1.95.0 --profile minimal --target "$TARGET"
+      - name: Build and package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: CONTEXTDB_VERSION="$TAG" bash scripts/package-release.sh "$TARGET" dist
+      - name: Upload to the release
+        run: gh release upload "$TAG" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    name: Checksums and publish
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write checksums.txt from the uploaded archives
+        run: |
+          mkdir dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'contextdb-*.tar.gz' --dir dist
+          (cd dist && sha256sum contextdb-*.tar.gz > checksums.txt && cat checksums.txt)
+          gh release upload "$TAG" dist/checksums.txt --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Publish the release
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
