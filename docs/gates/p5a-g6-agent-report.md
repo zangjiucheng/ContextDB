@@ -1,7 +1,7 @@
 # P5a G6 agent-labelled baseline report
 
 2026-10-22. Current criterion: SPEC v1.6.4 §4.4 / P5a G6, ADR 0011 r0.6 §11.
-Score built from the working tree based on `1ce43dc`; this is not a claim that the
+Score built from the working tree based on `a89258e`; this is not a claim that the
 uncommitted scorer has already passed an independent implementation review.
 
 **G6 evidence complete under the agent-evidence criterion.** The replay evidence

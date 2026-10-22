@@ -1,6 +1,6 @@
 # P2 implementation report — 2026-10-20
 
-**Gate passed** on `de80aa6`, after the independent review and two closure checks. Remote Linux/macOS CI (run 39497969575) and the nightly exhaustive, four-shard mutation and durability workflow (run 39498455621) both passed. See [P2.md](P2.md). Related documents:
+**Gate passed** on `21da1f7`, after the independent review and two closure checks. Remote Linux/macOS CI (run 39497969575) and the nightly exhaustive, four-shard mutation and durability workflow (run 39498455621) both passed. See [P2.md](P2.md). Related documents:
 - [gate matrix](P2.md)
 - [durable-log ADR 0006](../adr/0006-p2-durable-log.md), whose §12 records where the implementation differs from the text
 - [incremental structural commits ADR 0007](../adr/0007-incremental-structural-commits.md)
@@ -70,7 +70,7 @@ Before the crash, the poisoned store must report only the durable epoch, refuse 
 
 Apple M1 Pro, macOS 27.0.1, APFS internal SSD, Rust 1.95.0 release, one thread ([p2-env.json](p2-env.json)).
 
-Ranges cover eight runs of `store_bench` on the final code (`de80aa6`): four of mine and four by the independent reviewer.
+Ranges cover eight runs of `store_bench` on the final code (`21da1f7`): four of mine and four by the independent reviewer.
 
 | Metric | Target | Measured (min–max) | Verdict |
 |---|---:|---:|---|
@@ -120,7 +120,7 @@ Details are in ADR 0006 §12.
 
 ## Independent review
 
-A separate non-implementing reviewer (SPEC §4.2) reviewed commit `a3eedff`. They reproduced findings 1–6 by executing probes, and verified the following as accurate:
+A separate non-implementing reviewer (SPEC §4.2) reviewed commit `341035e`. They reproduced findings 1–6 by executing probes, and verified the following as accurate:
 - the G5 numbers;
 - commit order;
 - earlier-frame fail-closed, including across segments;
@@ -146,7 +146,7 @@ Every finding was fixed and has a `review*` regression test in `crates/contextdb
 | 11 | G5 was not measured in the production configuration (file projections) | minor | Bench now gates commit p99 and cold opens with file projections; roll-forward is batched (6.3 s → 4.4 s) |
 | 12 | A mistyped path created an empty store; the blob layout differed from the ADR | minor | `OpenOptions::create = false` for `ctx` (`NotAStore`); flat layout recorded in ADR 0006 §12 |
 
-**Closure check** (same reviewer, commit `01f2d9d`):
+**Closure check** (same reviewer, commit `4659641`):
 - All 12 findings are closed, with executed evidence.
 - Reverting each fix in a copy made its `review*` test fail, so the tests are not vacuous.
 
@@ -161,7 +161,7 @@ New findings from the closure check:
 | N5 | Rolled-forward projection rows were committed before the self-check | minor | `end_bulk` runs after the self-check |
 | N6 | `catch_up_projections` was not bulked (≈ 9 s at 100K) | minor | One bulk transaction; on failure it rolls back and restores the watermark (`review_n6_*` checks the rollback, not the speedup). Catch-up at 50K epochs: 4.5 s → 1.05 s |
 
-**Second closure check** (same reviewer, commit `de80aa6`): N1–N6 are all closed, and the projection rewrite introduced no regression.
+**Second closure check** (same reviewer, commit `21da1f7`): N1–N6 are all closed, and the projection rewrite introduced no regression.
 - Gate-setting runs pass: 29 recovery, 2 migration, 1 CLI and 9 probe tests.
 - All four `store_bench` runs give `g5_initial_pass=true`.
 - One docs defect (a leftover table header in G5) has been fixed.

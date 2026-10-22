@@ -3,7 +3,7 @@
   "rust": "1.95.0",
   "date": "2026-10-20",
   "host": "remote Linux host (AMD EPYC 9554, 64 cores), --jobs 48, via scripts/remote.sh",
-  "commit": "9835b56",
+  "commit": "68af150",
   "mutants": 785,
   "caught": 771,
   "unviable": 14,

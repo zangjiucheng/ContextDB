@@ -703,7 +703,7 @@ The dogfood row stays Pending (§0.1).
 
 ## 18. Implementation review (revision 3.4)
 
-A non-implementing reviewer reviewed `8131399..db559e8` plus the working tree: 1 blocker (reproduced), 7 majors, 12 minors. Its closure check of `8ca096a` found all closed, the fixes acceptable, and four new minors (N1–N4), fixed below.
+A non-implementing reviewer reviewed `4df803a..aa8dd1a` plus the working tree: 1 blocker (reproduced), 7 majors, 12 minors. Its closure check of `06a4d42` found all closed, the fixes acceptable, and four new minors (N1–N4), fixed below.
 
 | Finding | Resolution |
 |---|---|

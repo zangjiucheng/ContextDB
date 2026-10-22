@@ -547,7 +547,7 @@ Under it, every cell above passes. Budgets for N > 1 depend on each run's measur
 
 ## 18. P3 review mapping (revision 3.3)
 
-The independent P3 review of `5b49800` found 1 blocker, 2 majors and 7 minors. All are fixed with regression tests unless stated otherwise.
+The independent P3 review of `e1110aa` found 1 blocker, 2 majors and 7 minors. All are fixed with regression tests unless stated otherwise.
 
 **Blocker**
 - **1** → §17 "presence means durable". Open syncs every pack segment and the op_log tail. `SimDisk::restart` models a killed process; two kill-restart G4 tests cover it.
@@ -592,7 +592,7 @@ The independent P3 review of `5b49800` found 1 blocker, 2 majors and 7 minors. A
   - Reads served after a poisoned session log, or after `Stop`, lose their lazy events.
   - A retried `SessionEnd` gets `UnknownSession`; clients treat that as done.
 
-**Closure confirmation (of `4ba1291`).** A non-implementing reviewer found N1–N3 closed and no new blocker or major. It raised two minors, both now fixed:
+**Closure confirmation (of `e1ac9b1`).** A non-implementing reviewer found N1–N3 closed and no new blocker or major. It raised two minors, both now fixed:
 - **C1** → if the startup `LogBroken` sync fails or times out, `Service::with_recall` stops the writer and the actor and returns an error, so `ctxd` refuses to serve. Otherwise plain writes could reuse the cut epochs and hide the break from the next restart. Test: `a_cut_that_cannot_be_marked_durably_refuses_to_serve`.
 - **C2** → `SessionLog::open` also syncs `sessions/`. A rollover killed between the segment's file sync and its directory sync leaves a valid header-only segment that later groups append to, so its name must be durable. Test: `open_syncs_the_name_of_a_segment_whose_rollover_was_killed`, which fails without the sync.
 - **Accepted (low):** a transient op_log read error during replay is treated as a cut and marks the session broken. This fails safe.

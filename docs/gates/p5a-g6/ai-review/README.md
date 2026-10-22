@@ -81,7 +81,7 @@ AI 建议为 y 94 条、n 116 条；置信度 high 130、medium 79、low 1。**�
 
 ## 选择规则及证据
 
-冻结于 2026-10-22、项目 HEAD `bea3e6a`，在原始 1,352 条配对上选取。先按仓库和 fired/not-fired 分成六层；每层按 Git SHA-1 blob 哈希 `git hash-object(commit + ":" + path)` 的十六进制值升序取前 35 条。此处 blob 输入没有末尾换行。fired 包括 changed 和 broken。合并后按同一哈希排序赋予 G6 编号；共 105 not-fired、92 changed、13 broken。
+冻结于 2026-10-22、项目 HEAD `793ada2`，在原始 1,352 条配对上选取。先按仓库和 fired/not-fired 分成六层；每层按 Git SHA-1 blob 哈希 `git hash-object(commit + ":" + path)` 的十六进制值升序取前 35 条。此处 blob 输入没有末尾换行。fired 包括 changed 和 broken。合并后按同一哈希排序赋予 G6 编号；共 105 not-fired、92 changed、13 broken。
 
 not-fired 要求 parent 中锚点 blob 存在，以便从有效文件前提判断这次是否带来新的失效。145 条不满足该前提的 not-fired 配对只从本次预标注池排除，逐条记录于 [excluded.tsv](excluded.tsv)，原始 1,352 条全部保留。该排除不是对既有 MissingBaseline 行为的评价；其语义另行分析。
 

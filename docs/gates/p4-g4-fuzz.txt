@@ -1,4 +1,4 @@
-# P4 G4 fuzz on the final P4 tree (9ed116f), cargo-fuzz 0.13.2, remote Linux, 4 workers per target, >= 1 h each (final status lines)
+# P4 G4 fuzz on the final P4 tree (76117c6), cargo-fuzz 0.13.2, remote Linux, 4 workers per target, >= 1 h each (final status lines)
 ## hook_stdin
 #115838206: cov: 1371 ft: 6425 corp: 1640 exec/s: 9293 oom/timeout/crash: 0/0/0 time: 3637s job: 167 dft_time: 0
 INFO: exiting: 0 time: 3638s

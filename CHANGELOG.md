@@ -49,7 +49,7 @@
   - open locks before creating `log/`;
   - `migrate` resumes from the newest backup and syncs before the swap;
   - `get_blob` is gated on poison.
-- Close the P2 gate: independent review and two closure checks, CI run 39497969575 and nightly run 39498455621 on `de80aa6`.
+- Close the P2 gate: independent review and two closure checks, CI run 39497969575 and nightly run 39498455621 on `21da1f7`.
 - Accept P3 G0: ADR 0008 (daemon, group commit, session log, certificates, MCP) after four review rounds; SPEC v1.5.0–v1.5.3.
 - P3 milestone 1 (core):
   - **Counter-based L1/L2 columns.** Per-incidence literal bits, per-rule counters and per-node truth, witness and reason replace the query-time memo. They are maintained by the rank-ordered status walker (SPEC §3.4 Phase 3b), and FullRecompute rebuilds them independently. `Db` is `Send + Sync`.
@@ -90,7 +90,7 @@
   - Oversized session drains are split into groups; recall results are capped.
   - The session writer is flushed and joined before the store lock is released.
 - **Gate P3 passed** (2026-10-21):
-  - G4 stress on `4ba1291`: 1/8/32/128 clients × 10 min, 0 mixed epochs, chain breaks or replay mismatches.
+  - G4 stress on `e1ac9b1`: 1/8/32/128 clients × 10 min, 0 mixed epochs, chain breaks or replay mismatches.
   - Fuzz: IPC and MCP targets, 1 h each, 0 crashes.
   - G5 under the owner's per-client write budgets.
   - See `docs/gates/P3.md`.

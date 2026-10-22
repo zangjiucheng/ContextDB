@@ -1,4 +1,4 @@
-# P5a G5 anchor benchmark (anchor_bench), M1 Pro, 2026-10-22, tree 1ce43dc (ADR 0011 r0.4 code), confirmation run.
+# P5a G5 anchor benchmark (anchor_bench), M1 Pro, 2026-10-22, tree a89258e (ADR 0011 r0.4 code), confirmation run.
 # Load average at start 7.98 / 9.37 / 7.27, at end 9.23 / 9.67 / 7.60 (lowest observed on this desktop).
 # Rule (ADR 0011 §7, owner decision 2026-10-22): P4 hook budgets at every size; 10/100 anchors without misses; misses at 1,000 reported.
 P5a anchor benchmark; os=macos arch=aarch64 timeout_live_ms=40 observer_ms=5000

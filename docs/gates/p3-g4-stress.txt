@@ -1,4 +1,4 @@
-# P3 G4 stress, ctxd-stress, commit 4ba1291, remote host (Ubuntu 24.04, ≤48 cores), 4 × 600 s
+# P3 G4 stress, ctxd-stress, commit e1ac9b1, remote host (Ubuntu 24.04, ≤48 cores), 4 × 600 s
 clients=1 seconds=600.0 reads=60043 cas_attempts=60457 cas_ok=60457 cas_conflicts=0 coupled_moves=30209 coupled_conflicts=0 busy=0 other=0 write_tx_per_s=151 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=90676
 G4 PASS
 clients=8 seconds=600.0 reads=162213 cas_attempts=162400 cas_ok=111381 cas_conflicts=51019 coupled_moves=27155 coupled_conflicts=53919 busy=0 other=0 write_tx_per_s=231 mixed_epoch=0 chain_breaks=0 replay_mismatch=0 replay_samples=50 epoch=138546

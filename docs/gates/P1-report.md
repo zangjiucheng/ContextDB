@@ -1,7 +1,7 @@
 # P1 implementation report — 2026-10-20
 
 **Gate passed.** The G5 memory budget was calibrated per scope by ADR 0005 (an owner
-decision) after the storage was compacted. Commit `5ba4b92` passed:
+decision) after the storage was compacted. Commit `05061e2` passed:
 - remote Linux/macOS CI (run 39436790664);
 - the nightly exhaustive and mutation workflow (run 39436822063). [Gate matrix](P1.md),
 [maintenance ADR](../adr/0004-p1-maintenance.md),
@@ -146,7 +146,7 @@ The extended mutation audit also exposed test gaps, now closed:
 
 It also removed the dead `RuleArena.flags` column.
 
-Closure: remote CI and the nightly workflow both passed on `5ba4b92`. The nightly
+Closure: remote CI and the nightly workflow both passed on `05061e2`. The nightly
 mutation job's earlier failure (the `results/` directory was missing) was fixed in
 `scripts/mutation.sh`.
 

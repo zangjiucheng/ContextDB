@@ -8,7 +8,7 @@
 [ADR 0008](adr/0008-p3-daemon-sessions-certificates.md) rev 3.3,
 [ADR 0009](adr/0009-p3-memory-scopes-after-maintained-layers.md)).
 
-**Gate P2 passed** (2026-10-20, commit `de80aa6`) after independent review and two closure
+**Gate P2 passed** (2026-10-20, commit `21da1f7`) after independent review and two closure
 checks, with CI run 39497969575 and nightly run 39498455621.
 See [P2 gate](gates/P2.md), [P2 report](gates/P2-report.md),
 [durable-log ADR 0006](adr/0006-p2-durable-log.md) and
