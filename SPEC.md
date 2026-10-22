@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.4 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.5 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -212,7 +212,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 **SD14 UNKNOWN 的两种来源。**
 - (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P10 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
-- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
+- (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest（P5b：symbol 锚点由其宿主文件的原始 OID 代表，`CTXPOS02` 头部记录各语言 normaliser 版本；daemon 实时采样从不解析，宿主文件任何字节变化在 observer 下次扫描前为 lag，ADR 0012 §6）；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
 
 两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，若闭包内任一 scope 的 watermark 自签发后推进，判为 `Invalid`。
 
@@ -225,11 +225,11 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 **SD17 conflict 与递归预留。** P0–P6 中 Conflict 恒为 NONE（字段保留）。P7 起 open 的 Conflict artifact 是 L2 的 eager node gate，不影响 L0/L1（de Kleer：contradiction 检测始终 eager）。节点布局预留 `cnr/cr` 计数器、规则 flags 预留 `RECURSIVE` 位；oracle 用 least fixpoint，对有环输入同样正确，作为 P11 递归支持的 reference。
 
 **SD18 CodeAnchor（P5 起）。**
-1. logical 键 `code:<repo>/<path>[#<symbol>]`，kind = CodeAnchor。
-2. revision 内容：P5a 为工作树原始字节的 `git hash-object --no-filters --stdin`（不是 HEAD 中的 blob，忽略 clean/EOL filter）；支持 SHA1/SHA256，规范 descriptor 含 repo-id、相对路径、算法和完整 OID，ContentHash = BLAKE3(descriptor)，编码与支持域见 ADR 0011（所有父目录 symlink 拒绝）；P5b 起为 `(path, symbol, normalized_span_hash)`。
+1. logical 键 `code:<repo>/<path>[#<symbol>]`，kind = CodeAnchor。P5b 起 symbol 按 ADR 0012 §3 可逆编码到小写字母表（大写 → `-`+小写，`_` → `.`，段分隔 `:`，`#` 标记 trait / 哈希段；哈希段固定为对源文本去掉 ASCII 空白后 BLAKE3 的前 8 位小写十六进制，永不随 normaliser 改变）；文件路径不得再含 `#`；key 到路径的映射取自已提交的 descriptor，不拆分 key。
+2. revision 内容：P5a 为工作树原始字节的 `git hash-object --no-filters --stdin`（不是 HEAD 中的 blob，忽略 clean/EOL filter）；支持 SHA1/SHA256，规范 descriptor 含 repo-id、相对路径、算法和完整 OID，ContentHash = BLAKE3(descriptor)，编码与支持域见 ADR 0011（所有父目录 symlink 拒绝）；P5b 起为 `(path, symbol, normalized_span_hash)`：descriptor `CTXANC02` 含 repo-id、路径、symbol 原文、语言、normaliser 版本与 32 字节规范化哈希（忽略注释、空白、可选标点与引号风格，保留树形状、指令注释、attribute/decorator 与 Python docstring）；normaliser 版本由语法 crate 与 tree-sitter 运行时的精确版本加 walk 修订号机械导出，任何变化都是新版本；版本不一致的扫描为 unavailable，跨版本只能经 `ctx anchors migrate`（ADR 0012 §4）。
 3. **写入通道**：CodeAnchor logical 的 `CreateLogical / AddRevision / SetHead / AssertBase / RetractBase` 只接受可信 observer 通道（P3 起 daemon 按 transport 区分 `observer` 与 `agent` 通道，P9 之前即生效）；其他来源返回 `KindRestricted`。CodeAnchor 不得作为规则结论（§2.5）。
 4. **revision 身份**：以 `(logical, content)` 去重——相同内容复用已有 RevisionId（`SetHead` 回指），从而 ABA 恢复（SD12）对锚点成立；新锚点 revision 以 `adopt_as_base=true` 创建。
-5. **observer 分类**：内容未变 → no-op；内容变化 → `SetHead`（下游由各自 incidence kind 决定：`Cur` → STALE；`Sem` → PENDING；`Pin` → `STALE(SupersededPinnedPremise)`）；文件/symbol 消失或歧义（0 个或多个匹配）→ 对当前锚点 revision `RetractBase` + `AnchorBroken` artifact；恢复时 `AssertBase`。observer **不按变化位置替依赖方选择状态**。git rename 识别为删除 + 新锚点，`AnchorBroken` 附带 rebind 建议。
+5. **observer 分类**：内容未变 → no-op；内容变化 → `SetHead`（下游由各自 incidence kind 决定：`Cur` → STALE；`Sem` → PENDING；`Pin` → `STALE(SupersededPinnedPremise)`）；文件/symbol 消失或歧义（0 个或多个匹配）→ 对当前锚点 revision `RetractBase` + `AnchorBroken` artifact（P5b：同一文件中同一 symbol 路径的多处声明合并为一个 symbol，不再视为歧义；解析错误按局部规则：span 及其外层声明链无 ERROR/MISSING 即 Present，按 Git 判定相对 HEAD 已修改（正在编辑）的文件为 unavailable，其余（已提交、未跟踪或 HEAD 未诞生）为 `Broken(parse-error)`，ADR 0012 §2、§4）；恢复时 `AssertBase`。observer **不按变化位置替依赖方选择状态**。git rename 识别为删除 + 新锚点，`AnchorBroken` 附带 rebind 建议。
 6. **watermark**：observer 以 `ObserverWatermark{scope, expected, position}` Op 推进（对当前值 CAS，失败 `WatermarkConflict`；非 observer 通道 `ChannelRestricted`）；多个 observer 来源（git hook、fs watch、PostToolUse）的提交经 CAS 串行化。freshness 判定见 SD14b。
 7. P6 之前切换 git 分支会导致大量锚点翻转后再恢复（结果正确但有抖动），文档化；P6 起 branch 跟随 git branch。
 
@@ -593,13 +593,13 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 
 **范围**
 - tree-sitter 解析；revision = `(path, symbol, normalized_span_hash)`；结构指纹（忽略注释、空白、格式）。
-- 分类严格按 SD18.5（span hash 未变 → no-op；变化 → SetHead；缺失/歧义 → RetractBase + AnchorBroken）。
-- 语言顺序：TS/JS → Rust → Python → Go；不支持的语言退回文件级。
+- 分类严格按 SD18.5（span hash 未变 → no-op；变化 → SetHead；缺失 → RetractBase + AnchorBroken；同一文件中同路径的多处声明合并为一个 symbol，不视为歧义；解析错误按局部规则，ADR 0012）。
+- 语言顺序：TS/JS → Rust → Python → Go 为优先顺序而非交付顺序（ADR 0012 四种语言一起交付）；不支持的语言退回文件级。
 
 **Gate P5b**
-- G2：T45（纯格式化变更 no-op）、T42b（只改函数体外代码时 symbol 锚点不变）。
+- G2：T45（纯格式化变更 no-op，以真实格式化工具判定）、T45b、T42b（只改函数体外代码时 symbol 锚点不变）、T42d、T42e、T46d、T46e。
 - G3：PROP12 扩展到 symbol 锚点。
-- G6：同一回放 benchmark，symbol 级进入推荐配置的门槛：false invalidation ≤ 10%（initial），且 missed invalidation 不高于文件级。
+- G6：同一回放 benchmark，symbol 级进入推荐配置的门槛：false invalidation ≤ 10%（initial），且 missed invalidation ≤ 文件级 + 2 个百分点（initial；v1.6.5 owner 决定）。两种预测在同一批标注配对上评分，按分层加权的点估计判定，并报告 95% 区间与宿主文件变化时的条件漏报率；抽样与 symbol 选择规则见 ADR 0012 §9。
 
 ---
 
@@ -1008,15 +1008,20 @@ handoffs(id, owner, state, cert_id, summary)
 | T41 | P4 | policy 违规事务被拒，`--no-verify` 无法绕过 |
 | T41b | P4 | hook schema 契约测试（固定版本） |
 | T42a | P5a | 锚定文件修改 → Cur 依赖 STALE、Sem 依赖 PENDING |
-| T42b | P5b | 只改 symbol 范围外代码 → symbol 锚点 revision 不变 |
+| T42b | P5b | 只改 symbol 范围外代码 → symbol 锚点 revision 不变（scope 在下次扫描前 lag，之后 fresh 且无 STALE） |
+| T42d | P5b | 解析错误局部化：span 无错误仍 Present；编辑中的文件 unavailable；已提交不可解析文件 `Broken(parse-error)`，修复后复用同一 RevisionId |
+| T42e | P5b | normaliser 版本不一致的扫描为 unavailable；只有 migrate 跨版本 |
 | T42c | P5a | Pin 指向旧锚点 → `STALE(SupersededPinnedPremise)` |
 | T43 | P5a | 文件删除 → AnchorBroken + 下游 STALE（Cur、Pin、Sem 三种依赖各一例） |
 | T43b | P5a | 锚点更新后 Sem 下游对新内容验证通过（CERTIFIED），随后文件删除 → 下游 `STALE(Unsupported)`，证书 Invalid；以原内容恢复 → 下游恢复 |
 | T44 | P5a | live_pos ≠ watermark → `PENDING(ObservationLag)`，证书 Unknown |
-| T45 | P5b | 纯格式化变更 no-op |
+| T45 | P5b | 纯格式化变更 no-op：以 rustfmt / prettier / black / gofmt 在 G6 仓库 symbol 语料上的输出判定 |
+| T45b | P5b | 指令注释、attribute / decorator、Python docstring、引号风格与 Python 块移动按 ADR 0012 §4 计入或忽略 |
 | T46a | P3 | agent 通道写 CodeAnchor（任一写操作）→ `KindRestricted` |
 | T46b | P5a | 删除后以相同内容恢复 → 同一 RevisionId，下游恢复，计数器 == oracle |
 | T46c | P5a | PreToolUse 只校验锚定目标路径的证书条目 |
+| T46d | P5b | 对宿主文件的 Edit 选中其上所有 symbol 锚点的 root（按解码后的宿主路径匹配） |
+| T46e | P5b | range / pre-push 由变更的宿主文件选中其 symbol 锚点 |
 | T73 | P6 | 跨 branch 去重：main 有 A@0，b、c 均从 main fork；b 创建内容 X 的 A@1；c 执行 `AddRevision(A, X)` → 返回 A@1 并在 c 中可见，但 b 中以 A@1 为结论的规则在 c 不可见，A@1 在 c 的 base 为 false；main 的 digest 不变 |
 | T75 | P6 | key 命名空间例外：b 创建 key k 后，main 创建 k → `LogicalExists{key}`，错误中不含 id / branch / kind；main 的 digest 不变 |
 | T72 | P6 | 按 branch 的 cycle 图：b 中加入 `B→A` 后，main 仍可加入 `A→B`；随后把 b merge 进 main → `CycleDetected`，merge 被拒，main 不变 |
@@ -1098,7 +1103,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | SD15 | T63、T17b、T06a |
 | SD16 | T62 |
 | SD17 | T11、T51 |
-| SD18 | T42a/b/c、T43、T43b、T44、T45、T46a/b/c |
+| SD18 | T42a/b/c/d/e、T43、T43b、T44、T45、T45b、T46a/b/c/d/e |
 | SD19 | T14、T20a、T20b、T47、T72、T73、T75 |
 | §2.5 | T09h–m、T46a |
 | §6.1 输入契约 | T09p–v、T18b、T73 |
@@ -1263,6 +1268,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.5 | 2026-10-22 | P5b G0（ADR 0012 r0.3）：symbol key 可逆编码（哈希段为冻结的源文本哈希）、文件路径禁止 `#`；descriptor `CTXANC02` 与机械导出的 normaliser 版本（仅 migrate 跨版本）；同路径声明合并代替歧义；局部解析错误规则；宿主文件粒度的 `CTXPOS02` 位置，daemon 不解析；G6 改为 missed ≤ 文件级 + 2 个百分点（owner 决定），加权点估计；新增 T42d、T42e、T45b、T46d、T46e |
 | 1.6.4 | 2026-10-22 | owner 决定取消项目人工参与门槛：标注、独立复核、dogfood 维护和验收由 agent 执行（§4.4）；P5a G6 改为 ≥200 条有来源/理由/证据的 agent 标签，人工抽查和一致率仅作可选诊断（ADR 0011 r0.6 §11）；P4/P7 评测允许 agent 参考标签，保留真实使用时长、确定性 oracle、失败状态及通道/CAS/LLM 不自证边界 |
 | 1.6.3 | 2026-10-22 | P5a G6（owner 决定）：ground truth 由「≥ 200 人工标注」改为「≥ 200 预先分层抽样的 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，不一致者记为有争议、只进敏感性区间；分层报告并披露非盲、非总体样本（ADR 0011 r0.5 §10） |
 | 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |
