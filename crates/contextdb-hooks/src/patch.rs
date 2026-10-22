@@ -48,5 +48,8 @@ mod tests {
         // A body line that merely contains a header is not one.
         assert!(paths("+let s = \"x *** Add File: y\";").is_empty());
         assert!(!is_patch_command("cargo test"));
+        // Both the tool and a patch body are needed.
+        assert!(!is_patch_command("apply_patch --help"));
+        assert!(!is_patch_command("cat notes.txt # *** Begin Patch"));
     }
 }

@@ -47,6 +47,9 @@ mod tests {
         assert_eq!(normalize(root, cwd, "/etc/hosts"), "/etc/hosts");
         assert_eq!(normalize(root, cwd, "../../other/y"), "/r/other/y");
         assert_eq!(normalize(root, Path::new("/r/repo2"), "z"), "/r/repo2/z");
+        // The root itself is ".", never the empty string.
+        assert_eq!(normalize(root, cwd, ".."), ".");
+        assert_eq!(normalize(root, root, "/r/repo/"), ".");
         for p in ["/r/repo/src/a.rs", "b.rs", "../docs/./x.md", "/etc/hosts"] {
             let once = normalize(root, cwd, p);
             assert_eq!(normalize(root, root, &once), once, "{p}");

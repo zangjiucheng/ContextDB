@@ -3,6 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # Extra arguments go to cargo-mutants, e.g. `--shard 0/4` (nightly matrix).
 mkdir -p results
+# Each cargo-mutants build directory needs its own target directory: a
+# shared CARGO_TARGET_DIR (as scripts/remote.sh exports) lets parallel
+# mutants overwrite each other's binaries, so tests run the wrong mutant.
+unset CARGO_TARGET_DIR
 # The baseline must select testkit too; --test-package alone does not apply
 # to cargo-mutants 27.1.0's initial baseline build/test selection.
 CONTEXTDB_PROP11_SEEDS=${CONTEXTDB_PROP11_SEEDS:-2000} cargo mutants --workspace --test-workspace true \

@@ -948,6 +948,26 @@ mod tests {
         assert!(!journal.before.contains_key(&RevisionId(1)));
         assert_eq!(previous.state(), db.maintainer.state());
     }
+    /// `logical_info` reports each logical's exact key, kind and lane, and
+    /// nothing past the last logical (mutation closure for `export_key`).
+    #[test]
+    fn logical_info_reports_key_kind_and_lane() {
+        let mut db = Db::default();
+        db.commit(&Batch::new(vec![
+            logical("db.engine", "repo", 1),
+            logical("plan", "team", 2),
+        ]))
+        .unwrap();
+        assert_eq!(
+            db.logical_info(LogicalId(0)),
+            Some(("db.engine".into(), RecordKind::Fact, "repo".into()))
+        );
+        assert_eq!(
+            db.logical_info(LogicalId(1)),
+            Some(("plan".into(), RecordKind::Fact, "team".into()))
+        );
+        assert_eq!(db.logical_info(LogicalId(2)), None);
+    }
     fn logical(key: &str, lane: &str, content: u8) -> Op {
         Op::CreateLogical {
             key: key.into(),

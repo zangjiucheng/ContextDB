@@ -1,0 +1,19 @@
+# P4 G4 fuzz on the final P4 tree (9ed116f), cargo-fuzz 0.13.2, remote Linux, 4 workers per target, >= 1 h each (final status lines)
+## hook_stdin
+#115838206: cov: 1371 ft: 6425 corp: 1640 exec/s: 9293 oom/timeout/crash: 0/0/0 time: 3637s job: 167 dft_time: 0
+INFO: exiting: 0 time: 3638s
+## ipc_request
+#872729172: cov: 3149 ft: 11617 corp: 2333 exec/s: 66946 oom/timeout/crash: 0/0/0 time: 3639s job: 167 dft_time: 0
+INFO: exiting: 0 time: 3639s
+## mcp_json
+#209582203: cov: 1440 ft: 7867 corp: 1924 exec/s: 15150 oom/timeout/crash: 0/0/0 time: 3638s job: 167 dft_time: 0
+INFO: exiting: 0 time: 3639s
+## mcp_meta
+#551103738: cov: 981 ft: 5471 corp: 1499 exec/s: 42556 oom/timeout/crash: 0/0/0 time: 3600s job: 166 dft_time: 0
+INFO: exiting: 0 time: 3601s
+## patch_paths
+#600949068: cov: 191 ft: 873 corp: 300 exec/s: 58180 oom/timeout/crash: 0/0/0 time: 3627s job: 167 dft_time: 0
+INFO: exiting: 0 time: 3628s
+## wire_records
+#442814277: cov: 1136 ft: 5082 corp: 1122 exec/s: 32349 oom/timeout/crash: 0/0/0 time: 3637s job: 167 dft_time: 0
+INFO: exiting: 0 time: 3638s

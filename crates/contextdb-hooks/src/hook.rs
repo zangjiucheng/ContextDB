@@ -932,3 +932,237 @@ impl Hook {
         Output::default()
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use contextdb_model::{PendingReason, StaleReason};
+
+    /// A fresh canonical temporary directory (macOS: /var → /private/var).
+    fn tmp(name: &str) -> PathBuf {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("ctx-hook-unit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+    fn sh(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "protocol.file.allow=always",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} in {}", dir.display());
+    }
+    fn repo(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        sh(dir, &["init", "-q"]);
+        std::fs::write(dir.join("README"), "x").unwrap();
+        sh(dir, &["add", "README"]);
+        sh(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    fn git_is_killed_at_its_limit() {
+        let dir = tmp("git-limit");
+        repo(&dir);
+        let t = Instant::now();
+        let out = git(
+            &dir,
+            &["-c", "alias.zz=!sleep 3", "zz"],
+            Duration::from_millis(100),
+        );
+        assert_eq!(out, None, "a git that overruns its limit yields None");
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // Within the limit the output comes back.
+        let head = git(&dir, &["rev-parse", "HEAD"], Duration::from_secs(5)).map(line);
+        assert_eq!(head.map(|h| h.len()), Some(40));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn still_innermost_requires_git_containment_and_no_nested_repo() {
+        let base = tmp("innermost");
+        let top = base.join("top");
+        std::fs::create_dir_all(top.join(".git")).unwrap();
+        std::fs::create_dir_all(top.join("a/b")).unwrap();
+        // The top itself and a directory below it.
+        assert!(still_innermost(&top, &top));
+        assert!(still_innermost(&top.join("a/b"), &top));
+        // A `.git` appeared in between: a nested repository.
+        std::fs::create_dir_all(top.join("a/.git")).unwrap();
+        assert!(!still_innermost(&top.join("a/b"), &top));
+        assert!(!still_innermost(&top.join("a"), &top));
+        // cwd outside the top (no .git above it either).
+        let outside = base.join("outside/x");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(!still_innermost(&outside, &top));
+        // The top lost its .git, though it still contains cwd.
+        let gone = base.join("gone");
+        std::fs::create_dir_all(gone.join("c")).unwrap();
+        assert!(!still_innermost(&gone.join("c"), &gone));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn root_cache_lives_under_home() {
+        if let Some(h) = std::env::var_os("HOME") {
+            assert_eq!(cache_dir(), PathBuf::from(h).join(".cache/contextdb/roots"));
+        }
+    }
+
+    #[test]
+    fn repo_roots_of_plain_separate_git_dir_and_submodule_checkouts() {
+        let base = tmp("roots");
+        // Plain repository: main is top.
+        let plain = base.join("plain");
+        repo(&plain);
+        std::fs::create_dir_all(plain.join("d")).unwrap();
+        assert_eq!(
+            repo_roots(&plain.join("d")),
+            Some(Roots {
+                main: plain.clone(),
+                top: plain.clone()
+            })
+        );
+        // `--separate-git-dir`: the common dir is not named `.git`, so the
+        // top names the repository, not the git dir's parent.
+        let work = base.join("work");
+        let store = base.join("store.git");
+        sh(
+            &base,
+            &[
+                "init",
+                "-q",
+                &format!("--separate-git-dir={}", store.display()),
+                &work.to_string_lossy(),
+            ],
+        );
+        assert_eq!(
+            repo_roots(&work),
+            Some(Roots {
+                main: work.clone(),
+                top: work.clone()
+            })
+        );
+        // A submodule: the superproject's root names the repository.
+        let sup = base.join("super");
+        repo(&sup);
+        let lib = base.join("lib");
+        repo(&lib);
+        sh(
+            &sup,
+            &["submodule", "add", "-q", &lib.to_string_lossy(), "sub"],
+        );
+        assert_eq!(
+            repo_roots(&sup.join("sub")),
+            Some(Roots {
+                main: sup.clone(),
+                top: sup.join("sub")
+            })
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn summaries_and_update_lines() {
+        assert_eq!(summary(&Summary::Certified), "CERTIFIED");
+        assert_eq!(summary(&Summary::Conflicted), "CONFLICTED");
+        assert_eq!(summary(&Summary::Unavailable), "UNAVAILABLE");
+        assert_eq!(
+            summary(&Summary::Stale(StaleReason::HeadSuperseded)),
+            "STALE(HeadSuperseded)"
+        );
+        assert_eq!(
+            summary(&Summary::Pending(PendingReason::Semantic)),
+            "PENDING(Semantic)"
+        );
+        let item = |current| UpdateItem {
+            logical: LogicalId(1),
+            key: "db".into(),
+            cert_rev: RevisionId(2),
+            current,
+            summary: Summary::Stale(StaleReason::HeadSuperseded),
+        };
+        assert_eq!(
+            update_line(&item(Some(RevisionId(3)))),
+            "db: read r2, now r3 STALE(HeadSuperseded)"
+        );
+        assert_eq!(
+            update_line(&item(Some(RevisionId(2)))),
+            "db: r2 STALE(HeadSuperseded)"
+        );
+        assert_eq!(update_line(&item(None)), "db: r2 STALE(HeadSuperseded)");
+    }
+
+    #[test]
+    fn session_end_starts_the_next_stream_generation() {
+        let data = tmp("gen");
+        assert_eq!(
+            stream_of(&data, Harness::Claude, "s"),
+            outbox::stream_id("claude", "s")
+        );
+        next_generation(&data, Harness::Claude, "s");
+        assert_eq!(
+            stream_of(&data, Harness::Claude, "s"),
+            outbox::stream_id("claude", "s\u{0}1")
+        );
+        next_generation(&data, Harness::Claude, "s");
+        assert_eq!(
+            stream_of(&data, Harness::Claude, "s"),
+            outbox::stream_id("claude", "s\u{0}2")
+        );
+        // Per harness and session.
+        assert_eq!(
+            stream_of(&data, Harness::Codex, "s"),
+            outbox::stream_id("codex", "s")
+        );
+        assert_eq!(
+            stream_of(&data, Harness::Claude, "t"),
+            outbox::stream_id("claude", "t")
+        );
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn unavailable_output_denies_with_a_reason_or_notices() {
+        let closed = GateConfig {
+            fail_closed: true,
+            ..GateConfig::default()
+        };
+        assert_eq!(
+            unavailable_output(EventName::PreToolUse, &closed, "down".into()),
+            Output {
+                decision: Some(Decision::Deny),
+                reason: "down; gating is fail-closed".into(),
+                ..Output::default()
+            }
+        );
+        for (event, cfg) in [
+            (EventName::PreToolUse, GateConfig::default()),
+            (EventName::Stop, closed),
+        ] {
+            assert_eq!(
+                unavailable_output(event, &cfg, "down".into()),
+                Output {
+                    system: "down: action not checked".into(),
+                    ..Output::default()
+                }
+            );
+        }
+    }
+}

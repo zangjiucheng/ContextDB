@@ -1,0 +1,45 @@
+{
+  "gate": "P4 G3 mutation (ADR 0010 §11)",
+  "tool": "cargo-mutants 27.1.0",
+  "scope": [
+    "crates/contextdb-proto/src/gate.rs",
+    "crates/contextdb-proto/src/outbox.rs",
+    "crates/contextdb-hooks/src/adapter.rs",
+    "crates/contextdb-hooks/src/patch.rs",
+    "crates/contextdb-hooks/src/paths.rs",
+    "crates/contextdb-hooks/src/render.rs",
+    "crates/contextdb-hooks/src/hook.rs",
+    "crates/contextdb-daemon/src/service.rs"
+  ],
+  "note": "An earlier run shared one CARGO_TARGET_DIR across parallel mutants (scripts/remote.sh exports it), so tests ran other mutants' binaries; those results were discarded and both mutation scripts now unset it. The clean run below found 175 then 19 survivors; tests were added until only the waived mutants remain.",
+  "clean_run": {
+    "host": "remote Linux, 24 jobs, timeout 300 s",
+    "tested": 675,
+    "caught": 579,
+    "timeouts_detected": 13,
+    "unviable": 64,
+    "missed": 19
+  },
+  "after_closure": {
+    "killed_by_new_tests": 5,
+    "missed_unwaived": 0,
+    "waived": 14
+  },
+  "waivers": [
+    {"mutant": "service.rs:963:37 == -> != in attach (undo)", "reason": "equivalent: at undo time the key maps to the new session; a stale key whose session is not live is ignored by attach and rebuilt from the log"},
+    {"mutant": "service.rs:2160:55 += -> -= in briefing (Conflicted)", "reason": "unreachable before P7: summary_at never returns Conflicted (conflict artifacts arrive in P7)"},
+    {"mutant": "service.rs:2160:55 += -> *= in briefing (Conflicted)", "reason": "unreachable before P7, as above"},
+    {"mutant": "service.rs:2450:30 |= -> &= in Pending::take (durable flag)", "reason": "timing only: durable events would sync within the 100 ms lazy bound instead of at once; every caller that needs durability flushes explicitly"},
+    {"mutant": "service.rs:2467:9 Pending::urgent -> true", "reason": "timing only: lazy events sync at once instead of within 100 ms; not observable without a sync counter"},
+    {"mutant": "service.rs:2512:50 > -> >= in indexer", "reason": "equivalent: equality already returns early (indexed == snap.epoch)"},
+    {"mutant": "service.rs:2512:76 == -> != in indexer", "reason": "equivalent: with watermark 0 an incremental pass over all epochs equals a full rebuild"},
+    {"mutant": "service.rs:2517:32 + -> - in indexer", "reason": "equivalent: re-reads one already indexed epoch; updates are idempotent"},
+    {"mutant": "service.rs:2517:32 + -> * in indexer", "reason": "equivalent, as above"},
+    {"mutant": "hook.rs:81:41 < -> <= in git_with_input", "reason": "timing equality: differs only when elapsed equals the limit to the nanosecond"},
+    {"mutant": "outbox.rs:188:5 sync -> Ok(())", "reason": "fsync is observable only across power loss, not in-process (the daemon side's durability is tested on SimDisk)"},
+    {"mutant": "outbox.rs:322:71 > -> >= in deliver", "reason": "equivalent: pending() already dropped seq <= acked with the same mark"},
+    {"mutant": "outbox.rs:331:32 > -> >= in deliver (budget)", "reason": "timing equality with the budget"},
+    {"mutant": "outbox.rs:410:56 + -> * in truncate_if_acked", "reason": "equivalent: the branch runs only when every record is <= acked, so last+1 never exceeds acked+1"}
+  ],
+  "core_rerun": "P1-P3 core scope (scripts/mutation.sh) rerun with per-mutant target dirs: 787 tested, 727 caught, 58 unviable, 2 missed (LogicalArena::export_key), both killed by a new core test; 0 survivors"
+}

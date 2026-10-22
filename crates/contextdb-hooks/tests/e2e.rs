@@ -711,3 +711,60 @@ fn session_end_and_resume_make_no_phantom_and_keep_earlier_edits_declared() {
         assert!(!msg.contains("early.txt"), "{msg}");
     }
 }
+
+/// Drift compares against HEAD at SessionStart (mutation closure): a file
+/// committed during the session, by a Bash side effect, is still reported.
+#[test]
+fn drift_includes_files_committed_after_session_start() {
+    let repo = Repo::new("commit");
+    let d = repo.daemon();
+    let start = input(
+        "SessionStart",
+        "sess-g",
+        &repo.root,
+        json!({ "source": "startup" }),
+    );
+    repo.hook("claude", "session-start", &start);
+    std::fs::write(repo.root.join("committed.txt"), "x").unwrap();
+    for a in [
+        vec!["add", "committed.txt"],
+        vec![
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "side",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo.root)
+                .args(a)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let stop = input(
+        "Stop",
+        "sess-g",
+        &repo.root,
+        json!({ "stop_hook_active": false }),
+    );
+    let o = repo.hook("claude", "stop", &stop).expect("drift notice");
+    assert!(
+        o["systemMessage"]
+            .as_str()
+            .unwrap()
+            .contains("committed.txt"),
+        "{o}"
+    );
+    drop(d);
+}

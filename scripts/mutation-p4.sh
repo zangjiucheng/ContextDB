@@ -5,6 +5,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
+# Each cargo-mutants build directory needs its own target directory: a
+# shared CARGO_TARGET_DIR (as scripts/remote.sh exports) lets parallel
+# mutants overwrite each other's binaries, so tests run the wrong mutant.
+unset CARGO_TARGET_DIR
 CONTEXTDB_P4_OUTBOX_SEEDS=${CONTEXTDB_P4_OUTBOX_SEEDS:-500} \
 CONTEXTDB_P4_VIEW_SEEDS=${CONTEXTDB_P4_VIEW_SEEDS:-1000} \
 cargo mutants --workspace --test-workspace true \

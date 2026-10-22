@@ -569,7 +569,266 @@ mod tests {
         assert!(ob.dirty().is_empty());
         ob.append(&s, None, fact(1)).unwrap();
         assert_eq!(ob.dirty(), [s]);
+        // A delivered (emptied) log is not dirty.
+        let d = ob
+            .deliver(&s, Duration::from_secs(5), |_, _| Ok(Reply::Applied(1)))
+            .unwrap();
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 1,
+                remaining: 0
+            }
+        );
+        assert!(ob.dirty().is_empty());
         assert_ne!(stream_id("claude", "z"), stream_id("codex", "z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn pk(seq: u64, fact: Fact) -> Packet {
+        Packet {
+            seq,
+            agent: None,
+            fact,
+        }
+    }
+    /// A packet whose body is exactly `size` bytes (paths stay under the
+    /// decoder's element limit).
+    fn sized(seq: u64, size: usize) -> Packet {
+        const PART: usize = 500_000;
+        let mut len = size % PART;
+        loop {
+            let mut dirty = vec![("x".repeat(PART), [0; 32]); size / PART];
+            dirty.push(("x".repeat(len), [0; 32]));
+            let p = pk(seq, Fact::Baseline { dirty });
+            let got = p.canonical_bytes().len();
+            if got == size {
+                return p;
+            }
+            len = (len + size).checked_sub(got).expect("room for overhead");
+        }
+    }
+    fn put_log(ob: &Outbox, s: &Stream, packets: &[Packet]) {
+        ob.ensure().unwrap();
+        let bytes: Vec<u8> = packets.iter().flat_map(record).collect();
+        std::fs::write(ob.path(s, "log"), bytes).unwrap();
+    }
+    fn put_u64(ob: &Outbox, s: &Stream, ext: &str, v: u64) {
+        ob.ensure().unwrap();
+        std::fs::write(ob.path(s, ext), v.to_le_bytes()).unwrap();
+    }
+    fn get_u64(ob: &Outbox, s: &Stream, ext: &str) -> u64 {
+        let b = std::fs::read(ob.path(s, ext)).unwrap();
+        u64::from_le_bytes(b[..8].try_into().unwrap())
+    }
+    type Calls = Vec<(Vec<u64>, Option<(u64, u64)>)>;
+    /// Delivers to a daemon that applies everything it is sent.
+    fn deliver_all(ob: &Outbox, s: &Stream) -> (Delivered, Calls) {
+        let mut calls = Vec::new();
+        let d = ob
+            .deliver(s, Duration::from_secs(30), |p, skip| {
+                calls.push((p.iter().map(|p| p.seq).collect(), skip));
+                let to = skip.map_or(0, |(_, t)| t);
+                Ok(Reply::Applied(p.last().map_or(to, |p| p.seq.max(to))))
+            })
+            .unwrap();
+        (d, calls)
+    }
+    #[test]
+    fn batches_are_bounded_by_bytes_but_always_carry_one_packet() {
+        let dir = tmp("batch");
+        let ob = Outbox::new(&dir);
+        // Two packets filling BATCH_BYTES exactly share a batch; the next
+        // one goes alone, and none of them needs a skip.
+        let s = stream_id("claude", "batch");
+        let a = sized(1, BATCH_BYTES / 2);
+        let b = sized(2, BATCH_BYTES - a.canonical_bytes().len());
+        put_log(&ob, &s, &[a, b, pk(3, fact(3)), pk(4, fact(4))]);
+        let (d, calls) = deliver_all(&ob, &s);
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 4,
+                remaining: 0
+            }
+        );
+        assert_eq!(calls, [(vec![1, 2], None), (vec![3, 4], None)]);
+        // A packet larger than BATCH_BYTES is still sent, alone.
+        let s = stream_id("claude", "huge");
+        put_log(&ob, &s, &[sized(1, BATCH_BYTES + 1), pk(2, fact(2))]);
+        let (d, calls) = deliver_all(&ob, &s);
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 2,
+                remaining: 0
+            }
+        );
+        assert_eq!(calls, [(vec![1], None), (vec![2], None)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn records_missing_after_the_mark_are_skipped_up_front() {
+        let dir = tmp("skip");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "skip");
+        // Acknowledged through 2; record 3 was lost (a corrupt middle record).
+        put_log(&ob, &s, &[1, 2, 4, 5].map(|n| pk(n, fact(n as u8))));
+        put_u64(&ob, &s, "ack", 2);
+        let (d, calls) = deliver_all(&ob, &s);
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 5,
+                remaining: 0
+            }
+        );
+        assert_eq!(calls, [(vec![4, 5], Some((3, 3)))]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_gap_the_log_still_holds_is_resent_not_skipped() {
+        let dir = tmp("resend");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "resend");
+        // We acknowledged 2 but have not truncated; the daemon lost its marks.
+        put_log(&ob, &s, &[1, 2, 3].map(|n| pk(n, fact(n as u8))));
+        put_u64(&ob, &s, "ack", 2);
+        let mut calls = Vec::new();
+        let d = ob
+            .deliver(&s, Duration::from_secs(30), |p, skip| {
+                calls.push((p.iter().map(|p| p.seq).collect::<Vec<_>>(), skip));
+                Ok(if calls.len() == 1 {
+                    Reply::Gap(1)
+                } else {
+                    Reply::Applied(3)
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 3,
+                remaining: 0
+            }
+        );
+        assert_eq!(calls, [(vec![3], None), (vec![1, 2, 3], None)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn an_unresolved_gap_fails_after_four_replies() {
+        let dir = tmp("gaps");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "gaps");
+        ob.append(&s, None, fact(1)).unwrap();
+        let mut calls = 0;
+        let d = ob
+            .deliver(&s, Duration::from_secs(2), |_, _| {
+                calls += 1;
+                Ok(Reply::Gap(1))
+            })
+            .unwrap();
+        assert_eq!(
+            d,
+            Delivered::Failed {
+                acked: 0,
+                error: "unresolved gap at 1".into()
+            }
+        );
+        assert_eq!(calls, 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn delivery_is_busy_under_another_holder_and_stops_at_the_budget() {
+        let dir = tmp("busy");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "busy");
+        ob.append(&s, None, fact(1)).unwrap();
+        let held = lock(open_rw(&ob.path(&s, "ack")).unwrap(), false).unwrap();
+        let d = ob.deliver(&s, Duration::from_secs(5), |_, _| unreachable!());
+        assert_eq!(d.unwrap(), Delivered::Busy);
+        drop(held);
+        // An exhausted budget sends nothing and loses nothing.
+        let d = ob.deliver(&s, Duration::ZERO, |_, _| unreachable!());
+        assert_eq!(
+            d.unwrap(),
+            Delivered::Done {
+                acked: 0,
+                remaining: 1
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn seqs_are_bounded_by_seq_log_and_ack() {
+        let dir = tmp("bounds");
+        let ob = Outbox::new(&dir);
+        // A damaged last record: `.seq` still rules out reusing its seq.
+        let s = stream_id("claude", "damaged");
+        for n in 1..=3 {
+            ob.append(&s, None, fact(n)).unwrap();
+        }
+        let mut log = std::fs::read(ob.path(&s, "log")).unwrap();
+        let n = log.len();
+        log[n - 1] ^= 1;
+        std::fs::write(ob.path(&s, "log"), log).unwrap();
+        assert_eq!(ob.append(&s, None, fact(4)).unwrap(), Some(4));
+        assert_eq!(get_u64(&ob, &s, "seq"), 5);
+        // Acknowledged and truncated before `.seq` was written: `.ack` bounds it.
+        let s = stream_id("claude", "acked");
+        put_u64(&ob, &s, "ack", 2);
+        assert_eq!(ob.append(&s, None, fact(1)).unwrap(), Some(3));
+        // Truncating carries the mark into `.seq`, even past the last record.
+        let s = stream_id("claude", "trunc");
+        put_log(&ob, &s, &[pk(2, fact(2))]);
+        put_u64(&ob, &s, "ack", 3);
+        let (d, calls) = deliver_all(&ob, &s);
+        assert_eq!(
+            d,
+            Delivered::Done {
+                acked: 3,
+                remaining: 0
+            }
+        );
+        assert!(calls.is_empty());
+        assert_eq!(std::fs::metadata(ob.path(&s, "log")).unwrap().len(), 0);
+        assert_eq!(get_u64(&ob, &s, "seq"), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn pending_filters_by_the_mark_and_reports_io_errors() {
+        let dir = tmp("pending");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "pending");
+        // No `.ack` yet: nothing is acknowledged.
+        for n in 1..=3 {
+            ob.append(&s, None, fact(n)).unwrap();
+        }
+        let seqs = |(a, p): (u64, Vec<Packet>)| (a, p.iter().map(|p| p.seq).collect::<Vec<_>>());
+        assert_eq!(seqs(ob.pending(&s).unwrap()), (0, vec![1, 2, 3]));
+        put_u64(&ob, &s, "ack", 2);
+        assert_eq!(seqs(ob.pending(&s).unwrap()), (2, vec![3]));
+        // An unreadable `.ack` (here a symlink loop) is an error, not mark 0.
+        std::fs::remove_file(ob.path(&s, "ack")).unwrap();
+        std::os::unix::fs::symlink(ob.path(&s, "ack"), ob.path(&s, "ack")).unwrap();
+        assert!(ob.pending(&s).is_err());
+        assert!(ob.append(&s, None, fact(4)).is_err());
+        // Likewise an unreadable log.
+        let s = stream_id("claude", "badlog");
+        ob.ensure().unwrap();
+        std::os::unix::fs::symlink(ob.path(&s, "log"), ob.path(&s, "log")).unwrap();
+        assert!(ob.pending(&s).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_full_log_drops_and_counts_facts() {
+        let dir = tmp("cap");
+        let ob = Outbox::new(&dir);
+        let s = stream_id("claude", "cap");
+        ob.ensure().unwrap();
+        std::fs::write(ob.path(&s, "log"), vec![0u8; LOG_CAP as usize]).unwrap();
+        assert_eq!(ob.append(&s, None, fact(1)).unwrap(), None);
+        assert_eq!(ob.append(&s, None, fact(2)).unwrap(), None);
+        assert_eq!(ob.state(&s).dropped, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
