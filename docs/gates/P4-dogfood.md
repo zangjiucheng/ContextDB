@@ -13,9 +13,6 @@ mkdir -p "$DATA" && ctxd "$DATA" &   # keep it running for the whole period
 
 Start from an empty data directory. Outbox records and session logs written by pre-release P4 builds are not compatible, so remove a data directory created by earlier development builds.
 
-```sh
-```
-
 ## 2. Configure gating and policy (committed to the repository)
 
 `.contextdb/gating.toml`: start in `warn`. The false-deny rate is measured on the actions that would have been flagged.
