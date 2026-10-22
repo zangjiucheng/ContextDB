@@ -165,6 +165,9 @@ fn codex_thread_ids_bind_directly_and_ctx_check_peeks_updates() {
         meta.clone(),
     );
     assert_eq!(read["binding"], "harness");
+    // A certified item reports no stale reason.
+    assert_eq!(read["item"]["summary"], "CERTIFIED");
+    assert!(read["item"]["status"]["stale_reason"].is_null(), "{read}");
     let session = attach(&s, "codex", "th-1");
     assert!(matches!(
         verdict(&s, session),

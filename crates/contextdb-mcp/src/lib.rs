@@ -71,7 +71,9 @@ fn status(state: &NodeState) -> Value {
         "semantic": format!("{:?}", d.semantic),
         "conflicted": d.conflicted,
         "authorized": d.authorized,
-        "stale_reason": reason(&d.stale_reason),
+        // Only meaningful when the node is not valid: a CERTIFIED item
+        // carries no reason (dogfood report: agents read it as stale).
+        "stale_reason": (!state.l0).then(|| reason(&d.stale_reason)),
         "support": state.support,
     })
 }
