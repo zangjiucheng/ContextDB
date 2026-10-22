@@ -4,6 +4,7 @@
 //!
 //!   anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K]
 //!   anchor_replay score <labelled.tsv>...
+//!   anchor_replay label <repos dir> <labeler> <file.tsv>...
 //!
 //! `prepare` makes a `--shared --no-checkout` clone in a temporary directory
 //! (the source clone is never modified), starts a development daemon there
@@ -270,7 +271,7 @@ fn prepare(src: &Path, out: &Path, commits: usize, anchors: usize) -> Result<(),
     Ok(())
 }
 
-fn score(files: &[String]) -> Result<bool, String> {
+fn score(files: &[String], list: bool) -> Result<bool, String> {
     let (mut fp, mut tp, mut fneg, mut tn) = (0u32, 0u32, 0u32, 0u32);
     let mut unlabelled = Vec::new();
     let mut repos = BTreeSet::new();
@@ -323,13 +324,136 @@ fn score(files: &[String]) -> Result<bool, String> {
         rate(fneg, tp + fneg),
         tp + fneg
     );
-    for u in &unlabelled {
-        println!("unlabelled {u}");
+    if list {
+        for u in &unlabelled {
+            println!("unlabelled {u}");
+        }
     }
     // ADR 0011 §7 minimums; P5a fixes no rate threshold (P5b compares to it).
     let complete = repos.len() >= 3 && labelled >= 200;
     println!("p5a_g6_evidence_complete={complete}");
     Ok(complete)
+}
+
+/// Interactive labelling in a terminal: shows each unlabelled pair (commit
+/// message and the relevant diff from a clone under `<repos dir>/<name>`) and
+/// records the human's y/n with the labeler's name. Pairs are presented in a
+/// fixed mixed order (smallest `git hash-object` of `commit:path`) across all
+/// files, so any prefix covers every repository and both fired and not-fired
+/// pairs. Each answer is saved immediately; `q` stops, `s` skips.
+fn label(repos: &Path, labeler: &str, files: &[String]) -> Result<bool, String> {
+    use std::io::BufRead;
+    if labeler.is_empty() || labeler.contains(['\t', '\n']) {
+        return Err("labeler name required".into());
+    }
+    let mut docs: Vec<Vec<String>> = Vec::new();
+    let mut queue = Vec::new();
+    for (k, file) in files.iter().enumerate() {
+        let body = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        let lines: Vec<String> = body.lines().map(str::to_owned).collect();
+        for (i, line) in lines.iter().enumerate() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if !line.starts_with('#') && line != HEADER && f.len() == 11 && f[8].is_empty() {
+                queue.push((order(&format!("{}:{}", f[1], f[3])), k, i));
+            }
+        }
+        docs.push(lines);
+    }
+    queue.sort();
+    let total = queue.len();
+    println!(
+        "{total} unlabelled pairs. For each: would a decision or plan that relied on this file at the parent commit have to be re-checked after this commit?\n  y = yes (behaviour, API, contract or meaning changed)\n  n = no (formatting, comments, typos, unrelated refactor, or nothing relevant changed)\n  s = skip (unsure)   q = quit (answers so far are saved)"
+    );
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut done = 0;
+    for (n, (_, k, i)) in queue.into_iter().enumerate() {
+        let f: Vec<String> = docs[k][i].split('\t').map(str::to_owned).collect();
+        let name = f[0]
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let clone = repos.join(&name);
+        let (commit, parent, path, event) = (&f[1], &f[2], &f[3], &f[4]);
+        println!(
+            "\n==== {}/{total}  {name}  {}  {path}  [{event}]",
+            n + 1,
+            &commit[..12]
+        );
+        let message = text(&clone, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
+        println!(
+            "{}",
+            message.lines().take(12).collect::<Vec<_>>().join("\n")
+        );
+        // Fired: the anchor's own diff. Not fired: what changed beside it.
+        let diff = if event == "not-fired" {
+            let dir = path.rsplit_once('/').map_or(".", |(d, _)| d);
+            text(&clone, &["diff", "--stat", parent, commit, "--", dir]).and_then(|stat| {
+                text(
+                    &clone,
+                    &["diff", "--no-color", "-U2", parent, commit, "--", dir],
+                )
+                .map(|d| format!("(anchor {path} unchanged; same-directory changes)\n{stat}\n{d}"))
+            })
+        } else {
+            text(
+                &clone,
+                &["diff", "--no-color", "-U3", parent, commit, "--", path],
+            )
+        }
+        .unwrap_or_else(|e| {
+            format!(
+                "(diff unavailable: {e}; clone {} missing?)",
+                clone.display()
+            )
+        });
+        let lines: Vec<&str> = diff.lines().collect();
+        println!(
+            "{}",
+            lines
+                .iter()
+                .take(120)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        if lines.len() > 120 {
+            println!(
+                "... {} more lines (git -C {} show {commit} -- {path})",
+                lines.len() - 120,
+                clone.display()
+            );
+        }
+        let answer = loop {
+            print!("invalidates? [y/n/s/q] ");
+            std::io::stdout().flush().map_err(|e| e.to_string())?;
+            let mut line = String::new();
+            if input.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                break "q".to_owned();
+            }
+            let a = line.trim().to_lowercase();
+            if ["y", "n", "s", "q"].contains(&a.as_str()) {
+                break a;
+            }
+        };
+        match answer.as_str() {
+            "q" => break,
+            "s" => continue,
+            _ => {}
+        }
+        let mut row = f.clone();
+        row[8] = answer;
+        row[9] = labeler.to_owned();
+        docs[k][i] = row.join("\t");
+        let tmp = format!("{}.tmp", files[k]);
+        std::fs::write(&tmp, docs[k].join("\n") + "\n").map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &files[k]).map_err(|e| e.to_string())?;
+        done += 1;
+    }
+    println!("\nlabelled {done} pairs this session");
+    score(files, false)
 }
 
 fn main() {
@@ -348,8 +472,9 @@ fn main() {
             flag("--anchors", 20),
         )
         .map(|()| true),
-        Some("score") if args.len() >= 2 => score(&args[1..]),
-        _ => Err("usage: anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K] | score <labelled.tsv>...".into()),
+        Some("score") if args.len() >= 2 => score(&args[1..], true),
+        Some("label") if args.len() >= 4 => label(Path::new(&args[1]), &args[2], &args[3..]),
+        _ => Err("usage: anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K] | score <labelled.tsv>... | label <repos dir> <labeler> <file.tsv>...".into()),
     };
     match result {
         Ok(true) => {}

@@ -148,8 +148,14 @@ fn main() {
             }
             let p95 = pct(&mut hooks, 95);
             let p99 = pct(&mut hooks, 99);
-            pass &=
-                p95 <= 50. && p99 <= 100. && failures == 0 && reads == count && hook_failures == 0;
+            // ADR 0011 §7 G5 (owner decision 2026-10-22): P4 hook budgets at
+            // every size; 10/100 anchors must also certify every read without
+            // capture failures; at the 1,000 bound misses are reported (they
+            // are Unknown, fail closed), not a failure.
+            pass &= p95 <= 50. && p99 <= 100.;
+            if count < 1000 {
+                pass &= failures == 0 && reads == count && hook_failures == 0;
+            }
             println!(
                 "anchors={count} full_sync={full_sync} initial_reconcile_ms={:.3} certified_reads={reads}/{count} capture_p95_ms={:.3} capture_p99_ms={:.3} capture_failures={failures}/100 steady_reconcile_p95_ms={:.3} hook_p95_ms={p95:.3} hook_p99_ms={p99:.3} hook_warnings={hook_failures}/100",
                 initial.as_secs_f64() * 1000.,
