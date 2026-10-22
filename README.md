@@ -79,30 +79,35 @@
 ## 快速开始
 
 ```sh
-# 构建（需要 Rust 1.95.0，由 rust-toolchain.toml 固定）
-cargo build --release -p contextdb-daemon -p contextdb-mcp -p contextdb-hooks -p contextdb-cli
-export PATH="$PWD/target/release:$PATH"
+# 1. 安装 ctx、ctxd、ctx-mcp、ctx-hook（需要 Rust 1.95.0，由 rust-toolchain.toml 固定）
+scripts/install.sh                 # 装到 ~/.cargo/bin；或 scripts/install.sh --root DIR
 
-# 为仓库启动守护进程（数据目录可放在仓库内，并加入 .git/info/exclude）
-DATA="$PWD/.contextdb/db"
-mkdir -p "$DATA" && ctxd "$DATA" &
+# 2. 在要使用的仓库里一键接入
+cd /path/to/repo
+ctx setup                          # 默认同时接入 Claude Code 和 Codex；--harness claude|codex 只接一个
 
-# 接入 Claude Code：MCP 服务器必须叫 contextdb，再安装 hooks
-claude mcp add contextdb -- ctx-mcp "$DATA"
-ctx hooks install --harness claude --project "$PWD" --dir "$DATA"
-
-# 接入 Codex：在 config.toml 中添加 [mcp_servers.contextdb]（command = "ctx-mcp"，args = [数据目录]），然后
-ctx hooks install --harness codex --project "$PWD" --dir "$DATA"   # 之后在 Codex 中打开 /hooks 信任它们
-
-# 可选：把关键文件注册为代码锚点
-ctx anchors add "$DATA" "$PWD" src/main.rs docs/design.md
-
-# 查看状态与上下文图
-ctx status "$DATA"
-cargo run --release --manifest-path tools/ctx-ui/Cargo.toml -- "$DATA"   # http://127.0.0.1:7787/
+# 3. 可选：让 ctxd 开机自启、崩溃后自动重启
+ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --user
 ```
 
-之后 agent 用 `ctx_recall` / `ctx_read`（certified 模式）读取它依赖的决策，用 `ctx_record`（带 `deps`）记录决策与计划。门控默认是 `warn`：PreToolUse 发现读过的上下文已过时会附上说明，不会拦截；确认误报率足够低后再改为 `enforce`（见下文 P4 一节）。完整的接入流程见 [`docs/gates/P4-dogfood.md`](docs/gates/P4-dogfood.md)。
+`ctx setup` 会：
+
+- 创建数据目录（默认 `<repo>/.contextdb/db`），并加入 `.git/info/exclude`；
+- 启动 `ctxd`（若已有一个协议版本不同的 `ctxd` 在服务该目录，则报错并且不做任何改动）；
+- 在项目级注册 MCP 服务器 `contextdb`：Claude Code 写 `.mcp.json`，Codex 写 `.codex/config.toml`，其他配置原样保留；
+- 为每个 harness 安装 hooks（`.claude/settings.json`、`.codex/hooks.json`），默认门控模式为 `warn`。
+
+之后按提示操作：Claude Code 下次启动时批准项目 MCP 服务器；Codex 中打开 `/hooks` 信任新 hook。重复运行 `ctx setup` 是幂等的；`ctx service status <dir>` 查看服务与 `ctxd` 状态，`ctx service uninstall <dir>` 移除服务（`ctx shutdown` 主动停止后服务不会再拉起）。
+
+接入后，agent 用 `ctx_recall` / `ctx_read`（certified 模式）读取它依赖的决策，用 `ctx_record`（带 `deps`）记录决策与计划。PreToolUse 发现读过的上下文已过时会附上说明而不拦截；确认误报率足够低后再改为 `enforce`（见下文 P4 一节）。其他常用操作：
+
+```sh
+ctx anchors add .contextdb/db . src/main.rs docs/design.md   # 把关键文件注册为代码锚点
+ctx status .contextdb/db                                      # 记录与会话数
+cargo run --release --manifest-path tools/ctx-ui/Cargo.toml -- .contextdb/db   # 上下文图浏览器，http://127.0.0.1:7787/
+```
+
+升级时用同一个提交重新运行 `scripts/install.sh`，然后重启 `ctxd`（`ctx shutdown <dir>` 后由服务或下一次 `ctx setup` 拉起）：`ctxd`、`ctx-mcp` 与 `ctx-hook` 必须来自同一构建，协议版本不同会被明确拒绝。
 
 ## 阶段与状态
 

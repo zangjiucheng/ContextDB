@@ -3,6 +3,7 @@
 mod anchors;
 mod daemon;
 mod p4;
+mod setup;
 
 use contextdb_model::*;
 use contextdb_store::{OpenOptions, ProjectionFile, StdDisk, Store, doctor, migrate};
@@ -49,6 +50,12 @@ Hooks and gating (P4, ADR 0010):
   ctx gate-report P4 <dir> [--out FILE]
                                        dogfood numbers (false-deny, coverage, ...)
   ctx dogfood review <dir>             label warn/deny decisions and sampled allows
+Setup (one repository; binaries installed together, scripts/install.sh):
+  ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-start]
+                                       data dir, ctxd, project MCP config, hooks
+  ctx service install|uninstall|status <dir> [--no-load]
+                                       launchd (macOS) / systemd --user service
+                                       keeping ctxd running
   ctx --help | --version
 
 Specification: SPEC.md; durability: docs/adr/0006-p2-durable-log.md";
@@ -179,6 +186,8 @@ fn run(args: &[String]) -> Result<u8, String> {
             p4::gating(dir(2)?, &rest)
         }
         Some("hooks") => p4::hooks(&args[1..]),
+        Some("setup") => setup::setup(&args[1..]),
+        Some("service") => setup::service(&args[1..]),
         Some("gate-report") => p4::gate_report(&args[1..]),
         Some("dogfood") => p4::dogfood(&args[1..]),
         _ => run_p3(args).map(|()| 0),
