@@ -1,8 +1,8 @@
 # Implementation status
 
-**P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.5). G0–G5, G7, G8 and the independent reviews pass; G6 (AI-assisted ground truth, ADR §10) needs 9 per-stratum audit top-ups by the owner; P5a cannot pass before P4.
+**P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.6). G0–G5, G7, G8 and prior independent reviews pass. G6 uses 210 agent-labelled pairs with explicit provenance and hashed evidence; the 84 historical human reviews remain optional diagnostics and no manual top-ups are required (SPEC v1.6.4 §4.4). G6 passed under this agent-evidence criterion (`p5a_g6_evidence_complete=true`; [report](gates/p5a-g6-agent-report.md)). P5a cannot pass before P4.
 
-**P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). G6 dogfood (≥ 2 weeks, ≥ 2 parallel agents) is run by the project owner; P4 passes only with that report.
+**P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). Maintenance agents run and review the dogfood and generate its report; no owner labelling or sign-off is required. The ≥2 weeks of real use with ≥2 parallel agents and evidence requirements remain; P4 passes only with that report. Earliest planned report remains 2026-11-04.
 
 **Gate P3 passed** (2026-10-21) after independent review, a closure check and a closure confirmation ([P3 gate](gates/P3.md),
 [ADR 0008](adr/0008-p3-daemon-sessions-certificates.md) rev 3.3,

@@ -7,7 +7,7 @@ Status: **Accepted (revision 3.2)**, 2026-10-20, for P3 G0; **revision 3.3** add
 1. **Session log.** Sessions, read ledgers and certificates live in a session log of their own: a second append-only, hash-chained log in the store. op_log stays the only truth for kernel state. SPEC §7 and §3.5 #7 are amended (SPEC v1.5.0) so the session log is a separate truth for a disjoint domain that never feeds kernel state.
 2. **MCP.** `ctx-mcp` is hand-rolled JSON-RPC over stdio, built on `serde_json`, without the `rmcp` SDK.
 3. **`carry_rules`.** `ctx_supersede(carry_rules=copy)` copies the old revision's *own* justification rules, those concluding the old head, onto the new revision. Rules that depend on the old revision are never rebound or edited (SPEC §3.5 #2), and the owners of those rules must rebind them explicitly.
-4. **Human validation.** In P3 only `ctx validate` over `admin.sock` may submit `RecordValidation` (SPEC §3.5 #14). The daemon enforces this: agent connections have no request that can produce one. `Record` and `Supersede` never emit it, `Validate` is admin-only and `Raw(Batch)` is unavailable on `agent.sock`. The kernel input contract (SPEC §6.1 contract 7) is unchanged, so P0 goldens and the oracle are unaffected. The MCP server offers no `ctx_validate` tool to agents in P3. P7 adds validator workers.
+4. **Controlled validation (execution by authorized agent allowed; SPEC v1.6.4 §4.4).** In P3 only `ctx validate` over `admin.sock` may submit `RecordValidation` (SPEC §3.5 #14). The daemon enforces this: agent connections have no request that can produce one. `Record` and `Supersede` never emit it, `Validate` is admin-only and `Raw(Batch)` is unavailable on `agent.sock`. The kernel input contract (SPEC §6.1 contract 7) is unchanged, so P0 goldens and the oracle are unaffected. The MCP server offers no `ctx_validate` tool to agents in P3. P7 adds validator workers.
 5. **Trust boundary.** P3 claims a cooperative boundary. Channel separation stops identity spoofing through MCP or request parameters. It does not stop a malicious agent with shell access as the same OS user from connecting to `observer.sock` or `admin.sock`. SPEC §10 and the docs say so. Hard separation arrives with principals and ACL in P9.
 
 Scope: SPEC §5 P3, §6.1 read modes, §6.3, §6.4; SD13, SD14(b), SD15, SD16, SD18.3; I3–I6, I8.
@@ -301,7 +301,7 @@ Parameters: `(logical, body, expected_head, adopt_as_base, carry_rules: copy | n
 
 Parameters: `(rule, verdict, curvec_seen)`, or `(rev, verdict)`.
 - The `rev` form first *shows* every active rule concluding `rev` that has a Sem incidence (SD10), with its current vector.
-- After the human confirms, it submits one `RecordValidation` per rule with exactly the vector that was shown as `curvec_seen` (review N11). A vector that moved in between gives `CurvecMoved`, so the compare-and-set covers the time the human spent reviewing.
+- After the authorized validator confirms (automation may use `--yes`), it submits one `RecordValidation` per rule with exactly the vector that was shown as `curvec_seen` (review N11). A vector that moved in between gives `CurvecMoved`, so the compare-and-set covers the time spent reviewing.
 
 ### 8.4 T32: retry escape
 

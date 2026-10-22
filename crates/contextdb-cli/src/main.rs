@@ -28,7 +28,7 @@ Usage (via a running ctxd, admin socket):
   ctx impact <dir> <key[@rev]>         dependents (reachable impact)
   ctx diff <dir> <from> <to>           status changes between epochs
   ctx validate <dir> <key@rev> verified|rejected [--yes]
-                                       human validation of Sem rules (shows the
+                                       controlled validation of Sem rules (shows the
                                        vectors, records exactly what was shown)
   ctx shutdown <dir>                   stop ctxd
 

@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.3 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.4 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -422,7 +422,7 @@ commit(batch):
 1. 阶段开始：复制 `docs/gates/TEMPLATE.md` 为 `docs/gates/Pn.md`，写入范围、T-ID 清单、PROP 与 seed 数、性能预算、场景脚本。
 2. 实施期间：每个 PR 必须保持 G1 + 已完成部分的 G2/G3 绿色。
 3. 阶段结束：生成 `docs/gates/Pn-report.md`（`ctx gate-report Pn` 汇总 CI 结果），包含每层结果、测试数量、seed 数与 coverage 数字、bench 表、已知限制、偏离 spec 之处。
-4. **独立复核**：由一个未参与实现的 reviewer（人或独立 agent）对照 gate 清单与 spec 做对抗式检查（尝试构造反例、检查测试是否真的断言了 spec 要求）。复核意见全部关闭后阶段才算完成。
+4. **独立复核**：由一个未参与实现的独立 agent reviewer 对照 gate 清单与 spec 做对抗式检查（尝试构造反例、检查测试是否真的断言了 spec 要求）。复核意见全部关闭后阶段才算完成。
 5. 发现 spec 歧义或错误：先改 spec（附录 C 记录）+ 加回归，再继续实现，**不得**在代码里静默选择一种解释。
 
 ### 4.3 持续不变式（任何阶段都必须成立）
@@ -435,6 +435,13 @@ commit(batch):
 - I6 任何非 CERTIFIED 状态（STALE / PENDING（含 StructuralUnknown、ObservationLag）/ CONFLICTED / UNAVAILABLE）永远不会被汇总、打包、缓存或展示为 CERTIFIED（P3 起）。
 - I7 未授权主体得不到受保护的 payload、witness、WHY（P9 起；P3–P8 单主体模式下由 transport 信任边界保证）。
 - I8 派生状态只依赖已提交输入（SD7）：`rebuild_from_op_log == live state`（P2 起）。
+
+### 4.4 Agent 自主执行与证据来源（owner 决定，2026-10-22）
+
+- 项目的标注、复核、benchmark、dogfood 维护和阶段验收由 agent 执行，不设置必须由 owner/人工补标、点击确认或签字的门槛。§4.2 的独立复核仍由未参与实现的 agent 完成。
+- 标注和评测记录须保留执行者类型/身份、版本或模型（可取得时）、理由、输入/证据哈希与结果；AI 标签、历史人工标签、争议和未判定项分开计数，不能换名冒充人工 ground truth。已有人工记录可作可选诊断，数量、一致率和抽查覆盖不再决定 gate。
+- 这不替代 oracle、确定性检查、真实性能测量或真实使用时长；缺少数据、测试失败或不确定的结论继续如实报告，不自动改为通过。P4 仍需 ≥2 周、≥2 并行 agent 的真实使用，report 由维护 agent 生成。
+- 执行者可以是 agent，但 transport/channel 准入、admin-only validation、curvec CAS 和 §3.5 #14 保留。授权维护 agent 可在独立证据支持下使用 admin CLI（`ctx validate ... --yes`）；LLM 输出本身不是自证或自动批准写入的许可。缺乏可信验证证据的语义结论保持 Pending，由 agent 继续调查，不强制转人工。
 
 ---
 
@@ -531,7 +538,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - 强制 CAS：所有 agent 写入必须带 `expected_head` 或 `create_only`；deps 只能引用本会话证书中的 handle 或显式 `logical@rev`（证据准入）。
 - 增量 L1/L2 列（§3.4 Phase 3b，替换 P1 的按需计算；与 oracle 精确比较）。
 - 基础检索投影：精确 ID / 前缀 / FTS5。
-- `ctx-mcp` 工具：`ctx_recall`（基础）、`ctx_read`、`ctx_record`、`ctx_supersede`、`ctx_why`、`ctx_why_not`、`ctx_impact`、`ctx_check`；人工验证在 P3 只经 admin 通道的 `ctx validate`（CLI）进入，agent 无法提交 RecordValidation（§3.5 #14，ADR 0008 §0.4）。
+- `ctx-mcp` 工具：`ctx_recall`（基础）、`ctx_read`、`ctx_record`、`ctx_supersede`、`ctx_why`、`ctx_why_not`、`ctx_impact`、`ctx_check`；受控语义验证在 P3 只经 admin 通道的 `ctx validate`（CLI）进入，可由授权维护 agent 根据验证证据执行；agent socket 无法提交 RecordValidation（§3.5 #14，ADR 0008 §0.4）。
 
 **Gate P3**
 - G2：T06b（引擎）、T06d-sem、T07e、T08（并发变体）、T12（并发）、T15/b/c/d（增量）、T16、T16b-cert、T21、T32、T36、T37、T46a（agent 通道写 CodeAnchor 被拒）、T62（引擎版）、T65（certificate 判定优先级）。
@@ -560,7 +567,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - G4：hook 进程被 kill / 超时 / daemon 重启期间的事件不丢失（outbox 恢复）。
 - G5（initial）：PreToolUse 端到端 p95 ≤ 50 ms，p99 ≤ 100 ms。
 - G6 **Dogfood（首次真实使用门槛）**：在本仓库上用 ≥ 2 个并行 agent 工作 ≥ 2 周，记录并报告：
-  - **false-deny 率** = 人工复核判为不应 warn/deny 的 gated 行动数 ÷ 全部 gated 行动数；enforce 作为推荐配置的门槛 ≤ 2%（initial）。
+  - **false-deny 率** = agent 根据行动与依赖证据复核判为不应 warn/deny 的 gated 行动数 ÷ 全部 gated 行动数；enforce 作为推荐配置的门槛 ≤ 2%（initial）。
   - **依赖覆盖率** = 至少带一条声明依赖或锚点的写入 ÷ 全部写入；门槛 ≥ 60%（initial）。低于门槛时下一步优先改进自动依赖推断（O8），而不是继续加功能。
   - stale-action 拦截数与真阳性比例（只报告，不设门槛）、legitimate-action allow rate。
 
@@ -580,7 +587,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **Gate P5a**
 - G2：T42a（锚定文件修改 → Cur 依赖 STALE、Sem 依赖 PENDING）、T42c（Pin 指向旧锚点 → `STALE(SupersededPinnedPremise)`）、T43（删除 → AnchorBroken + 下游 STALE）、T43b、T44（watermark 落后 → `PENDING(ObservationLag)` / certificate Unknown）、T46b（删除后以相同内容恢复 → 同一 RevisionId，下游恢复，计数器 == oracle）、T46c（PreToolUse 按路径过滤）、S13-rows-e2e（ObservationLag 行）。
 - G3：PROP12（observer 输出 == 由 git 历史全量重算锚点的 oracle）。
-- G6 **commit 回放 benchmark**（≥ 3 个真实开源仓库，各 ≥ 1,000 commits）：报告文件级锚点的 false / missed invalidation 率。ground truth（v1.6.3，owner 决定的辅助标注，ADR 0011 §10）：≥ 200 个按预先固定的分层规则抽取、由 AI 预标注（附理由与证据哈希）的锚点-变更对；owner 在每个分层（仓库 × 触发/未触发）内按样本顺序复核前缀、每层 ≥ 5 对且总数 ≥ 80 对，人工与 AI 一致率点估计 ≥ 90%（同时报告 Wilson 95% 下界）；人工与 AI 不一致的配对记为有争议：不计入主比率，单独按人工、按 AI 两种取法报告敏感性区间。按仓库 × 触发/未触发分层报告比率，并披露：非盲（复核者看得到 AI 建议）、各层多数为未复核的 AI 标签、两阶段抽样与缺 parent 的排除、分层样本不是总体等概率样本、配对集中在少数文件、AI 标签与人工标签分开计数。P5a 只报告比率、不设阈值（P5b 与之比较）。测试结果变化作为辅助标签。
+- G6 **commit 回放 benchmark**（≥ 3 个真实开源仓库，各 ≥ 1,000 commits）：报告文件级锚点的 false / missed invalidation 率。基线（v1.6.4，ADR 0011 §11）：≥ 200 个按预先固定分层规则抽取、由 agent 标注的锚点-变更对，覆盖每仓库触发/未触发两层，逐条附来源、理由与证据哈希。人工抽查完全可选，不设数量、前缀覆盖或一致率门槛；已有人工/AI 不一致者保留为争议，不计入主比率，分别按两种标签计算敏感性区间。按仓库 × 触发/未触发分层报告比率、AI-only/已有人工/争议数量与文件覆盖，并披露 agent 标签并非独立人工真值、已有抽查非盲、两阶段抽样、缺 parent 的排除、非总体等概率样本及配对集中度。P5a 只报告比率、不设阈值（P5b 与同来源的基线比较）。测试变化仅作辅助证据，不能以自身 classifier 输出作为标注真值。
 
 ### P5b — symbol 级 code anchors
 
@@ -625,7 +632,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **范围**
 - Validator adapter trait（core 之外）；worker 池在 writer 之外执行，提交 `RecordValidation(j, curvec_seen, …)`，内核以 `CurvecMoved` CAS 拒绝过期结果，worker 重排队。
 - 任务按 `(rule_id, curvec)` claim 去重（token 栅栏，多槽表），marker-first（崩溃可发现）。
-- ValidationRecord 记录 validator 类型/版本、model、`prompt_sha256`、标签。标签映射（reinforcement/none → Verified；conflict → Rejected；boundary_change/new_rule → 保持 Pending）**只适用于可信 validator**（确定性检查器或人）。**LLM validator 的 conflict 只写 PendingReview artifact，sem 保持 Pending**；LLM 不得写 Rejected。
+- ValidationRecord 记录 validator 类型/版本、model、`prompt_sha256`、标签。标签映射（reinforcement/none → Verified；conflict → Rejected；boundary_change/new_rule → 保持 Pending）**只适用于可信 validator**（确定性检查器，或受控 admin 验证；不要求人工执行）。**LLM validator 的 conflict 只写 PendingReview artifact，sem 保持 Pending**；LLM 不得写 Rejected。
 - 矛盾候选生成（P7 只做 lexical 相似度；embedding 候选在 P8）→ Conflict artifact（输入层，SD7）→ L2 gate；`ctx_conflicts` / `ctx_resolve`。
 - Handoff：`ctx_handoff_begin/accept`（claim-once CAS + 附带 certificate 校验）。
 - `ctx_changes(since_epoch)` 与订阅流。
@@ -633,7 +640,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 **Gate P7**
 - G2：T49、T50、T51、T52、T53、S13-rows-e2e（CONFLICTED 行）。
 - G3：oracle 扩展 Conflict node gate（SD17）并精确比较；PROP1 加入 Conflict 操作。
-- G6：mock validator 的确定性场景 + 一次真实 LLM validator 的小规模评测，报告 validator 调用数、token、与人工标注的一致率（**单独报告，不与内核正确性混合**）。
+- G6：mock validator 的确定性场景 + 一次真实 LLM validator 的小规模评测，报告 validator 调用数、token、与独立参考标签的一致率及标签来源（确定性 oracle 或独立 agent；人工标签可选），争议/无法判定项单列（**单独报告，不与内核正确性混合**）。
 
 ---
 
@@ -1256,6 +1263,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
+| 1.6.4 | 2026-10-22 | owner 决定取消项目人工参与门槛：标注、独立复核、dogfood 维护和验收由 agent 执行（§4.4）；P5a G6 改为 ≥200 条有来源/理由/证据的 agent 标签，人工抽查和一致率仅作可选诊断（ADR 0011 r0.6 §11）；P4/P7 评测允许 agent 参考标签，保留真实使用时长、确定性 oracle、失败状态及通道/CAS/LLM 不自证边界 |
 | 1.6.3 | 2026-10-22 | P5a G6（owner 决定）：ground truth 由「≥ 200 人工标注」改为「≥ 200 预先分层抽样的 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，不一致者记为有争议、只进敏感性区间；分层报告并披露非盲、非总体样本（ADR 0011 r0.5 §10） |
 | 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |
 | 1.6.1 | 2026-10-21 | P5a G0 ADR 0011：raw Git OID descriptor/BLAKE3 身份、完整 manifest 与 pre-capture hint cutoff 分离、Sem asserted p 与 head h 的 observation support 闭包、缺 live evidence fail-closed、持久 per-root 历史 proof/路径别名保守回退、旧 strict baseline 缺失 Unknown、range 点时证书与全部可达当前 roots/pushed-tree 限制、协议 3 与 session format 2 强制 rollover/旧格式只读兼容；固定资源上限及 PROP12 coverage。P4 A11 顺序约束不变 |

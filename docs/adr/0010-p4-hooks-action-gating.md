@@ -26,7 +26,7 @@ Builds on ADR 0008.
 
 1. **Dogfood gate.** G6 needs ≥ 2 weeks of real use with ≥ 2 parallel agents, which a session cannot produce.
    - P4 is implemented and G0–G5, G7 and G8 are closed.
-   - Hooks, telemetry and `ctx gate-report P4` then go to the owner for the dogfood run.
+   - Hooks, telemetry and `ctx gate-report P4` are maintained and reviewed by agents for the real dogfood run (SPEC v1.6.4 §4.4 supersedes the original owner-run workflow).
    - `docs/gates/P4.md` keeps G6 at **Pending**.
    - P5a G0 and implementation may start meanwhile.
    - P4 is marked Passed only after the dogfood report.
@@ -508,7 +508,7 @@ The unavailable outcome is recorded in the outbox as a `Gate` fact.
 - **Unavailable checks:** counted separately.
 
 **False-deny rate.**
-- **Definition:** gated actions a human labelled "should not have warned or denied", divided by all gated actions.
+- **Definition:** gated actions a reviewing agent labelled (SPEC v1.6.4 §4.4) "should not have warned or denied", divided by all gated actions.
 - **Threshold:** ≤ 2% for recommending enforce.
 - **Labelling:** `ctx dogfood review` walks every warn and deny, plus a uniform 5% sample of allows. Labels go to `<data dir>/reports/review.jsonl`, which is local and outside the kernel.
 
@@ -621,7 +621,7 @@ The dogfood row stays Pending (§0.1).
 3. **`ctx-hook` binary:** every event; T38, T39 and T41b.
 4. **Outbox delivery, sweeper and drift;** T40 and T66.
 5. **CLI:** `ctx check`, `ctx policy`, `ctx gating apply`, `ctx hooks …`, `ctx gate-report`, `ctx dogfood review`; T41.
-6. **Verification:** G3–G5 and the G6 scenario, then hand the dogfood kit to the owner.
+6. **Verification:** G3–G5 and the G6 scenario, then let maintenance agents operate and review the dogfood kit (SPEC v1.6.4 §4.4).
 
 ## 13. SPEC amendments (SPEC v1.6.0)
 

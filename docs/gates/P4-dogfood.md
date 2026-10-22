@@ -1,6 +1,6 @@
 # P4 G6 dogfood kit
 
-SPEC §5 P4 G6 requires real use of ContextDB on this repository: **≥ 2 parallel agents for ≥ 2 weeks**. The report then gives the false-deny rate (threshold ≤ 2% to recommend `enforce`) and the dependency coverage (threshold ≥ 60%). The owner runs this (ADR 0010 §0.1); P4 is marked Passed only with the resulting report.
+SPEC §5 P4 G6 requires real use of ContextDB on this repository: **≥ 2 parallel agents for ≥ 2 weeks**. The report then gives the false-deny rate (threshold ≤ 2% to recommend `enforce`) and the dependency coverage (threshold ≥ 60%). Maintenance agents run, label and report this (SPEC v1.6.4 §4.4 supersedes the owner-run workflow in ADR 0010 §0.1); P4 is marked Passed only with the resulting report.
 
 ## 1. Build and start
 
@@ -68,18 +68,18 @@ Then open `/hooks` in Codex (or accept the startup review) to trust the new hook
 - Have the agents read the decisions they rely on with `ctx_recall` / `ctx_read` (certified), and record decisions and plans with dependencies (`ctx_record` with `deps`). Coverage counts writes that carry dependencies.
 - If the daemon is restarted, nothing is lost. Hooks keep facts in the outbox, and `ctxd` delivers them at start; `ctx hooks flush "$DATA"` delivers them at once.
 
-## 5. Review (weekly, and at the end)
+## 5. Agent review (weekly, and at the end)
 
 ```sh
 ctx dogfood review "$DATA"
 ```
 
-It shows every warn or deny, and 1 in 20 allowed actions:
+A reviewing agent examines each action against its recorded dependencies, certificate and relevant implementation evidence, then supplies the per-entry answers. No human review is required. Keep a companion provenance record with reviewer/model/version when available, rationale and evidence hashes; do not infer correctness just from the gate verdict. If evidence is missing, skip and report it as unreviewed. The CLI shows every warn or deny, and 1 in 20 allowed actions:
 - For a warn or deny, answer `y` if ContextDB was right to flag it and `n` if it was a false alarm.
 - For an allow, answer `y` if allowing it was right.
 - `s` skips an entry and `q` stops.
 
-The false-deny rate needs every warn and deny labelled.
+The false-deny rate needs every warn and deny labelled; unanswered entries remain incomplete, not correct by default. The report identifies these as agent judgments, not human ground truth.
 
 ## 6. Report
 

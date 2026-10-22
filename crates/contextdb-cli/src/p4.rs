@@ -706,7 +706,7 @@ fn telemetry(dir: &Path) -> Result<Vec<TelemetryEntry>, String> {
 pub fn entry_id(e: &TelemetryEntry) -> String {
     hex(&blake3::hash(&e.canonical_bytes()).as_bytes()[..12])
 }
-/// Human labels (`ctx dogfood review`): entry id → "ok" | "false".
+/// Reviewer labels (`ctx dogfood review`, normally supplied by an agent): entry id → "ok" | "false".
 fn labels(dir: &Path) -> BTreeMap<String, String> {
     let text = std::fs::read_to_string(dir.join("reports/review.jsonl")).unwrap_or_default();
     text.lines()

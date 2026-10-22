@@ -1,12 +1,19 @@
-# G6 AI 预标注与人工抽查记录
+# G6 agent 标注基线与可选历史抽查
 
-已准备 **210 条**建议：click、fd、ripgrep 各 70 条，每仓库包含 35 条 observer 触发、35 条未触发。每条都有中文理由和复核重点。2026-10-22，owner 逐条复核了 **84 条**（G6-001–084），随后决定采用辅助标注方法：SPEC v1.6.3 与 ADR 0011 r0.5 §10 把 G6 的 ground truth 改为「分层 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，人工与 AI 不一致者记为有争议（见 [复核收尾决定](REVIEW_DECISION.md)）。
+已准备 **210 条** agent 标签：click、fd、ripgrep 各 70 条，每仓库包含 35 条触发、35 条未触发配对，逐条附理由、复核重点和证据哈希。当前规则为 SPEC v1.6.4 §4.4 与 ADR 0011 r0.6 §11：**不再要求 owner/人工补审，包括此前要求的 9 条**。现有 84 条人工记录只作可选对照，其中 4 条与 AI 不同，保留为争议并报告敏感性区间，不重写归属。
 
-按新规则，还需在两个分层各补复核：click 已触发 4 条（G6-092、096、107、108）、ripgrep 已触发 5 条（G6-089、091、095、129、148）。补完后 `anchor_replay score --assisted docs/gates/p5a-g6/ai-review/proposals.tsv docs/gates/p5a-g6/*.tsv` 报告 `p5a_g6_evidence_complete`。
+检查证据和生成当前 G6 报告：
 
-## 开始复核
+```sh
+python3 scripts/p5a_review.py --check
+cargo run --release -p contextdb-bench --bin anchor_replay -- score --assisted docs/gates/p5a-g6/ai-review/proposals.tsv docs/gates/p5a-g6/*.tsv
+```
 
-补复核上述 9 条：`python3 scripts/p5a_review.py --reviewer jiucheng --ids G6-089,G6-091,G6-092,G6-095,G6-096,G6-107,G6-108,G6-129,G6-148`（`--ids` 只呈现这些编号）。
+`--assisted` 为兼容的命令名称，当前使用 agent 证据门槛，不再检查人工数量、分层人工前缀或一致率。原始未带 `--assisted` 的 score 只统计旧人工标签，不是当前 G6 的验收命令。标签质量是 agent 判断，不能称为独立人工真值；分层结果也不是总体无偏失效率。
+
+## 可选复核工具（不是 gate 前置条件）
+
+此工具仅用于自愿追加人工对照；owner 无需运行。Agent 标签继续写在独立的 proposals.tsv，不通过该人工工具冒充人审。
 
 在 ContextDB 项目根目录的终端运行（Python 3，无需额外依赖，也无需重新克隆仓库）：
 
@@ -33,7 +40,7 @@ python3 scripts/p5a_review.py --reviewer jiucheng
 
 空回车不接受建议。每次 `a/y/n` 才把这一条写入原始 TSV 的 `invalidates/labeler/note`；备注保留 AI 来源、接受或改判、人工姓名和时间。再次运行自动跳过已有答案。请不要同时使用其他标签工具编辑同一批 TSV。退出后需继续跳过的疑难项，可先翻看批次文档，再用 `--from-id G6-134` 从指定编号开始。
 
-r0.5 起不再要求 200 条人工标签；不确定的可以保留空白（`s`）。随时可检查当前证据与计数：
+人工对照完全可选；不确定的可以保留空白（`s`）。可检查当前证据与历史计数：
 
 ```sh
 python3 scripts/p5a_review.py --check
@@ -86,4 +93,4 @@ not-fired 要求 parent 中锚点 blob 存在，以便从有效文件前提判�
 - 相关 diff 对 fired 仅看锚点文件；对 not-fired 看所在目录（根文件看整次提交）。`g` 额外提供跨目录的完整提交，避免漏掉共享依赖变化。
 - 原始人工标签文件放在上级目录；这里单独放在子目录中，不进入 `docs/gates/p5a-g6/*.tsv` 的正式评分输入。
 
-这次准备工作未完成 G5 的空闲机器 benchmark，也未提前生成 P4 的两周 dogfood 报告。
+G6 的 agent 证据完成不代替 G5 性能确认或 P4 的真实两周 dogfood 报告；各项状态见上级 P5a gate。

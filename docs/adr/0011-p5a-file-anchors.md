@@ -3,6 +3,7 @@
 Status: accepted, revision 0.3, 2026-10-21. G0 independent review passed.
 Revision 0.4 (2026-10-22, accepted after G0 review and closure check): §9 replaces the per-stream hint cutoff (review M2).
 Revision 0.5 (2026-10-22, owner decision): §10 redefines the G6 ground truth as AI-assisted labelling with an owner audit.
+Revision 0.6 (2026-10-22, owner decision): §11 replaces mandatory owner audit with agent-labelled evidence; SPEC v1.6.4 §4.4 makes project execution autonomous.
 
 ## 0. Scope and delivery
 
@@ -11,7 +12,7 @@ S13-rows-e2e (ObservationLag), PROP12, and the pre-push range check deferred
 from P4. P4 G6 continues against `.contextdb/bin` and `.contextdb/db`; builds,
 tests and development daemons use different paths. Do not upgrade or erase those
 live files. P5a can be implemented during dogfood (A11), but its Gate cannot pass
-before P4. Human replay labels are required evidence, never generated claims.
+before P4. Replay labels retain explicit provenance; §11 removes mandatory human audit.
 
 P5b symbol parsing, branch isolation, validators and ACL remain later phases.
 The existing cooperative same-OS-user trust boundary remains unchanged.
@@ -285,7 +286,7 @@ events, corrupted descriptors, restart without routing and concurrent wakeups.
 G5: retain P4 gate budgets; report capture/reconcile costs separately for 10/100/
 1,000 anchors, including deadline/failure outcomes rather than omitting them.
 
-G6 (superseded in part by §10, r0.5: the ground truth is AI-assisted with an owner audit): replay >=3 real repositories, >=1,000 commits each, with >=200 HUMAN labelled
+G6 (historical definition, superseded by §10 and then §11): replay >=3 real repositories, >=1,000 commits each, with >=200 HUMAN labelled
 anchor-change pairs and test changes only auxiliary. Record repo URLs, commit ids,
 selection rule and every unlabelled pair. Synthetic fixture success is not a
 scientific invalidation-quality result. Automated replay can prepare labels but
@@ -416,7 +417,7 @@ and `append:after-announce`; P4 outbox property (b) unchanged.
 **Mirrors.** §4's per-stream cutoff text is superseded by this section; SPEC
 SD14b is amended in v1.6.2.
 
-## 10. Revision 0.5 — G6 assisted ground truth (owner decision, 2026-10-22)
+## 10. Revision 0.5 — G6 assisted ground truth (historical; audit requirement superseded by §11)
 
 **Context.** §7 required ≥ 200 human labels and said automated replay may
 prepare but not approve labels. The owner reviewed 84 AI-proposed labels one by
@@ -470,3 +471,34 @@ here instead of being reinterpreted silently.
 rather than a fully human ground truth. A later fully human or blind relabel
 can replace it without changing anything else. `anchor_replay score --assisted
 <proposals.tsv>` computes items 3–5 and prints `p5a_g6_evidence_complete`.
+
+## 11. Revision 0.6 — Agent execution; no mandatory human review
+
+**Owner decision (2026-10-22).** The owner explicitly declined the nine audit
+top-ups and requested no mandatory human involvement in the project. This
+supersedes §10 items 3 and 6's reliance on an owner-audited baseline, rather than
+leaving an unscheduled human gate pending. SPEC v1.6.4 §4.4 applies project-wide.
+
+**Current G6 criteria.** Keep ≥3 real repositories × ≥1,000 commits, zero Git
+replay disagreements, ≥200 pre-selected agent-labelled pairs spanning both
+fired/not-fired strata in every repository, and per-pair provenance, rationale,
+review focus and hashed evidence. Evidence integrity is checked before scoring.
+No human count, per-stratum human minimum, prefix or agreement threshold is
+required. `anchor_replay score --assisted` remains the compatible command; its
+completion predicate uses these agent-evidence criteria.
+
+Existing human judgments remain unchanged and optional. Keep disagreements
+contested and outside headline rates, with both resolutions in the sensitivity
+report. Report AI-only, historical human-reviewed and contested counts separately;
+agreement and Wilson intervals are diagnostics only. With no human records,
+agreement is n/a. §10's selection, concentration, non-blind and population-rate
+limitations remain, and the report must call this an agent-labelled baseline,
+not independently established human ground truth. P5b comparisons disclose label
+provenance and use the same baseline.
+
+Agent review must examine parent files and implementation diffs, not use the
+observer's own classification or passing tests as a semantic oracle. The frozen
+210 proposals and 84 human judgments are retained without rewriting attribution.
+The nine manual top-ups are cancelled. G6 completion does not pass P4 or waive
+its actual duration/concurrency criteria; live dogfood data and binaries remain
+untouched. Independent agent review and the ordinary verification gates remain.

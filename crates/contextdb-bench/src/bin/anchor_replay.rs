@@ -1,6 +1,6 @@
-//! P5a G6 commit replay (ADR 0011 §7). Prepares anchor/change pairs from real
-//! repository history for HUMAN labelling, then scores labelled files. It never
-//! writes a label: an unlabelled pair stays unlabelled and is reported.
+//! P5a G6 commit replay (ADR 0011 §11). Prepares anchor/change pairs from real
+//! repository history, then scores agent-labelled evidence with explicit provenance.
+//! Scoring never writes labels; historical human reviews remain a separate input.
 //!
 //!   anchor_replay prepare <clone> <out.tsv> [--commits N] [--anchors K]
 //!   anchor_replay score <labelled.tsv>...
@@ -478,9 +478,9 @@ fn pct(a: u32, b: u32) -> String {
         format!("{:.1}%", 100. * a as f64 / b as f64)
     }
 }
-/// ADR 0011 §10 (r0.5): G6 from AI-proposed labels on a pre-registered
-/// stratified sample plus the owner's audit, a prefix of every stratum in
-/// sample order. Human labels are read from the replay TSVs (never written
+/// ADR 0011 §11 (r0.6): G6 from agent labels on a pre-registered stratified
+/// sample. Human audits are optional diagnostics, never completion criteria.
+/// Historical human labels are read from the replay TSVs (never written
 /// there from the AI column); disagreements are contested and only enter a
 /// sensitivity range.
 fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
@@ -502,9 +502,13 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
         col("path")?,
         col("observer")?,
         col("ai_invalidates")?,
+        col("rationale")?,
+        col("review_focus")?,
+        col("provenance")?,
     ];
     let width = cols.iter().max().copied().unwrap_or(0) + 1;
     let mut human: BTreeMap<PairKey, Vec<(String, String)>> = BTreeMap::new();
+    let mut replay_ok = true;
     for file in files {
         let name = Path::new(file)
             .file_name()
@@ -512,6 +516,21 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
             .ok_or("bad file name")?
             .to_owned();
         let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        let commits = text.lines().find_map(|line| {
+            line.strip_prefix("# replayed=")?
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        });
+        let disagreements = text.lines().find_map(|line| {
+            line.strip_prefix("# git_diff_disagreements=")?
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        });
+        replay_ok &= commits.is_some_and(|n| n >= 1000) && disagreements == Some(0);
         for line in text.lines().filter(|l| !l.starts_with('#') && *l != HEADER) {
             let f: Vec<&str> = line.split('\t').collect();
             if f.len() != 11 {
@@ -538,7 +557,28 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
         if f.len() < width {
             return Err(format!("proposals: short row {line:?}"));
         }
-        let [c_id, c_src, c_url, c_commit, c_parent, c_path, c_obs, c_ai] = cols;
+        let [
+            c_id,
+            c_src,
+            c_url,
+            c_commit,
+            c_parent,
+            c_path,
+            c_obs,
+            c_ai,
+            c_reason,
+            c_focus,
+            c_provenance,
+        ] = cols;
+        if [c_reason, c_focus, c_provenance]
+            .iter()
+            .any(|&i| f[i].trim().is_empty())
+        {
+            return Err(format!(
+                "{}: missing rationale, review focus or agent provenance",
+                f[c_id]
+            ));
+        }
         let key: PairKey = (
             f[c_src].into(),
             f[c_url].into(),
@@ -611,16 +651,18 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
     };
     let contested: usize = cells.values().map(|c| c.contested.len()).sum();
     println!(
-        "G6 assisted (ADR 0011 §10): {total} pairs, {audited} owner-audited, {} AI-only, {contested} contested",
+        "G6 agent-labelled (ADR 0011 §11): {total} pairs, {audited} historical human reviews, {} AI-only, {contested} contested",
         total - audited
     );
-    println!(
-        "  agreement {agreed}/{audited} = {:.1}% (Wilson 95% lower bound {:.1}%; not blind: an upper bound; the gate uses the point estimate)",
-        100. * agreement,
-        100. * wilson
-    );
-    let mut prefix_ok = true;
-    let mut coverage_ok = true;
+    if audited == 0 {
+        println!("  optional human agreement=n/a (no human review required)");
+    } else {
+        println!(
+            "  optional human agreement {agreed}/{audited} = {:.1}% (Wilson 95% lower bound {:.1}%; non-blind, not a gate criterion)",
+            100. * agreement,
+            100. * wilson
+        );
+    }
     println!(
         "  per stratum: audited | final y/n (agreed + AI-only; contested out) | human-only y/n | contested -> human / AI | files"
     );
@@ -629,10 +671,6 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
         let mut ids = c.ids.clone();
         ids.sort();
         let n_aud = ids.iter().filter(|(_, a)| *a).count();
-        // The audit must be the first n_aud pairs of the stratum in sample order.
-        let prefix = ids.iter().take(n_aud).all(|(_, a)| *a);
-        prefix_ok &= prefix;
-        coverage_ok &= n_aud >= 5;
         let (mut h, mut a) = (c.labels, c.labels);
         for (_, hl, al) in &c.contested {
             h[usize::from(hl == "n")] += 1;
@@ -646,10 +684,9 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
             }
         };
         println!(
-            "    {repo:8} {:9} audited {n_aud:2}/{:2}{} | y={:3} n={:3} {}={:6} | human y={} n={} | {} / {} | {} files",
+            "    {repo:8} {:9} audited {n_aud:2}/{:2} | y={:3} n={:3} {}={:6} | human y={} n={} | {} / {} | {} files",
             if *fired { "fired" } else { "not-fired" },
             ids.len(),
-            if prefix { "" } else { " NOT A PREFIX" },
             c.labels[0],
             c.labels[1],
             if *fired { "false_inv" } else { "inval_nf" },
@@ -684,16 +721,15 @@ fn assisted(proposals: &Path, files: &[String]) -> Result<bool, String> {
     println!("    contested resolved the human way: {}", show(pool_h));
     println!("    contested resolved the AI way:    {}", show(pool_a));
     let repos: BTreeSet<_> = cells.keys().map(|(r, _)| r.clone()).collect();
-    let complete = repos.len() >= 3
-        && total >= 200
-        && audited >= 80
-        && coverage_ok
-        && prefix_ok
-        && agreement >= 0.90;
+    let coverage_ok = repos.iter().all(|repo| {
+        [false, true]
+            .iter()
+            .all(|&fired| cells.contains_key(&(repo.clone(), fired)))
+    });
+    let complete = repos.len() >= 3 && total >= 200 && coverage_ok && replay_ok;
     println!(
-        "  criteria: repos={} (>=3) pairs={total} (>=200) audited={audited} (>=80) every stratum >=5 audited={coverage_ok} prefixes={prefix_ok} agreement>=90%={}",
+        "  criteria: repos={} (>=3) pairs={total} (>=200) both strata per repo={coverage_ok} replay>=1000 with zero Git disagreements={replay_ok}; human audit optional",
         repos.len(),
-        agreement >= 0.90
     );
     println!("p5a_g6_evidence_complete={complete}");
     Ok(complete)
@@ -729,5 +765,73 @@ fn main() {
             eprintln!("anchor_replay: {e}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_evidence_needs_no_human_audit_but_still_requires_replay_coverage_and_provenance() {
+        let root = std::env::temp_dir().join(format!("agent-g6-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let proposals = root.join("proposals.tsv");
+        let mut proposal_text = "id\tsource\trepo_url\tcommit\tparent\tpath\tobserver\tai_invalidates\trationale\treview_focus\tprovenance\n".to_owned();
+        let mut files = Vec::new();
+        for repo in 0..3 {
+            let name = format!("repo{repo}.tsv");
+            let mut text = format!("# replayed=1000\n# git_diff_disagreements=0\n{HEADER}\n");
+            for i in 0..70 {
+                let event = if i < 35 { "changed" } else { "not-fired" };
+                let commit = format!("{:040x}", repo * 70 + i + 1);
+                let url = format!("https://example.org/repo{repo}.git");
+                text.push_str(&format!(
+                    "{url}\t{commit}\tparent\tfile{i}.rs\t{event}\t0\t0\tsubject\t\t\t\n"
+                ));
+                proposal_text.push_str(&format!("G6-{}\t{name}\t{url}\t{commit}\tparent\tfile{i}.rs\t{event}\tn\treason\tfocus\tagent:test\n", repo * 70 + i + 1));
+            }
+            let file = root.join(name);
+            std::fs::write(&file, text).unwrap();
+            files.push(file.to_str().unwrap().to_owned());
+        }
+        std::fs::write(&proposals, &proposal_text).unwrap();
+        assert!(
+            assisted(&proposals, &files).unwrap(),
+            "zero human reviews are allowed"
+        );
+
+        std::fs::write(&proposals, proposal_text.replacen("agent:test", "", 1)).unwrap();
+        assert!(
+            assisted(&proposals, &files)
+                .unwrap_err()
+                .contains("provenance")
+        );
+        std::fs::write(&proposals, &proposal_text).unwrap();
+
+        let original = std::fs::read_to_string(&files[0]).unwrap();
+        std::fs::write(&files[0], original.replace("replayed=1000", "replayed=999")).unwrap();
+        assert!(
+            !assisted(&proposals, &files).unwrap(),
+            "real replay minimum remains"
+        );
+        std::fs::write(&files[0], &original).unwrap();
+
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            std::fs::write(file, text.replace("not-fired", "changed")).unwrap();
+        }
+        std::fs::write(&proposals, proposal_text.replace("not-fired", "changed")).unwrap();
+        assert!(
+            !assisted(&proposals, &files).unwrap(),
+            "both sample strata remain required"
+        );
     }
 }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- SPEC v1.6.4 / ADR 0011 r0.6: agent execution across labelling, independent review, dogfood maintenance and gate reporting; no mandatory human audit, owner top-ups or agreement threshold. G6 `score --assisted` accepts provenance-bearing agent evidence while retaining historical human/contested diagnostics and real replay/stratum requirements. Runtime channels, CAS, oracle tests and actual dogfood duration remain in force.
+
 - Adopt SPEC v1.4 as the implementation starting point; keep prior research and reviews.
 - Establish the Rust 1.95.0 workspace with 13 product/verification crate boundaries and an isolated R2 baseline workspace.
 - Add the bootstrap `ctx --help` / `--version` commands; database commands remain unimplemented.
