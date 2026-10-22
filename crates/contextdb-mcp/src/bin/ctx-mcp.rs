@@ -17,6 +17,17 @@ impl Backend for Socket {
     }
 }
 fn main() -> ExitCode {
+    match std::env::args().nth(1).as_deref() {
+        Some("-V" | "--version") => {
+            println!("ctx-mcp {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Some("-h" | "--help") => {
+            println!("usage: ctx-mcp <data dir>");
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     let Some(dir) = std::env::args().nth(1).map(PathBuf::from) else {
         eprintln!("usage: ctx-mcp <data dir>");
         return ExitCode::from(2);

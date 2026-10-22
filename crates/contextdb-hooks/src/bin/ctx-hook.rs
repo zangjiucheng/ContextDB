@@ -9,6 +9,10 @@ use std::io::{Read, Write};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("-V" | "--version")) {
+        println!("ctx-hook {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let (Some(harness), Some(event)) = (
         args.first().and_then(|h| Harness::parse(h)),
         args.get(1).and_then(|e| EventName::from_arg(e)),
