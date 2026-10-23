@@ -1,0 +1,61 @@
+# P5b G6 retest scores, 2026-10-23 (walk 3, ADR 0012 r0.7, SPEC v1.6.6 rule). Headline: fixed sample and labels.
+
+## headline
+# P5b G6 score; sample docs/gates/p5b-g6-r2/sample.tsv; labels docs/gates/p5b-g6-r2/labels.tsv
+repo	file_fired	symbol_fired	population	labelled	invalidating
+click	n	n	623	35	0
+click	y	n	45	35	0
+click	y	y	8	8	4
+fd	n	n	139	35	1
+fd	y	n	148	35	0
+fd	y	y	34	34	20
+ripgrep	n	n	165	35	0
+ripgrep	y	n	50	35	0
+ripgrep	y	y	39	35	0
+all	symbol_false_invalidation=70.4%	95%=[63.0, 77.8]
+all	file_false_invalidation=92.6%	95%=[90.7, 94.4]
+all	symbol_missed_invalidation=14.2%	95%=[0.0, 36.2]
+all	file_missed_invalidation=14.2%	95%=[0.0, 36.2]
+all	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+all	missed_difference_pp=0.0	95%=[0.0, 0.0]
+click	symbol_false_invalidation=50.0%	95%=[12.5, 87.5]
+click	file_false_invalidation=92.5%	95%=[86.8, 98.1]
+click	symbol_missed_invalidation=0.0%	95%=[0.0, 0.0]
+click	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+click	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+click	missed_difference_pp=0.0	95%=[0.0, 0.0]
+fd	symbol_false_invalidation=41.2%	95%=[26.5, 58.8]
+fd	file_false_invalidation=89.0%	95%=[86.3, 92.3]
+fd	symbol_missed_invalidation=16.6%	95%=[0.0, 41.2]
+fd	file_missed_invalidation=16.6%	95%=[0.0, 41.2]
+fd	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+fd	missed_difference_pp=0.0	95%=[0.0, 0.0]
+ripgrep	symbol_false_invalidation=100.0%	95%=[100.0, 100.0]
+ripgrep	file_false_invalidation=100.0%	95%=[100.0, 100.0]
+ripgrep	symbol_missed_invalidation=0.0%	95%=[0.0, 0.0]
+ripgrep	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+ripgrep	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+ripgrep	missed_difference_pp=0.0	95%=[0.0, 0.0]
+unsure=0 (excluded from rates)
+threshold_fi=false (symbol 70.4% <= 46.3%) threshold_missed=true
+p5b_g6_pass=false
+
+## diagnostic: span-only predictor (walk 2's rule) on the same pairs, from symbol_replay predict
+all	symbol_false_invalidation=66.7%	95%=[59.5, 74.3]
+all	file_false_invalidation=92.6%	95%=[90.7, 94.4]
+all	symbol_missed_invalidation=14.2%	95%=[0.0, 36.2]
+all	file_missed_invalidation=14.2%	95%=[0.0, 36.2]
+all	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+all	missed_difference_pp=0.0	95%=[0.0, 0.0]
+threshold_fi=false (symbol 66.7% <= 46.3%) threshold_missed=true
+p5b_g6_pass=false
+
+## sensitivity: pure moves counted as invalidating (the batch template's wording)
+all	symbol_false_invalidation=18.7%	95%=[11.1, 26.6]
+all	file_false_invalidation=79.7%	95%=[77.8, 81.7]
+all	symbol_missed_invalidation=5.7%	95%=[0.0, 16.1]
+all	file_missed_invalidation=5.7%	95%=[0.0, 16.1]
+all	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+all	missed_difference_pp=0.0	95%=[0.0, 0.0]
+threshold_fi=true (symbol 18.7% <= 39.8%) threshold_missed=true
+p5b_g6_pass=true

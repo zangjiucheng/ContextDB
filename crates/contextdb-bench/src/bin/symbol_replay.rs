@@ -493,9 +493,10 @@ fn batches(sample: &Path, clones: &Path, out: &Path, count: usize) -> Result<(),
         let mut s = format!(
             "# P5b G6 labelling batch {:02}\n\nFor each pair, answer: **does this commit invalidate a decision resting on this symbol?** \
 A decision rests on the symbol as it was at the parent commit: what it declares, does or promises (signature, behaviour, contract, documented meaning). \
-Answer `y` if, after this commit, such a decision must be re-validated: the symbol itself changed in a way that can change what it declares or does, it was removed or renamed, \
+Answer `y` if, after this commit, such a decision must be re-validated: the symbol itself changed in a way that can change what it declares or does, it was removed, \
 or a change outside it (in its file or directory) changes its behaviour or contract (for example a constant, type or helper it uses directly changed meaning). \
-Answer `n` if the commit cannot change what the symbol declares or does (unrelated code, other symbols, formatting, comments that are not its documentation, tests elsewhere). \
+Answer `n` if the commit cannot change what the symbol declares or does (unrelated code, other symbols, formatting, comments that are not its documentation, tests elsewhere); \
+a pure move or rename with identical code is `n` (finding it again is a rebind, not a re-validation). \
 Use `unsure` only when the evidence cannot decide.\n\n\
 Inspect with Git in the clone (read-only): `git -C <clone> show <commit> -- <dir>` for the change, and `git -C <clone> show <parent>:<path>` for the symbol at the parent.\n\n\
 | id | clone | commit | parent | path | symbol | subject |\n|---|---|---|---|---|---|---|\n",
@@ -718,8 +719,16 @@ fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<boo
         report(repo, &|r| r == repo);
     }
     println!("unsure={unsure} (excluded from rates)");
-    // ADR 0012 §9 / SPEC v1.6.5: weighted point estimates decide.
-    let pass = all[0] <= 0.10 && all[2] <= all[3] + 0.02;
+    // ADR 0012 §9 r0.7 / SPEC v1.6.6 (owner decision 2026-10-23): weighted
+    // point estimates decide; FI ≤ ½ × file level (v1.6.5 had FI ≤ 10 %).
+    let fi = all[0] <= 0.5 * all[1];
+    let mi = all[2] <= all[3] + 0.02;
+    println!(
+        "threshold_fi={fi} (symbol {:.1}% <= {:.1}%) threshold_missed={mi}",
+        all[0] * 100.,
+        all[1] * 50.
+    );
+    let pass = fi && mi;
     println!("p5b_g6_pass={pass}");
     Ok(pass)
 }
@@ -730,7 +739,7 @@ fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<boo
 fn predict(sample: &Path, clones: &Path, out: &Path) -> Result<(), String> {
     let (_, rows) = read_rows(sample)?;
     let mut f = std::fs::File::create(out).map_err(|e| e.to_string())?;
-    writeln!(f, "id\tsymbol_fired\tv1\tcontext_changed").map_err(|e| e.to_string())?;
+    writeln!(f, "id\tsymbol_fired\tv1\tcontext_changed\tspan_fired").map_err(|e| e.to_string())?;
     let (mut fired, mut added) = (0, 0);
     for r in &rows {
         let clone = clones.join(r.repo());
@@ -743,16 +752,23 @@ fn predict(sample: &Path, clones: &Path, out: &Path) -> Result<(), String> {
         let (before, after) = (at(r.get("parent"))?, at(r.get("commit"))?);
         let v1 = r.get("symbol_fired") == "y";
         let context = matches!((&before, &after), (Some(b), Some(a)) if b.context != a.context);
+        // Span only (walk 2's rule): the span changed, or the symbol broke.
+        let span = match (&before, &after) {
+            (Some(b), Some(a)) => b.span != a.span,
+            (Some(_), None) => true,
+            _ => r.get("symbol_event") == "broken",
+        };
         let v2 = v1 || context;
         fired += usize::from(v2);
         added += usize::from(v2 && !v1);
         writeln!(
             f,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             r.get("id"),
             if v2 { "y" } else { "n" },
             if v1 { "y" } else { "n" },
-            if context { "y" } else { "n" }
+            if context { "y" } else { "n" },
+            if span { "y" } else { "n" }
         )
         .map_err(|e| e.to_string())?;
     }
