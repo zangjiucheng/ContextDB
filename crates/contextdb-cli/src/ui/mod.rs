@@ -224,21 +224,53 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     else {
         return Err("usage: ctx ui <data dir> [--port N]".into());
     };
-    let port: u16 = match args.iter().position(|a| a == "--port") {
-        Some(i) => args
-            .get(i + 1)
-            .and_then(|p| p.parse().ok())
-            .ok_or("--port needs a number")?,
-        None => 7787,
+    if !dir.join("log").is_dir() {
+        let hint = if dir.join("db/log").is_dir() {
+            format!(": did you mean {}?", dir.join("db").display())
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "{} is not a ContextDB data dir (no log/){hint}",
+            dir.display()
+        ));
+    }
+    // An explicit --port is the only port tried; the default moves on to the
+    // next free one, so a second viewer still starts.
+    let ports = match args.iter().position(|a| a == "--port") {
+        Some(i) => {
+            let port: u16 = args
+                .get(i + 1)
+                .and_then(|p| p.parse().ok())
+                .ok_or("--port needs a number")?;
+            port..=port
+        }
+        None => 7787..=7796,
     };
+    let mut bound = Err(String::new());
+    for port in ports.clone() {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => {
+                bound = Ok((l, port));
+                break;
+            }
+            Err(e) => bound = Err(format!("{e}")),
+        }
+    }
+    let (listener, port) = bound.map_err(|e| {
+        let (lo, hi) = (ports.start(), ports.end());
+        if lo == hi {
+            format!("cannot listen on 127.0.0.1:{lo}: {e}")
+        } else {
+            format!("cannot listen on 127.0.0.1:{lo}-{hi}: {e} (try --port N)")
+        }
+    })?;
     let state = Arc::new(State {
         dir,
         port,
         cache: Mutex::new(None),
     });
     state.snapshot()?;
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| format!("cannot listen on 127.0.0.1:{port}: {e}"))?;
     println!("ctx ui: http://127.0.0.1:{port}/  (read-only; Ctrl-C to stop)");
     for stream in listener.incoming().flatten() {
         let state = state.clone();

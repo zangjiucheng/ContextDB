@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `ctx ui` refuses a directory that is not a data dir (suggesting `<dir>/db`), and without `--port` moves on from a busy 7787 to the next free port up to 7796.
 - SPEC v1.6.4 / ADR 0011 r0.6: agent execution across labelling, independent review, dogfood maintenance and gate reporting; no mandatory human audit, owner top-ups or agreement threshold. G6 `score --assisted` accepts provenance-bearing agent evidence while retaining historical human/contested diagnostics and real replay/stratum requirements. Runtime channels, CAS, oracle tests and actual dogfood duration remain in force.
 
 - Adopt SPEC v1.4 as the implementation starting point; keep prior research and reviews.
