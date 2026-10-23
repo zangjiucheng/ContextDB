@@ -31,22 +31,22 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-contextdb-model = { path = "crates/contextdb-model", version = "=0.1.2" }
-contextdb-core = { path = "crates/contextdb-core", version = "=0.1.2" }
-contextdb-oracle = { path = "crates/contextdb-oracle", version = "=0.1.2" }
-contextdb-testkit = { path = "crates/contextdb-testkit", version = "=0.1.2" }
-contextdb-store = { path = "crates/contextdb-store", version = "=0.1.2" }
-contextdb-proto = { path = "crates/contextdb-proto", version = "=0.1.2" }
-contextdb-anchors = { path = "crates/contextdb-anchors", version = "=0.1.2" }
-contextdb-symbols = { path = "crates/contextdb-symbols", version = "=0.1.2" }
-contextdb-daemon = { path = "crates/contextdb-daemon", version = "=0.1.2" }
+contextdb-model = { path = "crates/contextdb-model", version = "=0.1.3" }
+contextdb-core = { path = "crates/contextdb-core", version = "=0.1.3" }
+contextdb-oracle = { path = "crates/contextdb-oracle", version = "=0.1.3" }
+contextdb-testkit = { path = "crates/contextdb-testkit", version = "=0.1.3" }
+contextdb-store = { path = "crates/contextdb-store", version = "=0.1.3" }
+contextdb-proto = { path = "crates/contextdb-proto", version = "=0.1.3" }
+contextdb-anchors = { path = "crates/contextdb-anchors", version = "=0.1.3" }
+contextdb-symbols = { path = "crates/contextdb-symbols", version = "=0.1.3" }
+contextdb-daemon = { path = "crates/contextdb-daemon", version = "=0.1.3" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

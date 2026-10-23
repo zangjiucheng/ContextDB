@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 0.1.3: crate versions follow the release tag. Includes P5b walk 3 (same-file context and the trailing-comma fix). **Symbol anchors made with an earlier walk need `ctx anchors migrate`.** File anchors and the protocol (3) are unchanged.
 - P5b G6 passes (walk 3 retest, [report](docs/gates/p5b-g6-r2-report.md)) under the owner's convention that a pure move invalidates (SPEC v1.6.7, ADR 0012 r0.8, decided after the labels and disclosed): symbol FI 18.7 % ≤ ½ × file level 79.7 %, missed +0.0 pp; under the pre-registered reading FI is 70.4 % (fail). `symbol_replay score --moves-invalidate`.
 - P5b normaliser walk 3 (ADR 0012 r0.7, SPEC v1.6.6): a symbol's revision also covers the same-file items it names (other symbols, imports by source path, Python module-level assignments), so a changed helper, constant or import re-revisions it; span hashes (T45) are unchanged. **Symbol anchors need `ctx anchors migrate`.** The first G6 failed (symbol FI 34.2 %, missed +13.1 pp, [report](docs/gates/p5b-g6-report.md)); the owner set FI ≤ ½ × file level, and a retest on disjoint symbols is fixed before labelling.
 - P5b G5 ([report](docs/gates/p5b-g5.md)): new `symbol_bench`. With 10/100/1,000 symbol anchors the P4 hook stays within budget (p95 ≤ 29 ms, p99 ≤ 37 ms at 1,000) and `ctxd`/`ctx-hook` link no grammar; a whole scan costs ≈ 0.38 s per MiB of host bytes, so the 5 s deadline binds at ≈ 13 MiB (ADR 0012 r0.5 corrects the parse-only estimate).
