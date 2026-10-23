@@ -124,6 +124,9 @@ pub struct Service<D: Durability> {
     /// Opened routed worktrees by root, with the identity they were opened
     /// at; a leaf lock never held across another lock.
     pub(crate) anchor_repos: Mutex<BTreeMap<String, crate::anchors::OpenedRepo>>,
+    /// Decoded anchor descriptors by content hash (immutable).
+    pub(crate) anchor_descriptors:
+        Mutex<BTreeMap<ContentHash, contextdb_anchors::AnchorDescriptor>>,
     /// Deadline of one live anchor sample (ADR 0011 §3: 40 ms by default).
     pub(crate) anchor_live_timeout: Mutex<std::time::Duration>,
     hooks: Mutex<Hooks>,
@@ -284,6 +287,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             sessions: Mutex::new(BTreeMap::new()),
             anchor_routes: Mutex::new(None),
             anchor_repos: Mutex::new(BTreeMap::new()),
+            anchor_descriptors: Mutex::new(BTreeMap::new()),
             anchor_live_timeout: Mutex::new(contextdb_anchors::capture::LIVE_TIMEOUT),
             hooks: Mutex::new(Hooks::default()),
             facts_lock: Mutex::new(()),

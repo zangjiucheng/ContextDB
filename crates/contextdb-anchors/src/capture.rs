@@ -1,5 +1,5 @@
 //! Raw worktree capture. No mtime invalidation and no clean/filter execution.
-use crate::{Descriptor, ObjectFormat, Observation, descriptor::unhex, validate_path};
+use crate::{Descriptor, ObjectFormat, Observation, descriptor::unhex, validate_legacy_path};
 use contextdb_model::Wire;
 use nix::{
     errno::Errno,
@@ -316,18 +316,25 @@ impl Repo {
         }
         Ok(oid)
     }
+    /// Observes one path; returns its bytes too when `keep` (a symbol host
+    /// file the observer will parse).
     fn observe(
         &self,
         root: &File,
         path: &str,
+        keep: bool,
         total: &AtomicUsize,
         deadline: Instant,
-    ) -> Result<Observation, Unavailable> {
+    ) -> Result<(Observation, Option<Vec<u8>>), Unavailable> {
         remaining(deadline)?;
-        validate_path(&self.id, path).map_err(error)?;
+        validate_legacy_path(&self.id, path).map_err(error)?;
+        if path.contains('#') {
+            // A legacy P5a path; `#` now separates host paths from symbols.
+            return Ok((Observation::Broken("reserved-character".into()), None));
+        }
         Ok(match read_regular(root, path)? {
-            FileRead::Missing => Observation::Missing,
-            FileRead::Broken(reason) => Observation::Broken(reason.into()),
+            FileRead::Missing => (Observation::Missing, None),
+            FileRead::Broken(reason) => (Observation::Broken(reason.into()), None),
             FileRead::Bytes(bytes) => {
                 let before = total.fetch_add(bytes.len(), Ordering::Relaxed);
                 if before.saturating_add(bytes.len()) > MAX_SCAN {
@@ -340,7 +347,7 @@ impl Repo {
                     oid: blob_oid(self.format, &bytes)?,
                 };
                 d.validate().map_err(error)?;
-                Observation::Present(d)
+                (Observation::Present(d), keep.then_some(bytes))
             }
         })
     }
@@ -351,8 +358,9 @@ impl Repo {
     fn once(
         &self,
         paths: &BTreeSet<String>,
+        keep: &BTreeSet<String>,
         deadline: Instant,
-    ) -> Result<(Vec<u8>, BTreeMap<String, Observation>), Unavailable> {
+    ) -> Result<Sample, Unavailable> {
         if paths.len() > MAX_ANCHORS {
             return Err(error("anchor limit"));
         }
@@ -367,14 +375,15 @@ impl Repo {
             .min(paths.len().div_ceil(PATHS_PER_WORKER))
             .max(1);
         let chunk = paths.len().div_ceil(workers).max(1);
-        let observed: Vec<Result<Vec<Observation>, Unavailable>> = std::thread::scope(|s| {
+        type Observed = (Observation, Option<Vec<u8>>);
+        let observed: Vec<Result<Vec<Observed>, Unavailable>> = std::thread::scope(|s| {
             let jobs: Vec<_> = paths
                 .chunks(chunk)
                 .map(|part| {
                     let (root, total) = (&root, &total);
                     s.spawn(move || {
                         part.iter()
-                            .map(|p| self.observe(root, p, total, deadline))
+                            .map(|p| self.observe(root, p, keep.contains(*p), total, deadline))
                             .collect()
                     })
                 })
@@ -384,10 +393,15 @@ impl Repo {
                 .collect()
         });
         let mut entries = BTreeMap::new();
+        let mut kept = BTreeMap::new();
         let mut names = paths.into_iter();
         for part in observed {
-            for obs in part? {
-                entries.insert(names.next().expect("one per path").clone(), obs);
+            for (obs, bytes) in part? {
+                let name = names.next().expect("one per path");
+                if let Some(bytes) = bytes {
+                    kept.insert(name.clone(), bytes);
+                }
+                entries.insert(name.clone(), obs);
             }
         }
         let after = self.root.metadata().map_err(error)?;
@@ -395,7 +409,7 @@ impl Repo {
             return Err(error("root replaced"));
         }
         remaining(deadline)?;
-        Ok((head, entries))
+        Ok((head, entries, kept))
     }
     /// Two full equal samples. A later external write remains a documented
     /// TOCTOU race, never an atomic guarantee about the next tool action.
@@ -404,6 +418,18 @@ impl Repo {
         paths: &BTreeSet<String>,
         deadline: Instant,
     ) -> Result<Capture, Unavailable> {
+        self.capture_keeping(paths, &BTreeSet::new(), deadline)
+            .map(|(capture, _)| capture)
+    }
+    /// As [`Repo::capture`], also returning the bytes of the `keep` paths from
+    /// the second sample (equal OIDs to the first): symbol host files the
+    /// observer parses (ADR 0012 §5).
+    pub fn capture_keeping(
+        &self,
+        paths: &BTreeSet<String>,
+        keep: &BTreeSet<String>,
+        deadline: Instant,
+    ) -> Result<(Capture, BTreeMap<String, Vec<u8>>), Unavailable> {
         // Read the index bytes around Git's gitlink decode; no mtime cache.
         let index_path = self.git_dir.join("index");
         let index_bytes = || -> Result<Vec<u8>, Unavailable> {
@@ -443,7 +469,7 @@ impl Repo {
                     )
                 })
             });
-            let a = self.once(paths, deadline);
+            let a = self.once(paths, &BTreeSet::new(), deadline);
             let links = match (cached, decode) {
                 (Some(links), _) => Ok(links),
                 (None, Some(job)) => job
@@ -468,8 +494,8 @@ impl Repo {
             (links, a)
         });
         let links = links?;
-        let (head_a, mut a) = a?;
-        let (head, mut b) = self.once(paths, deadline)?;
+        let (head_a, mut a, _) = a?;
+        let (head, mut b, mut kept) = self.once(paths, keep, deadline)?;
         if before != index_bytes()? {
             return Err(error("index changed during capture"));
         }
@@ -483,6 +509,7 @@ impl Repo {
                             .is_some_and(|suffix| suffix.starts_with(b"/"))
                 }) {
                     *obs = Observation::Broken("submodule".into());
+                    kept.remove(path);
                 }
             }
         }
@@ -492,11 +519,14 @@ impl Repo {
         // Only links decoded from an index that stayed byte-identical.
         *self.links.lock().expect("links") = Some((key, links));
         let position = fingerprint(&self.id, &head, &b);
-        Ok(Capture {
-            head,
-            entries: b,
-            position,
-        })
+        Ok((
+            Capture {
+                head,
+                entries: b,
+                position,
+            },
+            kept,
+        ))
     }
 }
 /// Whether every component of `path` exists under `root` spelled byte for
@@ -519,6 +549,12 @@ pub fn exact_spelling(root: &Path, path: &str) -> Result<bool, Unavailable> {
     }
     Ok(true)
 }
+/// HEAD, observations, and the kept host-file bytes of one sample.
+type Sample = (
+    Vec<u8>,
+    BTreeMap<String, Observation>,
+    BTreeMap<String, Vec<u8>>,
+);
 enum FileRead {
     Missing,
     Broken(&'static str),
@@ -586,6 +622,44 @@ fn read_regular(root: &File, path: &str) -> Result<FileRead, Unavailable> {
         }
     }
     Err(error("empty path"))
+}
+/// The scope position (ADR 0011 §4, ADR 0012 §6). Without symbol anchors
+/// (`versions` empty) it is exactly `CTXPOS01`, so P5a watermarks stay valid.
+/// With them it is `CTXPOS02`: the per-language normaliser versions, then one
+/// entry per path, where a host-only path (`hosts_only`) carries tag 4 and its
+/// raw OID instead of a file descriptor. Symbols themselves never appear:
+/// they are a pure function of their host file's bytes.
+pub fn position(
+    repo: &str,
+    head: &[u8],
+    entries: &BTreeMap<String, Observation>,
+    hosts_only: &BTreeSet<String>,
+    versions: &BTreeMap<crate::Language, String>,
+) -> Vec<u8> {
+    if versions.is_empty() && hosts_only.is_empty() {
+        return fingerprint(repo, head, entries);
+    }
+    let mut bytes = b"CTXPOS02".to_vec();
+    1u32.encode(&mut bytes);
+    repo.to_owned().encode(&mut bytes);
+    head.to_vec().encode(&mut bytes);
+    (versions.len() as u32).encode(&mut bytes);
+    for version in versions.values() {
+        version.encode(&mut bytes);
+    }
+    (entries.len() as u32).encode(&mut bytes);
+    for (path, obs) in entries {
+        path.encode(&mut bytes);
+        let (tag, value) = match obs {
+            Observation::Present(d) if hosts_only.contains(path) => (4u8, d.oid.clone()),
+            Observation::Present(d) => (1, d.canonical_bytes()),
+            Observation::Missing => (2, Vec::new()),
+            Observation::Broken(r) => (3, r.as_bytes().to_vec()),
+        };
+        tag.encode(&mut bytes);
+        value.encode(&mut bytes);
+    }
+    blake3::hash(&bytes).as_bytes().to_vec()
 }
 pub fn fingerprint(repo: &str, head: &[u8], entries: &BTreeMap<String, Observation>) -> Vec<u8> {
     let mut bytes = b"CTXPOS01".to_vec();

@@ -3,7 +3,7 @@ use crate::{
     actor::Snapshot,
     service::{Identity, Service},
 };
-use contextdb_anchors::{Repo, capture::MAX_ANCHORS};
+use contextdb_anchors::{AnchorDescriptor, Repo, capture::MAX_ANCHORS};
 use contextdb_core::{Db, IssueRequest, LogLink};
 use contextdb_model::*;
 use contextdb_proto::proto::*;
@@ -15,6 +15,13 @@ use std::{
 };
 /// A routed worktree with the root/Git-dir identity it was opened at.
 pub(crate) type OpenedRepo = (contextdb_anchors::capture::RepoIdentity, Repo);
+/// One scope's observed paths (ADR 0012 §6).
+#[derive(Default)]
+struct Layout {
+    files: BTreeSet<String>,
+    hosts: BTreeSet<String>,
+    versions: BTreeMap<contextdb_anchors::Language, String>,
+}
 fn err(detail: impl Into<String>) -> Response {
     Response::Error {
         code: "ObservationUnavailable".into(),
@@ -117,19 +124,32 @@ impl<D: Durability + Clone + 'static> Service<D> {
         .and_then(|b| Vec::<(String, String)>::from_bytes(&b).ok())
         .unwrap_or_default();
         let inputs = db.inputs();
-        let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for l in &inputs.logicals {
+        // Paths come from the head descriptors, never from splitting keys
+        // (ADR 0012 §7): file anchors, symbol host files and the normaliser
+        // version of each symbol language. A scope whose layout cannot be
+        // read is left out (Unknown).
+        let mut groups: BTreeMap<String, Layout> = BTreeMap::new();
+        let mut unreadable = BTreeSet::new();
+        for (index, l) in inputs.logicals.iter().enumerate() {
             if l.kind != RecordKind::CodeAnchor {
                 continue;
             }
-            let Some(path) = l.key.strip_prefix(&format!("{}/", l.scope_lane)) else {
-                return BTreeMap::new();
-            };
-            groups
-                .entry(l.scope_lane.clone())
-                .or_default()
-                .insert(path.to_owned());
+            let content = inputs.revisions[inputs.heads[index].index()].content;
+            let layout = groups.entry(l.scope_lane.clone()).or_default();
+            match self.anchor_descriptor(content) {
+                Some(AnchorDescriptor::File(d)) => {
+                    layout.files.insert(d.path);
+                }
+                Some(AnchorDescriptor::Symbol(d)) => {
+                    layout.hosts.insert(d.path);
+                    layout.versions.insert(d.language, d.normaliser);
+                }
+                None => {
+                    unreadable.insert(l.scope_lane.clone());
+                }
+            }
         }
+        groups.retain(|scope, _| !unreadable.contains(scope));
         let Some(data) = path.parent().and_then(|p| p.canonicalize().ok()) else {
             return BTreeMap::new();
         };
@@ -147,13 +167,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 {
                     let content = inputs.revisions[inputs.heads[index].index()].content;
                     let valid = match blobs.log.read_blob(&content) {
-                        Payload::Available(b) => contextdb_anchors::Descriptor::from_bytes(&b)
-                            .ok()
-                            .is_some_and(|d| {
+                        Payload::Available(b) => {
+                            AnchorDescriptor::from_bytes(&b).ok().is_some_and(|d| {
                                 d.key() == logical.key
                                     && d.scope() == logical.scope_lane
                                     && d.content() == content
-                            }),
+                            })
+                        }
                         _ => false,
                     };
                     if !valid {
@@ -163,7 +183,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 invalid
             });
             let mut live = BTreeMap::new();
-            for (scope, paths) in &groups {
+            for (scope, layout) in &groups {
+                let paths: BTreeSet<String> = layout.files.union(&layout.hosts).cloned().collect();
                 let matching: Vec<_> = routes.iter().filter(|(s, _)| s == scope).collect();
                 if matching.len() != 1 {
                     continue;
@@ -183,8 +204,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 if repo.scope() != *scope {
                     continue;
                 }
-                if let Ok(capture) = repo.capture(paths, deadline) {
-                    live.insert(scope.clone(), (capture.position, capture.head));
+                if let Ok(capture) = repo.capture(&paths, deadline) {
+                    let hosts_only = layout.hosts.difference(&layout.files).cloned().collect();
+                    let position = contextdb_anchors::capture::position(
+                        &repo.id,
+                        &capture.head,
+                        &capture.entries,
+                        &hosts_only,
+                        &layout.versions,
+                    );
+                    live.insert(scope.clone(), (position, capture.head));
                 }
             }
             (invalid.join(), live)
@@ -200,6 +229,33 @@ impl<D: Durability + Clone + 'static> Service<D> {
             live.clear();
         }
         live
+    }
+    /// A head descriptor by content hash. Descriptors are content-addressed,
+    /// so a decoded one is cached; validity is still re-read every sample
+    /// (anchor_evidence), so a damaged descriptor stays Unknown.
+    pub(crate) fn anchor_descriptor(&self, content: ContentHash) -> Option<AnchorDescriptor> {
+        if let Some(d) = self
+            .anchor_descriptors
+            .lock()
+            .expect("descriptors")
+            .get(&content)
+        {
+            return Some(d.clone());
+        }
+        let bytes = match self.actor.snapshot().log.read_blob(&content) {
+            Payload::Available(b) => b,
+            _ => return None,
+        };
+        let d = AnchorDescriptor::from_bytes(&bytes).ok()?;
+        if d.content() != content {
+            return None;
+        }
+        let mut cache = self.anchor_descriptors.lock().expect("descriptors");
+        if cache.len() >= 4 * MAX_ANCHORS {
+            cache.clear();
+        }
+        cache.insert(content, d.clone());
+        Some(d)
     }
     /// The routed worktree, reused while its root and Git directory keep the
     /// identity they were opened with (saves a Git process per live sample).
@@ -284,10 +340,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .logicals
             .iter()
             .enumerate()
-            .filter(|(_, l)| {
+            .filter(|(index, l)| {
+                // A changed path selects its file anchor and every symbol
+                // anchor hosted in it (ADR 0012 §7); paths come from
+                // descriptors. An unreadable descriptor is selected
+                // conservatively.
                 l.kind == RecordKind::CodeAnchor
                     && l.scope_lane == scope
-                    && paths.iter().any(|p| l.key == format!("{scope}/{p}"))
+                    && self
+                        .anchor_descriptor(inputs.revisions[inputs.heads[*index].index()].content)
+                        .is_none_or(|d| paths.iter().any(|p| p == d.path()))
             })
             .flat_map(|(l, _)| {
                 inputs

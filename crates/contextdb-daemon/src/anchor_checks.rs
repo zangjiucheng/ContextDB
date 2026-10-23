@@ -161,9 +161,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .chain(old.into_iter().flat_map(|p| p.paths.iter()))
                 .cloned()
                 .collect();
-            let relevant = targets
-                .as_ref()
-                .is_none_or(|t| paths.is_empty() || paths.iter().any(|p| t.contains(p)));
+            // Support keys name anchors; a symbol anchor stands for its host
+            // file (ADR 0012 §7). Matching is on the descriptor's file key,
+            // never on key substrings; an unmapped key counts as relevant.
+            let relevant = targets.as_ref().is_none_or(|t| {
+                paths.is_empty()
+                    || paths
+                        .iter()
+                        .any(|k| self.anchor_file_key(&snap.db, k).is_none_or(|f| t.contains(&f)))
+            });
             if !relevant {
                 continue;
             }
@@ -372,6 +378,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
             live,
             !filtered && cert_id.is_none(),
         ))
+    }
+    /// The file key (`code:<repo>/<path>`) an anchor key observes: itself for
+    /// a file anchor, the host file for a symbol anchor. A key's path never
+    /// changes, and it is read from the head descriptor.
+    fn anchor_file_key(&self, db: &Db, key: &str) -> Option<String> {
+        let logical = db.logical_by_key(key)?;
+        let head = db.head(logical)?;
+        let content = db.revision_content(head).ok()?;
+        let d = self.anchor_descriptor(content)?;
+        Some(format!("{}/{}", d.scope(), d.path()))
     }
     fn filter_targets(&self, root: &str, action: &Action) -> Option<BTreeSet<String>> {
         use std::{

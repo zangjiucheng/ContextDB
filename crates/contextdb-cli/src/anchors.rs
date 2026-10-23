@@ -1,6 +1,6 @@
 //! P5a operator CLI; the running P4 daemon is never upgraded automatically.
 use contextdb_anchors::{
-    Repo,
+    AnchorDescriptor, Repo,
     capture::{OBSERVER_TIMEOUT, git},
     descriptor::unhex,
     observer,
@@ -10,6 +10,7 @@ use contextdb_proto::{
     Client, lease,
     proto::{Request, Response},
 };
+use contextdb_symbols::observer::{self as symbol_observer, Added, Mode};
 use std::{
     collections::BTreeSet,
     io::{BufRead, Write},
@@ -46,10 +47,23 @@ fn stable_lock(path: &Path) -> Result<std::fs::File, String> {
         }
     }
 }
-fn reject_runtime(dir: &Path, repo: &Repo, paths: &BTreeSet<String>) -> Result<(), String> {
+/// Refuses anchors on runtime data. New registrations use the current path
+/// rule (no `#`); committed paths only the legacy one, so a legacy `#` file
+/// anchor is observed Broken instead of blocking every scan.
+fn reject_runtime(
+    dir: &Path,
+    repo: &Repo,
+    paths: &BTreeSet<String>,
+    committed: bool,
+) -> Result<(), String> {
     let data = dir.canonicalize().map_err(|e| e.to_string())?;
     for path in paths {
-        contextdb_anchors::validate_path(&repo.id, path).map_err(|e| e.to_string())?;
+        if committed {
+            contextdb_anchors::validate_legacy_path(&repo.id, path)
+        } else {
+            contextdb_anchors::validate_path(&repo.id, path)
+        }
+        .map_err(|e| format!("{path}: {e}"))?;
         let joined = repo.root.join(path);
         if joined.starts_with(&data) || joined.canonicalize().is_ok_and(|p| p.starts_with(&data)) {
             return Err("runtime data paths cannot be anchors".into());
@@ -90,10 +104,43 @@ fn route(dir: &Path, repo: &Repo) -> Result<(), String> {
     let _ = std::fs::remove_file(tmp);
     result.map_err(|e| e.to_string())
 }
+const USAGE: &str = "anchors add <dir> <repo> <path>[#<symbol>]... | scan|watch|status|migrate <dir> <repo> | hooks <dir> <repo> install|uninstall [--pre-push] | symbols <repo> <path> | repair-announce <dir>";
+
+/// Paths of the committed anchors (file anchors and symbol host files), from
+/// their descriptors (ADR 0012 §7).
+fn committed_paths(client: &mut Client, repo: &Repo) -> Result<BTreeSet<String>, String> {
+    let (_, state) = observer::state_by_key(client, &repo.scope()).map_err(|e| e.to_string())?;
+    Ok(state.values().map(|(d, _)| d.path().to_owned()).collect())
+}
 pub fn run(args: &[String]) -> Result<u8, String> {
-    let sub = args.first().map(String::as_str).ok_or(
-        "anchors add|scan|watch|status|hooks <dir> <repo> [paths...] | repair-announce <dir>",
-    )?;
+    let sub = args.first().map(String::as_str).ok_or(USAGE)?;
+    if sub == "symbols" {
+        // ADR 0012 §8: a file's symbols with their keys.
+        let repo = Repo::open(
+            Path::new(args.get(1).ok_or(USAGE)?),
+            Instant::now() + OBSERVER_TIMEOUT,
+        )
+        .map_err(|e| e.to_string())?;
+        let path = args.get(2).ok_or(USAGE)?;
+        let language = contextdb_anchors::Language::of_path(path)
+            .ok_or(format!("{path}: no symbol anchors for this file type"))?;
+        let bytes = std::fs::read(repo.root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        let file = contextdb_symbols::parse(language, &bytes, Instant::now() + OBSERVER_TIMEOUT)
+            .map_err(|e| e.to_string())?;
+        for (symbol, s) in &file.symbols {
+            let key =
+                contextdb_anchors::symbol::encode_symbol(symbol).map_err(|e| e.to_string())?;
+            println!(
+                "{path}#{symbol}\tcode:{}/{path}#{key}{}",
+                repo.id,
+                if s.error { "\t(parse error)" } else { "" }
+            );
+        }
+        if file.has_error {
+            eprintln!("note: {path} has parse errors");
+        }
+        return Ok(0);
+    }
     let dir = Path::new(args.get(1).ok_or("missing data dir")?);
     if sub == "repair-announce" {
         // ADR 0011 §9.4: after fixing what made an announce fail.
@@ -115,30 +162,60 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     match sub {
         "status" => {
             let (watermark, state) =
-                observer::state(&mut client, &repo.scope()).map_err(|e| e.to_string())?;
+                observer::state_by_key(&mut client, &repo.scope()).map_err(|e| e.to_string())?;
             println!(
                 "scope={} anchors={} watermark={watermark:?}",
                 repo.scope(),
                 state.len()
             );
-            for (path, a) in state {
-                println!("{path} r{} base={} breaks={:?}", a.head.0, a.base, a.breaks);
+            for (d, a) in state.values() {
+                let note = match d {
+                    AnchorDescriptor::Symbol(s)
+                        if s.normaliser != contextdb_symbols::normaliser_version(s.language) =>
+                    {
+                        " (other normaliser version: run ctx anchors migrate)"
+                    }
+                    AnchorDescriptor::File(f) if f.path.contains('#') => {
+                        " (legacy path with '#': rename the file)"
+                    }
+                    _ => "",
+                };
+                println!(
+                    "{} r{} base={} breaks={:?}{note}",
+                    d.label(),
+                    a.head.0,
+                    a.base,
+                    a.breaks
+                );
             }
         }
-        "add" | "scan" | "watch" => {
-            let paths: BTreeSet<_> = if sub == "add" {
+        "add" | "scan" | "watch" | "migrate" => {
+            let mut added = Added::default();
+            if sub == "add" {
                 if args.len() < 4 {
-                    return Err("anchors add needs paths".into());
+                    return Err("anchors add needs <path> or <path>#<symbol> arguments".into());
                 }
-                args[3..].iter().cloned().collect()
-            } else {
-                if args.len() != 3 {
-                    return Err("scan/watch takes no paths".into());
+                for arg in &args[3..] {
+                    match arg.split_once('#') {
+                        Some((path, symbol)) => {
+                            added.symbols.insert((path.to_owned(), symbol.to_owned()));
+                        }
+                        None => {
+                            added.files.insert(arg.clone());
+                        }
+                    }
                 }
-                BTreeSet::new()
-            };
-            reject_runtime(dir, &repo, &paths)?;
-            for path in &paths {
+            } else if args.len() != 3 {
+                return Err(format!("{sub} takes no paths"));
+            }
+            let new_paths: BTreeSet<String> = added
+                .files
+                .iter()
+                .cloned()
+                .chain(added.symbols.iter().map(|(p, _)| p.clone()))
+                .collect();
+            reject_runtime(dir, &repo, &new_paths, false)?;
+            for path in &new_paths {
                 if !contextdb_anchors::capture::exact_spelling(&repo.root, path)
                     .map_err(|e| e.to_string())?
                 {
@@ -147,16 +224,37 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                     ));
                 }
             }
-            let (_, existing) =
-                observer::state(&mut client, &repo.scope()).map_err(|e| e.to_string())?;
-            reject_runtime(dir, &repo, &existing.into_keys().collect())?;
+            // A symbol must exist in its file (listed on a miss).
+            for (path, symbol) in &added.symbols {
+                let language = contextdb_anchors::Language::of_path(path)
+                    .ok_or(format!("{path}: no symbol anchors for this file type"))?;
+                let bytes =
+                    std::fs::read(repo.root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+                let file =
+                    contextdb_symbols::parse(language, &bytes, Instant::now() + OBSERVER_TIMEOUT)
+                        .map_err(|e| e.to_string())?;
+                if !file.symbols.contains_key(symbol) {
+                    let known: Vec<_> = file.symbols.keys().map(String::as_str).collect();
+                    return Err(format!(
+                        "{path}#{symbol}: no such symbol; the file has: {}",
+                        known.join(", ")
+                    ));
+                }
+            }
+            reject_runtime(dir, &repo, &committed_paths(&mut client, &repo)?, true)?;
             // Route config is trusted operator data and survives daemon restart.
             route(dir, &repo)?;
+            let mode = if sub == "migrate" {
+                Mode::Migrate
+            } else {
+                Mode::Scan
+            };
             loop {
-                let result = observer::reconcile(
+                let result = symbol_observer::reconcile(
                     &mut client,
                     &repo,
-                    &paths,
+                    &added,
+                    mode,
                     Instant::now() + OBSERVER_TIMEOUT,
                 );
                 match result {
@@ -178,6 +276,11 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                             client = fresh;
                         }
                     }
+                    Err(e) if e.0.contains("LogicalExists") => {
+                        return Err(format!(
+                            "{e}: a key is taken (a legacy file anchor whose path contains '#' can encode like a symbol key; rename that file)"
+                        ));
+                    }
                     Err(e) => return Err(e.to_string()),
                 }
                 if sub != "watch" {
@@ -186,7 +289,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
-        _ => return Err("anchors add|scan|watch|status|hooks".into()),
+        _ => return Err(USAGE.into()),
     }
     Ok(0)
 }
@@ -250,14 +353,39 @@ fn check_range(dir: &Path, repo: &Repo, base: &str, tip: &str) -> Result<u8, Str
         return Err("Unknown: pushed tip is not current HEAD".into());
     }
     let mut client = connect(dir, "observer.sock")?;
-    observer::reconcile(&mut client, repo, &BTreeSet::new(), deadline)
+    symbol_observer::reconcile(&mut client, repo, &Added::default(), Mode::Scan, deadline)
         .map_err(|e| e.to_string())?;
-    let (_, prior) = observer::state(&mut client, &repo.scope()).map_err(|e| e.to_string())?;
+    let (_, prior) =
+        observer::state_by_key(&mut client, &repo.scope()).map_err(|e| e.to_string())?;
     if prior.is_empty() {
         return Err("Unknown: no registered anchors".into());
     }
-    let paths: BTreeSet<_> = prior.keys().cloned().collect();
-    let captured = repo.capture(&paths, deadline).map_err(|e| e.to_string())?;
+    // Registered files and symbol host files, from descriptors; the position
+    // is encoded as the daemon encodes it (ADR 0012 §6).
+    let mut files = BTreeSet::new();
+    let mut hosts = BTreeSet::new();
+    let mut versions = std::collections::BTreeMap::new();
+    for (d, _) in prior.values() {
+        match d {
+            AnchorDescriptor::File(f) => {
+                files.insert(f.path.clone());
+            }
+            AnchorDescriptor::Symbol(s) => {
+                hosts.insert(s.path.clone());
+                versions.insert(s.language, s.normaliser.clone());
+            }
+        }
+    }
+    let paths: BTreeSet<_> = files.union(&hosts).cloned().collect();
+    let hosts_only: BTreeSet<_> = hosts.difference(&files).cloned().collect();
+    let mut captured = repo.capture(&paths, deadline).map_err(|e| e.to_string())?;
+    captured.position = contextdb_anchors::capture::position(
+        &repo.id,
+        &captured.head,
+        &captured.entries,
+        &hosts_only,
+        &versions,
+    );
     let expected_head = unhex(tip.as_bytes()).map_err(|e| e.to_string())?;
     if captured.head != expected_head {
         return Err("Unknown: HEAD changed during range capture".into());

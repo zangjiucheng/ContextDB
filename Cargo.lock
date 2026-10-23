@@ -142,6 +142,7 @@ dependencies = [
  "contextdb-oracle",
  "contextdb-proto",
  "contextdb-store",
+ "contextdb-symbols",
  "contextdb-testkit",
  "serde_json",
  "toml",
@@ -242,6 +243,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "contextdb-anchors",
+ "contextdb-model",
+ "contextdb-proto",
  "tree-sitter",
  "tree-sitter-go",
  "tree-sitter-javascript",

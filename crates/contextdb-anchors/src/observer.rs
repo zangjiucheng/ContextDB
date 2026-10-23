@@ -1,6 +1,6 @@
 //! Observer client implementation is isolated from persistence. Captures and
 //! classifications are submitted with one Raw batch, never per-file commits.
-use crate::{AnchorState, Prepared, Repo, Unavailable, prepare};
+use crate::{AnchorDescriptor, AnchorState, Prepared, Repo, Unavailable, prepare};
 use contextdb_model::{Batch, CommitResult, Wire};
 use contextdb_proto::{
     Client,
@@ -39,6 +39,43 @@ pub fn state(client: &mut Client, scope: &str) -> Result<ScopeState, Unavailable
                 );
             }
             Ok((watermark, prior))
+        }
+        other => Err(Unavailable(format!("{other:?}"))),
+    }
+}
+/// Committed anchors of a scope keyed by logical key, file and symbol alike,
+/// with their decoded descriptors (ADR 0012 §5, §7): paths always come from
+/// descriptors, never from splitting keys.
+pub type KeyedState = (
+    Option<Vec<u8>>,
+    BTreeMap<String, (AnchorDescriptor, AnchorState)>,
+);
+pub fn state_by_key(client: &mut Client, scope: &str) -> Result<KeyedState, Unavailable> {
+    let reply = client
+        .call(&Request::AnchorState {
+            scope: scope.into(),
+        })
+        .map_err(|e| Unavailable(format!("{e:?}")))?;
+    match reply.response {
+        Response::AnchorState { watermark, anchors } => {
+            let mut out = BTreeMap::new();
+            for a in anchors {
+                let d = AnchorDescriptor::from_bytes(&a.descriptor)
+                    .map_err(|e| Unavailable(format!("corrupt anchor descriptor: {e}")))?;
+                if d.scope() != scope || d.key() != a.key || d.content() != a.content {
+                    return Err(Unavailable("corrupt anchor descriptor".into()));
+                }
+                let state = AnchorState {
+                    logical: a.logical,
+                    head: a.head,
+                    content: a.content,
+                    oid: d.match_id().to_vec(),
+                    base: a.base,
+                    breaks: a.breaks,
+                };
+                out.insert(a.key, (d, state));
+            }
+            Ok((watermark, out))
         }
         other => Err(Unavailable(format!("{other:?}"))),
     }

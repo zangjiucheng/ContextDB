@@ -2,6 +2,7 @@
 //! (SPEC SD18, ADR 0012). Observer-side only: `ctxd` never links this crate,
 //! so the daemon's live path never parses.
 mod extract;
+pub mod observer;
 mod walk;
 
 use contextdb_anchors::Language;
