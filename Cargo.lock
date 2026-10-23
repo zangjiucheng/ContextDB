@@ -102,7 +102,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "contextdb-anchors"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-core",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-bench"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "contextdb-anchors",
  "contextdb-core",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-anchors",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-model",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-daemon"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -176,11 +176,11 @@ dependencies = [
 
 [[package]]
 name = "contextdb-harness"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "contextdb-hooks"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-daemon",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-mcp"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "contextdb-daemon",
  "contextdb-model",
@@ -203,18 +203,18 @@ dependencies = [
 
 [[package]]
 name = "contextdb-model"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "contextdb-oracle"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "contextdb-model",
 ]
 
 [[package]]
 name = "contextdb-proto"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-core",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-store"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-core",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-symbols"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-anchors",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-testkit"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-core",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "contextdb-workload"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "cpufeatures"

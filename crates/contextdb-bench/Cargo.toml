@@ -20,5 +20,5 @@ contextdb-store.workspace = true
 stats_alloc = "=0.1.10"
 contextdb-daemon.workspace = true
 contextdb-proto.workspace = true
-contextdb-mcp = { path = "../contextdb-mcp", version = "=0.1.0" }
+contextdb-mcp = { path = "../contextdb-mcp", version = "=0.1.2" }
 serde_json = "=1.0.151"

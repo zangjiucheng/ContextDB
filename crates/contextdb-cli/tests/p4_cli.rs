@@ -262,17 +262,17 @@ fn hooks_install_is_idempotent_and_uninstall_removes_only_ours() {
         "--dir",
         data.to_str().unwrap(),
     ];
+    // A project install writes Claude's personal settings.local.json; the
+    // shared settings.json (theirs) is left exactly as it was.
+    let shared = std::fs::read_to_string(&settings).unwrap();
+    let local = root.join(".claude/settings.local.json");
     assert_eq!(ctx(&install).0, 0);
-    let once = std::fs::read_to_string(&settings).unwrap();
+    let once = std::fs::read_to_string(&local).unwrap();
     assert_eq!(ctx(&install).0, 0);
-    assert_eq!(
-        std::fs::read_to_string(&settings).unwrap(),
-        once,
-        "idempotent"
-    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), once, "idempotent");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), shared);
     let v: serde_json::Value = serde_json::from_str(&once).unwrap();
-    assert_eq!(v["model"], "m");
-    assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert!(root.join(".contextdb/dir.wire").exists());
     let (rc, out) = ctx(&[
         "hooks",
@@ -299,10 +299,15 @@ fn hooks_install_is_idempotent_and_uninstall_removes_only_ours() {
     ];
     assert_eq!(ctx(&uninstall).0, 0);
     let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+    assert!(
+        v["hooks"].as_object().is_none_or(|h| h.is_empty()),
+        "ours removed: {v}"
+    );
     assert_eq!(
-        v["hooks"],
-        serde_json::json!({"Stop":[{"hooks":[{"type":"command","command":"theirs"}]}]})
+        std::fs::read_to_string(&settings).unwrap(),
+        shared,
+        "theirs untouched"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
