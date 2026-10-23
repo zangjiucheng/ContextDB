@@ -1,0 +1,6 @@
+# https://github.com/sharkdp/fd.git cfed17a2bc4a2a27eeb90932b94f4c5680a78741 --edition 2024
+language	variant	files	symbols	changed	missing	extra	rejected	n/a
+rust	fmt-default	24	459	0	0	0	0	0
+rust	fmt-stress	24	459	0	0	0	0	0
+rust	comments	23	456	0	0	0	0	1
+rust	doc-comments	21	440	0	0	0	0	3

@@ -293,3 +293,268 @@ fn deadline_cancels() {
     let big = "fn f() { 1 }\n".repeat(200_000);
     assert!(parse(Language::Rust, big.as_bytes(), Instant::now()).is_err());
 }
+
+/// T45b: the §4 rules that are neither pure formatting nor obvious meaning.
+#[test]
+fn t45b_directives_attributes_docstrings_strings() {
+    // Rust doc comments are comments; `#[doc = …]` attributes count.
+    same(
+        Language::Rust,
+        "f",
+        "/// a\nfn f() {}",
+        "//! x\n/// b\nfn f() {}",
+    );
+    differ(
+        Language::Rust,
+        "f",
+        "#[doc = \"a\"]\nfn f() {}",
+        "#[doc = \"b\"]\nfn f() {}",
+    );
+    // Raw and interpreted strings keep distinct kinds.
+    differ(
+        Language::Rust,
+        "f",
+        "fn f() -> &'static str { \"a\" }",
+        "fn f() -> &'static str { r\"a\" }",
+    );
+    differ(
+        Language::Go,
+        "F",
+        "package p\nfunc F() string { return \"a\" }\n",
+        "package p\nfunc F() string { return `a` }\n",
+    );
+    // Go: build-constraint and line directives count; plain comments do not.
+    differ(
+        Language::Go,
+        "F",
+        "package p\n//export F\nfunc F() {}\n",
+        "package p\n//export G\nfunc F() {}\n",
+    );
+    // Python: quote style is neutral, prefixes and `# type:` comments are not.
+    same(
+        Language::Python,
+        "f",
+        "def f():\n    return 'a'\n",
+        "def f():\n    return \"a\"\n",
+    );
+    differ(
+        Language::Python,
+        "f",
+        "def f():\n    return 'a'\n",
+        "def f():\n    return b'a'\n",
+    );
+    differ(
+        Language::Python,
+        "f",
+        "def f(a):\n    x = a  # type: int\n",
+        "def f(a):\n    x = a  # type: str\n",
+    );
+    same(
+        Language::Python,
+        "f",
+        "def f(a):\n    x = a + \\\n        1\n",
+        "def f(a):\n    x = a + 1\n",
+    );
+    // JS/TS: a statement-level parenthesised string is not a directive.
+    differ(
+        Language::JavaScript,
+        "f",
+        "function f() { \"use strict\"; return 1 }",
+        "function f() { (\"use strict\"); return 1 }",
+    );
+    same(
+        Language::JavaScript,
+        "f",
+        "function f() { return `a${1}` }",
+        "function f() {\n  return `a${1}`;\n}",
+    );
+    differ(
+        Language::JavaScript,
+        "f",
+        "function f() { return 'a' }",
+        "function f() { return `a` }",
+    );
+    // TS comments other than @ts-* directives are dropped; JSDoc in .ts too.
+    same(
+        Language::TypeScript,
+        "f",
+        "/** @param a x */\nfunction f(a: number) {}",
+        "/** @param a y */\nfunction f(a: number) {}",
+    );
+    differ(
+        Language::TypeScript,
+        "f",
+        "// @ts-ignore\nfunction f(a: number) {}",
+        "// @ts-nocheck\nfunction f(a: number) {}",
+    );
+}
+
+/// Walk 2 (T45 formatter corpus): each formatter-equivalence rule, with the
+/// nearest pair that must still differ.
+#[test]
+fn walk2_formatter_equivalences() {
+    use Language::{JavaScript, Python, Rust, TypeScript};
+    // Rust: match-arm and closure blocks around one value; tail divergence.
+    same(
+        Rust,
+        "f",
+        "fn f(x: u8) -> u8 { match x { 0 => { g(1) } _ => g(2), } }",
+        "fn f(x: u8) -> u8 { match x { 0 => g(1), _ => g(2) } }",
+    );
+    same(
+        Rust,
+        "f",
+        "fn f(x: Option<u8>) -> u8 { match x { None => return 0, Some(v) => v } }",
+        "fn f(x: Option<u8>) -> u8 { match x { None => { return 0; } Some(v) => v } }",
+    );
+    same(
+        Rust,
+        "f",
+        "fn f() { v.map(|x| g(x)); }",
+        "fn f() { v.map(|x| { g(x) }); }",
+    );
+    same(
+        Rust,
+        "f",
+        "fn f() { let Some(x) = y else { return }; }",
+        "fn f() { let Some(x) = y else { return; }; }",
+    );
+    differ(
+        Rust,
+        "f",
+        "fn f() { v.map(|x| g(x)); }",
+        "fn f() { v.map(|x| { g(x); }); }",
+    );
+    differ(
+        Rust,
+        "f",
+        "fn f(x: u8) -> u8 { match x { 0 => { h(); g(1) } _ => g(2) } }",
+        "fn f(x: u8) -> u8 { match x { 0 => g(1), _ => g(2) } }",
+    );
+    differ(
+        Rust,
+        "f",
+        "fn f() -> u8 { loop { break 1; } }",
+        "fn f() -> u8 { loop { continue; } }",
+    );
+    // Python: tuple and pattern parentheses, grouping in targets, types.
+    same(
+        Python,
+        "f",
+        "def f():\n    return a, b\n",
+        "def f():\n    return (a, b)\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    x = a,\n",
+        "def f():\n    x = (a,)\n",
+    );
+    differ(
+        Python,
+        "f",
+        "def f():\n    x = a,\n",
+        "def f():\n    x = (a)\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    for k, v in x:\n        pass\n",
+        "def f():\n    for (k, v) in x:\n        pass\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    for k in x:\n        pass\n",
+        "def f():\n    for (k) in x:\n        pass\n",
+    );
+    differ(
+        Python,
+        "f",
+        "def f():\n    for k, in x:\n        pass\n",
+        "def f():\n    for (k) in x:\n        pass\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f(x: type[A] | None) -> int: ...\n",
+        "def f(x: (type[A] | None)) -> (int): ...\n",
+    );
+    differ(
+        Python,
+        "f",
+        "def f(x: int | None): ...\n",
+        "def f(x: None | int): ...\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    from m import a, b\n",
+        "def f():\n    from m import (\n        a,\n        b,\n    )\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f(x):\n    match x:\n        case A() | B():\n            pass\n",
+        "def f(x):\n    match x:\n        case (A() | B()):\n            pass\n",
+    );
+    // TypeScript/JavaScript: leading union bar, quotes and escapes, keys,
+    // arrow parameter parentheses.
+    same(
+        TypeScript,
+        "T",
+        "type T = A | B;",
+        "type T =\n  | A\n  | B;",
+    );
+    differ(TypeScript, "T", "type T = A | B;", "type T = B | A;");
+    same(
+        JavaScript,
+        "f",
+        "function f() { return 'it\\'s' }",
+        "function f() { return \"it's\" }",
+    );
+    same(
+        JavaScript,
+        "f",
+        "function f() { return '' }",
+        "function f() { return \"\" }",
+    );
+    differ(
+        JavaScript,
+        "f",
+        "function f() { return 'a\\nb' }",
+        "function f() { return 'a\\\\nb' }",
+    );
+    same(
+        JavaScript,
+        "f",
+        "function f() { return {'a': 1} }",
+        "function f() { return {a: 1} }",
+    );
+    differ(
+        JavaScript,
+        "f",
+        "function f() { return {'a-b': 1} }",
+        "function f() { return {ab: 1} }",
+    );
+    differ(
+        JavaScript,
+        "f",
+        "function f() { return {a: 'a'} }",
+        "function f() { return {a: a} }",
+    );
+    same(TypeScript, "f", "const f = (x) => x;", "const f = x => x;");
+    differ(
+        TypeScript,
+        "f",
+        "const f = (x: number) => x;",
+        "const f = x => x;",
+    );
+    differ(
+        TypeScript,
+        "f",
+        "const f = (x = 1) => x;",
+        "const f = x => x;",
+    );
+    same(JavaScript, "f", "const f = (x) => x;", "const f = x => x;");
+}

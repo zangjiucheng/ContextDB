@@ -1,0 +1,7 @@
+# symbol_corpus repos/ripgrep at 3fce3b5bb0236da2df6d99672afb8a719642eca7
+language	variant	path	symbol	difference	first difference
+rust	fmt-stress	crates/globset/src/pathutil.rs	tests	changed	L( ( L| | Lidentifier s L| | <Lidentifier Cow L:: :: Lidentifier Borrowed | (token_tree L{ { Lidentifier Cow>
+rust	fmt-stress	crates/globset/src/pathutil.rs	tests::name	changed	L( ( L| | Lidentifier s L| | <Lidentifier Cow L:: :: Lidentifier Borrowed | (token_tree L{ { Lidentifier Cow>
+rust	fmt-default	crates/printer/src/macros.rs	assert_eq_printed	changed	) L} } ) ) <L} } ) | L; ; L} } )>
+rust	fmt-default	tests/macros.rs	eqnice	changed	) L} } ) ) <L} } ) | L; ; L} } )>
+rust	fmt-default	tests/macros.rs	eqnice_repr	changed	) L} } ) ) <L} } ) | L; ; L} } )>

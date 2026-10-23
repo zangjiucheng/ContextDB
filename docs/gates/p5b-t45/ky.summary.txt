@@ -1,0 +1,6 @@
+# https://github.com/sindresorhus/ky.git 3ba40cc6333cf1847c02c51744e22ab7c04407f5 
+language	variant	files	symbols	changed	missing	extra	rejected	n/a
+typescript	fmt-default	34	116	0	0	0	0	0
+typescript	fmt-stress	34	116	0	0	0	0	0
+typescript	comments	22	87	0	0	0	0	12
+typescript	doc-comments	6	23	0	0	0	0	28

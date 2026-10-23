@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- P5b normaliser walk revision 2 (ADR 0012 r0.4): formatter-equivalent forms found by the T45 corpus (rustfmt arm/closure blocks and diverging-tail semicolons; black tuple, target, import and type parentheses; prettier quotes, object keys, leading union bars and arrow parentheses) now hash alike. **Existing symbol anchors need `ctx anchors migrate`**; about a third of symbols re-hash, so their dependents go STALE/PENDING once. New bench tools `symbol_corpus` (T45) and `symbol_hashes` (normaliser walk check); T45b and T42e tests.
 - `ctx ui` refuses a directory that is not a data dir (suggesting `<dir>/db`), and without `--port` moves on from a busy 7787 to the next free port up to 7796.
 - SPEC v1.6.4 / ADR 0011 r0.6: agent execution across labelling, independent review, dogfood maintenance and gate reporting; no mandatory human audit, owner top-ups or agreement threshold. G6 `score --assisted` accepts provenance-bearing agent evidence while retaining historical human/contested diagnostics and real replay/stratum requirements. Runtime channels, CAS, oracle tests and actual dogfood duration remain in force.
 

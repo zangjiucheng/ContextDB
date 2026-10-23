@@ -1,0 +1,6 @@
+# https://github.com/expressjs/express.git 8e229f92752ad51462c868b99f6e6c2e559801b0 
+language	variant	files	symbols	changed	missing	extra	rejected	n/a
+javascript	fmt-default	152	607	0	0	0	0	0
+javascript	fmt-stress	152	607	0	0	0	0	0
+javascript	comments	60	362	0	0	0	0	92
+javascript	doc-comments	12	131	0	0	0	0	140

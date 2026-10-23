@@ -1,0 +1,6 @@
+# https://github.com/pallets/click.git 2247b35ea1c47c727d7a06e51fa280e12a863ff6 
+language	variant	files	symbols	changed	missing	extra	rejected	n/a
+python	fmt-default	91	1379	0	0	0	0	0
+python	fmt-stress	91	1379	5	0	0	0	0
+python	comments	48	1264	0	0	0	0	43
+python	doc-comments	0	0	0	0	0	0	91

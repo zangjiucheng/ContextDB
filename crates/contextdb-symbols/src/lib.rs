@@ -9,7 +9,7 @@ use contextdb_anchors::Language;
 use std::{collections::BTreeMap, ops::ControlFlow, time::Instant};
 
 /// Walk revision (ADR 0012 §4); part of every normaliser version.
-const WALK: u32 = 1;
+const WALK: u32 = 2;
 const RUNTIME: &str = "tree-sitter=0.27.1";
 
 fn grammar(language: Language) -> (tree_sitter::Language, &'static str) {
@@ -73,13 +73,12 @@ impl std::fmt::Display for Unavailable {
 }
 impl std::error::Error for Unavailable {}
 
-/// Parses `bytes` and returns every symbol (ADR 0012 §2, §4). Parsing is
-/// cancelled at `deadline` (unavailable, never a partial result).
-pub fn parse(
+/// Parses with cancellation at `deadline` (unavailable, never a partial tree).
+fn tree(
     language: Language,
     bytes: &[u8],
     deadline: Instant,
-) -> Result<ParsedFile, Unavailable> {
+) -> Result<tree_sitter::Tree, Unavailable> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&grammar(language).0)
@@ -92,13 +91,23 @@ pub fn parse(
         }
     };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut cancel);
-    let tree = parser
+    parser
         .parse_with_options(
             &mut |offset, _| bytes.get(offset..).unwrap_or_default(),
             None,
             Some(options),
         )
-        .ok_or_else(|| Unavailable("parse deadline".into()))?;
+        .ok_or_else(|| Unavailable("parse deadline".into()))
+}
+
+/// Parses `bytes` and returns every symbol (ADR 0012 §2, §4). Parsing is
+/// cancelled at `deadline` (unavailable, never a partial result).
+pub fn parse(
+    language: Language,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<ParsedFile, Unavailable> {
+    let tree = tree(language, bytes, deadline)?;
     let root = tree.root_node();
     let rules = walk::rules(language);
     let mut extract = extract::Extract {
@@ -123,6 +132,7 @@ pub fn parse(
                     src: bytes,
                     hasher: &mut hash,
                     mask: None,
+                    trace: None,
                 }
                 .node(*node);
                 walk::Walk {
@@ -130,6 +140,7 @@ pub fn parse(
                     src: bytes,
                     hasher: &mut masked,
                     mask: occ.name.map(|n| n.id()),
+                    trace: None,
                 }
                 .node(*node);
             }
@@ -159,4 +170,66 @@ fn inside_error(node: tree_sitter::Node) -> bool {
         n = p.parent();
     }
     false
+}
+
+/// Byte ranges of the comments the walk drops anywhere in the file (directive
+/// comments excluded), in source order: the T45 corpus edits them (ADR 0012
+/// §4) to check that comment-only changes are no-ops.
+pub fn dropped_comments(
+    language: Language,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<Vec<std::ops::Range<usize>>, Unavailable> {
+    let tree = tree(language, bytes, deadline)?;
+    let rules = walk::rules(language);
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if rules.is_comment(n.kind()) {
+            if !rules.is_directive(&String::from_utf8_lossy(&bytes[n.byte_range()])) {
+                out.push(n.byte_range());
+            }
+            continue;
+        }
+        stack.extend((0..n.child_count()).rev().filter_map(|i| n.child(i)));
+    }
+    Ok(out)
+}
+
+/// The readable normalised stream of one symbol (all occurrences), or `None`
+/// if the file has no such symbol: corpus triage only, never hashed.
+pub fn trace(
+    language: Language,
+    bytes: &[u8],
+    symbol: &str,
+    deadline: Instant,
+) -> Result<Option<Vec<String>>, Unavailable> {
+    let tree = tree(language, bytes, deadline)?;
+    let rules = walk::rules(language);
+    let mut extract = extract::Extract {
+        language,
+        rules: &rules,
+        src: bytes,
+        table: BTreeMap::new(),
+    };
+    extract.container(tree.root_node(), &[]);
+    let Some(occurrences) = extract.table.remove(symbol) else {
+        return Ok(None);
+    };
+    let mut lines = Vec::new();
+    let mut sink = blake3::Hasher::new();
+    for occ in &occurrences {
+        lines.push("O".to_owned());
+        for node in &occ.nodes {
+            walk::Walk {
+                rules: &rules,
+                src: bytes,
+                hasher: &mut sink,
+                mask: None,
+                trace: Some(&mut lines),
+            }
+            .node(*node);
+        }
+    }
+    Ok(Some(lines))
 }

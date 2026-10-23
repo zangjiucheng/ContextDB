@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 contextdb-anchors.workspace = true
+contextdb-symbols.workspace = true
 contextdb-core.workspace = true
 contextdb-model.workspace = true
 contextdb-testkit.workspace = true

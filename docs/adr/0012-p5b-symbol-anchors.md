@@ -1,7 +1,9 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.3, 2026-10-22. G0 passed after an independent
+Status: **accepted**, revision 0.4, 2026-10-22. G0 passed after an independent
 review, a closure check and a closure confirmation (§11). SPEC v1.6.5 mirrors it.
+r0.4 records implementation findings: walk revision 2 from the T45 formatter
+corpus, and four clarifications (§11).
 
 ## 0. Scope and delivery
 
@@ -142,9 +144,12 @@ attached attributes: preceding Rust `attribute_item`s, Python
 `use`/`import` statements are outside the span by design; G6 reports them as
 expected sources of missed invalidation.
 
-The **walk** is iterative (TreeCursor; no recursion) over the span in
-pre-order. Each kept node emits its kind name and the number of kept children;
-each kept leaf emits its text, all length-prefixed. The rules, per language,
+The **walk** is iterative (an explicit stack; no recursion) over the span in
+pre-order. Each kept inner node emits an open marker with its kind name and,
+after its kept children, a close marker; each kept leaf emits its kind and
+text, all length-prefixed. This is injective and carries the same shape as
+kind plus child count, but streams without counting children first (r0.4).
+Directive comments directly preceding a declaration belong to its span. The rules, per language,
 remove what formatters change and keep what changes meaning:
 
 - **Comments are dropped**, except **directive comments**, which are kept as
@@ -174,11 +179,43 @@ remove what formatters change and keep what changes meaning:
 - **Python docstrings count**: they are string statements visible at run time
   (`__doc__`), not comments. Rust doc comments (`///`, `//!`) are comments and
   do not count; `#[doc = …]` attributes do.
+- **Formatter-equivalent forms agree** (walk revision 2, r0.4, found by the
+  T45 corpus). Each is a pair of grammar forms one formatter switches between
+  for the same meaning; each has a must-differ golden for its nearest
+  meaning change:
+  - Rust: a match arm's or closure's block around a single value
+    (`=> { e }` / `=> e,`, `|x| { e }` / `|x| e`) emits the value; the arm
+    comma is dropped; an expression statement around `return`/`break`/
+    `continue`, and a block-like tail without `;`, emits the expression
+    (rustfmt adds `;` after a diverging tail). `{ f(); }` still differs from
+    `f()`.
+  - Python: `expression_list`/`pattern_list` are emitted as `tuple`/
+    `tuple_pattern`, whose parentheses are optional (`return a, b` /
+    `return (a, b)`), as are `from m import (…)` parentheses; a one-element
+    `tuple_pattern` without a comma is grouping (`for (k) in`); the type
+    grammar is mapped onto the expression grammar black's parentheses
+    produce (`type` and `type_parameter` transparent, `union_type` →
+    `binary_operator`, `generic_type` → `subscript`, `member_type` →
+    `attribute`); `case_pattern` is transparent. Single-element trailing
+    commas stay meaningful on all of them.
+  - TypeScript/JavaScript: a `string` is one leaf of its content with `\'`
+    and `\"` unescaped (prettier switches quotes to avoid escapes); a quoted
+    object key that is an identifier equals the unquoted key; a leading `|`/`&`
+    on a multi-line union or intersection is dropped with the one-member
+    wrapper it creates; one plain arrow parameter equals its parenthesised
+    form (`x => x` / `(x) => x`, not `(x: T) => x`).
 
 **T45 is defined by real formatters**, not by the generator: on a corpus of the
 three G6 repositories' symbols, running rustfmt, prettier, black and gofmt with
 default settings (and comment-only and doc-comment-only edits) must leave every
-normalised hash unchanged, apart from listed, explained exceptions.
+normalised hash unchanged, apart from listed, explained exceptions. The G6
+repositories contain only Rust and Python, so pinned TypeScript, JavaScript
+and Go repositories supplement them, and each formatter also runs with a
+stress style (narrow width and its non-default options) so that already
+formatted code is actually rewritten (r0.4; results in
+`docs/gates/p5b-t45/`). Listed exceptions: rewrites inside Rust macro token
+trees (no syntax tree to normalise), and docstring content black re-wraps (a
+real `__doc__` change).
 
 **Parse errors are local** (r0.1 review B1). A symbol's observation is Present
 if its span and the chain of enclosing declarations it is nested in contain no
@@ -215,7 +252,7 @@ is published and the scope lags (fail-closed).
 **Normaliser versions** (r0.1 M3, r0.2 N2). A version string is derived
 mechanically, per language, from the **exact grammar crate version and the
 tree-sitter runtime version plus a walk revision number**
-(e.g. `rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=1`). There is no
+(e.g. `rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=2`). There is no
 corpus exemption: any grammar, runtime or walk change is a new version, because
 code outside any corpus may hash differently. A binary implements exactly one
 version per language. The descriptor carries its version (below) and so does
@@ -456,3 +493,17 @@ language-order note), all fixed. Its new minor — the modified-vs-HEAD test use
 Git's stat cache — is adopted: the test compares the filtered hash of the
 captured bytes with the `HEAD` blob OID, with `--no-optional-locks` (§4).
 **G0 passed.**
+
+**r0.4 implementation findings (2026-10-22)**: the T45 corpus found formatter
+rewrites the walk-1 rules did not cover (rustfmt arm/closure blocks and
+diverging-tail semicolons; black's tuple, target and type parentheses;
+prettier's quotes, keys, leading union bars and arrow parentheses). Walk
+revision 2 adds the rules in §4, each with a must-differ golden. As §4
+requires, the version changes: on the reference corpus 2,226 of 6,820
+symbols re-hash (ripgrep 681/3,613, fd 117/459, click 855/1,379, cobra
+0/646, ky 63/116, express 510/607), so existing symbol anchors need
+`ctx anchors migrate` and their dependents see one STALE/PENDING round.
+Clarifications of existing behaviour: the walk's open/close markers (§4);
+preceding directive comments belong to the span (§4); a symbol path the
+grammar has no table entry for observes Missing; the descriptor's
+name-masked hash field is named `masked`.

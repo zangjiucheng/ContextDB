@@ -313,3 +313,79 @@ fn symbol_anchors_end_to_end() {
     drop(rig.daemon);
     let _ = std::fs::remove_dir_all(&rig.root);
 }
+
+/// T42e: a committed symbol head made with another normaliser version makes
+/// `scan` unavailable (nothing committed); only `migrate` crosses versions.
+#[test]
+fn normaliser_version_mismatch_needs_migrate() {
+    use contextdb_anchors::{
+        AnchorDescriptor, AnchorObservation,
+        observer::{state_by_key, submit},
+        prepare_anchors,
+    };
+    let root = temp("t42e");
+    git(&root, &["init", "-q"]);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), LIB).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "init"]);
+    let data = root.join(".contextdb/db");
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let rig = Rig { root, data, daemon };
+    let (rc, out) = ctx(&["anchors", "add", rig.ds(), rig.rs(), "src/lib.rs#foo"]);
+    assert_eq!(rc, 0, "{out}");
+    let current = rig.head_of("#foo");
+
+    // Another binary's observer committed foo with an older normaliser.
+    let scope = rig.scope();
+    let mut client = rig.client(Channel::Observer);
+    let (watermark, committed) = state_by_key(&mut client, &scope).unwrap();
+    let (key, (descriptor, _)) = committed.iter().next().unwrap();
+    let AnchorDescriptor::Symbol(mut old) = descriptor.clone() else {
+        panic!("symbol descriptor expected")
+    };
+    old.normaliser = "rust:tree-sitter-rust=0.0.0;tree-sitter=0.0.0;walk=0".into();
+    let observations = [(
+        key.clone(),
+        (
+            "src/lib.rs#foo".to_owned(),
+            AnchorObservation::Present(AnchorDescriptor::Symbol(old)),
+        ),
+    )]
+    .into();
+    let prior = committed
+        .iter()
+        .map(|(k, (_, s))| (k.clone(), s.clone()))
+        .collect();
+    let repo_id = descriptor.scope().trim_start_matches("code:").to_owned();
+    let prepared = prepare_anchors(
+        &repo_id,
+        &observations,
+        &prior,
+        &Default::default(),
+        watermark.clone(),
+        watermark.clone().unwrap(),
+    )
+    .unwrap();
+    submit(&mut client, prepared).unwrap().expect("committed");
+    let old_head = rig.head_of("#foo");
+    assert_ne!(old_head, current);
+
+    // scan refuses and names migrate; nothing is committed.
+    let before = rig.anchors();
+    let (rc, out) = rig.scan();
+    assert_ne!(rc, 0, "{out}");
+    assert!(out.contains("ctx anchors migrate"), "{out}");
+    assert_eq!(rig.anchors(), before);
+    let (_, status) = ctx(&["anchors", "status", rig.ds(), rig.rs()]);
+    assert!(status.contains("migrate"), "{status}");
+
+    // migrate crosses versions; identical syntax restores the same revision.
+    let (rc, out) = ctx(&["anchors", "migrate", rig.ds(), rig.rs()]);
+    assert_eq!(rc, 0, "{out}");
+    assert_eq!(rig.head_of("#foo"), current);
+    assert_eq!(rig.scan().0, 0);
+    drop(rig.daemon);
+    let _ = std::fs::remove_dir_all(&rig.root);
+}

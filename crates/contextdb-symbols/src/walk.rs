@@ -1,4 +1,4 @@
-//! The normalising walk (ADR 0012 §4, walk revision 1): an iterative
+//! The normalising walk (ADR 0012 §4, walk revision 2): an iterative
 //! pre-order traversal streaming into BLAKE3. A kept inner node emits
 //! `(` + kind and, after its kept children, `)`; a kept leaf emits `L` + kind +
 //! text; every string is length-prefixed, so the encoding is injective and
@@ -19,6 +19,124 @@ pub(crate) struct Rules {
     strings: &'static [&'static str],
     /// Extra nodes dropped outright (Python line continuations).
     dropped: &'static [&'static str],
+    /// Kinds emitted under another kind's name: two grammar forms of one
+    /// construct that formatters switch between (walk 2).
+    renamed: &'static [(&'static str, &'static str)],
+    /// Kinds whose `(`/`)` leaves are optional (Python tuples, imports).
+    optional_parens: &'static [&'static str],
+    /// Language-specific wrappers emitted as their children only (walk 2).
+    unwrap: fn(Node) -> Option<Unwrap>,
+    /// JS/TS `string`s are emitted as one leaf of their decoded content, so a
+    /// quote switch that drops `\'` escapes agrees; an identifier-like object
+    /// key agrees with the unquoted key (walk 2).
+    decode_strings: bool,
+}
+/// How a transparent node is emitted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unwrap {
+    /// Its kept children, in place of the node.
+    All,
+    /// Only its named children (grouping punctuation dropped too).
+    Named,
+}
+fn no_unwrap(_: Node) -> Option<Unwrap> {
+    None
+}
+fn rust_unwrap(node: Node) -> Option<Unwrap> {
+    fn named(n: Node) -> Vec<Node> {
+        let mut c = n.walk();
+        n.named_children(&mut c)
+            .filter(|c| !matches!(c.kind(), "line_comment" | "block_comment"))
+            .collect()
+    }
+    let has_semicolon =
+        |n: Node| (0..n.child_count()).any(|i| n.child(i).is_some_and(|c| c.kind() == ";"));
+    // `return x;` and a tail `return x` diverge alike; rustfmt adds the
+    // semicolon (also `break`, `continue`). A block-like tail (`match`,
+    // `if`, …) without `;` is the block's value.
+    let value_statement = |n: Node| {
+        let inner = named(n);
+        let diverging = inner.len() == 1
+            && matches!(
+                inner[0].kind(),
+                "return_expression" | "break_expression" | "continue_expression"
+            );
+        diverging || !has_semicolon(n)
+    };
+    match node.kind() {
+        "expression_statement" => value_statement(node).then_some(Unwrap::Named),
+        // A match arm's `=> { e }` / `=> e,` and a closure's `|| { e }` /
+        // `|| e`: rustfmt switches both ways by line width.
+        "block"
+            if node
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "match_arm" | "closure_expression")) =>
+        {
+            let inner = named(node);
+            let single = inner.len() == 1
+                && match inner[0].kind() {
+                    "expression_statement" => value_statement(inner[0]),
+                    k => {
+                        !matches!(k, "let_declaration" | "label" | "empty_statement")
+                            && !k.ends_with("_item")
+                            && !k.starts_with("attribute")
+                            && !k.ends_with("_declaration")
+                    }
+                };
+            single.then_some(Unwrap::Named)
+        }
+        _ => None,
+    }
+}
+fn ts_unwrap(node: Node) -> Option<Unwrap> {
+    // `(x) => …` and `x => …` (prettier's arrowParens): one plain parameter
+    // without type, default or modifier is emitted as the bare identifier.
+    fn plain_arrow_parameters(n: Node) -> bool {
+        let Some(arrow) = n.parent().filter(|p| p.kind() == "arrow_function") else {
+            return false;
+        };
+        if arrow
+            .child_by_field_name("parameters")
+            .is_none_or(|p| p.id() != n.id())
+            || n.named_child_count() != 1
+        {
+            return false;
+        }
+        let only = n.named_child(0).expect("one named child");
+        only.kind() == "identifier"
+            || (only.kind() == "required_parameter"
+                && only.child_count() == 1
+                && only.child(0).is_some_and(|c| c.kind() == "identifier"))
+    }
+    match node.kind() {
+        // Prettier's leading `|`/`&` on a multi-line union nests a one-member
+        // union around the first member.
+        "union_type" | "intersection_type" if node.named_child_count() == 1 => Some(Unwrap::Named),
+        "formal_parameters" if plain_arrow_parameters(node) => Some(Unwrap::Named),
+        "required_parameter" if node.parent().is_some_and(plain_arrow_parameters) => {
+            Some(Unwrap::Named)
+        }
+        _ => None,
+    }
+}
+fn python_unwrap(node: Node) -> Option<Unwrap> {
+    match node.kind() {
+        // Type-grammar wrappers: `x: (str | None)` parses as an expression.
+        "type" | "type_parameter" => Some(Unwrap::All),
+        // A pure wrapper; black's parentheses around a case pattern nest one.
+        "case_pattern" => Some(Unwrap::All),
+        // `for (x) in …`: one element and no comma is grouping, not a tuple.
+        "tuple_pattern" => {
+            let mut c = node.walk();
+            let children: Vec<Node> = node.children(&mut c).collect();
+            let elements = children
+                .iter()
+                .filter(|c| c.is_named() && c.kind() != "comment")
+                .count();
+            (elements == 1 && !children.iter().any(|c| c.kind() == ",")).then_some(Unwrap::Named)
+        }
+        _ => None,
+    }
 }
 fn go_directive(t: &str) -> bool {
     ["//go:", "//export ", "//line ", "// +build", "//go:build"]
@@ -50,6 +168,10 @@ pub(crate) fn rules(language: Language) -> Rules {
             single_comma: &["tuple_expression", "tuple_type", "tuple_pattern"],
             strings: &[],
             dropped: &[],
+            renamed: &[],
+            optional_parens: &[],
+            unwrap: rust_unwrap,
+            decode_strings: false,
         },
         Language::TypeScript | Language::Tsx => Rules {
             comments: &["comment", "html_comment"],
@@ -59,6 +181,10 @@ pub(crate) fn rules(language: Language) -> Rules {
             single_comma: &[],
             strings: &["string"],
             dropped: &[],
+            renamed: &[],
+            optional_parens: &[],
+            unwrap: ts_unwrap,
+            decode_strings: true,
         },
         Language::JavaScript => Rules {
             comments: &["comment", "html_comment"],
@@ -68,15 +194,36 @@ pub(crate) fn rules(language: Language) -> Rules {
             single_comma: &[],
             strings: &["string"],
             dropped: &[],
+            renamed: &[],
+            optional_parens: &[],
+            unwrap: ts_unwrap,
+            decode_strings: true,
         },
         Language::Python => Rules {
             comments: &["comment"],
             directive: py_directive,
             drop_semicolons: false,
             transparent_parens: true,
-            single_comma: &["tuple", "subscript", "tuple_pattern"],
+            single_comma: &[
+                "tuple",
+                "subscript",
+                "tuple_pattern",
+                "expression_list",
+                "pattern_list",
+                "type_parameter",
+            ],
             strings: &["string"],
             dropped: &["line_continuation"],
+            renamed: &[
+                ("union_type", "binary_operator"),
+                ("generic_type", "subscript"),
+                ("member_type", "attribute"),
+                ("expression_list", "tuple"),
+                ("pattern_list", "tuple_pattern"),
+            ],
+            optional_parens: &["tuple", "tuple_pattern", "import_from_statement"],
+            unwrap: python_unwrap,
+            decode_strings: false,
         },
         Language::Go => Rules {
             comments: &["comment"],
@@ -86,6 +233,10 @@ pub(crate) fn rules(language: Language) -> Rules {
             single_comma: &[],
             strings: &[],
             dropped: &[],
+            renamed: &[],
+            optional_parens: &[],
+            unwrap: no_unwrap,
+            decode_strings: false,
         },
     }
 }
@@ -93,6 +244,9 @@ pub(crate) fn rules(language: Language) -> Rules {
 impl Rules {
     pub(crate) fn is_directive(&self, text: &str) -> bool {
         (self.directive)(text)
+    }
+    pub(crate) fn is_comment(&self, kind: &str) -> bool {
+        self.comments.contains(&kind)
     }
 }
 fn closing(kind: &str) -> bool {
@@ -120,9 +274,15 @@ pub(crate) struct Walk<'a> {
     pub src: &'a [u8],
     pub hasher: &'a mut blake3::Hasher,
     pub mask: Option<usize>,
+    /// A readable copy of the stream, for corpus triage (never hashed).
+    pub trace: Option<&'a mut Vec<String>>,
 }
 impl Walk<'_> {
     fn bytes(&mut self, tag: u8, parts: &[&[u8]]) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            let parts: Vec<_> = parts.iter().map(|p| String::from_utf8_lossy(p)).collect();
+            trace.push(format!("{}{}", tag as char, parts.join(" ")));
+        }
         self.hasher.update(&[tag]);
         for p in parts {
             self.hasher.update(&(p.len() as u64).to_le_bytes());
@@ -143,6 +303,21 @@ impl Walk<'_> {
         }
         if kind == ";" && !child.is_named() && self.rules.drop_semicolons {
             return true;
+        }
+        if matches!(kind, "(" | ")")
+            && !child.is_named()
+            && self.rules.optional_parens.contains(&parent.kind())
+        {
+            return true;
+        }
+        if matches!(kind, "|" | "&")
+            && index == 0
+            && matches!(parent.kind(), "union_type" | "intersection_type")
+        {
+            return true; // prettier's leading `|` on a multi-line union
+        }
+        if kind == "," && parent.kind() == "match_arm" {
+            return true; // required or not by the arm's form, never meaning
         }
         if kind == "," && !child.is_named() {
             // Trailing comma: the next non-comment sibling closes the list.
@@ -178,9 +353,12 @@ impl Walk<'_> {
         false
     }
     /// Parentheses that only group (precedence is already in the tree's shape).
-    fn transparent(&self, node: Node) -> bool {
+    fn transparent(&self, node: Node) -> Option<Unwrap> {
+        if let Some(how) = (self.rules.unwrap)(node) {
+            return Some(how);
+        }
         if !self.rules.transparent_parens || node.kind() != "parenthesized_expression" {
-            return false;
+            return None;
         }
         let statement_string = node
             .parent()
@@ -188,7 +366,29 @@ impl Walk<'_> {
             && node
                 .named_children(&mut node.walk())
                 .any(|c| is_string(self.rules, c));
-        !statement_string && !contains_optional_chain(node)
+        (!statement_string && !contains_optional_chain(node)).then_some(Unwrap::Named)
+    }
+    /// A JS/TS string's content without its quotes, `\'` and `\"` unescaped.
+    fn decoded(&self, node: Node) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut c = node.walk();
+        for child in node.named_children(&mut c) {
+            let text = self.text(child);
+            match (child.kind(), text) {
+                ("escape_sequence", b"\\'") => out.push(b'\''),
+                ("escape_sequence", b"\\\"") => out.push(b'"'),
+                _ => out.extend_from_slice(text),
+            }
+        }
+        out
+    }
+    fn kind<'n>(&self, node: Node<'n>) -> &'n str {
+        let kind = node.kind();
+        self.rules
+            .renamed
+            .iter()
+            .find(|(from, _)| *from == kind)
+            .map_or(kind, |(_, to)| to)
     }
     /// Streams one node's subtree (iteratively: no recursion on deep trees).
     pub fn node(&mut self, root: Node) {
@@ -200,6 +400,9 @@ impl Walk<'_> {
         while let Some(step) = stack.pop() {
             let node = match step {
                 Step::Close => {
+                    if let Some(trace) = self.trace.as_deref_mut() {
+                        trace.push(")".into());
+                    }
                     self.hasher.update(b")");
                     continue;
                 }
@@ -228,19 +431,37 @@ impl Walk<'_> {
             if node.kind() == "string_end" {
                 continue;
             }
+            if self.rules.decode_strings && is_string(self.rules, node) {
+                let text = self.decoded(node);
+                let key = node
+                    .parent()
+                    .and_then(|p| p.child_by_field_name("key"))
+                    .is_some_and(|k| k.id() == node.id());
+                let identifier = text.first().is_some_and(|b| !b.is_ascii_digit())
+                    && text
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$'));
+                let kind: &[u8] = if key && identifier {
+                    b"property_identifier"
+                } else {
+                    b"string"
+                };
+                self.bytes(b'L', &[kind, &text]);
+                continue;
+            }
             if kept.is_empty() {
                 let text = self.text(node).to_vec();
-                self.bytes(b'L', &[node.kind().as_bytes(), &text]);
+                self.bytes(b'L', &[self.kind(node).as_bytes(), &text]);
                 continue;
             }
             let transparent = self.transparent(node);
-            if !transparent {
-                self.bytes(b'(', &[node.kind().as_bytes()]);
+            if transparent.is_none() {
+                self.bytes(b'(', &[self.kind(node).as_bytes()]);
                 stack.push(Step::Close);
             }
             for child in kept.into_iter().rev() {
-                if transparent && !child.is_named() {
-                    continue; // the grouping parentheses themselves
+                if transparent == Some(Unwrap::Named) && !child.is_named() {
+                    continue; // the grouping punctuation itself
                 }
                 stack.push(Step::Visit(child));
             }
