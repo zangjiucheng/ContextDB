@@ -187,19 +187,28 @@ pub fn prepare_scan(
     let hosts = hosts(targets);
     let hosts_only: BTreeSet<String> = hosts.difference(files).cloned().collect();
 
-    // Parse each host once, within the byte budget and the deadline.
-    let mut parsed: BTreeMap<String, ParsedFile> = BTreeMap::new();
-    let mut budget = PARSE_BUDGET;
-    for (path, content) in bytes {
-        budget = budget
-            .checked_sub(content.len())
-            .ok_or_else(|| unavailable("parse byte budget"))?;
-        let language = Language::of_path(path).expect("hosts have a language");
-        parsed.insert(
-            path.clone(),
-            parse(language, content, deadline).map_err(|e| unavailable(e.0))?,
-        );
+    // Parse each distinct host content once, within the byte budget (checked
+    // before any parse) and the deadline.
+    let language = |path: &String| Language::of_path(path).expect("hosts have a language");
+    let distinct: BTreeSet<(Language, &[u8])> = bytes
+        .iter()
+        .map(|(path, content)| (language(path), content.as_slice()))
+        .collect();
+    if distinct.iter().map(|(_, c)| c.len()).sum::<usize>() > PARSE_BUDGET {
+        return Err(unavailable("parse byte budget"));
     }
+    let mut by_content: BTreeMap<(Language, &[u8]), ParsedFile> = BTreeMap::new();
+    for (language, content) in distinct {
+        let file = parse(language, content, deadline).map_err(|e| unavailable(e.0))?;
+        by_content.insert((language, content), file);
+    }
+    let parsed: BTreeMap<String, ParsedFile> = bytes
+        .iter()
+        .map(|(path, content)| {
+            let file = &by_content[&(language(path), content.as_slice())];
+            (path.clone(), file.clone())
+        })
+        .collect();
 
     let mut observations: BTreeMap<String, (String, AnchorObservation)> = BTreeMap::new();
     for path in files {

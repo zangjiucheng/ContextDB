@@ -1,7 +1,10 @@
 //! Symbol tables per language (ADR 0012 §2). Only declarations reachable
 //! through item nesting are symbols; nothing inside a function body is.
 //! Same-path declarations are grouped in source order.
-use crate::walk::Rules;
+use crate::{
+    Unavailable,
+    walk::{Clock, Rules},
+};
 use contextdb_anchors::{Language, symbol::key_hash};
 use std::collections::BTreeMap;
 use tree_sitter::Node;
@@ -15,11 +18,20 @@ pub(crate) struct Occurrence<'t> {
 }
 pub(crate) type Table<'t> = BTreeMap<String, Vec<Occurrence<'t>>>;
 
+/// Containers nested deeper than this hold no symbols (ADR 0012 §4): the
+/// extraction recursion stays far inside the observer's stack.
+pub const MAX_NESTING: usize = 256;
+
 pub(crate) struct Extract<'a, 't> {
     pub language: Language,
     pub rules: &'a Rules,
     pub src: &'a [u8],
     pub table: Table<'t>,
+    pub clock: Clock,
+    /// Containers entered and not yet left.
+    pub depth: usize,
+    /// Set when the deadline passed; the table is then incomplete.
+    pub failed: Option<Unavailable>,
 }
 fn ident_ok(s: &str) -> bool {
     !s.is_empty()
@@ -60,10 +72,22 @@ impl<'a, 't> Extract<'a, 't> {
     /// Walks a container's children, collecting attachments that precede a
     /// declaration (attributes, decorators, directive comments).
     pub fn container(&mut self, node: Node<'t>, prefix: &[String]) {
+        if self.depth >= MAX_NESTING || self.failed.is_some() {
+            return;
+        }
+        self.depth += 1;
+        self.children(node, prefix);
+        self.depth -= 1;
+    }
+    fn children(&mut self, node: Node<'t>, prefix: &[String]) {
         let mut pending: Vec<Node<'t>> = Vec::new();
         let mut cursor = node.walk();
         let children: Vec<Node<'t>> = node.children(&mut cursor).collect();
         for child in children {
+            if let Err(e) = self.clock.tick() {
+                self.failed = Some(e);
+                return;
+            }
             match child.kind() {
                 "attribute_item" | "decorator" => {
                     pending.push(child);

@@ -1,9 +1,10 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.4, 2026-10-22. G0 passed after an independent
+Status: **accepted**, revision 0.5, 2026-10-23. G0 passed after an independent
 review, a closure check and a closure confirmation (§11). SPEC v1.6.5 mirrors it.
 r0.4 records implementation findings: walk revision 2 from the T45 formatter
-corpus, and four clarifications (§11).
+corpus, and four clarifications (§11). r0.5 records the G4 resource findings:
+a container nesting bound and the deadline over extraction and walk (§4, §11).
 
 ## 0. Scope and delivery
 
@@ -241,8 +242,14 @@ has errors, is:
   when it parses (reversible, same revision).
 
 **Resource bounds.** Parsing uses `parse_with_options` with a progress callback
-that cancels at the observer deadline; a cancelled parse is unavailable. A
-scan parses each distinct blob OID once and at most 32 MiB of host-file bytes
+that cancels at the observer deadline; extraction and the walk check the same
+deadline every 1,024 nodes (r0.5); a cancelled parse is unavailable. Both are
+iterative or bounded and linear in the tree: no step climbs to a parent or
+rescans a subtree. **Containers nested deeper than 256 levels (the file
+counts as one) hold no symbols**: extraction does not enter them, so an anchor
+on such a symbol observes Missing (r0.5). A
+scan parses each distinct host content once and at most 32 MiB of distinct
+host-file bytes, checked before any parse
 (≈ 3 s at the measured ≈ 9 ms per 100 KB, inside the 5 s observer deadline);
 beyond that the scan is unavailable. In `watch`, parse results are cached in memory by
 (raw blob OID, normaliser version), never by mtime (SPEC §3.5). A crash inside
@@ -507,3 +514,16 @@ Clarifications of existing behaviour: the walk's open/close markers (§4);
 preceding directive comments belong to the span (§4); a symbol path the
 grammar has no table entry for observes Missing; the descriptor's
 name-masked hash field is named `masked`.
+
+**r0.5 G4 resource findings (2026-10-23)**: an 80 KB file of 10,000 nested
+`mod a {` overflowed the observer's stack (extraction recursed per container),
+and an 8 KB file of 1,000 nested modules took 29 s against the 5 s deadline:
+only the parse checked the deadline, and tree-sitter's `parent()` (which
+descends from the root) and indexed `child(i)` made the walk super-linear.
+Extraction now stops at 256 nested containers, extraction and walk check the
+deadline, ancestor facts (inside `ERROR`, optional chains) are computed in one
+pass, and parents are carried down the walk. Hashes are unchanged for every
+input within the bound (the six T45 corpora, 6,820 symbols, are identical);
+walk revision 2 was not yet released, so the bound is part of it and no
+version changes. The scan also dedupes identical host contents before the
+parse budget, as this section always said (per blob OID).

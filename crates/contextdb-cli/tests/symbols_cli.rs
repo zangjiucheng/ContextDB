@@ -389,3 +389,150 @@ fn normaliser_version_mismatch_needs_migrate() {
     drop(rig.daemon);
     let _ = std::fs::remove_dir_all(&rig.root);
 }
+
+/// A repository with `src/lib.rs` committed and a daemon on `.contextdb/db`.
+fn rig(name: &str, files: &[(&str, &str)]) -> Rig {
+    let root = temp(name);
+    git(&root, &["init", "-q"]);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), LIB).unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "init"]);
+    let data = root.join(".contextdb/db");
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    Rig { root, data, daemon }
+}
+impl Rig {
+    /// The scope's committed watermark and anchors.
+    fn state(&self) -> Response {
+        let scope = self.scope();
+        let mut r = self
+            .client(Channel::Observer)
+            .call(&Request::AnchorState { scope })
+            .unwrap()
+            .response;
+        if let Response::AnchorState { anchors, .. } = &mut r {
+            anchors.sort_by(|a, b| a.key.cmp(&b.key));
+        }
+        r
+    }
+}
+/// Many functions: a host file that takes a while to parse.
+fn big_rust(functions: usize, value: u32) -> String {
+    let mut s = format!("pub fn f0() -> u32 {{ {value} }}\n");
+    for i in 1..functions {
+        s += &format!("pub fn f{i}() -> u32 {{ {i} }}\n");
+    }
+    s
+}
+
+/// G4: the observer killed at any point of a scan (capture, parse, walk,
+/// submit) publishes all of the scan or nothing; the next scan converges.
+#[test]
+fn observer_killed_mid_scan_publishes_all_or_nothing() {
+    let rig = rig("g4-kill", &[("big.rs", &big_rust(30_000, 0))]);
+    let (rc, out) = ctx(&[
+        "anchors",
+        "add",
+        rig.ds(),
+        rig.rs(),
+        "src/lib.rs#foo",
+        "big.rs#f0",
+        "big.rs#f1",
+    ]);
+    assert_eq!(rc, 0, "{out}");
+    // Both hosts change: foo's and f0's bodies, so a scan commits.
+    rig.write(&LIB.replace("x + 1", "x + 9"));
+    std::fs::write(rig.root.join("big.rs"), big_rust(30_000, 7)).unwrap();
+    let before = rig.state();
+
+    // How long one observation takes here (listing parses, commits nothing).
+    let started = std::time::Instant::now();
+    let (rc, out) = ctx(&["anchors", "symbols", rig.rs(), "big.rs"]);
+    assert_eq!(rc, 0, "{}", &out[out.len().saturating_sub(300)..]);
+    let observe = started.elapsed();
+    assert_eq!(rig.state(), before, "listing commits nothing");
+
+    let mut seen = Vec::new();
+    let mut killed = 0;
+    for tenth in 0..=15u32 {
+        let mut scan = Command::new(env!("CARGO_BIN_EXE_ctx"))
+            .args(["anchors", "scan", rig.ds(), rig.rs()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(observe * tenth / 10);
+        let finished = scan.try_wait().unwrap().is_some();
+        let _ = scan.kill();
+        scan.wait().unwrap();
+        seen.push(rig.state());
+        if finished {
+            break;
+        }
+        killed += 1;
+    }
+    assert!(killed > 0, "no scan was interrupted");
+    let (rc, out) = rig.scan();
+    assert_eq!(rc, 0, "{out}");
+    let after = rig.state();
+    assert_ne!(after, before, "the scan has changes to publish");
+    for (i, state) in seen.iter().enumerate() {
+        assert!(
+            *state == before || *state == after,
+            "run {i}: partial state {state:?}"
+        );
+    }
+    let published = seen.iter().filter(|s| **s == after).count();
+    eprintln!(
+        "observe {observe:?}: {killed} scans killed, {} before / {published} published",
+        seen.len() - published
+    );
+    assert_eq!(rig.scan().0, 0);
+    assert_eq!(rig.state(), after, "converged");
+    drop(rig.daemon);
+    let _ = std::fs::remove_dir_all(&rig.root);
+}
+
+/// G4: host files beyond the 32 MiB parse budget make the scan unavailable
+/// before any parse (nothing committed); identical contents count once.
+#[test]
+fn parse_byte_budget_end_to_end() {
+    let hosts = ["a.rs", "b.rs", "c.rs"];
+    let small: Vec<(&str, &str)> = hosts.iter().map(|h| (*h, "pub fn f() {}\n")).collect();
+    let rig = rig("g4-budget", &small);
+    let mut args = vec!["anchors", "add", rig.ds(), rig.rs()];
+    let keys: Vec<String> = hosts.iter().map(|h| format!("{h}#f")).collect();
+    args.extend(keys.iter().map(String::as_str));
+    let (rc, out) = ctx(&args);
+    assert_eq!(rc, 0, "{out}");
+    let before = rig.state();
+
+    // 3 × 11 MiB of distinct contents: over budget.
+    let pad = 11 << 20;
+    for (i, h) in hosts.iter().enumerate() {
+        let text = format!("pub fn f() {{}}\n{}\n", format!("// {i}\n").repeat(pad / 5));
+        std::fs::write(rig.root.join(h), text).unwrap();
+    }
+    let started = std::time::Instant::now();
+    let (rc, out) = rig.scan();
+    assert_ne!(rc, 0, "{out}");
+    assert!(out.contains("parse byte budget"), "{out}");
+    assert_eq!(rig.state(), before, "nothing committed");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+    // The same contents in all three: 11 MiB distinct, within budget (the
+    // parse may still meet the deadline in an unoptimised build).
+    let text = format!("pub fn f() {{}}\n{}\n", "// same\n".repeat(pad / 8));
+    for h in hosts {
+        std::fs::write(rig.root.join(h), &text).unwrap();
+    }
+    let (_, out) = rig.scan();
+    assert!(!out.contains("parse byte budget"), "{out}");
+    drop(rig.daemon);
+    let _ = std::fs::remove_dir_all(&rig.root);
+}

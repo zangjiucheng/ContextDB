@@ -6,6 +6,7 @@ pub mod observer;
 mod walk;
 
 use contextdb_anchors::Language;
+pub use extract::MAX_NESTING;
 use std::{collections::BTreeMap, ops::ControlFlow, time::Instant};
 
 /// Walk revision (ADR 0012 §4); part of every normaliser version.
@@ -79,6 +80,10 @@ fn tree(
     bytes: &[u8],
     deadline: Instant,
 ) -> Result<tree_sitter::Tree, Unavailable> {
+    // A small input can parse before the progress callback first runs.
+    if Instant::now() >= deadline {
+        return Err(Unavailable("parse deadline".into()));
+    }
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&grammar(language).0)
@@ -100,8 +105,36 @@ fn tree(
         .ok_or_else(|| Unavailable("parse deadline".into()))
 }
 
-/// Parses `bytes` and returns every symbol (ADR 0012 §2, §4). Parsing is
-/// cancelled at `deadline` (unavailable, never a partial result).
+/// The symbol table of a parsed tree, with the facts and the clock the walk
+/// goes on with; unavailable at the deadline.
+fn table<'t>(
+    language: Language,
+    rules: &walk::Rules,
+    bytes: &[u8],
+    root: tree_sitter::Node<'t>,
+    deadline: Instant,
+) -> Result<(extract::Table<'t>, walk::Facts, walk::Clock), Unavailable> {
+    let mut clock = walk::Clock::new(deadline);
+    let facts = walk::Facts::of(rules, root, &mut clock)?;
+    let mut extract = extract::Extract {
+        language,
+        rules,
+        src: bytes,
+        table: BTreeMap::new(),
+        clock,
+        depth: 0,
+        failed: None,
+    };
+    extract.container(root, &[]);
+    if let Some(e) = extract.failed {
+        return Err(e);
+    }
+    Ok((extract.table, facts, extract.clock))
+}
+
+/// Parses `bytes` and returns every symbol (ADR 0012 §2, §4). Parsing,
+/// extraction and the walk are cancelled at `deadline` (unavailable, never a
+/// partial result).
 pub fn parse(
     language: Language,
     bytes: &[u8],
@@ -110,15 +143,9 @@ pub fn parse(
     let tree = tree(language, bytes, deadline)?;
     let root = tree.root_node();
     let rules = walk::rules(language);
-    let mut extract = extract::Extract {
-        language,
-        rules: &rules,
-        src: bytes,
-        table: BTreeMap::new(),
-    };
-    extract.container(root, &[]);
+    let (table, facts, mut clock) = table(language, &rules, bytes, root, deadline)?;
     let mut symbols = BTreeMap::new();
-    for (path, occurrences) in extract.table {
+    for (path, occurrences) in table {
         let mut hash = blake3::Hasher::new();
         let mut masked = blake3::Hasher::new();
         let mut error = false;
@@ -126,23 +153,21 @@ pub fn parse(
             hash.update(b"O");
             masked.update(b"O");
             for node in &occ.nodes {
-                error |= node.has_error() || node.is_missing() || inside_error(*node);
+                error |= node.has_error() || node.is_missing() || facts.under_error(*node);
+                // One pass feeds both streams; without a name node the
+                // masked stream is the plain one.
+                let name = occ.name.map_or(usize::MAX, |n| n.id());
                 walk::Walk {
                     rules: &rules,
+                    facts: &facts,
+                    clock: &mut clock,
                     src: bytes,
                     hasher: &mut hash,
-                    mask: None,
+                    masked: Some((&mut masked, name)),
                     trace: None,
+                    in_name: false,
                 }
-                .node(*node);
-                walk::Walk {
-                    rules: &rules,
-                    src: bytes,
-                    hasher: &mut masked,
-                    mask: occ.name.map(|n| n.id()),
-                    trace: None,
-                }
-                .node(*node);
+                .node(*node)?;
             }
         }
         symbols.insert(
@@ -160,17 +185,6 @@ pub fn parse(
         symbols,
     })
 }
-/// The node sits inside an `ERROR` node (error recovery wrapped it).
-fn inside_error(node: tree_sitter::Node) -> bool {
-    let mut n = node.parent();
-    while let Some(p) = n {
-        if p.is_error() {
-            return true;
-        }
-        n = p.parent();
-    }
-    false
-}
 
 /// Byte ranges of the comments the walk drops anywhere in the file (directive
 /// comments excluded), in source order: the T45 corpus edits them (ADR 0012
@@ -182,16 +196,20 @@ pub fn dropped_comments(
 ) -> Result<Vec<std::ops::Range<usize>>, Unavailable> {
     let tree = tree(language, bytes, deadline)?;
     let rules = walk::rules(language);
+    let mut clock = walk::Clock::new(deadline);
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
+    let mut cursor = tree.walk();
     while let Some(n) = stack.pop() {
+        clock.tick()?;
         if rules.is_comment(n.kind()) {
             if !rules.is_directive(&String::from_utf8_lossy(&bytes[n.byte_range()])) {
                 out.push(n.byte_range());
             }
             continue;
         }
-        stack.extend((0..n.child_count()).rev().filter_map(|i| n.child(i)));
+        let children: Vec<_> = n.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
     }
     Ok(out)
 }
@@ -206,14 +224,8 @@ pub fn trace(
 ) -> Result<Option<Vec<String>>, Unavailable> {
     let tree = tree(language, bytes, deadline)?;
     let rules = walk::rules(language);
-    let mut extract = extract::Extract {
-        language,
-        rules: &rules,
-        src: bytes,
-        table: BTreeMap::new(),
-    };
-    extract.container(tree.root_node(), &[]);
-    let Some(occurrences) = extract.table.remove(symbol) else {
+    let (mut table, facts, mut clock) = table(language, &rules, bytes, tree.root_node(), deadline)?;
+    let Some(occurrences) = table.remove(symbol) else {
         return Ok(None);
     };
     let mut lines = Vec::new();
@@ -223,12 +235,15 @@ pub fn trace(
         for node in &occ.nodes {
             walk::Walk {
                 rules: &rules,
+                facts: &facts,
+                clock: &mut clock,
                 src: bytes,
                 hasher: &mut sink,
-                mask: None,
+                masked: None,
                 trace: Some(&mut lines),
+                in_name: false,
             }
-            .node(*node);
+            .node(*node)?;
         }
     }
     Ok(Some(lines))
