@@ -249,9 +249,11 @@ rescans a subtree. **Containers nested deeper than 256 levels (the file
 counts as one) hold no symbols**: extraction does not enter them, so an anchor
 on such a symbol observes Missing (r0.5). A
 scan parses each distinct host content once and at most 32 MiB of distinct
-host-file bytes, checked before any parse
-(≈ 3 s at the measured ≈ 9 ms per 100 KB, inside the 5 s observer deadline);
-beyond that the scan is unavailable. In `watch`, parse results are cached in memory by
+host-file bytes, checked before any parse;
+beyond that the scan is unavailable. (r0.5: a whole scan — parse, extraction,
+walk — costs ≈ 0.38 s per MiB on the G5 baseline, not the parse-only
+≈ 9 ms per 100 KB, so the 5 s deadline binds at ≈ 13 MiB of distinct host
+bytes, before this budget.) In `watch`, parse results are cached in memory by
 (raw blob OID, normaliser version), never by mtime (SPEC §3.5). A crash inside
 the C runtime ends the observer process before anything is submitted: nothing
 is published and the scope lags (fail-closed).
@@ -526,4 +528,6 @@ pass, and parents are carried down the walk. Hashes are unchanged for every
 input within the bound (the six T45 corpora, 6,820 symbols, are identical);
 walk revision 2 was not yet released, so the bound is part of it and no
 version changes. The scan also dedupes identical host contents before the
-parse budget, as this section always said (per blob OID).
+parse budget, as this section always said (per blob OID). G5 measured the whole scan at ≈ 0.38 s per MiB of host bytes, so the
+deadline, not the 32 MiB budget, is the effective bound (≈ 13 MiB); §4 now
+says so.

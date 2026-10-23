@@ -1,0 +1,19 @@
+# P5b G5 symbol benchmark (symbol_bench), M1 Pro, 2026-10-23, tree e0950ae + symbol_bench (ADR 0012 r0.5 code), final run.
+# Rule (ADR 0012 §9, as P5a G5): P4 hook budgets (p95 ≤ 50 ms, p99 ≤ 100 ms) at every size; 10/100 symbol anchors certify every read without hook warnings; misses at 1,000 reported. Scan costs are reported.
+# Load at start: { 9.65 18.95 36.08 }
+P5b symbol benchmark; os=macos arch=aarch64 timeout_live_ms=40 observer_ms=5000 per_host=10 host_bytes=16384
+symbols=10 hosts=1 full_sync=false initial_scan_ms=18.484 certified_reads=10/10 steady_scan_p95_ms=10.166 edit_scan_p95_ms=9.627 hook_p95_ms=6.189 hook_p99_ms=9.895 hook_warnings=0/100
+symbols=100 hosts=10 full_sync=false initial_scan_ms=20.127 certified_reads=100/100 steady_scan_p95_ms=16.090 edit_scan_p95_ms=16.562 hook_p95_ms=8.130 hook_p99_ms=14.595 hook_warnings=0/100
+symbols=1000 hosts=100 full_sync=false initial_scan_ms=38.504 certified_reads=999/1000 steady_scan_p95_ms=41.767 edit_scan_p95_ms=42.505 hook_p95_ms=28.721 hook_p99_ms=36.672 hook_warnings=0/100
+symbols=10 hosts=1 full_sync=true initial_scan_ms=33.108 certified_reads=10/10 steady_scan_p95_ms=6.620 edit_scan_p95_ms=13.297 hook_p95_ms=5.759 hook_p99_ms=6.669 hook_warnings=0/100
+symbols=100 hosts=10 full_sync=true initial_scan_ms=25.676 certified_reads=100/100 steady_scan_p95_ms=16.184 edit_scan_p95_ms=20.723 hook_p95_ms=7.951 hook_p99_ms=10.719 hook_warnings=0/100
+symbols=1000 hosts=100 full_sync=true initial_scan_ms=48.521 certified_reads=999/1000 steady_scan_p95_ms=41.919 edit_scan_p95_ms=46.449 hook_p95_ms=27.804 hook_p99_ms=30.728 hook_warnings=0/100
+host_bytes=65280 initial_scan_ms=37.310 steady_scan_p95_ms=24.621
+host_bytes=261888 initial_scan_ms=113.724 steady_scan_p95_ms=95.461
+host_bytes=1048320 initial_scan_ms=398.430 steady_scan_p95_ms=387.336
+host_bytes=4194048 initial_scan_ms=1552.623 steady_scan_p95_ms=1540.080
+host_bytes=16776960 initial_scan=unavailable(parse deadline)
+p5b_g5_pass=true
+# Exit 0; load at end: { 7.76 16.45 33.79 }
+
+# Two earlier runs the same day (before unmeasured steady scans after an unavailable first scan were skipped) also gave p5b_g5_pass=true: hook p95 ≤ 27.4 ms, p99 ≤ 30.4 ms at 1,000 symbols; 998–999/1,000 certified reads.
