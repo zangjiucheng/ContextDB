@@ -470,9 +470,35 @@ pub fn shell_quote(path: &str) -> Result<String, String> {
     Ok(q)
 }
 /// Whether a handler is one of ours (`ctx-hook` at `exe`).
+/// Whether a hook handler is ContextDB's: this `ctx-hook`, or any program
+/// named `ctx-hook` wherever it is installed. An upgrade from another install
+/// path (e.g. a dogfood `.contextdb/bin`) therefore replaces the old entries
+/// instead of running both (ADR 0011 §9.6: every appender must announce).
 fn ours(handler: &Value, exe: &str) -> bool {
     let cmd = handler.get("command").and_then(Value::as_str).unwrap_or("");
-    cmd == exe || cmd.starts_with(&format!("{} ", shell_quote(exe).unwrap_or_default()))
+    if cmd == exe || cmd.starts_with(&format!("{} ", shell_quote(exe).unwrap_or_default())) {
+        return true;
+    }
+    // Claude: the command is the program; Codex: a shell line whose first
+    // word is the program, possibly double-quoted by `shell_quote`.
+    let program = match cmd.strip_prefix('"') {
+        Some(rest) => {
+            let mut out = String::new();
+            let mut chars = rest.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    '"' => break,
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+        None => cmd.split(' ').next().unwrap_or("").to_owned(),
+    };
+    Path::new(&program)
+        .file_name()
+        .is_some_and(|n| n == "ctx-hook")
 }
 /// Removes our handlers (and groups left empty) from a hooks object.
 fn strip(hooks: &mut serde_json::Map<String, Value>, exe: &str) {
@@ -1062,6 +1088,60 @@ mod tests {
         assert_eq!(shell_quote("a\"$b`c\\").unwrap(), "\"a\\\"\\$b\\`c\\\\\"");
         assert_eq!(mcp_server_name("my.ctx").unwrap(), "my_ctx");
         assert!(mcp_server_name("...").is_err());
+    }
+    #[test]
+    fn upgrading_from_another_install_path_replaces_the_old_entries() {
+        for harness in ["claude", "codex"] {
+            let mut cfg = json!({ "hooks": { "PreToolUse": [
+                { "matcher": "Bash", "hooks": [{ "type": "command", "command": "rtk hook claude" }] }
+            ] } });
+            merge_hooks(
+                &mut cfg,
+                harness,
+                "/repo/.contextdb/bin/ctx-hook",
+                "contextdb",
+                false,
+            )
+            .unwrap();
+            merge_hooks(
+                &mut cfg,
+                harness,
+                "/home/u/.local/bin/my dir/ctx-hook",
+                "contextdb",
+                false,
+            )
+            .unwrap();
+            let text = cfg.to_string();
+            assert!(
+                !text.contains(".contextdb/bin"),
+                "{harness}: old entries left: {text}"
+            );
+            assert!(
+                text.contains("rtk hook claude"),
+                "{harness}: other hooks kept"
+            );
+            let mut fresh = json!({ "hooks": { "PreToolUse": [
+                { "matcher": "Bash", "hooks": [{ "type": "command", "command": "rtk hook claude" }] }
+            ] } });
+            merge_hooks(
+                &mut fresh,
+                harness,
+                "/home/u/.local/bin/my dir/ctx-hook",
+                "contextdb",
+                false,
+            )
+            .unwrap();
+            assert_eq!(cfg, fresh, "{harness}: same as a fresh install");
+        }
+        // Another tool whose name merely contains ctx-hook is not ours.
+        assert!(!ours(
+            &json!({ "command": "/bin/ctx-hook-wrapper claude" }),
+            "/x/ctx-hook"
+        ));
+        assert!(ours(
+            &json!({ "command": "\"/a b/ctx-hook\" codex stop" }),
+            "/x/ctx-hook"
+        ));
     }
     #[test]
     fn report_counts_and_thresholds() {
