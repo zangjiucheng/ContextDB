@@ -1,8 +1,23 @@
 name: Workspace checks
 
+# Documentation-only changes skip the checks. The P5a G6 review package
+# under docs/gates/p5a-g6/ is read by scripts/test_p5a_review.py, so it
+# still triggers them. (Later patterns override earlier ones.)
 on:
   push:
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs/**'
+      - 'docs/gates/p5a-g6/**'
+      - '!LICENSE'
   pull_request:
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs/**'
+      - 'docs/gates/p5a-g6/**'
+      - '!LICENSE'
 
 permissions:
   contents: read
