@@ -244,8 +244,7 @@ fn codex_mcp(project: &Path, mcp: &Path, dir: &Path) -> Result<&'static str, Str
     Ok(if start.is_some() { "updated" } else { "added" })
 }
 
-const SETUP_USAGE: &str =
-    "usage: ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-start]";
+const SETUP_USAGE: &str = "usage: ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-service] [--no-start]";
 
 /// `ctx setup`: data dir, daemon, MCP registration and hooks in one step.
 pub fn setup(args: &[String]) -> Result<u8, String> {
@@ -276,10 +275,23 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
     if let Some(p) = exclude(&project, &dir)? {
         println!("  git        added {p} to .git/info/exclude");
     }
+    // Whether ctxd still needs a login service afterwards (for the hint).
+    let mut unmanaged = true;
     if args.iter().any(|a| a == "--no-start") {
         println!("  ctxd       not started (--no-start)");
+    } else if args.iter().any(|a| a == "--no-service") {
+        println!(
+            "  ctxd       {} (--no-service)",
+            ensure_daemon(&dir, &ctxd)?
+        );
     } else {
-        println!("  ctxd       {}", ensure_daemon(&dir, &ctxd)?);
+        match ensure_service(&dir, &ctxd)? {
+            Daemon::Service(how) => {
+                unmanaged = false;
+                println!("  ctxd       {how}");
+            }
+            Daemon::Detached(how) => println!("  ctxd       {how}"),
+        }
     }
     for h in harnesses {
         let verb = match *h {
@@ -336,10 +348,12 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
     if harnesses.contains(&"codex") {
         println!("  - Codex: open /hooks (or accept the startup review) to trust the new hooks.");
     }
-    println!(
-        "  - Keep ctxd running across logins: ctx service install {}",
-        dir.display()
-    );
+    if unmanaged {
+        println!(
+            "  - Keep ctxd running across logins: ctx service install {}",
+            dir.display()
+        );
+    }
     println!("  - Default gating is warn; see README (Hooks 与 action gating) to tune it.");
     Ok(0)
 }
@@ -424,6 +438,104 @@ fn uid() -> Result<String, String> {
 
 const SERVICE_USAGE: &str = "usage: ctx service install|uninstall|restart|status <dir> [--no-load]";
 
+/// Writes the user-service unit for `dir`; its path.
+fn write_unit(dir: &Path, ctxd: &Path) -> Result<PathBuf, String> {
+    let (file, text) = unit(&home()?, dir, ctxd)?;
+    replace(&file, &text)?;
+    Ok(file)
+}
+/// Asks the service manager to (re)load the unit, which starts `ctxd`
+/// (`RunAtLoad`, `enable --now`). False when the manager refuses; an error
+/// when it is missing.
+fn load_unit(dir: &Path, file: &Path) -> Result<bool, String> {
+    let name = label(dir)?;
+    if cfg!(target_os = "macos") {
+        let domain = format!("gui/{}", uid()?);
+        let _ = run("launchctl", &["bootout", &format!("{domain}/{name}")]);
+        run("launchctl", &["bootstrap", &domain, utf8(file)?])
+    } else {
+        Ok(run("systemctl", &["--user", "daemon-reload"])?
+            && run(
+                "systemctl",
+                &["--user", "enable", "--now", &format!("{name}.service")],
+            )?)
+    }
+}
+/// Waits until a `ctxd` speaking this protocol holds the lease of `dir`.
+fn wait_live(dir: &Path, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if lease::read_lease(&dir.join("ctxd.lease"))
+            .filter(lease::Lease::is_live)
+            .is_some_and(|l| l.protocol == PROTOCOL_VERSION)
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// What `ctx setup` did for the daemon.
+enum Daemon {
+    /// A service now runs `ctxd` (installed or reloaded here, or already).
+    Service(String),
+    /// A `ctxd` runs outside any service (started by hand, or the service
+    /// manager was unavailable and setup started it detached).
+    Detached(String),
+}
+
+/// `ctx setup`'s daemon step: by default the per-data-dir user service runs
+/// `ctxd`, so it starts at login and restarts after a failure. A `ctxd`
+/// already running is never stopped. Without a usable service manager (an
+/// SSH session, CI, no `systemd --user`) setup starts `ctxd` detached and
+/// says so.
+fn ensure_service(dir: &Path, ctxd: &Path) -> Result<Daemon, String> {
+    let name = label(dir)?;
+    let (file, _) = unit(&home()?, dir, ctxd)?;
+    if let Some(l) = lease::read_lease(&dir.join("ctxd.lease")).filter(lease::Lease::is_live) {
+        if l.protocol != PROTOCOL_VERSION {
+            return Err(format!(
+                "the ctxd serving {} speaks protocol {}, this ctx {}: stop it and start the matching build (not changed)",
+                dir.display(),
+                l.protocol,
+                PROTOCOL_VERSION
+            ));
+        }
+        return Ok(if file.exists() {
+            Daemon::Service(format!("running under service {name}"))
+        } else {
+            Daemon::Detached(format!(
+                "already running (pid {}), started outside the login service; to hand it over: ctx shutdown {} && ctx setup",
+                l.pid,
+                dir.display()
+            ))
+        });
+    }
+    let file = write_unit(dir, ctxd)?;
+    match load_unit(dir, &file) {
+        Ok(true) if wait_live(dir, Duration::from_secs(10)) => Ok(Daemon::Service(format!(
+            "started by service {name} (starts at login, restarts after a failure)"
+        ))),
+        Ok(true) => Err(format!(
+            "service {name} loaded but ctxd did not come up within 10 s; see {}",
+            dir.join("ctxd.log").display()
+        )),
+        loaded => {
+            // No usable service manager: no unit left behind, ctxd detached.
+            let why = match loaded {
+                Err(e) => e,
+                _ => "the service manager refused it".into(),
+            };
+            let _ = std::fs::remove_file(&file);
+            let started = ensure_daemon(dir, ctxd)?;
+            Ok(Daemon::Detached(format!(
+                "{started} (detached: no login service, {why})"
+            )))
+        }
+    }
+}
+
 /// `ctx service`: a user service (launchd on macOS, systemd --user elsewhere)
 /// that starts `ctxd <dir>` at login and restarts it after a failure.
 /// `--no-load` writes or removes the unit without asking the service manager.
@@ -449,22 +561,10 @@ pub fn service(args: &[String]) -> Result<u8, String> {
                     dir.display()
                 ));
             }
-            let (file, text) = unit(&home()?, &dir, &ctxd)?;
-            replace(&file, &text)?;
+            let file = write_unit(&dir, &ctxd)?;
             println!("wrote {}", file.display());
             if load {
-                let ok = if mac {
-                    let domain = format!("gui/{}", uid()?);
-                    let _ = run("launchctl", &["bootout", &format!("{domain}/{name}")]);
-                    run("launchctl", &["bootstrap", &domain, utf8(&file)?])?
-                } else {
-                    run("systemctl", &["--user", "daemon-reload"])?
-                        && run(
-                            "systemctl",
-                            &["--user", "enable", "--now", &format!("{name}.service")],
-                        )?
-                };
-                if !ok {
+                if !load_unit(&dir, &file)? {
                     return Err(format!("the service manager refused {name}"));
                 }
                 println!("loaded {name}; ctxd now starts at login and restarts after a failure");

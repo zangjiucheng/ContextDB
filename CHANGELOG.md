@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `ctx setup` now runs `ctxd` through the per-repository login service (launchd / systemd --user) by default, so it starts at login and restarts after a crash. A running `ctxd` is never stopped; without a usable service manager setup starts it detached and says so; `--no-service` keeps the old behaviour.
 - 0.1.3: crate versions follow the release tag. Includes P5b walk 3 (same-file context and the trailing-comma fix). **Symbol anchors made with an earlier walk need `ctx anchors migrate`.** File anchors and the protocol (3) are unchanged.
 - P5b G6 passes (walk 3 retest, [report](docs/gates/p5b-g6-r2-report.md)) under the owner's convention that a pure move invalidates (SPEC v1.6.7, ADR 0012 r0.8, decided after the labels and disclosed): symbol FI 18.7 % ≤ ½ × file level 79.7 %, missed +0.0 pp; under the pre-registered reading FI is 70.4 % (fail). `symbol_replay score --moves-invalidate`.
 - P5b normaliser walk 3 (ADR 0012 r0.7, SPEC v1.6.6): a symbol's revision also covers the same-file items it names (other symbols, imports by source path, Python module-level assignments), so a changed helper, constant or import re-revisions it; span hashes (T45) are unchanged. **Symbol anchors need `ctx anchors migrate`.** The first G6 failed (symbol FI 34.2 %, missed +13.1 pp, [report](docs/gates/p5b-g6-report.md)); the owner set FI ≤ ½ × file level, and a retest on disjoint symbols is fixed before labelling.

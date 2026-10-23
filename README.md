@@ -95,15 +95,12 @@ curl -fsSL https://raw.githubusercontent.com/zangjiucheng/ContextDB/main/install
 # 2. Connect a repository in one step
 cd /path/to/repo
 ctx setup                          # Claude Code and Codex by default; --harness claude|codex for one
-
-# 3. Optional: start ctxd at login and restart it after a crash
-ctx service install .contextdb/db  # launchd on macOS, systemd --user on Linux
 ```
 
 `ctx setup`:
 
 - creates the data directory (default `<repo>/.contextdb/db`) and adds it to `.git/info/exclude`;
-- starts `ctxd` (if a `ctxd` speaking another protocol version already serves the directory, it reports an error and changes nothing);
+- starts `ctxd` through a per-repository user service (launchd on macOS, systemd `--user` on Linux), so it starts at login and restarts after a crash. A `ctxd` that is already running is left alone. If it was started by hand, `ctx shutdown <dir>` followed by `ctx setup` hands it to the service. Without a usable service manager (an SSH session, CI), `ctxd` is started detached and setup says so. `--no-service` starts it detached on purpose; `--no-start` starts nothing. If a `ctxd` speaking another protocol version already serves the directory, setup reports an error and changes nothing;
 - registers the `contextdb` MCP server per project: `.mcp.json` for Claude Code, `.codex/config.toml` for Codex, keeping all other configuration;
 - installs the hooks for each harness (`.claude/settings.local.json`, `.codex/hooks.json`) with the default gating mode `warn`;
 - keeps the files it writes out of Git, since they hold machine-specific paths: untracked ones are added to `.git/info/exclude`, and a tracked one (e.g. a team `.mcp.json`) gets a warning. Commit `.contextdb/gating.toml` and `.contextdb/policy.toml` to share gating and policy.

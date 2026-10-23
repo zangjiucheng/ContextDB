@@ -110,5 +110,5 @@ fi
 if [[ $setup == 1 ]]; then
   "$dir/ctx" setup
 else
-  say "next, in a repository: ctx setup   (then optionally: ctx service install .contextdb/db)"
+  say "next, in a repository: ctx setup   (also installs a login service that keeps ctxd running)"
 fi
