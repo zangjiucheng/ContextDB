@@ -1,0 +1,21 @@
+[package]
+name = "contextdb-symbols"
+description = "Symbol extraction and normalisation for code anchors (tree-sitter); never linked into ctxd."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contextdb-anchors.workspace = true
+blake3 = "=1.8.7"
+tree-sitter = "=0.27.1"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-python = "=0.25.0"
+tree-sitter-go = "=0.25.0"

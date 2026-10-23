@@ -98,6 +98,14 @@ class DependencyPolicyTests(unittest.TestCase):
         errors = check(data, policy)
         self.assertTrue(any("contextdb-hooks must not reach contextdb-store" in e for e in errors))
 
+    def test_daemon_must_not_reach_a_grammar(self):
+        # ADR 0012 §1: ctxd never links tree-sitter, even through anchors.
+        policy = {**POLICY, "grammar_free": {"crates": ["contextdb-daemon"]}}
+        data = metadata({"daemon": ["anchors"], "anchors": ["tree-sitter"]}, external=("tree-sitter",))
+        self.assertTrue(any("must not reach tree-sitter" in e for e in check(data, policy)))
+        clean = metadata({"daemon": ["anchors"], "symbols": ["tree-sitter"]}, external=("tree-sitter",))
+        self.assertFalse(any("must not reach tree-sitter" in e for e in check(clean, policy)))
+
     def test_dev_edges_to_the_store_are_allowed_for_light_clients(self):
         policy = dict(POLICY, light={"crates": ["contextdb-hooks"]})
         data = metadata({"core": ["model"], "hooks": ["store"]})

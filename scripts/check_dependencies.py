@@ -91,6 +91,14 @@ def check(metadata: dict, policy: dict) -> list[str]:
             if name in ("contextdb-store", "rusqlite", "libsqlite3-sys"):
                 errors.append(f"{crate} must not reach {name}")
 
+    for crate in policy.get("grammar_free", {}).get("crates", []):
+        if crate not in members:
+            continue
+        for dependency_id in reachable_normal(members[crate]):
+            name = packages[dependency_id]["name"]
+            if name.startswith("tree-sitter") or name == "contextdb-symbols":
+                errors.append(f"{crate} must not reach {name} (ADR 0012 §1)")
+
     for section, crate in (
         ("store", "contextdb-store"),
         ("daemon", "contextdb-daemon"),
@@ -99,6 +107,7 @@ def check(metadata: dict, policy: dict) -> list[str]:
         ("hooks", "contextdb-hooks"),
         ("cli", "contextdb-cli"),
         ("anchors", "contextdb-anchors"),
+        ("symbols", "contextdb-symbols"),
     ):
         reviewed = set(policy.get(section, {}).get("reviewed_external", []))
         if crate not in members:

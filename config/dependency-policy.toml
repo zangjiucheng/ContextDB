@@ -44,5 +44,14 @@ reviewed_external = ["toml", "serde_json", "blake3"]
 [anchors]
 reviewed_external = ["blake3", "nix", "sha1-checked", "sha2"]
 
+# ADR 0012 §1: tree-sitter and the pinned grammars, observer-side only.
+[symbols]
+reviewed_external = ["blake3", "tree-sitter", "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-javascript", "tree-sitter-python", "tree-sitter-go"]
+
 [light]
-crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors"]
+crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors", "contextdb-symbols"]
+
+# ADR 0012 §1: the daemon's live path never parses, so no grammar is linked
+# into ctxd or the crates it and the hooks are built from.
+[grammar_free]
+crates = ["contextdb-daemon", "contextdb-anchors", "contextdb-proto", "contextdb-hooks", "contextdb-mcp"]

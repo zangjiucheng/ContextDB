@@ -233,8 +233,9 @@ versions therefore cannot flip heads back and forth.
 **Descriptor** (model::Wire, as ADR 0011 §2): `CTXANC02`, u32LE version = 1,
 String repo-id, String path, String symbol (exact, decoded), u8 language
 (1 Rust, 2 TypeScript, 3 TSX, 4 JavaScript, 5 Python, 6 Go), String normaliser
-version, Vec<u8> normalised hash (32 bytes). No trailing bytes, no
-noncanonical forms. ContentHash = BLAKE3(descriptor). Identical normalised
+version, Vec<u8> normalised hash (32 bytes), Vec<u8> name-masked hash
+(32 bytes, §5; a function of the same span, so it does not affect
+deduplication). No trailing bytes, no noncanonical forms. ContentHash = BLAKE3(descriptor). Identical normalised
 syntax reuses the same RevisionId (SD18.4); restoring earlier text restores
 dependents. File OIDs are not in the descriptor, so edits elsewhere never
 create revisions.

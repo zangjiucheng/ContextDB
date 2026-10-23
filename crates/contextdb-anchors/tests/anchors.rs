@@ -896,3 +896,85 @@ fn classifier_rejects_partial_or_misrouted_manifest_and_suggests_only_equal_raw_
             .any(|b| std::str::from_utf8(b).is_ok_and(|t| t.contains("candidates=new.rs")))
     );
 }
+
+/// ADR 0012 §3: the symbol key encoding is reversible and fits the key
+/// alphabet; markers have fixed forms; `#` is refused in file paths.
+#[test]
+fn symbol_keys_round_trip_and_hash_markers_are_unambiguous() {
+    use contextdb_anchors::symbol::{decode_symbol, encode_symbol, key_hash, validate_symbol};
+    let h = key_hash("u8");
+    assert_eq!(h.len(), 8);
+    assert_eq!(
+        key_hash("Vec < u8 >"),
+        key_hash("Vec<u8>"),
+        "whitespace-free source text"
+    );
+    for symbol in [
+        "Store::open",
+        "MyType#Display::fmt",
+        "new_with_capacity",
+        "$jq",
+        &format!("T#From#{h}::from"),
+        &format!("#{h}#Tr#{h}::f"),
+        "#deadbeef#Deadbeef::g",
+        "C::#private::p",
+        "N::T",
+    ] {
+        let encoded = encode_symbol(symbol).unwrap();
+        assert!(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._:#-".contains(&b)),
+            "{encoded}"
+        );
+        assert_eq!(decode_symbol(&encoded).unwrap(), symbol, "{encoded}");
+    }
+    assert_eq!(
+        encode_symbol("MyType#Display::fmt").unwrap(),
+        "-my-type#-display:fmt"
+    );
+    assert_eq!(encode_symbol("new_with").unwrap(), "new.with");
+    // Not identifiers or misplaced markers.
+    for bad in [
+        "",
+        "a::",
+        "::a",
+        "a:::b",
+        "f\u{e9}",
+        "a b",
+        "#private",
+        "a#b#c#d",
+        "#zzzzzzzz",
+    ] {
+        assert!(validate_symbol(bad).is_err(), "{bad:?}");
+    }
+    assert!(decode_symbol("-").is_err() && decode_symbol("a-b-").is_err());
+    let repo = "a".repeat(32);
+    assert!(contextdb_anchors::validate_path(&repo, "src/a#b.rs").is_err());
+    assert!(contextdb_anchors::validate_legacy_path(&repo, "src/a#b.rs").is_ok());
+    // A descriptor round-trips and keys its symbol.
+    let d = contextdb_anchors::SymbolDescriptor {
+        repo: repo.clone(),
+        path: "src/lib.rs".into(),
+        symbol: "Store::open".into(),
+        language: contextdb_anchors::Language::Rust,
+        normaliser: "rust:x".into(),
+        hash: vec![1; 32],
+        masked: vec![2; 32],
+    };
+    let bytes = d.canonical_bytes();
+    let back = contextdb_anchors::AnchorDescriptor::from_bytes(&bytes).unwrap();
+    assert_eq!(back.key(), format!("code:{repo}/src/lib.rs#-store:open"));
+    assert_eq!(back.path(), "src/lib.rs");
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(contextdb_anchors::AnchorDescriptor::from_bytes(&trailing).is_err());
+    let wrong_language = contextdb_anchors::SymbolDescriptor {
+        language: contextdb_anchors::Language::Go,
+        ..d
+    };
+    assert!(
+        wrong_language.validate().is_err(),
+        "language follows the extension"
+    );
+}

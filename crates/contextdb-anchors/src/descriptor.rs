@@ -20,7 +20,19 @@ pub struct Descriptor {
     pub format: ObjectFormat,
     pub oid: Vec<u8>,
 }
+/// Registration rule (ADR 0011 §2, amended by ADR 0012 §3): the P5a path
+/// domain without `#`, which separates a host path from a symbol in keys.
 pub fn validate_path(repo: &str, path: &str) -> Result<(), WireError> {
+    validate_legacy_path(repo, path)?;
+    if path.contains('#') {
+        return Err(WireError::InvalidEncoding);
+    }
+    Ok(())
+}
+/// The P5a domain, which allowed `#`: decodes committed file descriptors so a
+/// legacy `#` path is observed as `Broken("reserved-character")`, not as a
+/// corrupt scope.
+pub fn validate_legacy_path(repo: &str, path: &str) -> Result<(), WireError> {
     if repo.len() != 32
         || !repo
             .bytes()
@@ -40,7 +52,7 @@ pub fn validate_path(repo: &str, path: &str) -> Result<(), WireError> {
 }
 impl Descriptor {
     pub fn validate(&self) -> Result<(), WireError> {
-        validate_path(&self.repo, &self.path)?;
+        validate_legacy_path(&self.repo, &self.path)?;
         if self.oid.len() != self.format.oid_len() {
             return Err(WireError::InvalidEncoding);
         }
