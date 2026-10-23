@@ -643,8 +643,11 @@ pub fn position(
     1u32.encode(&mut bytes);
     repo.to_owned().encode(&mut bytes);
     head.to_vec().encode(&mut bytes);
-    (versions.len() as u32).encode(&mut bytes);
-    for version in versions.values() {
+    // The header lists the versions sorted as strings (ADR 0012 §6), not in
+    // `Language` order.
+    let sorted: BTreeSet<&String> = versions.values().collect();
+    (sorted.len() as u32).encode(&mut bytes);
+    for version in sorted {
         version.encode(&mut bytes);
     }
     (entries.len() as u32).encode(&mut bytes);

@@ -118,18 +118,21 @@ pub fn reconcile(
     Err(unavailable("observer CAS retry limit"))
 }
 
-fn scan(
-    client: &mut Client,
-    repo: &Repo,
+/// What one scan observes: file anchors by path, symbol anchors by logical
+/// key → (host path, symbol).
+pub type Targets = (BTreeSet<String>, BTreeMap<String, (String, String)>);
+
+/// The committed anchors plus `added`, refusing (in `Mode::Scan`) a committed
+/// symbol head made with another normaliser version (ADR 0012 §4).
+pub fn targets(
+    scope: &str,
+    committed: &BTreeMap<String, (AnchorDescriptor, contextdb_anchors::AnchorState)>,
     added: &Added,
     mode: Mode,
-    deadline: Instant,
-) -> Result<contextdb_anchors::Prepared, Unavailable> {
-    let scope = repo.scope();
-    let (watermark, committed) = state_by_key(client, &scope)?;
+) -> Result<Targets, Unavailable> {
     let mut files: BTreeSet<String> = added.files.clone();
-    let mut symbols: BTreeMap<String, (String, String)> = BTreeMap::new(); // key → (host, symbol)
-    for (key, (d, _)) in &committed {
+    let mut symbols: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for (key, (d, _)) in committed {
         match d {
             AnchorDescriptor::File(f) => {
                 files.insert(f.path.clone());
@@ -153,15 +156,41 @@ fn scan(
         );
         symbols.insert(key, (path.clone(), symbol.clone()));
     }
-    let hosts: BTreeSet<String> = symbols.values().map(|(h, _)| h.clone()).collect();
-    let hosts_only: BTreeSet<String> = hosts.difference(&files).cloned().collect();
-    let all: BTreeSet<String> = files.union(&hosts).cloned().collect();
-    let (captured, bytes) = repo.capture_keeping(&all, &hosts, deadline)?;
+    Ok((files, symbols))
+}
+
+/// Whether a host's captured bytes differ from its blob at `HEAD`.
+pub type Edited<'a> = dyn FnMut(&str, &[u8]) -> Result<bool, Unavailable> + 'a;
+
+/// Host paths of the symbol targets.
+pub fn hosts(targets: &Targets) -> BTreeSet<String> {
+    targets.1.values().map(|(h, _)| h.clone()).collect()
+}
+
+/// The pure half of a scan (ADR 0012 §4–§6): from a capture of every target
+/// path (`entries`, at `head`) and the kept host bytes, parse each host once,
+/// derive every observation, rebind candidates and the position, and prepare
+/// the batch. `edited` answers whether a host is modified relative to `HEAD`.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_scan(
+    repo: &str,
+    targets: &Targets,
+    head: &[u8],
+    entries: &BTreeMap<String, Observation>,
+    bytes: &BTreeMap<String, Vec<u8>>,
+    committed: BTreeMap<String, contextdb_anchors::AnchorState>,
+    watermark: Option<Vec<u8>>,
+    edited: &mut Edited,
+    deadline: Instant,
+) -> Result<contextdb_anchors::Prepared, Unavailable> {
+    let (files, symbols) = targets;
+    let hosts = hosts(targets);
+    let hosts_only: BTreeSet<String> = hosts.difference(files).cloned().collect();
 
     // Parse each host once, within the byte budget and the deadline.
     let mut parsed: BTreeMap<String, ParsedFile> = BTreeMap::new();
     let mut budget = PARSE_BUDGET;
-    for (path, content) in &bytes {
+    for (path, content) in bytes {
         budget = budget
             .checked_sub(content.len())
             .ok_or_else(|| unavailable("parse byte budget"))?;
@@ -173,9 +202,9 @@ fn scan(
     }
 
     let mut observations: BTreeMap<String, (String, AnchorObservation)> = BTreeMap::new();
-    for path in &files {
-        let key = format!("{scope}/{path}");
-        let obs = match &captured.entries[path] {
+    for path in files {
+        let key = format!("code:{repo}/{path}");
+        let obs = match &entries[path] {
             Observation::Present(d) => {
                 AnchorObservation::Present(AnchorDescriptor::File(d.clone()))
             }
@@ -185,17 +214,17 @@ fn scan(
         observations.insert(key, (path.clone(), obs));
     }
     let mut versions = BTreeMap::new();
-    for (key, (host, symbol)) in &symbols {
+    for (key, (host, symbol)) in symbols {
         let language = Language::of_path(host).expect("symbol hosts have a language");
         versions.insert(language, normaliser_version(language));
         let label = format!("{host}#{symbol}");
-        let obs = match (&captured.entries[host], parsed.get(host)) {
+        let obs = match (&entries[host], parsed.get(host)) {
             (Observation::Missing, _) => AnchorObservation::Missing,
             (Observation::Broken(r), _) => AnchorObservation::Broken(r.clone()),
             (Observation::Present(_), Some(file)) => match file.symbols.get(symbol) {
                 Some(s) if !s.error => {
                     AnchorObservation::Present(AnchorDescriptor::Symbol(SymbolDescriptor {
-                        repo: repo.id.clone(),
+                        repo: repo.to_owned(),
                         path: host.clone(),
                         symbol: symbol.clone(),
                         language,
@@ -208,7 +237,7 @@ fn scan(
                 // The span or its enclosing chain has errors, or the symbol is
                 // not found in a file with errors (ADR 0012 §4).
                 _ => {
-                    if edited(repo, host, &bytes[host], deadline)? {
+                    if edited(host, &bytes[host])? {
                         return Err(unavailable(format!(
                             "{host} is being edited and does not parse"
                         )));
@@ -231,24 +260,44 @@ fn scan(
                 .insert(format!("{path}#{symbol}"));
         }
     }
-    let position = position(
-        &repo.id,
-        &captured.head,
-        &captured.entries,
-        &hosts_only,
-        &versions,
-    );
-    let prior = committed
-        .into_iter()
-        .map(|(k, (_, state))| (k, state))
-        .collect();
+    let position = position(repo, head, entries, &hosts_only, &versions);
     prepare_anchors(
-        &repo.id,
+        repo,
         &observations,
-        &prior,
+        &committed,
         &candidates,
         watermark,
         position,
     )
     .map_err(Unavailable)
+}
+
+fn scan(
+    client: &mut Client,
+    repo: &Repo,
+    added: &Added,
+    mode: Mode,
+    deadline: Instant,
+) -> Result<contextdb_anchors::Prepared, Unavailable> {
+    let scope = repo.scope();
+    let (watermark, committed) = state_by_key(client, &scope)?;
+    let targets = targets(&scope, &committed, added, mode)?;
+    let hosts = hosts(&targets);
+    let all: BTreeSet<String> = targets.0.union(&hosts).cloned().collect();
+    let (captured, bytes) = repo.capture_keeping(&all, &hosts, deadline)?;
+    let prior = committed
+        .into_iter()
+        .map(|(k, (_, state))| (k, state))
+        .collect();
+    prepare_scan(
+        &repo.id,
+        &targets,
+        &captured.head,
+        &captured.entries,
+        &bytes,
+        prior,
+        watermark,
+        &mut |host, content| edited(repo, host, content, deadline),
+        deadline,
+    )
 }

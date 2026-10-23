@@ -244,7 +244,9 @@ version = "0.1.2"
 dependencies = [
  "blake3",
  "contextdb-anchors",
+ "contextdb-core",
  "contextdb-model",
+ "contextdb-oracle",
  "contextdb-proto",
  "tree-sitter",
  "tree-sitter-go",
