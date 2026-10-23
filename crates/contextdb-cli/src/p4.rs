@@ -592,10 +592,40 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
         Some(p) => p.clone(),
         None => home()?,
     };
-    let file = match harness {
-        "claude" => base.join(".claude/settings.json"),
+    // A project install writes Claude's personal, untracked settings file:
+    // the hook command is a machine-specific path that must not end up in a
+    // team's committed .claude/settings.json. A user-level install keeps
+    // ~/.claude/settings.json (already personal).
+    let file = match (harness, &project) {
+        ("claude", Some(_)) => base.join(".claude/settings.local.json"),
+        ("claude", None) => base.join(".claude/settings.json"),
         _ => base.join(".codex/hooks.json"),
     };
+    // Earlier releases wrote project hooks into .claude/settings.json: remove
+    // ContextDB's entries there so the hook never runs twice.
+    if harness == "claude" && project.is_some() {
+        let shared = base.join(".claude/settings.json");
+        if let Ok(text) = std::fs::read_to_string(&shared)
+            && let Ok(mut old) = serde_json::from_str::<Value>(&text)
+            && let Some(h) = old.get_mut("hooks").and_then(Value::as_object_mut)
+        {
+            let before = h.clone();
+            strip(h, &exe);
+            if *h != before {
+                if h.is_empty() {
+                    old.as_object_mut().expect("object").remove("hooks");
+                }
+                let text = serde_json::to_string_pretty(&old).map_err(|e| e.to_string())?;
+                let tmp = shared.with_extension("json.ctx-tmp");
+                std::fs::write(&tmp, text + "\n").map_err(|e| e.to_string())?;
+                std::fs::rename(&tmp, &shared).map_err(|e| e.to_string())?;
+                println!(
+                    "moved ContextDB hooks out of {} (now in settings.local.json)",
+                    shared.display()
+                );
+            }
+        }
+    }
     let mut config: Value = match std::fs::read_to_string(&file) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", file.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),

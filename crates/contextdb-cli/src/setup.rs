@@ -86,27 +86,63 @@ fn ensure_daemon(dir: &Path, ctxd: &Path) -> Result<&'static str, String> {
     ))
 }
 
-/// Keep the data dir out of Git when it lives inside the repository.
-fn exclude(project: &Path, dir: &Path) -> Result<Option<String>, String> {
-    let Ok(rel) = dir.strip_prefix(project) else {
-        return Ok(None);
-    };
+/// The repository's `.git/info/exclude` (local, never committed); None
+/// outside a Git repository.
+fn exclude_file(project: &Path) -> Result<Option<PathBuf>, String> {
     let out = Command::new("git")
         .current_dir(project)
         .args(["rev-parse", "--git-path", "info/exclude"])
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Ok(None); // not a Git repository
+        return Ok(None);
     }
     let file = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    let file = if file.is_absolute() {
+    Ok(Some(if file.is_absolute() {
         file
     } else {
         project.join(file)
+    }))
+}
+/// Keep the data dir out of Git when it lives inside the repository.
+fn exclude(project: &Path, dir: &Path) -> Result<Option<String>, String> {
+    let Ok(rel) = dir.strip_prefix(project) else {
+        return Ok(None);
     };
-    let pattern = format!("/{}/", utf8(rel)?);
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let Some(file) = exclude_file(project)? else {
+        return Ok(None); // not a Git repository
+    };
+    append_pattern(&file, &format!("/{}/", utf8(rel)?))
+}
+/// The files `ctx setup` writes hold machine-specific absolute paths, so they
+/// are kept out of Git: untracked ones are added to `.git/info/exclude`
+/// (returned first); tracked ones cannot be excluded and are returned second
+/// so the caller can warn.
+fn exclude_generated(project: &Path, files: &[&str]) -> Result<(Vec<String>, Vec<String>), String> {
+    let Some(exclude) = exclude_file(project)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let (mut added, mut tracked) = (Vec::new(), Vec::new());
+    for f in files {
+        let is_tracked = Command::new("git")
+            .current_dir(project)
+            .args(["ls-files", "--error-unmatch", "--", f])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?
+            .success();
+        if is_tracked {
+            tracked.push((*f).to_owned());
+        } else if let Some(p) = append_pattern(&exclude, &format!("/{f}"))? {
+            added.push(p);
+        }
+    }
+    Ok((added, tracked))
+}
+fn append_pattern(file: &Path, pattern: &str) -> Result<Option<String>, String> {
+    let pattern = pattern.to_owned();
+    let text = std::fs::read_to_string(file).unwrap_or_default();
     if text.lines().any(|l| l.trim() == pattern) {
         return Ok(None);
     }
@@ -116,7 +152,7 @@ fn exclude(project: &Path, dir: &Path) -> Result<Option<String>, String> {
     }
     text.push_str(&pattern);
     text.push('\n');
-    replace(&file, &text)?;
+    replace(file, &text)?;
     Ok(Some(pattern))
 }
 
@@ -271,6 +307,25 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
         .map(|s| s.to_string())
         .collect();
         crate::p4::hooks(&install)?;
+    }
+    let mut generated = vec![".contextdb/dir.wire"];
+    if harnesses.contains(&"claude") {
+        generated.extend([".mcp.json", ".claude/settings.local.json"]);
+    }
+    if harnesses.contains(&"codex") {
+        generated.extend([".codex/config.toml", ".codex/hooks.json"]);
+    }
+    let (added, tracked) = exclude_generated(&project, &generated)?;
+    if !added.is_empty() {
+        println!(
+            "  git        added {} to .git/info/exclude",
+            added.join(" ")
+        );
+    }
+    for f in &tracked {
+        println!(
+            "  warning    {f} is tracked by Git and now holds machine-specific paths; do not commit those lines"
+        );
     }
     println!("\nNext:");
     if harnesses.contains(&"claude") {
@@ -579,6 +634,41 @@ mod tests {
         assert_eq!(exclude(&p, Path::new("/elsewhere")).unwrap(), None);
         let text = std::fs::read_to_string(p.join(".git/info/exclude")).unwrap();
         assert_eq!(text.matches("/.contextdb/db/").count(), 1);
+        let _ = std::fs::remove_dir_all(p);
+    }
+    #[test]
+    fn generated_files_are_excluded_unless_tracked() {
+        let p = temp("generated");
+        assert!(
+            Command::new("git")
+                .current_dir(&p)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(p.join(".mcp.json"), "{}").unwrap();
+        assert!(
+            Command::new("git")
+                .current_dir(&p)
+                .args(["add", ".mcp.json"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (added, tracked) = exclude_generated(
+            &p,
+            &[".mcp.json", ".codex/hooks.json", ".contextdb/dir.wire"],
+        )
+        .unwrap();
+        assert_eq!(added, vec!["/.codex/hooks.json", "/.contextdb/dir.wire"]);
+        assert_eq!(
+            tracked,
+            vec![".mcp.json"],
+            "a tracked file cannot be excluded"
+        );
+        let (again, _) = exclude_generated(&p, &[".codex/hooks.json"]).unwrap();
+        assert!(again.is_empty(), "idempotent");
         let _ = std::fs::remove_dir_all(p);
     }
     #[test]

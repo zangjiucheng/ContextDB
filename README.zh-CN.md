@@ -104,7 +104,8 @@ ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --use
 - 创建数据目录（默认 `<repo>/.contextdb/db`），并加入 `.git/info/exclude`；
 - 启动 `ctxd`（若已有一个协议版本不同的 `ctxd` 在服务该目录，则报错并且不做任何改动）；
 - 在项目级注册 MCP 服务器 `contextdb`：Claude Code 写 `.mcp.json`，Codex 写 `.codex/config.toml`，其他配置原样保留；
-- 为每个 harness 安装 hooks（`.claude/settings.json`、`.codex/hooks.json`），默认门控模式为 `warn`。
+- 为每个 harness 安装 hooks（`.claude/settings.local.json`、`.codex/hooks.json`），默认门控模式为 `warn`；
+- 它写入的文件含本机绝对路径，因此不进 Git：未跟踪的加入 `.git/info/exclude`，已被跟踪的（如团队共享的 `.mcp.json`）给出警告。要共享门控与 policy，提交 `.contextdb/gating.toml` 和 `.contextdb/policy.toml`。
 
 之后按提示操作：Claude Code 下次启动时批准项目 MCP 服务器；Codex 中打开 `/hooks` 信任新 hook。重复运行 `ctx setup` 是幂等的；`ctx service status <dir>` 查看服务与 `ctxd` 状态，`ctx service uninstall <dir>` 移除服务（`ctx shutdown` 主动停止后服务不会再拉起）。
 

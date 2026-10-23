@@ -1,0 +1,4 @@
+# ContextDB P4 dogfood: warn only, fail open (ADR 0010 §6.2; docs/gates/P4-dogfood.md).
+mode = "warn"
+on_unavailable = "open"
+timeout_ms = 150

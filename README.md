@@ -105,7 +105,8 @@ ctx service install .contextdb/db  # launchd on macOS, systemd --user on Linux
 - creates the data directory (default `<repo>/.contextdb/db`) and adds it to `.git/info/exclude`;
 - starts `ctxd` (if a `ctxd` speaking another protocol version already serves the directory, it reports an error and changes nothing);
 - registers the `contextdb` MCP server per project: `.mcp.json` for Claude Code, `.codex/config.toml` for Codex, keeping all other configuration;
-- installs the hooks for each harness (`.claude/settings.json`, `.codex/hooks.json`) with the default gating mode `warn`.
+- installs the hooks for each harness (`.claude/settings.local.json`, `.codex/hooks.json`) with the default gating mode `warn`;
+- keeps the files it writes out of Git, since they hold machine-specific paths: untracked ones are added to `.git/info/exclude`, and a tracked one (e.g. a team `.mcp.json`) gets a warning. Commit `.contextdb/gating.toml` and `.contextdb/policy.toml` to share gating and policy.
 
 Then follow the prompts: approve the project MCP server the next time Claude Code starts, and open `/hooks` in Codex to trust the new hooks. Re-running `ctx setup` is idempotent. `ctx service status <dir>` shows the service and `ctxd`; `ctx service uninstall <dir>` removes the service (after a deliberate `ctx shutdown`, the service does not restart `ctxd`).
 

@@ -1,7 +1,11 @@
 # Build and local research output (Cargo.lock files are committed).
 **/target/
 /results/
-/.contextdb/
+# ContextDB runtime data, binaries and machine-specific files; the team's
+# gating and policy files are committed (README, P4 section).
+/.contextdb/*
+!/.contextdb/gating.toml
+!/.contextdb/policy.toml
 /.codebase-memory/
 /.tools/
 
