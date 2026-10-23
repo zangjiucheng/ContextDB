@@ -1,0 +1,68 @@
+# P5b G6 scores, 2026-10-23. Headline: fixed sample and labels. Sensitivity inputs from scripts/p5b_g6_sensitivity.py (not the gate).
+
+## headline
+# P5b G6 score; sample docs/gates/p5b-g6/sample.tsv; labels docs/gates/p5b-g6/labels.tsv
+repo	file_fired	symbol_fired	population	labelled	invalidating
+click	n	n	3442	35	0
+click	y	n	257	35	3
+click	y	y	38	35	17
+fd	n	n	4663	35	2
+fd	y	n	988	35	2
+fd	y	y	318	35	27
+ripgrep	n	n	177	35	0
+ripgrep	y	n	55	35	1
+ripgrep	y	y	45	35	0
+all	symbol_false_invalidation=34.2%	95%=[23.8, 45.8]
+all	file_false_invalidation=79.8%	95%=[74.0, 84.6]
+all	symbol_missed_invalidation=56.8%	95%=[14.2, 74.8]
+all	file_missed_invalidation=43.7%	95%=[0.0, 67.4]
+all	symbol_missed_given_host_changed=23.3%	95%=[5.0, 39.9]
+all	missed_difference_pp=13.1	95%=[2.2, 32.1]
+click	symbol_false_invalidation=51.4%	95%=[34.3, 68.6]
+click	file_false_invalidation=86.3%	95%=[77.0, 93.7]
+click	symbol_missed_invalidation=54.4%	95%=[0.0, 74.3]
+click	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+click	symbol_missed_given_host_changed=54.4%	95%=[0.0, 74.3]
+click	missed_difference_pp=54.4	95%=[0.0, 74.3]
+fd	symbol_false_invalidation=22.9%	95%=[8.6, 37.1]
+fd	file_false_invalidation=76.9%	95%=[69.7, 82.6]
+fd	symbol_missed_invalidation=56.8%	95%=[9.7, 75.4]
+fd	file_missed_invalidation=46.9%	95%=[0.0, 70.2]
+fd	symbol_missed_given_host_changed=18.7%	95%=[0.0, 37.4]
+fd	missed_difference_pp=9.9	95%=[0.0, 29.3]
+ripgrep	symbol_false_invalidation=100.0%	95%=[100.0, 100.0]
+ripgrep	file_false_invalidation=98.4%	95%=[95.3, 100.0]
+ripgrep	symbol_missed_invalidation=100.0%	95%=[0.0, 100.0]
+ripgrep	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+ripgrep	symbol_missed_given_host_changed=100.0%	95%=[0.0, 100.0]
+ripgrep	missed_difference_pp=100.0	95%=[0.0, 100.0]
+unsure=0 (excluded from rates)
+p5b_g6_pass=false
+
+## sensitivity: present at parent
+repo	file_fired	symbol_fired	population	labelled	invalidating
+all	symbol_false_invalidation=34.2%	95%=[23.5, 46.1]
+all	file_false_invalidation=77.6%	95%=[71.7, 82.7]
+all	symbol_missed_invalidation=57.0%	95%=[8.3, 75.6]
+all	file_missed_invalidation=47.8%	95%=[0.0, 70.7]
+all	symbol_missed_given_host_changed=17.6%	95%=[2.8, 34.1]
+all	missed_difference_pp=9.2	95%=[1.2, 26.1]
+p5b_g6_pass=false
+
+## sensitivity: moves invalidate
+all	symbol_false_invalidation=20.2%	95%=[10.3, 31.5]
+all	file_false_invalidation=76.5%	95%=[70.7, 81.2]
+all	symbol_missed_invalidation=52.0%	95%=[11.9, 70.7]
+all	file_missed_invalidation=40.0%	95%=[0.0, 63.7]
+all	symbol_missed_given_host_changed=20.0%	95%=[4.1, 35.0]
+all	missed_difference_pp=12.0	95%=[2.1, 28.3]
+p5b_g6_pass=false
+
+## sensitivity: both
+all	symbol_false_invalidation=20.2%	95%=[10.3, 31.5]
+all	file_false_invalidation=73.7%	95%=[67.8, 78.5]
+all	symbol_missed_invalidation=52.2%	95%=[7.0, 71.7]
+all	file_missed_invalidation=43.8%	95%=[0.0, 67.1]
+all	symbol_missed_given_host_changed=14.9%	95%=[2.3, 29.6]
+all	missed_difference_pp=8.4	95%=[1.1, 22.9]
+p5b_g6_pass=false
