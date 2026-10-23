@@ -558,3 +558,172 @@ fn walk2_formatter_equivalences() {
     );
     same(JavaScript, "f", "const f = (x) => x;", "const f = x => x;");
 }
+
+/// G3 mutation follow-up: supported names and declaration boundaries. These
+/// assertions check complete tables and cross-symbol isolation, not merely
+/// the presence of selected names.
+#[test]
+fn extraction_boundaries() {
+    use Language::{Go, JavaScript, Python, Rust, TypeScript};
+    assert_eq!(names(Rust, "fn café() {} fn ok() {}"), ["ok"]);
+    assert_eq!(names(Python, "def café(): pass\ndef ok(): pass\n"), ["ok"]);
+    assert_eq!(
+        names(JavaScript, "function $helper() {} function café() {}"),
+        ["$helper"]
+    );
+    assert_eq!(
+        names(Rust, "unsafe extern \"C\" { fn ffi(); static X: u8; }"),
+        ["X", "ffi"]
+    );
+    assert_eq!(
+        names(
+            TypeScript,
+            "declare function f(): void; declare const X: number;"
+        ),
+        ["X", "f"]
+    );
+    assert_eq!(names(Go, "package p\ntype Alias = int\n"), ["Alias"]);
+    let vars = "export const a = 1, b = 2;";
+    assert_eq!(names(TypeScript, vars), ["a", "b"]);
+    same(TypeScript, "a", vars, "export const a = 1, b = 3;");
+    differ(TypeScript, "b", vars, "export const a = 1, b = 3;");
+    let types = "package p\ntype (\n A int\n B string\n)\n";
+    assert_eq!(names(Go, types), ["A", "B"]);
+    same(Go, "A", types, &types.replace("B string", "B bool"));
+    differ(Go, "B", types, &types.replace("B string", "B bool"));
+    // Never descend into function bodies, in any supported grammar.
+    assert_eq!(names(Python, "def f():\n    def nested(): pass\n"), ["f"]);
+    assert_eq!(
+        names(JavaScript, "function f() { function nested() {} }"),
+        ["f"]
+    );
+}
+
+#[test]
+fn normalisation_boundaries() {
+    use Language::{JavaScript, Python, Rust, TypeScript};
+    same(
+        Rust,
+        "f",
+        "fn f() { v.map(|x| { if x { 1 } else { 2 } }); }",
+        "fn f() { v.map(|x| if x { 1 } else { 2 }); }",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    for (x, y) in z:\n        pass\n",
+        "def f():\n    for x, y in z:\n        pass\n",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    for (x,) in z:\n        pass\n",
+        "def f():\n    for x, in z:\n        pass\n",
+    );
+    same(
+        JavaScript,
+        "f",
+        r#"function f() { return "say \"yes\"" }"#,
+        r#"function f() { return 'say "yes"' }"#,
+    );
+    // A comma followed by a comment is still a trailing comma. Changing the
+    // skip index to subtraction/multiplication must not pass or loop forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let a = hash(Rust, "fn f(a: u8, /* why */) {}", "f");
+        let b = hash(Rust, "fn f(a: u8) {}", "f");
+        let _ = tx.send((a, b));
+    });
+    let (a, b) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("trailing-comment walk did not terminate");
+    assert_eq!(a, b);
+    // Quote elision applies to identifier object keys, not values or digit keys.
+    same(
+        JavaScript,
+        "f",
+        "function f() { return {'a': 1} }",
+        "function f() { return {a: 1} }",
+    );
+    differ(
+        JavaScript,
+        "f",
+        "function f() { return {'1a': 1} }",
+        "function f() { return {'a': 1} }",
+    );
+    same(TypeScript, "f", "const f = (x) => x;", "const f = x => x;");
+    // Parenthesised strings as values are ordinary grouping, unlike statement
+    // directives (which the must-differ G2 pair above already tests).
+    same(
+        JavaScript,
+        "f",
+        "function f() { return ('a') }",
+        "function f() { return 'a' }",
+    );
+}
+
+/// Normaliser versions freeze stream shape, even where deleting a wrapper
+/// happens not to collapse a particular same/differ pair. Check SPEC-required
+/// markers directly through the diagnostic stream (the hashed walk itself).
+#[test]
+fn walk2_keeps_required_stream_shape() {
+    use Language::{JavaScript, Python, Rust, TypeScript};
+    let trace = |l, src: &str, name| {
+        contextdb_symbols::trace(
+            l,
+            src.as_bytes(),
+            name,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    for (src, blocks) in [
+        ("fn f() { v.map(|x| { g(x); }); }", 2),
+        ("fn f() { v.map(|x| { fn local() {} }); }", 3),
+        ("fn f() { v.map(|x| { let y = x; }); }", 2),
+        ("fn f() { v.map(|x| { if x {} 1 }); }", 3),
+    ] {
+        assert_eq!(
+            trace(Rust, src, "f")
+                .iter()
+                .filter(|s| *s == "(block")
+                .count(),
+            blocks,
+            "{src}"
+        );
+    }
+    assert!(trace(TypeScript, "type T = A | B;", "T").contains(&"(union_type".into()));
+    assert!(
+        trace(TypeScript, "const f = (x: number) => x;", "f")
+            .contains(&"(formal_parameters".into())
+    );
+    assert!(
+        trace(Python, "def f():\n    for x, in z:\n        pass\n", "f")
+            .contains(&"(tuple_pattern".into())
+    );
+    assert!(trace(Rust, "fn f() {}", "f").contains(&"L{ {".into()));
+    let strings = trace(
+        JavaScript,
+        "function f() { return {'123': 'a', '': 1} }",
+        "f",
+    );
+    for text in ["Lstring 123", "Lstring a", "Lstring "] {
+        assert!(strings.contains(&text.into()), "{text} not in {strings:?}");
+    }
+}
+
+#[test]
+fn comment_range_api_excludes_directives_and_code() {
+    let src = "// plain\n// @ts-ignore\nfunction f() { /* ordinary */ return 1; }";
+    let ranges = contextdb_symbols::dropped_comments(
+        Language::TypeScript,
+        src.as_bytes(),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(
+        ranges.into_iter().map(|r| &src[r]).collect::<Vec<_>>(),
+        ["// plain", "/* ordinary */"]
+    );
+}

@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "host": "remote Linux host (Ubuntu 24.04), via scripts/remote.sh",
+  "base_commit": "ff78187",
+  "scope": "G3 only; uncommitted working tree",
+  "normaliser_walk": 2,
+  "mutants": 243,
+  "final_outcomes": {
+    "CaughtMutant": 230,
+    "Unviable": 13
+  },
+  "runs": [
+    {
+      "path": "results/remote/p5b-mutation/mutants.out/outcomes.json",
+      "sha256": "74b1b94fe9f6de5ef6851f87dd9cd86e634b80e2f1fe2897f419ddd5fe83c4ac",
+      "counts": {
+        "CaughtMutant": 226,
+        "Unviable": 13,
+        "MissedMutant": 3,
+        "Timeout": 1
+      }
+    },
+    {
+      "path": "results/remote/p5b-mutation-closure/mutants.out/outcomes.json",
+      "sha256": "449bc5fb6474690223eb28f862c49cea04ae7cc6332ccca7e259078020aa0258",
+      "counts": {
+        "CaughtMutant": 8
+      }
+    },
+    {
+      "path": "results/remote/p5b-mutation-termination/mutants.out/outcomes.json",
+      "sha256": "250a7fafe83602ddc7fea67d54db50ce3a73e62596e2b4e722862ae040e05618",
+      "counts": {
+        "CaughtMutant": 2
+      }
+    }
+  ],
+  "unviable": [
+    "crates/contextdb-symbols/src/extract.rs:222:13: replace && with || in Extract<'a, 't>::python",
+    "crates/contextdb-symbols/src/extract.rs:316:21: replace && with || in Extract<'a, 't>::script",
+    "crates/contextdb-symbols/src/extract.rs:320:21: replace && with || in Extract<'a, 't>::script",
+    "crates/contextdb-symbols/src/extract.rs:354:21: replace && with || in Extract<'a, 't>::declaration",
+    "crates/contextdb-symbols/src/extract.rs:372:25: replace && with || in Extract<'a, 't>::declaration",
+    "crates/contextdb-symbols/src/extract.rs:91:9: replace Extract<'a, 't>::with -> Vec<Node<'t>> with vec![Default::default()]",
+    "crates/contextdb-symbols/src/walk.rs:123:5: replace python_unwrap -> Option<Unwrap> with Some(Default::default())",
+    "crates/contextdb-symbols/src/walk.rs:162:5: replace rules -> Rules with Default::default()",
+    "crates/contextdb-symbols/src/walk.rs:357:9: replace Walk<'_>::transparent -> Option<Unwrap> with Some(Default::default())",
+    "crates/contextdb-symbols/src/walk.rs:43:5: replace no_unwrap -> Option<Unwrap> with Some(Default::default())",
+    "crates/contextdb-symbols/src/walk.rs:46:5: replace rust_unwrap -> Option<Unwrap> with Some(Default::default())",
+    "crates/contextdb-symbols/src/walk.rs:47:9: replace rust_unwrap::named -> Vec<Node> with vec![Default::default()]",
+    "crates/contextdb-symbols/src/walk.rs:94:5: replace ts_unwrap -> Option<Unwrap> with Some(Default::default())"
+  ],
+  "source_sha256": {
+    "crates/contextdb-symbols/src/extract.rs": "7f085d38fd67fb7e4d3314fd3b51206ce359e6e7e49c8825189a423bc46095ca",
+    "crates/contextdb-symbols/src/lib.rs": "aa4a4cc1d333a8d7a2ff291cbd639dcb2b2c2de999a187b7cbb604222141ba8b",
+    "crates/contextdb-symbols/src/observer.rs": "31c13637e0d31cd72d9851cc2d371cf390baf4fcae1fea7be90b70eba7aec5bc",
+    "crates/contextdb-symbols/src/walk.rs": "028793798c806559ebcc8686cca6413fd07c3d21dec44e187007f54d6f5f3680",
+    "crates/contextdb-symbols/tests/common/generated.rs": "4fea5006ff7d9f737a61b492a81fe86e020158f22da627f00f65090371d6186c",
+    "crates/contextdb-symbols/tests/common/history.rs": "e3fd79d164978734a1459db995bd2a350ab52079f2c7f6ceca15cf44be65e033",
+    "crates/contextdb-symbols/tests/common/spec.rs": "f532c46a02eb3be6253a69fa99d3c406147eb22d8bcc5ce8cc0ad2b020e3c737",
+    "crates/contextdb-symbols/tests/prop12_symbols.rs": "0c571c6aee16ef774926b796dac5b18c48f7c27f22721a1f14f800de541289e0",
+    "crates/contextdb-symbols/tests/prop12_symbols_model.rs": "c7a81e1da3139d06101dedc23603cd3abdac1b07d6770f83910608f6b71fa1d0",
+    "crates/contextdb-symbols/tests/symbols.rs": "9d8243c91a2c969edfcadb9bde75a58fa21b5de01c34b5bb70e88ab011ace5eb",
+    "Cargo.lock": "f258109444d0f243d7160a7dc1652d0eb25f1d115f18652e01d8083ab655252e",
+    "crates/contextdb-symbols/Cargo.toml": "c233210728c73a6ba3379fd62d7cf3568064781230c015eafe9ee34fd32d5ed8",
+    "crates/contextdb-anchors/src/capture.rs": "5efd30245118cfb80e1f9a692230fd080b79ee5eb9456c64a103d44ee56346de",
+    "scripts/g3-p5b.sh": "b2ab8533f1314f28eb6f4c5224171484a02982e334e23b7a4f1ed3e14aeb3f6a",
+    "scripts/mutation-p5b.sh": "8ac60eadf079ec2255f7e94d11fa6f371232301fc1f1e714b9a856c684f7f6d6"
+  },
+  "additional_evidence_sha256": {
+    "results/remote/p5b-g3-properties.txt": "190cc2ece58f62cbd113de89190008c5a7dcb92714f1e9095bf0f83463e3e747",
+    "results/remote/p5b-g3-model.txt": "4c10530973f1b36477d3e05b9ef5f97e9ed53b3edc0f931e3a16a04350430eb7",
+    "results/remote/p5b-mutation-initial/mutants.out/outcomes.json": "62f0b6e54e46551476ec3313ee89467ed03a42778a946ca577b926b9f4b0ed1e"
+  },
+  "local_remote_source_hashes_match": true
+}

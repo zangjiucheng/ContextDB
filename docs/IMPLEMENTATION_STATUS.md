@@ -1,5 +1,7 @@
 # Implementation status
 
+**P5b symbol anchors are implemented and under gate verification** ([P5b gate](gates/P5b.md), [ADR 0012](adr/0012-p5b-symbol-anchors.md) r0.5). G0, G3, G4 and G5 passed; G2 has formatter-corpus evidence for 6,820 symbols across six corpora. [G3](gates/p5b-g3.md) passed full-count Linux properties (two separately written 10,000-seed symbol suites plus the P5a carry-forward) and normaliser/extraction mutation: 230 caught, 13 compile-invalid, no survivors. The phase gate remains open and cannot pass before P5a/P4. [G4](gates/p5b-g4.md) fixed three robustness defects (deep nesting, deadline enforcement, `MISSING` names) and passed with fuzz and mutation; [G5](gates/p5b-g5.md) keeps the P4 hook budgets at 1,000 symbol anchors. Next is G6 replay.
+
 **P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.6). G0–G5, G7, G8 and prior independent reviews pass. G6 uses 210 agent-labelled pairs with explicit provenance and hashed evidence; the 84 historical human reviews remain optional diagnostics and no manual top-ups are required (SPEC v1.6.4 §4.4). G6 passed under this agent-evidence criterion (`p5a_g6_evidence_complete=true`; [report](gates/p5a-g6-agent-report.md)). P5a cannot pass before P4.
 
 **P4 is implemented and under gate verification** ([P4 gate](gates/P4.md), [ADR 0010](adr/0010-p4-hooks-action-gating.md) rev 3.3). Maintenance agents run and review the dogfood and generate its report; no owner labelling or sign-off is required. The ≥2 weeks of real use with ≥2 parallel agents and evidence requirements remain; P4 passes only with that report. Earliest planned report remains 2026-11-04.
@@ -70,6 +72,11 @@ That run does not validate the current P1 changes.
 - `ctx-mcp` (`contextdb-mcp`): nine agent tools over JSON-RPC 2.0 on stdio.
 - `ctx status | why | why-not | impact | diff | validate | shutdown` through the
   admin socket.
+- P4 hooks and action gating, outbox delivery and parallel-agent session views;
+  P5a file observers with watermark CAS, code freshness and rebind suggestions.
+- P5b symbol extraction/normalisation for Rust, TypeScript/TSX/JavaScript,
+  Python and Go; `ctx anchors symbols | add | scan | watch | status | migrate`.
+  Grammars run only in the observer; `ctxd` checks host-file positions without parsing.
 
 ## Boundaries
 
@@ -79,13 +86,12 @@ That run does not validate the current P1 changes.
 - In-memory history is not bounded after open.
 - MAIN only, one subject, positive DAG, transaction time only. No branch-isolation
   product API, ACL, negation, recursive production rules, erasure or replication.
-- Hooks and action gating (deny) are P4; until then `ctx_check` allows or warns.
-  CodeAnchor input/channel rules exist, but no filesystem observer before P5.
 - The P3 trust boundary is cooperative: a same-user agent with a shell can reach
   the observer and admin sockets (hard separation with principals and ACL in P9).
 - Conflict remains None before P7, visibility Authorized before P9; structural
   Unknown/freshness are summary-function fixtures.
-- Hooks and anchors crates remain placeholders (P4, P5). Research DD/DBSP workspaces stay excluded.
+- Research DD/DBSP workspaces stay excluded. P4's real dogfood report and
+  P5b's remaining gate evidence are still required.
 
 ## Dependency policy
 
