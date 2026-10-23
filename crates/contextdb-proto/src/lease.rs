@@ -101,9 +101,17 @@ impl Lease {
         process_start_time(self.pid).is_some_and(|t| t == self.start_time)
     }
 }
+/// Where `ps` is looked for: the standard locations first, so a lease is
+/// written and checked alike under a reduced `PATH` (a login service, an
+/// `env -i` hook); then `PATH`.
+const PS: [&str; 3] = ["/bin/ps", "/usr/bin/ps", "ps"];
+
 /// A process's start time as reported by `ps` (portable across macOS and Linux).
 pub fn process_start_time(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps")
+    PS.iter().find_map(|ps| start_time_via(ps, pid))
+}
+fn start_time_via(ps: &str, pid: u32) -> Option<String> {
+    let out = std::process::Command::new(ps)
         .env("LC_ALL", "C")
         .args(["-o", "lstart=", "-p", &pid.to_string()])
         .output()
