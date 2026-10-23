@@ -1,14 +1,15 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.7, 2026-10-23. G0 passed after an independent
-review, a closure check and a closure confirmation (§11). SPEC v1.6.6 mirrors it.
+Status: **accepted**, revision 0.8, 2026-10-23. G0 passed after an independent
+review, a closure check and a closure confirmation (§11). SPEC v1.6.7 mirrors it.
 r0.4 records implementation findings: walk revision 2 from the T45 formatter
 corpus, and four clarifications (§11). r0.5 records the G4 resource findings:
 a container nesting bound and the deadline over extraction and walk (§4, §11).
 r0.6 fixes the G6 rate definitions before labelling (§9, §11). r0.7 (owner
 decision after the first G6 failed) adds same-file context to the symbol
 revision (walk 3, §4), relaxes the FI threshold and fixes a fresh G6 retest
-(§9, §11).
+(§9, §11). r0.8 records the owner's labelling convention for pure moves,
+decided after the retest was labelled (§9, §11).
 
 ## 0. Scope and delivery
 
@@ -485,6 +486,13 @@ scopes Unknown (fail-closed); mixed versions are unsupported, as before.
     estimates.
   The first run's sample stays the training set. It was used to design
   walk 3 and is not evidence for the retest.
+  **Move convention (r0.8, owner decision 2026-10-23, after the retest's
+  labels).** A pure move or rename with identical code **invalidates**,
+  because the anchor breaks and must be rebound. The labels themselves are
+  unchanged. The scorer counts a Broken pair labelled `n` as invalidating
+  (`symbol_replay score --moves-invalidate`). In both samples every such
+  label's rationale is a pure move or rename (76 of 76). The pre-registered
+  reading (moves `n`) is reported beside it.
 - **G7**: P0–P5a regressions. **G8**: README, semantics, CHANGELOG, status.
 
 ## 10. SPEC mirror (v1.6.5)
@@ -608,3 +616,26 @@ absolute FI threshold with "≤ ½ × file level", and fixed a retest on
 disjoint symbols (§9). Walk 3 changes every symbol's descriptor hash, so
 symbol anchors need `ctx anchors migrate` again. The six-corpus span hashes
 (T45) are unchanged.
+
+**r0.8 move convention (2026-10-23, owner decision)**: the retest's labels
+showed that the FI verdict turns on one question. Is a pure move or rename an
+invalidation? ripgrep's whole-tree move carries about half of the fired
+weight.
+
+The two texts the labellers received disagreed. The batch template listed
+"removed or renamed" under `y`; the prompt said a pure move or rename is
+`n`. Most labellers followed the prompt.
+
+The owner decided that a pure move invalidates: the product breaks the
+anchor and requires a rebind, so the firing is not a false alarm. The
+decision came after the labels and scores were known, and this record says
+so.
+
+Results:
+
+- **Retest, walk 3.** Under the owner's convention: FI 18.7 %
+  [11.1, 26.6] ≤ ½ × 79.7 %, missed +0.0 pp. **Pass.** Under the
+  pre-registered reading, FI is 70.4 % > ½ × 92.6 %: fail.
+- **First run, walk 2.** Under the owner's convention: FI 20.2 % ≤ ½ × 76.5 %,
+  but missed is +12.0 pp, so it still fails. Same-file context (walk 3) is
+  what closes the missed gap.

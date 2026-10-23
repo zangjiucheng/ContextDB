@@ -1,11 +1,30 @@
 # P5b G6 retest — walk 3 against file level (agent-labelled)
 
-Status: **failed under the pre-registered rules**, 2026-10-23. The missed
-threshold now passes; the false-invalidation threshold does not. Under one
-sensitivity analysis both pass, as described below. Symbol level does
-**not** enter the recommended configuration on this evidence. This report
-covers the retest only; the first run's report is
-[p5b-g6-report.md](p5b-g6-report.md).
+Status: **passed under the owner's convention** (SPEC v1.6.7, ADR 0012 r0.8),
+2026-10-23. **Failed under the pre-registered labelling rule.** This report
+gives both.
+
+| Reading | Symbol FI | File FI | FI threshold (½ × file) | Missed difference | Verdict |
+|---|---:|---:|---:|---:|---|
+| **Owner convention: a pure move invalidates** (the gate) | **18.7 %** [11.1, 26.6] | 79.7 % | ≤ 39.8 % | **+0.0 pp** | **pass** |
+| Pre-registered: a pure move does not invalidate | 70.4 % [63.0, 77.8] | 92.6 % | ≤ 46.3 % | +0.0 pp | fail |
+
+**The owner decided the convention after the labels and scores were
+known.** The labellers' two texts conflicted on exactly this point (see
+"Labelling inconsistency"), and the verdict turns on it. The reason given:
+the product breaks a moved symbol's anchor and requires a rebind, so firing
+there is not a false alarm.
+
+The labels themselves were not changed. The convention is applied by the
+scorer (`--moves-invalidate`): a Broken pair labelled `n` counts as
+invalidating. All 38 such labels here (and 38 in the first run) give a pure
+move or rename as their rationale.
+
+The gate output is [`p5b-g6-final-score.txt`](p5b-g6-final-score.txt). Symbol
+level (walk 3) meets the G6 thresholds for the recommended configuration on
+this evidence, with the limitations below. The first run's report is
+[p5b-g6-report.md](p5b-g6-report.md); under the owner's convention it still
+fails (missed +12.0 pp), which is what walk 3 fixed.
 
 ## Design (fixed before labelling, `d87e748`)
 
@@ -30,9 +49,10 @@ ADR 0012 §9 r0.7, SPEC v1.6.6.
 - **Thresholds.** FI ≤ ½ × file FI, and missed ≤ file missed + 2 pp, on
   weighted point estimates.
 
-## Results
+## Results (pre-registered reading)
 
-The full output is in [`p5b-g6-r2-score.txt`](p5b-g6-r2-score.txt).
+The full output is in [`p5b-g6-r2-score.txt`](p5b-g6-r2-score.txt); the gate
+reading is in [`p5b-g6-final-score.txt`](p5b-g6-final-score.txt).
 
 | Stratum (file, symbol fired): invalidating / labelled (population) | click | fd | ripgrep |
 |---|---:|---:|---:|
@@ -50,7 +70,7 @@ The full output is in [`p5b-g6-r2-score.txt`](p5b-g6-r2-score.txt).
 | Variant (not the gate) | Symbol FI | File FI | Missed difference | Both thresholds |
 |---|---:|---:|---:|---|
 | Span only (walk 2's rule) on the same pairs | 66.7 % | 92.6 % | +0.0 pp | FI fails |
-| Pure moves counted as invalidating | 18.7 % [11.1, 26.6] | 79.7 % | +0.0 pp | **pass** |
+| Pure moves counted as invalidating (the owner convention, the gate) | 18.7 % [11.1, 26.6] | 79.7 % | +0.0 pp | **pass** |
 
 ## Why
 
@@ -107,6 +127,7 @@ other reading. The template is now fixed to match the prompt.
 ```sh
 symbol_replay prepare <clone> docs/gates/p5a-g6/<repo>.tsv <repo>.tsv --ranks 6-10 --live-at-parent
 symbol_replay sample sample.tsv click.tsv fd.tsv ripgrep.tsv --id-prefix P5B-G6R-
-symbol_replay score docs/gates/p5b-g6-r2/sample.tsv docs/gates/p5b-g6-r2/labels.tsv
+symbol_replay score docs/gates/p5b-g6-r2/sample.tsv docs/gates/p5b-g6-r2/labels.tsv --moves-invalidate   # the gate
+symbol_replay score docs/gates/p5b-g6-r2/sample.tsv docs/gates/p5b-g6-r2/labels.tsv                      # pre-registered
 symbol_replay predict docs/gates/p5b-g6-r2/sample.tsv <clones> pred.tsv   # span-only diagnostic (column span_fired)
 ```

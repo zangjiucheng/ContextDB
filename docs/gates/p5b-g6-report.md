@@ -1,5 +1,9 @@
 # P5b G6 — symbol level against file level (agent-labelled)
 
+> **Superseded for the gate by the [walk 3 retest](p5b-g6-r2-report.md)**,
+> which passes under the owner's move convention (SPEC v1.6.7). This first
+> run's sample became the training set for walk 3.
+
 Status: **failed**, 2026-10-23. Neither threshold is met by the weighted
 point estimates, under the fixed rules or under any of the sensitivity
 analyses below. Under SPEC §5 P5b G6, symbol level therefore does **not**

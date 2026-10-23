@@ -1,0 +1,40 @@
+# P5b G6 gate score, 2026-10-23: walk 3 retest, SPEC v1.6.7 / ADR 0012 r0.8 (pure moves invalidate; owner decision made after the labels, see the report).
+
+# P5b G6 score; sample docs/gates/p5b-g6-r2/sample.tsv; labels docs/gates/p5b-g6-r2/labels.tsv; pure moves invalidate (SPEC v1.6.7)
+repo	file_fired	symbol_fired	population	labelled	invalidating
+click	n	n	623	35	0
+click	y	n	45	35	0
+click	y	y	8	8	6
+fd	n	n	139	35	1
+fd	y	n	148	35	0
+fd	y	y	34	34	22
+ripgrep	n	n	165	35	0
+ripgrep	y	n	50	35	0
+ripgrep	y	y	39	35	34
+all	symbol_false_invalidation=18.7%	95%=[11.1, 26.6]
+all	file_false_invalidation=79.7%	95%=[77.8, 81.7]
+all	symbol_missed_invalidation=5.7%	95%=[0.0, 16.1]
+all	file_missed_invalidation=5.7%	95%=[0.0, 16.1]
+all	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+all	missed_difference_pp=0.0	95%=[0.0, 0.0]
+click	symbol_false_invalidation=25.0%	95%=[0.0, 62.5]
+click	file_false_invalidation=88.7%	95%=[84.9, 94.3]
+click	symbol_missed_invalidation=0.0%	95%=[0.0, 0.0]
+click	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+click	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+click	missed_difference_pp=0.0	95%=[0.0, 0.0]
+fd	symbol_false_invalidation=35.3%	95%=[20.6, 50.0]
+fd	file_false_invalidation=87.9%	95%=[85.2, 90.7]
+fd	symbol_missed_invalidation=15.3%	95%=[0.0, 38.5]
+fd	file_missed_invalidation=15.3%	95%=[0.0, 38.5]
+fd	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+fd	missed_difference_pp=0.0	95%=[0.0, 0.0]
+ripgrep	symbol_false_invalidation=2.9%	95%=[0.0, 8.6]
+ripgrep	file_false_invalidation=57.4%	95%=[56.2, 59.9]
+ripgrep	symbol_missed_invalidation=0.0%	95%=[0.0, 0.0]
+ripgrep	file_missed_invalidation=0.0%	95%=[0.0, 0.0]
+ripgrep	symbol_missed_given_host_changed=0.0%	95%=[0.0, 0.0]
+ripgrep	missed_difference_pp=0.0	95%=[0.0, 0.0]
+unsure=0 (excluded from rates)
+threshold_fi=true (symbol 18.7% <= 39.8%) threshold_missed=true
+p5b_g6_pass=true

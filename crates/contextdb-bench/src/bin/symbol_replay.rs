@@ -4,7 +4,7 @@
 //!   symbol_replay prepare <clone> <p5a.tsv> <out.tsv> [--ranks A-B] [--live-at-parent]
 //!   symbol_replay sample <sample.tsv> <population.tsv>... [--id-prefix P]
 //!   symbol_replay batches <sample.tsv> <clones dir> <out dir> <batches>
-//!   symbol_replay score <sample.tsv> <labels.tsv> [--predictions <p.tsv>]
+//!   symbol_replay score <sample.tsv> <labels.tsv> [--predictions <p.tsv>] [--moves-invalidate]
 //!   symbol_replay predict <sample.tsv> <clones dir> <out.tsv>
 //!
 //! `prepare` reads the P5a replay's header (repository, selection commit,
@@ -590,7 +590,16 @@ fn estimate(strata: &[(&Stratum, Vec<(bool, bool)>)]) -> [f64; 5] {
     ]
 }
 
-fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<bool, String> {
+/// `moves_invalidate` (owner convention, SPEC v1.6.7): a pure move or rename
+/// invalidates, because the anchor must be rebound. Every Broken pair
+/// labelled `n` in both G6 samples is a pure move or rename (checked against
+/// the rationales), so those labels count as `y`.
+fn score(
+    sample: &Path,
+    labels: &Path,
+    predictions: Option<&Path>,
+    moves_invalidate: bool,
+) -> Result<bool, String> {
     let (comments, rows) = read_rows(sample)?;
     let predicted: Option<BTreeMap<String, bool>> = match predictions {
         Some(p) => Some(
@@ -640,8 +649,10 @@ fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<boo
                 .ok_or_else(|| format!("no prediction for {}", r.get("id")))?,
             None => k.2 == "y",
         };
+        let moved = moves_invalidate && r.get("symbol_event") == "broken";
         match label.get(r.get("id")).copied() {
             Some("y") => s.labels.push((true, symbol)),
+            Some("n") if moved => s.labels.push((true, symbol)),
             Some("n") => s.labels.push((false, symbol)),
             Some("unsure") => unsure += 1,
             _ => missing.push(r.get("id").to_owned()),
@@ -651,9 +662,14 @@ fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<boo
         return Err(format!("unlabelled pairs: {}", missing.join(" ")));
     }
     println!(
-        "# P5b G6 score; sample {}; labels {}",
+        "# P5b G6 score; sample {}; labels {}{}",
         sample.display(),
-        labels.display()
+        labels.display(),
+        if moves_invalidate {
+            "; pure moves invalidate (SPEC v1.6.7)"
+        } else {
+            ""
+        }
     );
     println!("repo\tfile_fired\tsymbol_fired\tpopulation\tlabelled\tinvalidating");
     for ((repo, f, s), st) in &strata {
@@ -839,12 +855,27 @@ fn main() {
                 )
             })
             .map(|_| true),
-        Some("score") if args.len() == 3 => score(Path::new(&args[1]), Path::new(&args[2]), None),
-        Some("score") if args.len() == 5 && args[3] == "--predictions" => score(
-            Path::new(&args[1]),
-            Path::new(&args[2]),
-            Some(Path::new(&args[4])),
-        ),
+        Some("score") if args.len() >= 3 => {
+            let mut predictions = None;
+            let mut moves = false;
+            let mut rest = args[3..].iter();
+            let mut ok = true;
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--predictions" => match rest.next() {
+                        Some(p) => predictions = Some(Path::new(p)),
+                        None => ok = false,
+                    },
+                    "--moves-invalidate" => moves = true,
+                    _ => ok = false,
+                }
+            }
+            if ok {
+                score(Path::new(&args[1]), Path::new(&args[2]), predictions, moves)
+            } else {
+                Err(usage.to_owned())
+            }
+        }
         Some("predict") if args.len() == 4 => predict(
             Path::new(&args[1]),
             Path::new(&args[2]),
