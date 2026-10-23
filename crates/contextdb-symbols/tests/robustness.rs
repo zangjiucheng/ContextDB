@@ -10,15 +10,24 @@ use std::time::{Duration, Instant};
 const SLACK: Duration = Duration::from_secs(2);
 
 /// Parses on a thread with Rust's default 2 MiB spawned-thread stack (the
-/// observer's main thread has 8 MiB), within `deadline`.
+/// observer's main thread has 8 MiB), within `deadline`. A parse that misses
+/// the deadline fails the test when the slack runs out, not when it ends.
 fn bounded(language: Language, src: String, budget: Duration) -> Result<ParsedFile, Unavailable> {
+    // Timed parses run one at a time, so their slack is not spent waiting
+    // for cores the other tests hold.
+    static TIMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _turn = TIMED.lock().unwrap_or_else(|e| e.into_inner());
     let started = Instant::now();
-    let result = std::thread::Builder::new()
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
         .stack_size(2 << 20)
-        .spawn(move || parse(language, src.as_bytes(), Instant::now() + budget))
-        .unwrap()
-        .join()
-        .expect("no panic, no stack overflow");
+        .spawn(move || {
+            let _ = tx.send(parse(language, src.as_bytes(), Instant::now() + budget));
+        })
+        .unwrap();
+    let result = rx
+        .recv_timeout(budget + SLACK)
+        .unwrap_or_else(|e| panic!("{language:?}: no result within {budget:?} + slack: {e}"));
     let took = started.elapsed();
     assert!(
         took <= budget + SLACK,
@@ -182,11 +191,8 @@ fn walk_is_cancelled_at_the_deadline() {
     let flat = flat.elapsed();
     let deep = nested("mod a {", &body, "}", MAX_NESTING - 1);
     let budget = flat * 4 + Duration::from_millis(200);
-    let started = Instant::now();
-    let r = parse(Language::Rust, deep.as_bytes(), Instant::now() + budget);
-    let took = started.elapsed();
+    let r = bounded(Language::Rust, deep, budget);
     assert_eq!(r.map(|_| ()), Err(Unavailable("parse deadline".into())));
-    assert!(took <= budget + SLACK, "{took:?} past {budget:?}");
 }
 
 /// A deadline already passed: unavailable, never a partial table.
@@ -244,4 +250,46 @@ fn missing_names_are_not_symbols() {
             assert_eq!(&decode_symbol(&key).unwrap(), symbol);
         }
     }
+}
+
+/// Sibling containers do not add up: the nesting bound counts depth only.
+#[test]
+fn sibling_containers_are_not_nesting() {
+    let n = MAX_NESTING + 44;
+    let src: String = (0..n)
+        .map(|i| format!("mod m{i} {{ fn f() {{}} }}\n"))
+        .collect();
+    let file = parse(
+        Language::Rust,
+        src.as_bytes(),
+        Instant::now() + Duration::from_secs(30),
+    )
+    .unwrap();
+    assert_eq!(file.symbols.len(), 2 * n);
+    assert!(file.symbols.contains_key(&format!("m{}::f", n - 1)));
+}
+
+/// When the whole file fails to parse, tree-sitter's root is itself `ERROR`:
+/// the declarations below it are marked as errors although their own nodes
+/// have none (found in the `symbols_parse` fuzz corpus; Go, so the
+/// ancestor pass also runs for a language without transparent parentheses).
+#[test]
+fn declarations_under_an_error_root_are_errors() {
+    let src = "type\x16:U e#\x16e\x18\x00\u{85}G((((((((((((#e(((";
+    let file = parse(
+        Language::Go,
+        src.as_bytes(),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(file.has_error);
+    assert!(file.symbols["U"].error, "{:?}", file.symbols);
+}
+
+#[test]
+fn unavailable_displays_its_reason() {
+    assert_eq!(
+        Unavailable("parse deadline".into()).to_string(),
+        "parse deadline"
+    );
 }
