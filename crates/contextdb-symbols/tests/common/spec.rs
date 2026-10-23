@@ -15,7 +15,7 @@ pub fn version(l: Language) -> String {
         Language::Python => ("python", "tree-sitter-python=0.25.0"),
         Language::Go => ("go", "tree-sitter-go=0.25.0"),
     };
-    format!("{name}:{grammar};tree-sitter=0.27.1;walk=2")
+    format!("{name}:{grammar};tree-sitter=0.27.1;walk=3")
 }
 
 fn grammar(l: Language) -> tree_sitter::Language {
@@ -127,6 +127,7 @@ fn normalise(l: Language, n: Node, src: &[u8], mask: Option<usize>, out: &mut Ve
 
 #[derive(Clone, Debug)]
 pub struct Symbol {
+    /// Walk 3 revision hash: span and same-file context (ADR 0012 §4 r0.7).
     pub hash: Vec<u8>,
     pub masked: Vec<u8>,
     pub error: bool,
@@ -146,6 +147,8 @@ pub fn parse(l: Language, src: &[u8]) -> File {
     let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
     let mut groups: BTreeMap<String, (Vec<u8>, Vec<u8>, bool)> = BTreeMap::new();
+    // Identifier leaves each group's spans mention, its declared names aside.
+    let mut mentions: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let mut pending = Vec::new();
     let mut c = root.walk();
     for n in root.children(&mut c) {
@@ -173,27 +176,61 @@ pub fn parse(l: Language, src: &[u8]) -> File {
         let label = std::str::from_utf8(&src[name.byte_range()])
             .unwrap()
             .to_owned();
+        let said = mentions.entry(label.clone()).or_default();
         let (plain, masked, error) = groups.entry(label).or_default();
         plain.push(b'O');
         masked.push(b'O');
         pending.push(n);
+        for span in &pending {
+            let mut stack = vec![*span];
+            while let Some(m) = stack.pop() {
+                if m.child_count() == 0 {
+                    if m.kind().contains("identifier") && m.id() != name.id() {
+                        said.insert(
+                            std::str::from_utf8(&src[m.byte_range()])
+                                .unwrap()
+                                .to_owned(),
+                        );
+                    }
+                } else {
+                    stack.extend(m.children(&mut m.walk()));
+                }
+            }
+        }
         for span in pending.drain(..) {
             *error |= span.has_error() || span.is_missing();
             normalise(l, span, src, None, plain);
             normalise(l, span, src, Some(name.id()), masked);
         }
     }
+    // Walk 3: the other generated functions a span names are its context
+    // (generated files have no imports or module-level assignments).
+    let spans: BTreeMap<&String, [u8; 32]> = groups
+        .iter()
+        .map(|(name, (plain, _, _))| (name, *blake3::hash(plain).as_bytes()))
+        .collect();
     File {
         has_error: root.has_error(),
         symbols: groups
-            .into_iter()
+            .iter()
             .map(|(name, (plain, masked, error))| {
+                let mut context = Vec::new();
+                for (other, span) in &spans {
+                    if *other != name && mentions[name].contains(*other) {
+                        context.extend_from_slice(&(other.len() as u64).to_le_bytes());
+                        context.extend_from_slice(other.as_bytes());
+                        context.extend_from_slice(span);
+                    }
+                }
+                let mut revision = b"CTXSYM03".to_vec();
+                revision.extend_from_slice(blake3::hash(plain).as_bytes());
+                revision.extend_from_slice(blake3::hash(&context).as_bytes());
                 (
-                    name,
+                    name.clone(),
                     Symbol {
-                        hash: blake3::hash(&plain).as_bytes().to_vec(),
-                        masked: blake3::hash(&masked).as_bytes().to_vec(),
-                        error,
+                        hash: blake3::hash(&revision).as_bytes().to_vec(),
+                        masked: blake3::hash(masked).as_bytes().to_vec(),
+                        error: *error,
                     },
                 )
             })

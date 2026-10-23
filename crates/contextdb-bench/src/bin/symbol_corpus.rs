@@ -314,7 +314,7 @@ fn main() -> Result<(), String> {
                         t.changed += 1;
                         "parse-error"
                     }
-                    Some(a) if a.hash != s.hash => {
+                    Some(a) if a.span != s.span => {
                         t.changed += 1;
                         "changed"
                     }

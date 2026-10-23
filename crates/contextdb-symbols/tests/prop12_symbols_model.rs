@@ -72,8 +72,10 @@ impl Rng {
 
 // ---------------------------------------------------------------- model --
 
-/// What a symbol means: body, signature, attribute, directive variants.
-type Meaning = [u8; 4];
+/// What a symbol means: body, signature, attribute, directive variants, and
+/// whether its body uses the file's `FILL` item (walk 3 same-file context:
+/// then `FILL`'s value is part of what it means).
+type Meaning = [u8; 5];
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Sym {
     meaning: Meaning,
@@ -114,15 +116,23 @@ fn group_name(ext: &str) -> &'static str {
 
 // ------------------------------------------------------------- rendering --
 
+/// The body's use of the file's `FILL` item.
+fn fill(s: &Sym, name: &str) -> String {
+    if s.meaning[4] == 1 {
+        format!(" + {name}")
+    } else {
+        String::new()
+    }
+}
 fn render_rust(name: &str, s: &Sym) -> String {
-    let [b, sig, attr, _] = s.meaning;
+    let [b, sig, attr, _, _] = s.meaning;
     let attr = ["", "#[inline]\n", "#[must_use]\n"][attr as usize];
     let params: &[&str] = if sig == 0 {
         &["x: u32"]
     } else {
         &["x: u32", "y: u32"]
     };
-    let mut body = format!("x + {}", 10 + b);
+    let mut body = format!("x + {}{}", 10 + b, fill(s, "FILL"));
     if s.error {
         body.push_str(" +* ");
     }
@@ -145,11 +155,11 @@ fn render_rust(name: &str, s: &Sym) -> String {
     format!("{before}{attr}{decl}\n\n")
 }
 fn render_python(name: &str, s: &Sym) -> String {
-    let [b, sig, attr, directive] = s.meaning;
+    let [b, sig, attr, directive, _] = s.meaning;
     let attr = ["", "@cache\n", "@staticmethod\n"][attr as usize];
     let params: &[&str] = if sig == 0 { &["x"] } else { &["x", "y=1"] };
     let line = ["y = x", "y = x  # type: int", "y = x  # type: str"][directive as usize];
-    let b = 10 + b;
+    let b = format!("{}{}", 10 + b, fill(s, "FILL"));
     let tail = if s.error { " +* )" } else { "" };
     let (before, trailing, inside) = match s.comment {
         1 => ("# note\n", "", ""),
@@ -178,7 +188,7 @@ fn render_python(name: &str, s: &Sym) -> String {
     format!("{before}{attr}{def}\n\n")
 }
 fn render_ts(name: &str, s: &Sym, ext: &str) -> String {
-    let [b, sig, attr, directive] = s.meaning;
+    let [b, sig, attr, directive, _] = s.meaning;
     let typed = ext != "js";
     let attr = ["", "export ", "async "][attr as usize];
     let params: &[&str] = match (typed, sig) {
@@ -189,7 +199,7 @@ fn render_ts(name: &str, s: &Sym, ext: &str) -> String {
     };
     let ret = if typed { ": number" } else { "" };
     let directive = ["", "  // @ts-ignore\n", "  // @ts-expect-error\n"][directive as usize];
-    let b = 10 + b;
+    let b = format!("{}{}", 10 + b, fill(s, "FILL"));
     let expr = if s.error {
         format!("x + {b} + ")
     } else {
@@ -224,14 +234,14 @@ fn render_ts(name: &str, s: &Sym, ext: &str) -> String {
     format!("{before}{attr}{decl}\n\n")
 }
 fn render_go(name: &str, s: &Sym) -> String {
-    let [b, sig, _, directive] = s.meaning;
+    let [b, sig, _, directive, _] = s.meaning;
     let directive = ["", "//go:noinline\n", "//go:nosplit\n"][directive as usize];
     let params: &[&str] = if sig == 0 {
         &["x int"]
     } else {
         &["x int", "y int"]
     };
-    let b = 10 + b;
+    let b = format!("{}{}", 10 + b, fill(s, "fill"));
     let expr = if s.error {
         format!("x + {b} +")
     } else {
@@ -340,6 +350,7 @@ fn fresh_sym(rng: &mut Rng, ext: &str) -> Sym {
             rng.below(2) as u8,
             if ext == "go" { 0 } else { rng.below(3) as u8 },
             if ext == "rs" { 0 } else { rng.below(3) as u8 },
+            rng.below(2) as u8,
         ],
         layout: rng.below(4) as u8,
         comment: rng.below(4) as u8,
@@ -447,6 +458,7 @@ fn evolve(
                 continue;
             }
             610..=649 => s.error = true,
+            650..=689 => s.meaning[4] ^= 1,
             _ => {}
         }
         let s = h.symbols[name];
@@ -800,24 +812,24 @@ fn file_descriptor(repo: &str, path: &str, format: ObjectFormat, oid: &[u8]) -> 
 /// ADR 0012 §4: language code and normaliser version, spelled out.
 fn language_of(path: &str) -> (u8, &'static str) {
     match path.rsplit_once('.').unwrap().1 {
-        "rs" => (1, "rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=2"),
+        "rs" => (1, "rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=3"),
         "ts" => (
             2,
-            "typescript:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=2",
+            "typescript:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=3",
         ),
         "tsx" => (
             3,
-            "tsx:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=2",
+            "tsx:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=3",
         ),
         "js" => (
             4,
-            "javascript:tree-sitter-javascript=0.25.0;tree-sitter=0.27.1;walk=2",
+            "javascript:tree-sitter-javascript=0.25.0;tree-sitter=0.27.1;walk=3",
         ),
         "py" => (
             5,
-            "python:tree-sitter-python=0.25.0;tree-sitter=0.27.1;walk=2",
+            "python:tree-sitter-python=0.25.0;tree-sitter=0.27.1;walk=3",
         ),
-        "go" => (6, "go:tree-sitter-go=0.25.0;tree-sitter=0.27.1;walk=2"),
+        "go" => (6, "go:tree-sitter-go=0.25.0;tree-sitter=0.27.1;walk=3"),
         other => panic!("{other}"),
     }
 }
@@ -1085,6 +1097,8 @@ struct Coverage {
     comment: usize,
     body: usize,
     outside: usize,
+    /// A same-file item the symbol uses changed (walk 3).
+    context: usize,
     rename: usize,
     grouping: usize,
     hash_path: usize,
@@ -1418,7 +1432,12 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
                 h.group.to_vec()
             } else {
                 match h.symbols.get(symbol) {
-                    Some(s) if !s.error => s.meaning.to_vec(),
+                    // A used `FILL` is part of the meaning (walk 3).
+                    Some(s) if !s.error => {
+                        let mut m = s.meaning.to_vec();
+                        m.push(if s.meaning[4] == 1 { h.filler } else { u8::MAX });
+                        m
+                    }
                     _ => continue,
                 }
             };
@@ -1464,13 +1483,24 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
                     if b.meaning[0] != s.meaning[0] {
                         kinds.insert("body");
                     }
+                    if b.meaning == s.meaning
+                        && s.meaning[4] == 1
+                        && !b.error
+                        && before.filler != h.filler
+                    {
+                        kinds.insert("context");
+                    }
                 }
                 let unchanged = if grouped {
                     (before.group, before.group_layout) == (h.group, h.group_layout)
                 } else {
                     before.symbols.get(symbol) == h.symbols.get(symbol)
                 };
-                if unchanged && render(before) != render(h) {
+                let uses_fill = !grouped && h.symbols[symbol].meaning[4] == 1;
+                if unchanged
+                    && render(before) != render(h)
+                    && !(uses_fill && before.filler != h.filler)
+                {
                     kinds.insert("outside");
                 }
             }
@@ -1514,6 +1544,7 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
                 "comment" => &mut cov.comment,
                 "body" => &mut cov.body,
                 "outside" => &mut cov.outside,
+                "context" => &mut cov.context,
                 "grouping" => &mut cov.grouping,
                 "case_alias" => &mut cov.case_alias,
                 _ => &mut cov.rename,
@@ -1597,7 +1628,7 @@ fn model_prop12_symbols_10000_fixed_seeds() {
     let cov = run(0..SEEDS);
     let t = cov.transactions;
     println!(
-        "PROP12-symbols-model seeds={SEEDS} transactions={t} delete={} same_restore={} old_head_aba={} cas_retry={} lag={} unavailable={} unsupported={} sha256={} formatting={} comment={} body={} outside={} rename={} grouping={} hash_path={} case_alias={} restore={} syntax_error={} mixed={} rust={} ts={} python={} go={}",
+        "PROP12-symbols-model seeds={SEEDS} transactions={t} delete={} same_restore={} old_head_aba={} cas_retry={} lag={} unavailable={} unsupported={} sha256={} formatting={} comment={} body={} outside={} context={} rename={} grouping={} hash_path={} case_alias={} restore={} syntax_error={} mixed={} rust={} ts={} python={} go={}",
         cov.delete,
         cov.same_restore,
         cov.old_head_aba,
@@ -1610,6 +1641,7 @@ fn model_prop12_symbols_10000_fixed_seeds() {
         cov.comment,
         cov.body,
         cov.outside,
+        cov.context,
         cov.rename,
         cov.grouping,
         cov.hash_path,
@@ -1636,6 +1668,7 @@ fn model_prop12_symbols_10000_fixed_seeds() {
         ("comment", cov.comment, 5),
         ("body", cov.body, 5),
         ("outside", cov.outside, 5),
+        ("context", cov.context, 2),
         ("rename", cov.rename, 2),
         ("grouping", cov.grouping, 2),
         ("hash_path", cov.hash_path, 2),
@@ -1664,7 +1697,7 @@ fn model_injected_errors_are_inside_the_span() {
         for layout in 0..4 {
             for comment in 0..4 {
                 let s = Sym {
-                    meaning: [1, 1, 0, 0],
+                    meaning: [1, 1, 0, 0, 1],
                     layout,
                     comment,
                     error: true,
@@ -1696,19 +1729,27 @@ fn model_injected_errors_are_inside_the_span() {
 }
 
 /// Layout and comment variants never change a hash; meaning variants always
-/// do (the generator's premise, checked on every rendering).
+/// do, and so does the value of a used `FILL` (walk 3 context) but not of an
+/// unused one (the generator's premise, checked on every rendering).
 #[test]
 fn model_renderer_premise() {
     for ext in ["rs", "ts", "tsx", "js", "py", "go"] {
         let language = Language::of_path(&format!("x.{ext}")).unwrap();
-        let mut seen: BTreeMap<Meaning, [u8; 32]> = BTreeMap::new();
+        let mut seen: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
         let attrs = if ext == "go" { 1 } else { 3 };
         let directives = if ext == "rs" { 1 } else { 3 };
         for b in 0..3 {
             for sig in 0..2 {
                 for attr in 0..attrs {
-                    for directive in 0..directives {
-                        let meaning = [b, sig, attr, directive];
+                    for (directive, uses, filler) in (0..directives)
+                        .flat_map(|d| (0..2).flat_map(move |u| (0..2).map(move |f| (d, u, f))))
+                    {
+                        let meaning = [b, sig, attr, directive, uses];
+                        let key: Vec<u8> = meaning
+                            .iter()
+                            .copied()
+                            .chain([if uses == 1 { filler } else { u8::MAX }])
+                            .collect();
                         for layout in 0..4 {
                             for comment in 0..4 {
                                 let mut h = HostModel {
@@ -1716,7 +1757,7 @@ fn model_renderer_premise() {
                                     symbols: BTreeMap::new(),
                                     group: [0, 1],
                                     group_layout: layout % 2,
-                                    filler: 0,
+                                    filler,
                                 };
                                 let s = Sym {
                                     meaning,
@@ -1731,7 +1772,7 @@ fn model_renderer_premise() {
                                 let file = parse(language, &src, deadline).unwrap();
                                 assert!(!file.has_error, "{ext}: parse error\n{text}");
                                 let hash = file.symbols["alpha"].hash;
-                                match seen.get(&meaning) {
+                                match seen.get(&key) {
                                     Some(h) => assert_eq!(
                                         *h, hash,
                                         "{ext} {meaning:?} {layout} {comment}: layout or comment changed the hash\n{text}"
@@ -1741,7 +1782,7 @@ fn model_renderer_premise() {
                                             !seen.values().any(|h| *h == hash),
                                             "{ext} {meaning:?}: two meanings, one hash"
                                         );
-                                        seen.insert(meaning, hash);
+                                        seen.insert(key.clone(), hash);
                                     }
                                 }
                             }

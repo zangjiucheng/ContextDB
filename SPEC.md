@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.5 · Date: 2026-10-22 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.6 · Date: 2026-10-23 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -597,9 +597,9 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - 语言顺序：TS/JS → Rust → Python → Go 为优先顺序而非交付顺序（ADR 0012 四种语言一起交付）；不支持的语言退回文件级。
 
 **Gate P5b**
-- G2：T45（纯格式化变更 no-op，以真实格式化工具判定）、T45b、T42b（只改函数体外代码时 symbol 锚点不变）、T42d、T42e、T46d、T46e。
+- G2：T45（纯格式化变更 no-op，以真实格式化工具判定）、T45b、T42b（只改 symbol 范围外、且不是它引用的同文件项时，symbol 锚点不变；v1.6.6）、T42d、T42e、T46d、T46e。
 - G3：PROP12 扩展到 symbol 锚点。
-- G6：同一回放 benchmark，symbol 级进入推荐配置的门槛：false invalidation ≤ 10%（initial），且 missed invalidation ≤ 文件级 + 2 个百分点（initial；v1.6.5 owner 决定）。两种预测在同一批标注配对上评分，按分层加权的点估计判定，并报告 95% 区间与宿主文件变化时的条件漏报率；抽样与 symbol 选择规则见 ADR 0012 §9。
+- G6：同一回放 benchmark，symbol 级进入推荐配置的门槛：false invalidation ≤ 文件级 false invalidation 的一半，且 missed invalidation ≤ 文件级 + 2 个百分点（v1.6.6 owner 决定，取代 v1.6.5 的 FI ≤ 10%：首次 G6 显示纯语法预测无法区分保持行为的改写，FI 绝对阈值不可达）。两种预测在同一批标注配对上评分，按分层加权的点估计判定，并报告 95% 区间与宿主文件变化时的条件漏报率。symbol 级预测为 walk 3：span 语法变化，或其引用的同文件项（其他 symbol、import 绑定、模块级赋值）变化，或 Broken。重测使用新的、与首次样本不重叠的 symbol 与配对；抽样、选择与评分规则见 ADR 0012 §9（r0.7）。
 
 ---
 
@@ -1269,6 +1269,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 |---|---|---|
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
 | 1.6.5 | 2026-10-22 | P5b G0（ADR 0012 r0.3）：symbol key 可逆编码（哈希段为冻结的源文本哈希）、文件路径禁止 `#`；descriptor `CTXANC02` 与机械导出的 normaliser 版本（仅 migrate 跨版本）；同路径声明合并代替歧义；局部解析错误规则；宿主文件粒度的 `CTXPOS02` 位置，daemon 不解析；G6 改为 missed ≤ 文件级 + 2 个百分点（owner 决定），加权点估计；新增 T42d、T42e、T45b、T46d、T46e |
+| 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |
 | 1.6.4 | 2026-10-22 | owner 决定取消项目人工参与门槛：标注、独立复核、dogfood 维护和验收由 agent 执行（§4.4）；P5a G6 改为 ≥200 条有来源/理由/证据的 agent 标签，人工抽查和一致率仅作可选诊断（ADR 0011 r0.6 §11）；P4/P7 评测允许 agent 参考标签，保留真实使用时长、确定性 oracle、失败状态及通道/CAS/LLM 不自证边界 |
 | 1.6.3 | 2026-10-22 | P5a G6（owner 决定）：ground truth 由「≥ 200 人工标注」改为「≥ 200 预先分层抽样的 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，不一致者记为有争议、只进敏感性区间；分层报告并披露非盲、非总体样本（ADR 0011 r0.5 §10） |
 | 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |

@@ -1,6 +1,7 @@
 //! Symbol extraction and normalisation for symbol-level code anchors
 //! (SPEC SD18, ADR 0012). Observer-side only: `ctxd` never links this crate,
 //! so the daemon's live path never parses.
+mod context;
 mod extract;
 pub mod observer;
 mod walk;
@@ -10,7 +11,7 @@ pub use extract::MAX_NESTING;
 use std::{collections::BTreeMap, ops::ControlFlow, time::Instant};
 
 /// Walk revision (ADR 0012 §4); part of every normaliser version.
-const WALK: u32 = 2;
+const WALK: u32 = 3;
 const RUNTIME: &str = "tree-sitter=0.27.1";
 
 fn grammar(language: Language) -> (tree_sitter::Language, &'static str) {
@@ -50,12 +51,18 @@ pub(crate) fn walk_directive(rules: &walk::Rules, text: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Symbol {
-    /// Normalised hash of all occurrences in source order.
+    /// The revision hash (walk 3, ADR 0012 §4 r0.7): `span` and `context`
+    /// together; the descriptor's normalised hash.
     pub hash: [u8; 32],
-    /// The same with each occurrence's declared name masked.
+    /// Normalised hash of all occurrences in source order (T45).
+    pub span: [u8; 32],
+    /// `span` with each occurrence's declared name masked (rebind).
     pub masked: [u8; 32],
     /// An occurrence's span, or a node enclosing it, has a parse error.
     pub error: bool,
+    /// Same-file context (r0.7, G6 v2): the file's other items binding a
+    /// name the span mentions, by name and normalised hash.
+    pub context: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedFile {
@@ -145,11 +152,17 @@ pub fn parse(
     let rules = walk::rules(language);
     let (table, facts, mut clock) = table(language, &rules, bytes, root, deadline)?;
     let mut symbols = BTreeMap::new();
-    for (path, occurrences) in table {
+    let mut items: Vec<context::Item> = Vec::new();
+    let mut spans: Vec<(
+        String,
+        Vec<std::ops::Range<usize>>,
+        std::collections::BTreeSet<String>,
+    )> = Vec::new();
+    for (path, occurrences) in &table {
         let mut hash = blake3::Hasher::new();
         let mut masked = blake3::Hasher::new();
         let mut error = false;
-        for occ in &occurrences {
+        for occ in occurrences {
             hash.update(b"O");
             masked.update(b"O");
             for node in &occ.nodes {
@@ -170,14 +183,84 @@ pub fn parse(
                 .node(*node)?;
             }
         }
+        let hash = *hash.finalize().as_bytes();
+        let ranges: Vec<_> = occurrences
+            .iter()
+            .flat_map(|o| o.nodes.iter().map(|n| n.byte_range()))
+            .collect();
+        let mut mentioned = std::collections::BTreeSet::new();
+        for occ in occurrences {
+            mentioned.extend(context::mentions(
+                bytes,
+                &occ.nodes,
+                occ.name.map(|n| n.id()),
+            ));
+        }
+        let last = path.rsplit("::").next().unwrap_or(path);
+        items.push(context::Item {
+            names: vec![last.to_owned()],
+            ranges: ranges.clone(),
+            hash,
+        });
+        spans.push((path.clone(), ranges, mentioned));
         symbols.insert(
-            path,
+            path.clone(),
             Symbol {
-                hash: *hash.finalize().as_bytes(),
+                hash,
+                span: hash,
                 masked: *masked.finalize().as_bytes(),
                 error,
+                context: [0; 32],
             },
         );
+    }
+    // Top-level non-symbol binders (imports, module-level assignments).
+    for n in root.children(&mut root.walk()) {
+        let binders = context::binders(language, bytes, n);
+        if binders.is_empty() {
+            continue;
+        }
+        let mut statement = None;
+        for (name, binding) in binders {
+            let hash = match binding {
+                context::Binding::Import(source) => *blake3::hash(source.as_bytes()).as_bytes(),
+                context::Binding::Statement => match statement {
+                    Some(h) => h,
+                    None => {
+                        let mut h = blake3::Hasher::new();
+                        walk::Walk {
+                            rules: &rules,
+                            facts: &facts,
+                            clock: &mut clock,
+                            src: bytes,
+                            hasher: &mut h,
+                            masked: None,
+                            trace: None,
+                            in_name: false,
+                        }
+                        .node(n)?;
+                        *statement.insert(*h.finalize().as_bytes())
+                    }
+                },
+            };
+            items.push(context::Item {
+                names: vec![name],
+                ranges: vec![n.byte_range()],
+                hash,
+            });
+        }
+    }
+    let index = context::Index::new(&items);
+    for (path, ranges, mentioned) in &mut spans {
+        ranges.sort_by_key(|r| (r.start, r.end));
+        if let Some(s) = symbols.get_mut(path.as_str()) {
+            s.context = index.hash(ranges, mentioned, &mut clock)?;
+            let mut revision = blake3::Hasher::new();
+            revision.update(b"CTXSYM03");
+            revision.update(&s.span);
+            revision.update(&s.context);
+            s.hash = *revision.finalize().as_bytes();
+        }
     }
     Ok(ParsedFile {
         language,

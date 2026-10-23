@@ -1,10 +1,11 @@
 //! P5b G6 replay (ADR 0012 §9): symbol-level against file-level anchors on
 //! the P5a replay's repositories and commits, scored on agent labels.
 //!
-//!   symbol_replay prepare <clone> <p5a.tsv> <out.tsv>
-//!   symbol_replay sample <sample.tsv> <population.tsv>...
+//!   symbol_replay prepare <clone> <p5a.tsv> <out.tsv> [--ranks A-B] [--live-at-parent]
+//!   symbol_replay sample <sample.tsv> <population.tsv>... [--id-prefix P]
 //!   symbol_replay batches <sample.tsv> <clones dir> <out dir> <batches>
-//!   symbol_replay score <sample.tsv> <labels.tsv>
+//!   symbol_replay score <sample.tsv> <labels.tsv> [--predictions <p.tsv>]
+//!   symbol_replay predict <sample.tsv> <clones dir> <out.tsv>
 //!
 //! `prepare` reads the P5a replay's header (repository, selection commit,
 //! last commit, anchor files) and replays the same 1,000 first-parent commits
@@ -14,7 +15,9 @@
 //! symbols without a parse error at the selection commit, sorted by
 //! `git hash-object("<path>#<symbol>")`, the first 5. **Pairs**: every
 //! (symbol, commit) where the host file or a file in the host's directory
-//! changed. File level fires when the host blob changed; symbol level fires
+//! changed. The r0.7 retest takes ranks 6-10 instead of 1-5 and keeps only
+//! pairs whose symbol is live (not Broken) at the parent (`--ranks 6-10
+//! --live-at-parent`). File level fires when the host blob changed; symbol level fires
 //! when the observer gives the anchor a new head or breaks it. An automatic
 //! check (not a label) recomputes the symbol event from the commit's blobs
 //! with `parse` and counts disagreements.
@@ -108,7 +111,14 @@ fn hash_of(file: &Option<ParsedFile>, symbol: &str) -> Option<[u8; 32]> {
         .map(|s| s.hash)
 }
 
-fn prepare(src: &Path, p5a: &Path, out: &Path) -> Result<(), String> {
+/// Which ranked symbols per file, and whether pairs need a live symbol at
+/// the parent.
+struct Selection {
+    ranks: std::ops::RangeInclusive<usize>,
+    live_at_parent: bool,
+}
+
+fn prepare(src: &Path, p5a: &Path, out: &Path, sel: &Selection) -> Result<(), String> {
     let src = src.canonicalize().map_err(|e| e.to_string())?;
     let p5a_text = std::fs::read_to_string(p5a).map_err(|e| e.to_string())?;
     let lines: Vec<&str> = p5a_text.lines().collect();
@@ -166,7 +176,8 @@ fn prepare(src: &Path, p5a: &Path, out: &Path) -> Result<(), String> {
         selected.extend(
             symbols
                 .into_iter()
-                .take(PER_FILE)
+                .skip(sel.ranks.start() - 1)
+                .take(sel.ranks.end() + 1 - sel.ranks.start())
                 .map(|(_, s)| ((*path).clone(), s)),
         );
     }
@@ -294,7 +305,8 @@ fn prepare(src: &Path, p5a: &Path, out: &Path) -> Result<(), String> {
             }
             let file_fired = stat.contains_key(path.as_str());
             let near = stat.keys().any(|p| p != path && dir(p) == dir(path));
-            if file_fired || near {
+            let live = b.is_some_and(|(_, base)| *base);
+            if (file_fired || near) && (live || !sel.live_at_parent) {
                 let (added, removed) = stat.get(path.as_str()).cloned().unwrap_or_default();
                 rows.push(format!(
                     "{}\t{commit}\t{parent}\t{}\t{}\t{}\t{}\t{event}\t{added}\t{removed}\t{subject}",
@@ -318,7 +330,18 @@ fn prepare(src: &Path, p5a: &Path, out: &Path) -> Result<(), String> {
         list[1]
     ))?;
     w(format!(
-        "# selection: in the P5a anchor files of a supported language, symbols without a parse error at {base}, first {PER_FILE} per file by git hash-object(<path>#<symbol>)"
+        "# selection: in the P5a anchor files of a supported language, symbols without a parse error at {base}, ranks {}-{} per file by git hash-object(<path>#<symbol>){}",
+        sel.ranks.start(),
+        sel.ranks.end(),
+        if sel.live_at_parent {
+            "; pairs only where the symbol is live at the parent"
+        } else {
+            ""
+        }
+    ))?;
+    w(format!(
+        "# normaliser: {}",
+        contextdb_symbols::normaliser_version(Language::Rust)
     ))?;
     w(format!(
         "# hosts={} symbols={} pairs={} automatic_check_disagreements={} {}",
@@ -403,7 +426,7 @@ fn read_rows(path: &Path) -> Result<(Vec<String>, Vec<Row>), String> {
     Ok((comments, rows))
 }
 
-fn sample(out: &Path, files: &[String]) -> Result<(), String> {
+fn sample(out: &Path, files: &[String], prefix: &str) -> Result<(), String> {
     let mut strata: BTreeMap<Key, Vec<(Vec<u8>, Row)>> = BTreeMap::new();
     let mut sources = Vec::new();
     for file in files {
@@ -448,7 +471,7 @@ fn sample(out: &Path, files: &[String]) -> Result<(), String> {
     }
     w(&format!("id\t{HEADER}"))?;
     for (i, (_, row)) in picked.iter().enumerate() {
-        w(&format!("P5B-G6-{:03}\t{row}", i + 1))?;
+        w(&format!("{prefix}{:03}\t{row}", i + 1))?;
     }
     println!(
         "{} sampled pairs in {} strata -> {}",
@@ -514,15 +537,17 @@ impl SplitMix {
     }
 }
 
-/// One stratum's labelled outcomes.
+/// One stratum's labelled pairs: (invalidates, symbol level fired). File
+/// level is constant in a stratum; symbol level is too unless per-pair
+/// predictions replace it (a predictor scored on a sample stratified by
+/// another).
 struct Stratum {
     file_fired: bool,
-    symbol_fired: bool,
     population: f64,
-    labels: Vec<bool>,
+    labels: Vec<(bool, bool)>,
 }
 /// (symbol FI, file FI, symbol MI, file MI, symbol MI among host-changed positives)
-fn estimate(strata: &[(&Stratum, Vec<bool>)]) -> [f64; 5] {
+fn estimate(strata: &[(&Stratum, Vec<(bool, bool)>)]) -> [f64; 5] {
     let (mut fired, mut fp) = ([0.; 2], [0.; 2]);
     let (mut pos, mut missed) = (0., [0.; 2]);
     let (mut host_pos, mut host_missed) = (0., 0.);
@@ -530,22 +555,27 @@ fn estimate(strata: &[(&Stratum, Vec<bool>)]) -> [f64; 5] {
         if labels.is_empty() {
             continue;
         }
-        let rate = labels.iter().filter(|l| **l).count() as f64 / labels.len() as f64;
-        let positives = s.population * rate;
-        let negatives = s.population - positives;
-        pos += positives;
-        for (i, fires) in [s.symbol_fired, s.file_fired].into_iter().enumerate() {
-            if fires {
-                fired[i] += s.population;
-                fp[i] += negatives;
-            } else {
-                missed[i] += positives;
+        // Each labelled pair stands for population / labelled pairs.
+        let w = s.population / labels.len() as f64;
+        for &(invalidates, symbol) in labels {
+            if invalidates {
+                pos += w;
             }
-        }
-        if s.file_fired {
-            host_pos += positives;
-            if !s.symbol_fired {
-                host_missed += positives;
+            for (i, fires) in [symbol, s.file_fired].into_iter().enumerate() {
+                if fires {
+                    fired[i] += w;
+                    if !invalidates {
+                        fp[i] += w;
+                    }
+                } else if invalidates {
+                    missed[i] += w;
+                }
+            }
+            if s.file_fired && invalidates {
+                host_pos += w;
+                if !symbol {
+                    host_missed += w;
+                }
             }
         }
     }
@@ -559,8 +589,18 @@ fn estimate(strata: &[(&Stratum, Vec<bool>)]) -> [f64; 5] {
     ]
 }
 
-fn score(sample: &Path, labels: &Path) -> Result<bool, String> {
+fn score(sample: &Path, labels: &Path, predictions: Option<&Path>) -> Result<bool, String> {
     let (comments, rows) = read_rows(sample)?;
+    let predicted: Option<BTreeMap<String, bool>> = match predictions {
+        Some(p) => Some(
+            read_rows(p)?
+                .1
+                .iter()
+                .map(|r| (r.get("id").to_owned(), r.get("symbol_fired") == "y"))
+                .collect(),
+        ),
+        None => None,
+    };
     let (_, label_rows) = read_rows(labels)?;
     let label: BTreeMap<&str, &str> = label_rows
         .iter()
@@ -590,13 +630,18 @@ fn score(sample: &Path, labels: &Path) -> Result<bool, String> {
         let k = r.stratum();
         let s = strata.entry(k.clone()).or_insert(Stratum {
             file_fired: k.1 == "y",
-            symbol_fired: k.2 == "y",
             population: population.get(&k).copied().unwrap_or(0.),
             labels: Vec::new(),
         });
+        let symbol = match &predicted {
+            Some(p) => *p
+                .get(r.get("id"))
+                .ok_or_else(|| format!("no prediction for {}", r.get("id")))?,
+            None => k.2 == "y",
+        };
         match label.get(r.get("id")).copied() {
-            Some("y") => s.labels.push(true),
-            Some("n") => s.labels.push(false),
+            Some("y") => s.labels.push((true, symbol)),
+            Some("n") => s.labels.push((false, symbol)),
             Some("unsure") => unsure += 1,
             _ => missing.push(r.get("id").to_owned()),
         }
@@ -615,11 +660,11 @@ fn score(sample: &Path, labels: &Path) -> Result<bool, String> {
             "{repo}\t{f}\t{s}\t{}\t{}\t{}",
             st.population,
             st.labels.len(),
-            st.labels.iter().filter(|l| **l).count()
+            st.labels.iter().filter(|l| l.0).count()
         );
     }
     let report = |name: &str, keep: &dyn Fn(&str) -> bool| -> [f64; 5] {
-        let chosen: Vec<(&Stratum, Vec<bool>)> = strata
+        let chosen: Vec<(&Stratum, Vec<(bool, bool)>)> = strata
             .iter()
             .filter(|(k, _)| keep(&k.0))
             .map(|(_, s)| (s, s.labels.clone()))
@@ -628,7 +673,7 @@ fn score(sample: &Path, labels: &Path) -> Result<bool, String> {
         let mut rng = SplitMix(0x5eed_0006);
         let mut draws: Vec<[f64; 6]> = Vec::with_capacity(10_000);
         for _ in 0..10_000 {
-            let resampled: Vec<(&Stratum, Vec<bool>)> = chosen
+            let resampled: Vec<(&Stratum, Vec<(bool, bool)>)> = chosen
                 .iter()
                 .map(|(s, l)| {
                     let n = l.len();
@@ -679,17 +724,93 @@ fn score(sample: &Path, labels: &Path) -> Result<bool, String> {
     Ok(pass)
 }
 
+/// Symbol level v2 (ADR 0012 r0.7) on a sample's pairs, from the blobs:
+/// v1 fired (a new head or a break), or the symbol is present at both
+/// commits and its same-file context hash changed.
+fn predict(sample: &Path, clones: &Path, out: &Path) -> Result<(), String> {
+    let (_, rows) = read_rows(sample)?;
+    let mut f = std::fs::File::create(out).map_err(|e| e.to_string())?;
+    writeln!(f, "id\tsymbol_fired\tv1\tcontext_changed").map_err(|e| e.to_string())?;
+    let (mut fired, mut added) = (0, 0);
+    for r in &rows {
+        let clone = clones.join(r.repo());
+        let symbol = r.get("symbol");
+        let at = |c: &str| -> Result<Option<contextdb_symbols::Symbol>, String> {
+            Ok(host_at(&clone, c, r.get("path"))?
+                .and_then(|file| file.symbols.get(symbol).cloned())
+                .filter(|s| !s.error))
+        };
+        let (before, after) = (at(r.get("parent"))?, at(r.get("commit"))?);
+        let v1 = r.get("symbol_fired") == "y";
+        let context = matches!((&before, &after), (Some(b), Some(a)) if b.context != a.context);
+        let v2 = v1 || context;
+        fired += usize::from(v2);
+        added += usize::from(v2 && !v1);
+        writeln!(
+            f,
+            "{}\t{}\t{}\t{}",
+            r.get("id"),
+            if v2 { "y" } else { "n" },
+            if v1 { "y" } else { "n" },
+            if context { "y" } else { "n" }
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    println!(
+        "{} pairs: v2 fires on {fired}, {added} more than v1 -> {}",
+        rows.len(),
+        out.display()
+    );
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = "usage: symbol_replay prepare <clone> <p5a.tsv> <out.tsv> | sample <sample.tsv> <population.tsv>... | batches <sample.tsv> <clones dir> <out dir> <n> | score <sample.tsv> <labels.tsv>";
     let result = match args.first().map(String::as_str) {
-        Some("prepare") if args.len() == 4 => prepare(
-            Path::new(&args[1]),
-            Path::new(&args[2]),
-            Path::new(&args[3]),
-        )
-        .map(|_| true),
-        Some("sample") if args.len() >= 3 => sample(Path::new(&args[1]), &args[2..]).map(|_| true),
+        Some("prepare") if args.len() >= 4 => {
+            let mut sel = Selection {
+                ranks: 1..=PER_FILE,
+                live_at_parent: false,
+            };
+            let mut rest = args[4..].iter();
+            let mut ok = true;
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--live-at-parent" => sel.live_at_parent = true,
+                    "--ranks" => {
+                        let r = rest.next().and_then(|r| {
+                            let (a, b) = r.split_once('-')?;
+                            Some(a.parse::<usize>().ok()?..=b.parse::<usize>().ok()?)
+                        });
+                        match r {
+                            Some(r) if *r.start() >= 1 && r.start() <= r.end() => sel.ranks = r,
+                            _ => ok = false,
+                        }
+                    }
+                    _ => ok = false,
+                }
+            }
+            if ok {
+                prepare(
+                    Path::new(&args[1]),
+                    Path::new(&args[2]),
+                    Path::new(&args[3]),
+                    &sel,
+                )
+                .map(|_| true)
+            } else {
+                Err(usage.to_owned())
+            }
+        }
+        Some("sample") if args.len() >= 3 => {
+            let (files, prefix) = match args.iter().position(|a| a == "--id-prefix") {
+                Some(i) if i + 2 == args.len() && i >= 3 => (&args[2..i], args[i + 1].as_str()),
+                Some(_) => return eprintln!("{usage}"),
+                None => (&args[2..], "P5B-G6-"),
+            };
+            sample(Path::new(&args[1]), files, prefix).map(|_| true)
+        }
         Some("batches") if args.len() == 5 => args[4]
             .parse()
             .map_err(|_| usage.to_owned())
@@ -702,7 +823,18 @@ fn main() {
                 )
             })
             .map(|_| true),
-        Some("score") if args.len() == 3 => score(Path::new(&args[1]), Path::new(&args[2])),
+        Some("score") if args.len() == 3 => score(Path::new(&args[1]), Path::new(&args[2]), None),
+        Some("score") if args.len() == 5 && args[3] == "--predictions" => score(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            Some(Path::new(&args[4])),
+        ),
+        Some("predict") if args.len() == 4 => predict(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            Path::new(&args[3]),
+        )
+        .map(|_| true),
         _ => Err(usage.to_owned()),
     };
     match result {

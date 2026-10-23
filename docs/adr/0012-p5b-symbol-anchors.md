@@ -1,11 +1,14 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.6, 2026-10-23. G0 passed after an independent
-review, a closure check and a closure confirmation (§11). SPEC v1.6.5 mirrors it.
+Status: **accepted**, revision 0.7, 2026-10-23. G0 passed after an independent
+review, a closure check and a closure confirmation (§11). SPEC v1.6.6 mirrors it.
 r0.4 records implementation findings: walk revision 2 from the T45 formatter
 corpus, and four clarifications (§11). r0.5 records the G4 resource findings:
 a container nesting bound and the deadline over extraction and walk (§4, §11).
-r0.6 fixes the G6 rate definitions before labelling (§9, §11).
+r0.6 fixes the G6 rate definitions before labelling (§9, §11). r0.7 (owner
+decision after the first G6 failed) adds same-file context to the symbol
+revision (walk 3, §4), relaxes the FI threshold and fixes a fresh G6 retest
+(§9, §11).
 
 ## 0. Scope and delivery
 
@@ -287,6 +290,30 @@ syntax reuses the same RevisionId (SD18.4); restoring earlier text restores
 dependents. File OIDs are not in the descriptor, so edits elsewhere never
 create revisions.
 
+**Same-file context (walk 3, r0.7).** From walk 3 the descriptor's
+normalised hash is `BLAKE3("CTXSYM03" ‖ span ‖ context)`. `span` is the
+symbol's normalised stream hash as above; it alone feeds T45 and the
+name-masked hash. `context` covers the file's **items** that bind a name the
+span **mentions**. Mentions are identifier-like leaf texts in the span, other
+than the declared name. Items:
+
+- the file's other symbols, by their last path segment, with their `span`
+  hash;
+- top-level imports, as name → source path, so the formatting, order and
+  grouping of imports never matter: Rust `use` (full path), Python `import`
+  and `from … import` (module path), Go (import path), TS/JS (module source
+  and imported name);
+- Python module-level assignments, with the statement's normalised hash.
+  These include assignments in top-level conditional blocks, which the
+  extraction already descends.
+
+Items that overlap the span never count: the symbol itself, its containers
+and its members. `context` is `BLAKE3` over the sorted set of (length-prefixed
+name, item hash). A symbol therefore re-revisions when it changes, or when a
+same-file item it names changes, appears or disappears. Edits to items it
+does not name still never create revisions (T42b, narrowed). Cross-file
+dependencies are out of scope.
+
 ## 5. Observation and classification
 
 The observer captures files as in P5a (two stable samples, raw bytes, all
@@ -407,7 +434,8 @@ scopes Unknown (fail-closed); mixed versions are unsupported, as before.
 - **G5**: P4 hook budgets unchanged (no parse on the live path); observer scan
   cost reported for 10/100/1,000 symbol anchors over host files up to the size
   bound.
-- **G6** (SPEC §5 P5b, agent-labelled per SPEC §4.4, owner rule v1.6.5): the
+- **G6** (SPEC §5 P5b, agent-labelled per SPEC §4.4, owner rules v1.6.5 and
+  v1.6.6; the r0.7 retest below replaces the first run's thresholds): the
   same three repositories × 1,000 commits. **Symbol selection rule**: in each
   repository's P5a anchor files written in a supported language, the
   observer's symbols at the replay's first commit sorted by
@@ -440,6 +468,23 @@ scopes Unknown (fail-closed); mixed versions are unsupported, as before.
   commit) from those without a parse error. Intervals are stratified
   percentile bootstrap, 10,000 resamples, fixed seed; `unsure` labels are
   excluded and counted. Tool: `symbol_replay` (bench).
+  **Retest (r0.7, fixed before its sample is drawn).**
+  - *Predictor*: walk 3.
+  - *Repositories and commits*: the same.
+  - *Symbols*: in each supported P5a anchor file, the symbols without a parse
+    error at the selection commit, sorted as before; take **ranks 6–10**.
+    These are disjoint from the first run's symbols.
+  - *Pairs*: as before, but only pairs whose symbol is live (not Broken) at
+    the parent. P5a likewise excluded pairs without a parent anchor.
+  - *Sample*: strata, 35 per stratum, ordering and rates as before.
+  - *Labels*: new blind agent labellers, with the same question and rules
+    (including pure move = `n`).
+  - *Thresholds* (owner decision 2026-10-23, SPEC v1.6.6): symbol false
+    invalidation ≤ ½ × file false invalidation, and symbol missed
+    invalidation ≤ file missed invalidation + 2 pp, as weighted point
+    estimates.
+  The first run's sample stays the training set. It was used to design
+  walk 3 and is not evidence for the retest.
 - **G7**: P0–P5a regressions. **G8**: README, semantics, CHANGELOG, status.
 
 ## 10. SPEC mirror (v1.6.5)
@@ -545,3 +590,21 @@ says so.
 not the denominators. Before any label existed, false invalidation was fixed
 as FP / fired and missed invalidation as FN / positives (P5a's reporting).
 The selection point and the firing rule were fixed with them (§9).
+
+**r0.7 G6 retest (2026-10-23, owner decision)**: the first G6 failed: symbol
+FI was 34.2 % (threshold 10 %) and missed invalidation was +13.1 pp (threshold
++2 pp). Its labels showed two causes:
+
+- Five of eight misses were same-file dependencies: a module-level set, a
+  compatibility import, a `use` swap and a called helper.
+- Most false invalidations were behaviour-preserving rewrites (`%` →
+  f-strings, an equivalent macro or function) and moves. A syntactic
+  predictor cannot see these.
+
+Walk 3 adds same-file context (§4). On the training sample it removes the
+missed gap: +0.0 pp with live-at-parent pairs. FI stays near 31 %; it is
+21.6 % even with an ideal move detector. The owner therefore replaced the
+absolute FI threshold with "≤ ½ × file level", and fixed a retest on
+disjoint symbols (§9). Walk 3 changes every symbol's descriptor hash, so
+symbol anchors need `ctx anchors migrate` again. The six-corpus span hashes
+(T45) are unchanged.
