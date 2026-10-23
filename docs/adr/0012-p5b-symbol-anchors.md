@@ -165,7 +165,8 @@ remove what formatters change and keep what changes meaning:
   types in checked JS); Python `# type:` comments. Children are counted
   **after** dropping.
 - **Optional punctuation is dropped**: trailing commas before a closing
-  bracket, **except** when the list has exactly one element, where the comma
+  bracket or at the end of their list node (a Rust `where` clause, a Python
+  bare tuple; walk 3, r0.8), **except** when the list has exactly one element, where the comma
   changes meaning (Python 1-tuples and subscripts such as `a[1,]`; Rust tuple
   expressions, tuple types and tuple patterns such as `(u8,)`); `;` leaves in
   JS/TS and Go (automatic semicolon insertion / gofmt); Python
@@ -615,7 +616,8 @@ missed gap: +0.0 pp with live-at-parent pairs. FI stays near 31 %; it is
 absolute FI threshold with "≤ ½ × file level", and fixed a retest on
 disjoint symbols (§9). Walk 3 changes every symbol's descriptor hash, so
 symbol anchors need `ctx anchors migrate` again. The six-corpus span hashes
-(T45) are unchanged.
+(T45) were unchanged by the context; the r0.8 comma fix below changes 59 of
+them.
 
 **r0.8 move convention (2026-10-23, owner decision)**: the retest's labels
 showed that the FI verdict turns on one question. Is a pure move or rename an
@@ -639,3 +641,18 @@ Results:
 - **First run, walk 2.** Under the owner's convention: FI 20.2 % ≤ ½ × 76.5 %,
   but missed is +12.0 pp, so it still fails. Same-file context (walk 3) is
   what closes the missed gap.
+
+**r0.8 trailing-comma fix (walk 3, before its release)**: the G6 retest
+found one formatter equivalence the walk missed (P5B-G6R-211). rustfmt adds
+a trailing comma to a multi-line `where` clause. That comma is the clause
+node's last child, not followed by a closing bracket, so it was kept. The
+rule now treats a comma with nothing after it in its list node like one
+before a closing bracket, with the same one-element exception.
+
+- **Spans.** 59 of the six corpora's 6,820 spans change against walk 2:
+  ripgrep 54 and fd 5, all Rust `where` clauses.
+- **T45.** The formatter corpus results are identical: no new exception.
+- **G6 retest.** Only P5B-G6R-211 changes; FI becomes 17.5 %
+  (diagnostic; the gate stays at the measured 18.7 %).
+
+Walk 3 was not yet released, so this fix is part of walk 3.

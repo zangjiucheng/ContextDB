@@ -727,3 +727,48 @@ fn comment_range_api_excludes_directives_and_code() {
         ["// plain", "/* ordinary */"]
     );
 }
+
+/// A trailing comma with no closing bracket after it (found by the G6
+/// retest, P5B-G6R-211: rustfmt adds one to a multi-line `where` clause) is
+/// optional like any other trailing comma; a one-element tuple's comma
+/// still means a tuple.
+#[test]
+fn trailing_comma_without_closing_bracket() {
+    use Language::{Python, Rust};
+    same(
+        Rust,
+        "f",
+        "fn f<T>() where T: Clone {}",
+        "fn f<T>()\nwhere\n    T: Clone,\n{\n}",
+    );
+    same(
+        Rust,
+        "f",
+        "fn f<T, U>() where T: Clone, U: Copy {}",
+        "fn f<T, U>()\nwhere\n    T: Clone,\n    U: Copy,\n{\n}",
+    );
+    differ(
+        Rust,
+        "f",
+        "fn f<T, U>() where T: Clone, U: Copy {}",
+        "fn f<T, U>() where T: Clone {}",
+    );
+    same(
+        Python,
+        "f",
+        "def f():\n    x = 1, 2\n",
+        "def f():\n    x = 1, 2,\n",
+    );
+    differ(
+        Python,
+        "f",
+        "def f():\n    x = 1\n",
+        "def f():\n    x = 1,\n",
+    );
+    differ(
+        Python,
+        "f",
+        "def f():\n    for a in b: pass\n",
+        "def f():\n    for a, in b: pass\n",
+    );
+}

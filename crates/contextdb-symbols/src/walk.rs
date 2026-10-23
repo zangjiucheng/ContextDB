@@ -398,31 +398,27 @@ impl Walk<'_> {
             return true; // required or not by the arm's form, never meaning
         }
         if kind == "," && !child.is_named() {
-            // Trailing comma: the next non-comment sibling closes the list.
-            let mut next = index + 1;
-            while let Some(&n) = children.get(next) {
-                if self.rules.comments.contains(&n.kind()) {
-                    next += 1;
-                    continue;
-                }
-                if !closing(n.kind()) {
-                    return false;
-                }
-                // A subscript's elements are its `subscript` fields (not the
-                // indexed value); other lists' elements are their named children.
-                let elements = if parent.kind() == "subscript" {
-                    parent
-                        .children_by_field_name("subscript", &mut parent.walk())
-                        .count()
-                } else {
-                    children
-                        .iter()
-                        .filter(|c| c.is_named() && !self.rules.comments.contains(&c.kind()))
-                        .count()
-                };
-                return !(elements == 1 && self.rules.single_comma.contains(&parent.kind()));
+            // Trailing comma: the next non-comment sibling closes the list,
+            // or there is none (a Rust `where` clause, a Python bare tuple).
+            let next = children[index + 1..]
+                .iter()
+                .find(|n| !self.rules.comments.contains(&n.kind()));
+            if next.is_some_and(|n| !closing(n.kind())) {
+                return false;
             }
-            return false;
+            // A subscript's elements are its `subscript` fields (not the
+            // indexed value); other lists' elements are their named children.
+            let elements = if parent.kind() == "subscript" {
+                parent
+                    .children_by_field_name("subscript", &mut parent.walk())
+                    .count()
+            } else {
+                children
+                    .iter()
+                    .filter(|c| c.is_named() && !self.rules.comments.contains(&c.kind()))
+                    .count()
+            };
+            return !(elements == 1 && self.rules.single_comma.contains(&parent.kind()));
         }
         if is_string(self.rules, parent) && !child.is_named() {
             // Quote characters of a string literal.
