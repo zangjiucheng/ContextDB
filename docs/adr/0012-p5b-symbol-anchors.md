@@ -1,10 +1,11 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.5, 2026-10-23. G0 passed after an independent
+Status: **accepted**, revision 0.6, 2026-10-23. G0 passed after an independent
 review, a closure check and a closure confirmation (§11). SPEC v1.6.5 mirrors it.
 r0.4 records implementation findings: walk revision 2 from the T45 formatter
 corpus, and four clarifications (§11). r0.5 records the G4 resource findings:
 a container nesting bound and the deadline over extraction and walk (§4, §11).
+r0.6 fixes the G6 rate definitions before labelling (§9, §11).
 
 ## 0. Scope and delivery
 
@@ -430,7 +431,15 @@ scopes Unknown (fail-closed); mixed versions are unsupported, as before.
   pairs mostly add (neither fired) positives that both predictors miss alike,
   so the +2 pp threshold depends on how broad the candidate set is — the
   conditional miss rate among host-changed positives is reported beside it for
-  that reason.
+  that reason. **Rates** (fixed before labelling, r0.6): a predictor's false
+  invalidation is the weighted share of its fired pairs that do not
+  invalidate (FP / fired); its missed invalidation is the weighted share of
+  invalidating pairs it did not fire (FN / positives). Symbol level fires on
+  a new head or a break; restoring the same revision is not a firing. Symbols
+  are selected at the P5a selection commit (the replay's parent of its first
+  commit) from those without a parse error. Intervals are stratified
+  percentile bootstrap, 10,000 resamples, fixed seed; `unsure` labels are
+  excluded and counted. Tool: `symbol_replay` (bench).
 - **G7**: P0–P5a regressions. **G8**: README, semantics, CHANGELOG, status.
 
 ## 10. SPEC mirror (v1.6.5)
@@ -531,3 +540,8 @@ version changes. The scan also dedupes identical host contents before the
 parse budget, as this section always said (per blob OID). G5 measured the whole scan at ≈ 0.38 s per MiB of host bytes, so the
 deadline, not the 32 MiB budget, is the effective bound (≈ 13 MiB); §4 now
 says so.
+
+**r0.6 G6 definitions (2026-10-23)**: SPEC and §9 named the thresholds but
+not the denominators. Before any label existed, false invalidation was fixed
+as FP / fired and missed invalidation as FN / positives (P5a's reporting).
+The selection point and the firing rule were fixed with them (§9).
