@@ -136,6 +136,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "contextdb-anchors",
+ "contextdb-core",
  "contextdb-daemon",
  "contextdb-model",
  "contextdb-oracle",

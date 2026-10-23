@@ -1,5 +1,6 @@
-//! `ctx-ui <data dir> [--port N]`: a local, read-only viewer of a ContextDB
-//! context graph in the browser.
+//! `ctx ui <data dir> [--port N]`: a local, read-only viewer of a ContextDB
+//! context graph in the browser (formerly the separate `tools/ctx-ui`; built
+//! into `ctx` so it ships with every release and always matches `ctxd`).
 //!
 //! - The graph comes from replaying the op_log (graph.rs): exact, and safe
 //!   next to a running `ctxd`.
@@ -19,9 +20,9 @@ use std::{
     time::Duration,
 };
 
-const INDEX: &str = include_str!("../assets/index.html");
-const APP: &str = include_str!("../assets/app.js");
-const STYLE: &str = include_str!("../assets/style.css");
+const INDEX: &str = include_str!("../../assets/ui/index.html");
+const APP: &str = include_str!("../../assets/ui/app.js");
+const STYLE: &str = include_str!("../../assets/ui/style.css");
 
 struct State {
     dir: PathBuf,
@@ -215,34 +216,33 @@ fn handle(state: &State, mut stream: TcpStream) {
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
     }
 }
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(dir) = args.first().map(PathBuf::from) else {
-        eprintln!("usage: ctx-ui <data dir> [--port N]");
-        std::process::exit(2);
+pub fn run(args: &[String]) -> Result<u8, String> {
+    let Some(dir) = args
+        .first()
+        .filter(|a| !a.starts_with('-'))
+        .map(PathBuf::from)
+    else {
+        return Err("usage: ctx ui <data dir> [--port N]".into());
     };
-    let port: u16 = args
-        .iter()
-        .position(|a| a == "--port")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(7787);
+    let port: u16 = match args.iter().position(|a| a == "--port") {
+        Some(i) => args
+            .get(i + 1)
+            .and_then(|p| p.parse().ok())
+            .ok_or("--port needs a number")?,
+        None => 7787,
+    };
     let state = Arc::new(State {
         dir,
         port,
         cache: Mutex::new(None),
     });
-    if let Err(e) = state.snapshot() {
-        eprintln!("ctx-ui: {e}");
-        std::process::exit(2);
-    }
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
-        eprintln!("ctx-ui: cannot listen on 127.0.0.1:{port}: {e}");
-        std::process::exit(2);
-    });
-    println!("ctx-ui: http://127.0.0.1:{port}/  (read-only; Ctrl-C to stop)");
+    state.snapshot()?;
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("cannot listen on 127.0.0.1:{port}: {e}"))?;
+    println!("ctx ui: http://127.0.0.1:{port}/  (read-only; Ctrl-C to stop)");
     for stream in listener.incoming().flatten() {
         let state = state.clone();
         std::thread::spawn(move || handle(&state, stream));
     }
+    Ok(0)
 }

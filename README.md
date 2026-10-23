@@ -76,11 +76,11 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 | `contextdb-cli` | `ctx`: operations, checks, anchors, gating, setup and hook installation |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | Goldens, property tests, replay, workload generation and benchmarks |
 
-Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph), `fuzz/`, and [`tools/ctx-ui`](tools/ctx-ui/README.md) (a local read-only context graph viewer).
+Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph) and `fuzz/`. `ctx ui` serves a local, read-only context graph viewer.
 
-![ctx-ui: this repository's own dogfood context graph, with one plan selected](docs/images/ctx-ui-detail.png)
+![ctx ui: this repository's own dogfood context graph, with one plan selected](docs/images/ctx-ui-detail.png)
 
-*`ctx-ui` on this repository's own dogfood data: decisions and plans with their `pin` / `cur` dependencies; the panel shows a plan's body, the rules it depends on, its dependents and its L0/L1/L2 certification.*
+*`ctx ui` on this repository's own dogfood data: decisions and plans with their `pin` / `cur` dependencies; the panel shows a plan's body, the rules it depends on, its dependents and its L0/L1/L2 certification.*
 
 ## Quick start
 
@@ -114,7 +114,7 @@ Once connected, agents read the decisions they rely on with `ctx_recall` / `ctx_
 ```sh
 ctx anchors add .contextdb/db . src/main.rs docs/design.md   # register key files as code anchors
 ctx status .contextdb/db                                      # record and session counts
-cargo run --release --manifest-path tools/ctx-ui/Cargo.toml -- .contextdb/db   # context graph viewer at http://127.0.0.1:7787/
+ctx ui .contextdb/db                                          # read-only context graph viewer at http://127.0.0.1:7787/
 ```
 
 **Upgrade**: run the install command again, then `ctx service restart <dir>` (or `ctx shutdown <dir>` followed by `ctx setup`). `ctxd`, `ctx-mcp` and `ctx-hook` must come from the same build; a protocol mismatch is rejected explicitly. **Uninstall**: in each repository run `ctx service uninstall <dir>` and `ctx hooks uninstall --harness … --project …`, then `bash install.sh --uninstall`.

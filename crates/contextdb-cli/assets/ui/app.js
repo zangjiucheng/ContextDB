@@ -1,4 +1,4 @@
-// ctx-ui front end: a layered view of the justification DAG (premises above
+// ctx ui front end: a layered view of the justification DAG (premises above
 // their conclusions), coloured by derived state, refreshed when the op_log
 // changes. Read-only: every request is a GET.
 "use strict";

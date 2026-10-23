@@ -76,11 +76,11 @@
 | `contextdb-cli` | `ctx`：运维、检查、锚点、门控与 hook 安装 |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | golden、属性测试、回放、负载生成与基准 |
 
-另有独立 workspace：`crates/contextdb-dd`（研究基线，不进入产品依赖图）、`fuzz/`、[`tools/ctx-ui`](tools/ctx-ui/README.md)（本地只读的上下文图浏览器）。
+另有独立 workspace：`crates/contextdb-dd`（研究基线，不进入产品依赖图）与 `fuzz/`。`ctx ui` 提供本地只读的上下文图浏览器。
 
-![ctx-ui：本仓库自身 dogfood 的上下文图，选中一条计划](docs/images/ctx-ui-detail.png)
+![ctx ui：本仓库自身 dogfood 的上下文图，选中一条计划](docs/images/ctx-ui-detail.png)
 
-*`ctx-ui` 展示本仓库自己的 dogfood 数据：决策与计划及其 `pin` / `cur` 依赖；右侧面板显示所选计划的正文、它依赖的规则、依赖它的记录以及 L0/L1/L2 认证状态。*
+*`ctx ui` 展示本仓库自己的 dogfood 数据：决策与计划及其 `pin` / `cur` 依赖；右侧面板显示所选计划的正文、它依赖的规则、依赖它的记录以及 L0/L1/L2 认证状态。*
 
 ## 快速开始
 
@@ -113,7 +113,7 @@ ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --use
 ```sh
 ctx anchors add .contextdb/db . src/main.rs docs/design.md   # 把关键文件注册为代码锚点
 ctx status .contextdb/db                                      # 记录与会话数
-cargo run --release --manifest-path tools/ctx-ui/Cargo.toml -- .contextdb/db   # 上下文图浏览器，http://127.0.0.1:7787/
+ctx ui .contextdb/db                                          # 只读上下文图浏览器，http://127.0.0.1:7787/
 ```
 
 **升级**：重新运行安装命令，然后 `ctx service restart <dir>`（或 `ctx shutdown <dir>` 后再 `ctx setup`）。`ctxd`、`ctx-mcp` 与 `ctx-hook` 必须来自同一构建，协议版本不同会被明确拒绝。**卸载**：在各仓库运行 `ctx service uninstall <dir>` 与 `ctx hooks uninstall --harness … --project …`，再 `bash install.sh --uninstall`。

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 contextdb-anchors.workspace = true
 contextdb-model.workspace = true
+contextdb-core.workspace = true
 contextdb-oracle.workspace = true
 contextdb-store.workspace = true
 contextdb-daemon.workspace = true
