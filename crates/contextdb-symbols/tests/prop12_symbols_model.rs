@@ -40,6 +40,13 @@ use std::{
 };
 
 const SEEDS: u64 = 10_000;
+/// The full count, or a slice for mutation runs (`CONTEXTDB_SYMBOL_SEEDS`,
+/// shared with `prop12_symbols`); coverage floors apply to the full count.
+fn seeds() -> u64 {
+    std::env::var("CONTEXTDB_SYMBOL_SEEDS")
+        .map(|s| s.parse().expect("CONTEXTDB_SYMBOL_SEEDS"))
+        .unwrap_or(SEEDS)
+}
 const STEPS: usize = 10;
 /// Symbol names: `alpha`/`Alpha` are a case alias, `do_it` exercises `_`.
 const NAMES: [&str; 7] = ["alpha", "beta", "gamma", "do_it", "Alpha", "omega", "zeta"];
@@ -1625,10 +1632,11 @@ fn run(seeds: std::ops::Range<u64>) -> Coverage {
 
 #[test]
 fn model_prop12_symbols_10000_fixed_seeds() {
-    let cov = run(0..SEEDS);
+    let seeds = seeds();
+    let cov = run(0..seeds);
     let t = cov.transactions;
     println!(
-        "PROP12-symbols-model seeds={SEEDS} transactions={t} delete={} same_restore={} old_head_aba={} cas_retry={} lag={} unavailable={} unsupported={} sha256={} formatting={} comment={} body={} outside={} context={} rename={} grouping={} hash_path={} case_alias={} restore={} syntax_error={} mixed={} rust={} ts={} python={} go={}",
+        "PROP12-symbols-model seeds={seeds} transactions={t} delete={} same_restore={} old_head_aba={} cas_retry={} lag={} unavailable={} unsupported={} sha256={} formatting={} comment={} body={} outside={} context={} rename={} grouping={} hash_path={} case_alias={} restore={} syntax_error={} mixed={} rust={} ts={} python={} go={}",
         cov.delete,
         cov.same_restore,
         cov.old_head_aba,
@@ -1681,7 +1689,7 @@ fn model_prop12_symbols_10000_fixed_seeds() {
         ("go", cov.language[3], 10),
     ] {
         assert!(
-            count * 100 >= t * floor,
+            seeds < SEEDS || count * 100 >= t * floor,
             "coverage {name}: {count} / {t} < {floor}%"
         );
     }

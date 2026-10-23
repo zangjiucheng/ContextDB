@@ -162,3 +162,18 @@ mutation was rerun on the changed files, with this suite's 60-seed slice:
 250 caught, 28 compile-invalid, 0 missed ([G4 report](p5b-g4.md)). The
 source hashes in the [mutation audit](p5b-g3-mutation.json) identify the
 code G3 tested, before those changes.
+
+Walk 3 (ADR 0012 r0.7–r0.8) added `context.rs` and the trailing-comma rule.
+Mutation was rerun on `walk.rs`, `context.rs` and `lib.rs`. The tests were
+the goldens, the new `context` goldens, both PROP12 suites as 60-seed slices
+(`CONTEXTDB_SYMBOL_SEEDS`; coverage floors apply only to full counts) and
+`robustness`.
+
+- **First run.** 37 missed, all untested context forms: import bindings in
+  every language, overlap bounds and the mentions filter.
+- **New tests.** `tests/context.rs` covers them.
+- **Rerun.** 245 mutants: 218 caught, 26 compile-invalid, 1 missed (a Python
+  `import x as y` arm). Its golden was added and kills it when the mutant is
+  applied by hand.
+- **Final.** 219 caught, 26 compile-invalid, 0 missed. Rerun outcome SHA-256:
+  `f379423744e0d61d…`.
