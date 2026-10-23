@@ -204,3 +204,44 @@ fn passed_deadline_is_unavailable_for_every_language() {
         assert_eq!(r.map(|_| ()), Err(Unavailable("parse deadline".into())));
     }
 }
+
+/// Error recovery inserts zero-width `MISSING` names: they are not symbols,
+/// and every extracted name has a key (found by the `symbols_parse` fuzz
+/// target: an empty JavaScript name made `ctx anchors symbols` fail).
+#[test]
+fn missing_names_are_not_symbols() {
+    use contextdb_anchors::symbol::{decode_symbol, encode_symbol};
+    let fuzz: &[u8] = b"//\x00/\x00const?:,,):U,,\x1b\x00\x00\xff\x17\x00\x00\x00EEcol,:),:U,,stw\x00\x00\x00\x00\x00\x00\x00\x00=:,,!:U,,\x1b/\x00/\x00co\x00EE";
+    let cases: [(Language, &[u8]); 10] = [
+        (Language::JavaScript, fuzz),
+        (
+            Language::JavaScript,
+            b"const = 1;\nfunction () {}\nclass {}\n",
+        ),
+        (
+            Language::TypeScript,
+            b"interface {}\ntype = number;\nnamespace {}\n",
+        ),
+        (Language::Tsx, b"enum {}\nconst = <a/>;\n"),
+        (Language::Rust, b"fn () {}\nstruct ;\nmod {}\nimpl {}\n"),
+        (Language::Rust, b"trait { fn (); }\nconst : u8 = 1;\n"),
+        (Language::Python, b"def ():\n  pass\nclass :\n  pass\n"),
+        (Language::Go, b"package p\nfunc () {}\ntype = int\n"),
+        (
+            Language::Go,
+            b"package p\nfunc (r *) m() {}\nconst ( = 1 )\n",
+        ),
+        (
+            Language::JavaScript,
+            b"export default class extends {}\nexport const ;\n",
+        ),
+    ];
+    for (language, src) in cases {
+        let file = parse(language, src, Instant::now() + Duration::from_secs(5)).unwrap();
+        for symbol in file.symbols.keys() {
+            let key =
+                encode_symbol(symbol).unwrap_or_else(|e| panic!("{language:?} {symbol:?}: {e:?}"));
+            assert_eq!(&decode_symbol(&key).unwrap(), symbol);
+        }
+    }
+}

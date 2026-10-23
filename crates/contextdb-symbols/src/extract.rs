@@ -5,7 +5,10 @@ use crate::{
     Unavailable,
     walk::{Clock, Rules},
 };
-use contextdb_anchors::{Language, symbol::key_hash};
+use contextdb_anchors::{
+    Language,
+    symbol::{key_hash, validate_symbol},
+};
 use std::collections::BTreeMap;
 use tree_sitter::Node;
 
@@ -33,30 +36,20 @@ pub(crate) struct Extract<'a, 't> {
     /// Set when the deadline passed; the table is then incomplete.
     pub failed: Option<Unavailable>,
 }
-fn ident_ok(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
-}
 impl<'a, 't> Extract<'a, 't> {
     fn text(&self, n: Node) -> &'a str {
         std::str::from_utf8(&self.src[n.byte_range()]).unwrap_or("")
     }
-    /// Adds an occurrence; names outside the supported identifier set are
-    /// skipped (an anchor on such a name observes Missing).
+    /// Adds an occurrence; a path that is not a valid symbol (ADR 0012 §2–§3:
+    /// names outside the supported identifier set, or the empty name of a
+    /// `MISSING` node) is skipped, and an anchor on it observes Missing.
     fn add(&mut self, path: &[String], nodes: Vec<Node<'t>>, name: Option<Node<'t>>) {
-        let ok = path.iter().all(|seg| {
-            seg == "#private"
-                || seg
-                    .split('#')
-                    .enumerate()
-                    .all(|(i, part)| (i == 0 && part.is_empty()) || ident_ok(part))
-        });
-        if !ok || path.is_empty() {
+        let path = path.join("::");
+        if validate_symbol(&path).is_err() {
             return;
         }
         self.table
-            .entry(path.join("::"))
+            .entry(path)
             .or_default()
             .push(Occurrence { nodes, name });
     }
