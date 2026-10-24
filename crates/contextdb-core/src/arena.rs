@@ -216,6 +216,17 @@ impl LogicalArena {
         self.epoch.truncate(n);
         self.metadata.retain(|l, _| l.index() < n);
     }
+    pub fn record(&self, l: LogicalId) -> Logical {
+        let n = l.index();
+        Logical {
+            key: self.key(n).to_owned(),
+            kind: self.kind[n],
+            scope_lane: self.scopes[self.scope[n] as usize].clone(),
+            owner: self.owner[n],
+            origin_branch: self.branch[n],
+            origin_epoch: self.epoch[n],
+        }
+    }
     pub fn metadata(&self, l: LogicalId) -> Metadata {
         self.metadata.get(&l).cloned().unwrap_or_default()
     }
@@ -295,6 +306,16 @@ impl RevisionArena {
         self.branch.push(r.origin_branch);
         self.epoch.push(r.origin_epoch);
     }
+    pub fn record(&self, r: RevisionId) -> Revision {
+        let n = r.index();
+        Revision {
+            logical: self.logical[n],
+            content: self.content[n],
+            author: self.author[n],
+            origin_branch: self.branch[n],
+            origin_epoch: self.epoch[n],
+        }
+    }
     /// The kernel's cross-branch dedup: a branch's copy of an imported
     /// revision carries the original's provenance.
     pub fn set_origin(
@@ -359,6 +380,17 @@ impl RuleArena {
             + bool_bytes(&self.enabled)
             + b(&self.branch)
             + b(&self.epoch)
+    }
+    pub fn record(&self, j: RuleId) -> Rule {
+        let n = j.index();
+        Rule {
+            conclusion: self.conclusion[n],
+            premises: self.premises(j).collect(),
+            references: self.references(j).to_vec(),
+            enabled: self.enabled[n],
+            origin_branch: self.branch[n],
+            origin_epoch: self.epoch[n],
+        }
     }
     pub fn set_origin(&mut self, j: RuleId, branch: BranchId, epoch: Epoch) {
         self.branch[j.index()] = branch;
@@ -610,8 +642,27 @@ pub struct Indexes {
     pub(crate) inc_rule: Vec<RuleId>,
     // rule_start[j]..rule_start[j + 1] are rule j's incidence IDs.
     pub(crate) rule_start: Vec<u32>,
+    /// Open `Conflict` artifacts per target revision, the SD17 gate's input
+    /// (ADR 0013 §6.4); revisions with none are absent.
+    pub(crate) open_conflicts: BTreeMap<RevisionId, u32>,
 }
 impl Indexes {
+    /// Whether an open `Conflict` targets `r` (SD11's `Conflicted(r)`).
+    pub(crate) fn conflicted(&self, r: RevisionId) -> bool {
+        self.open_conflicts.contains_key(&r)
+    }
+    /// One more (`open`) or one fewer open Conflict on `r`.
+    pub(crate) fn adjust_conflicts(&mut self, r: RevisionId, open: bool) {
+        let n = self.open_conflicts.entry(r).or_default();
+        *n = if open {
+            *n + 1
+        } else {
+            n.checked_sub(1).expect("open conflict")
+        };
+        if *n == 0 {
+            self.open_conflicts.remove(&r);
+        }
+    }
     pub(crate) fn rule_incidences(&self, j: RuleId) -> std::ops::Range<usize> {
         self.rule_start[j.index()] as usize..self.rule_start[j.index() + 1] as usize
     }
@@ -643,6 +694,7 @@ impl Indexes {
             revisions_by_logical: Adjacency::with_rows(i.logicals.len()),
             inc_rule: Vec::with_capacity(i.rules.iter().map(|j| j.premises.len()).sum()),
             rule_start: Vec::with_capacity(i.rules.len() + 1),
+            open_conflicts: BTreeMap::new(),
         };
         for (n, r) in i.revisions.iter().enumerate() {
             out.revisions_by_logical
@@ -674,6 +726,11 @@ impl Indexes {
         }
         out.rule_start
             .push(u32::try_from(out.inc_rule.len()).expect("bounded index"));
+        for a in &i.artifacts {
+            if a.ty == ArtifactType::Conflict && a.open {
+                out.adjust_conflicts(a.target, true);
+            }
+        }
         out.rules_by_premise.seal();
         out.rules_by_concl.seal();
         out.exact_by_rev.seal();

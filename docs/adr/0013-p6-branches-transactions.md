@@ -528,6 +528,45 @@ newly visible anchor logicals, is in §6.2. Merge may run on the agent
 channel for this reason: it never moves an existing observed head. After a merge, the target's observer rescans its worktree
 and reconciles code anchors through the normal observer path.
 
+### 6.3a Implementation (r0.5)
+
+The kernel classifies and plans in global ids (`core/src/kernel_merge.rs`);
+the target's database publishes the plan like one structural commit
+(`core/src/merge.rs`).
+
+- **Sync points** hold the source state as the shared database and id map
+  (`Arc`), so storing one is O(1). The source's next write then copies its
+  database once, as after a fork. Every point is kept; G5 reports the
+  memory this retains.
+- **Merge base.** Containment is computed by memoized recursion over the
+  sync points. Sync epochs strictly decrease along it (one commit per
+  epoch), so it terminates. Candidates are the distinct stored states
+  contained in both branches; the maxima are those contained in no other.
+- **Classification** reads each value from the bases, the source and the
+  target in global ids. "Absent" is a value. Several maxima merge a value
+  that both sides agree on, use the bases' value when they all agree, and
+  conflict otherwise. A validation record conflicts only when verdicts
+  differ; equal verdicts with different validators keep the target's.
+- **Newly visible objects** take the next local ids in ascending global
+  order, so step 3 inserts the new rules in ascending `RuleId`. Their
+  records keep their original provenance. `AnchorBroken` artifacts are
+  never imported. A newly visible logical counts as one whose head the
+  merge set, so `require_certified` checks it (T20b).
+- **Order and atomicity.** `InvalidMerge`, then `ChannelRestricted` (the
+  observer channel cannot merge), then the read set's Op errors when every
+  `ExpectHeads` precedes the Merge, then `MergeConflict{Policy}`, then
+  `CycleDetected` from publication, then `UnknownRef` for `certify`, then
+  any later `ExpectHeads` errors, then `ReadSetConflict`, then
+  `MergeNotCertified`. A merge that checks the merged state (read sets or
+  certification) runs once as a dry run first, so a refusal changes
+  nothing.
+- **`anchor_unobserved`** is a per-branch set in the database, hashed into
+  the digest only when non-empty, so single-branch digests are unchanged.
+  A watermark commit clears the anchors of its scope. Persisting it is part
+  of store format 3.
+- **The report** (`MergeReport`) is returned by `Kernel::commit_detailed`;
+  it becomes the `CommitResult` trailer with format 3.
+
 ### 6.4 Conflict gate (SD17 amended for P6; review M9)
 
 SPEC §5 P6 requires merge conflicts to block CERTIFIED, and SD11 already
@@ -550,6 +589,13 @@ P7:
   stores are scanned offline (`ctx export`).
 
 P7 adds the other Conflict producers.
+
+**Implementation (r0.5).** The indexes count open Conflicts per target
+revision. Publication updates the count when a Conflict opens or resolves
+(journalled for `WHAT_IF`) and seeds the target into the status walk. The
+layer columns keep `conflicted` per revision: L2 is false and has no
+witness while it holds, and the summary reads it. The oracle (`jacobi`,
+`kahn`, snapshot) applies the same rule.
 
 ## 7. Currency, statuses, certificates and sessions (review B4)
 

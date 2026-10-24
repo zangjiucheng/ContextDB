@@ -2,8 +2,20 @@ use crate::input::{cycle_graph, semantic};
 use contextdb_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// SD11 `Conflicted(r)`: an open `Conflict` artifact targets `r` (the P6
+/// gate, ADR 0013 §6.4).
+pub fn conflicted(i: &Inputs) -> Vec<bool> {
+    let mut out = vec![false; i.revisions.len()];
+    for a in &i.artifacts {
+        if a.ty == ArtifactType::Conflict && a.open {
+            out[a.target.index()] = true;
+        }
+    }
+    out
+}
 /// Simultaneous positive least fixed point, including for raw cyclic inputs.
 pub fn jacobi(i: &Inputs) -> DerivedSnapshot {
+    let gate = conflicted(i);
     let mut layers = vec![[false; 3]; i.revisions.len()];
     loop {
         let mut next: Vec<_> = i.base.iter().map(|b| [*b; 3]).collect();
@@ -33,6 +45,9 @@ pub fn jacobi(i: &Inputs) -> DerivedSnapshot {
                 next[j.conclusion.index()][layer] |= all;
             }
         }
+        for (n, gated) in gate.iter().enumerate() {
+            next[n][2] &= !gated;
+        }
         if next == layers {
             return snapshot(i, layers);
         }
@@ -55,6 +70,7 @@ pub fn kahn(i: &Inputs) -> Result<DerivedSnapshot, Vec<CycleNode>> {
         .map(|(n, _)| n.clone())
         .collect();
     let mut count = 0;
+    let gate = conflicted(i);
     let mut truth = vec![[false; 3]; i.revisions.len()];
     while let Some(node) = ready.pop_first() {
         count += 1;
@@ -93,6 +109,7 @@ pub fn kahn(i: &Inputs) -> Result<DerivedSnapshot, Vec<CycleNode>> {
                     result[level] |= succeeds[level];
                 }
             }
+            result[2] &= !gate[r.index()];
             truth[r.index()] = result;
         }
         for next in &graph[&node] {
@@ -154,6 +171,7 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
             ]
         })
         .collect();
+    let gate = conflicted(i);
     let mut witnesses = vec![[None; 3]; t.len()];
     let mut support = vec![0; t.len()];
     for (r, base) in i.base.iter().enumerate() {
@@ -173,6 +191,12 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
             if yes && witnesses[r][layer].is_none() {
                 witnesses[r][layer] = Some(Witness::Rule(RuleId(n as u32)));
             }
+        }
+    }
+    // A conflicted revision has no L2 witness.
+    for (n, gated) in gate.iter().enumerate() {
+        if *gated {
+            witnesses[n][2] = None;
         }
     }
     fn reason(
@@ -241,7 +265,7 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
                     witness: witnesses[n],
                     dimensions: Dimensions {
                         authorized: true,
-                        conflicted: false,
+                        conflicted: gate[n],
                         currency: if i.heads[i.revisions[n].logical.index()].index() == n {
                             Currency::Current
                         } else {

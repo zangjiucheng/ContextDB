@@ -245,9 +245,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut dim = self.node(r)?.dimensions;
         let scopes = self.observation_scopes(&[r])?;
         if !scopes.is_empty() {
-            dim.observation = if scopes.iter().any(|s| {
-                live_pos.get(s).is_none() || self.tables.watermarks.get(s) != live_pos.get(s)
-            }) {
+            // A merged anchor not yet observed here lags whatever the
+            // watermark says (SD14b as extended by ADR 0013 §6.2).
+            let unobserved = !self.anchor_unobserved.is_empty()
+                && (self.observation_support(&[r])?.into_iter())
+                    .any(|r| self.anchor_unobserved.contains(&self.revisions.logical(r)));
+            dim.observation = if unobserved
+                || scopes.iter().any(|s| {
+                    live_pos.get(s).is_none() || self.tables.watermarks.get(s) != live_pos.get(s)
+                }) {
                 Observation::Lagging
             } else {
                 Observation::Fresh

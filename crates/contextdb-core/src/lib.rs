@@ -13,8 +13,12 @@ pub use cert::{HistoryUnavailable, IssueRequest, LogLink};
 mod fast;
 mod history;
 mod kernel;
-pub use kernel::{BranchInfo, BranchView, Import, Kernel, valid_branch_name};
+pub use kernel::{
+    BranchInfo, BranchView, ConflictKind, Import, Kernel, MergeConflictEntry, MergeReport,
+    MetadataField, valid_branch_name,
+};
 mod memory;
+mod merge;
 pub use history::{EpochDiff, Impact, NodeChange, diff_rows};
 pub use memory::MemoryFootprint;
 pub mod engine;
@@ -84,6 +88,10 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     initial_epoch: Epoch,
     /// Open only inside `what_if`.
     journal: Option<Box<whatif::Journal>>,
+    /// Code anchors a merge made visible that this branch's observer has not
+    /// yet seen (ADR 0013 §6.2, SD14b): they read `PENDING(ObservationLag)`
+    /// until a watermark for their scope commits here.
+    anchor_unobserved: std::collections::BTreeSet<LogicalId>,
     #[cfg(feature = "timing")]
     timing: Option<CommitTiming>,
 }
@@ -115,6 +123,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             history: Vec::new(),
             initial_epoch: Epoch(0),
             journal: None,
+            anchor_unobserved: Default::default(),
             #[cfg(feature = "timing")]
             timing: None,
         }
@@ -221,6 +230,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut h = blake3::Hasher::new();
         h.update(&self.inputs().canonical_bytes());
         h.update(&self.derived().canonical_bytes());
+        // Part of the branch overlay; absent (and hashed as nothing) unless a
+        // merge set it, so single-branch digests are unchanged.
+        if !self.anchor_unobserved.is_empty() {
+            h.update(b"anchor_unobserved");
+            for l in &self.anchor_unobserved {
+                h.update(&l.0.to_le_bytes());
+            }
+        }
         *h.finalize().as_bytes()
     }
     pub fn derived_digest(&self) -> ContentHash {
@@ -376,6 +393,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .collect()
     }
     /// Committed observer watermark of a scope (SD18.6).
+    /// Whether a merged code anchor still awaits this branch's observer.
+    pub fn anchor_unobserved(&self, l: LogicalId) -> bool {
+        self.anchor_unobserved.contains(&l)
+    }
     pub fn watermark(&self, scope: &str) -> Option<&[u8]> {
         self.tables.watermarks.get(scope).map(Vec::as_slice)
     }
@@ -556,27 +577,11 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             pk.sync(&staged, b.ops.len().saturating_sub(1), &mut stats)?;
             Ok::<_, TxError>(next)
         })();
-        let stage::Stage {
-            new_logicals,
-            new_heads,
-            new_revisions,
-            new_base,
-            new_rules,
-            new_artifacts,
-            heads,
-            base,
-            enabled,
-            artifact_open,
-            metadata,
-            validations,
-            watermarks,
-            policy,
-            ..
-        } = staged;
+        let parts = staged.into_parts();
         if let Some(sink) = ctx.staged {
             *sink.borrow_mut() = Staged {
-                revisions: new_revisions.clone(),
-                rules: new_rules.clone(),
+                revisions: parts.new_revisions.clone(),
+                rules: parts.new_rules.clone(),
             };
         }
         let epoch = match result {
@@ -591,6 +596,34 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(error);
             }
         };
+        Ok(self.publish(parts, pk_mark, allocations, epoch, stats))
+    }
+    /// Publishes a validated stage (ADR 0007): append, apply overrides while
+    /// recording pre-states, then maintenance and the status walk.
+    fn publish(
+        &mut self,
+        parts: stage::Parts,
+        pk_mark: pk::PkMark,
+        allocations: Allocations,
+        epoch: Epoch,
+        stats: S,
+    ) -> CommitResult {
+        let stage::Parts {
+            new_logicals,
+            new_heads,
+            new_revisions,
+            new_base,
+            new_rules,
+            new_artifacts,
+            heads,
+            base,
+            enabled,
+            artifact_open,
+            metadata,
+            validations,
+            watermarks,
+            policy,
+        } = parts;
         match &mut self.journal {
             Some(journal) => journal.pk = Some(pk_mark),
             None => self.pk.commit(),
@@ -656,6 +689,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 journal.artifact_open.entry(*a).or_insert(old);
             }
         }
+        // A watermark commit means the scope was scanned: merged anchors of
+        // that scope are observed now (ADR 0013 §6.2).
+        if !self.anchor_unobserved.is_empty() && !watermarks.is_empty() {
+            let logicals = &self.logicals;
+            self.anchor_unobserved
+                .retain(|l| !watermarks.contains_key(logicals.scope_lane(*l)));
+        }
         // Advances only (ADR 0008 §6.3): a committed position that differs.
         let watermark_moves: Vec<String> = watermarks
             .iter()
@@ -665,6 +705,26 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.tables.watermarks.extend(watermarks);
         for (l, m) in metadata {
             self.logicals.put_metadata(l, m);
+        }
+        // The SD17 gate's input: open Conflicts per target, which seed the
+        // status walk when they change (SPEC §3.4 Phase 3b).
+        let mut conflict_seeds = Vec::new();
+        let changed = (artifact_open.iter())
+            .filter(|(a, open)| {
+                let art = &self.tables.artifacts[a.index()];
+                art.ty == ArtifactType::Conflict && art.open != **open
+            })
+            .map(|(a, open)| (self.tables.artifacts[a.index()].target, *open));
+        let opened = (new_artifacts.iter())
+            .filter(|a| a.ty == ArtifactType::Conflict && a.open)
+            .map(|a| (a.target, true));
+        for (target, open) in changed.chain(opened).collect::<Vec<_>>() {
+            if let Some(journal) = &mut self.journal {
+                let old = self.indexes.open_conflicts.get(&target).copied();
+                journal.conflicts.entry(target).or_insert(old);
+            }
+            self.indexes.adjust_conflicts(target, open);
+            conflict_seeds.push(target);
         }
         for (a, open) in artifact_open {
             self.tables.artifacts[a.index()].open = open;
@@ -715,8 +775,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 .keys()
                 .map(|(j, _)| self.rules.conclusion(*j)),
         );
+        extra.extend(conflict_seeds);
         let revalidated: Vec<RuleId> = undo.validations.keys().map(|(j, _)| *j).collect();
-        Ok(self.finish(
+        self.finish(
             undo,
             delta,
             allocations,
@@ -726,7 +787,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             old_revisions,
             epoch,
             stats,
-        ))
+        )
     }
     fn commit_mutable(&mut self, b: &Batch, epoch: Epoch) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(

@@ -54,6 +54,8 @@ pub(crate) struct LayerColumns {
     truth: Vec<[bool; 2]>,
     witness: Vec<[Option<Witness>; 2]>,
     reason: Vec<StaleReason>,
+    /// SD11 `Conflicted(r)` as last evaluated; gates L2.
+    conflicted: Vec<bool>,
     dirty_inc: Vec<bool>,
     dirty_rule: Vec<bool>,
     pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
@@ -65,7 +67,7 @@ pub(crate) struct LayerColumns {
 #[derive(Clone, Debug)]
 pub(crate) struct LayerRows {
     r: RevisionId,
-    node: ([bool; 2], [Option<Witness>; 2], StaleReason),
+    node: ([bool; 2], [Option<Witness>; 2], StaleReason, bool),
     rules: Vec<(RuleId, [u32; 2], [bool; 2], SemState)>,
     lits: Vec<(usize, u8)>,
 }
@@ -96,7 +98,12 @@ impl LayerColumns {
         }
         Some(LayerRows {
             r,
-            node: (self.truth[n], self.witness[n], self.reason[n].clone()),
+            node: (
+                self.truth[n],
+                self.witness[n],
+                self.reason[n].clone(),
+                self.conflicted[n],
+            ),
             rules,
             lits,
         })
@@ -111,7 +118,12 @@ impl LayerColumns {
         } in saved
         {
             let n = r.index();
-            (self.truth[n], self.witness[n], self.reason[n]) = node;
+            (
+                self.truth[n],
+                self.witness[n],
+                self.reason[n],
+                self.conflicted[n],
+            ) = node;
             for (j, unsat, active, sem) in rules {
                 let k = j.index();
                 (self.unsat[k], self.active[k], self.sem[k]) = (unsat, active, sem);
@@ -124,6 +136,7 @@ impl LayerColumns {
         self.truth.truncate(revisions);
         self.witness.truncate(revisions);
         self.reason.truncate(revisions);
+        self.conflicted.truncate(revisions);
         self.unsat.truncate(rules);
         self.active.truncate(rules);
         self.sem.truncate(rules);
@@ -140,6 +153,7 @@ impl LayerColumns {
             + b(&self.truth)
             + b(&self.witness)
             + b(&self.reason)
+            + bool_bytes(&self.conflicted)
             + bool_bytes(&self.dirty_inc)
             + bool_bytes(&self.dirty_rule)
     }
@@ -173,6 +187,7 @@ impl LayerColumns {
         resize(&mut self.truth, n, [false; 2]);
         resize(&mut self.witness, n, [None; 2]);
         resize(&mut self.reason, n, StaleReason::Unsupported);
+        resize(&mut self.conflicted, n, false);
     }
     /// Marks an incidence for re-evaluation; returns its conclusion when newly marked.
     fn mark_incidence(
@@ -285,6 +300,8 @@ impl LayerColumns {
     fn node(&mut self, i: &impl InputView, c: &CountingState, index: &Indexes, r: RevisionId) {
         let n = r.index();
         let base = i.base(r);
+        let conflicted = index.conflicted(r);
+        self.conflicted[n] = conflicted;
         for level in 0..2 {
             let first = index
                 .rules_by_concl
@@ -292,8 +309,12 @@ impl LayerColumns {
                 .iter()
                 .find(|j| self.active[j.index()][level])
                 .copied();
-            self.truth[n][level] = base || first.is_some();
-            self.witness[n][level] = if base {
+            // L2 = ¬Conflicted(r) ∧ (base ∨ an active rule) (SD11).
+            let gated = level == 1 && conflicted;
+            self.truth[n][level] = !gated && (base || first.is_some());
+            self.witness[n][level] = if gated {
+                None
+            } else if base {
                 Some(Witness::Base)
             } else {
                 first.map(Witness::Rule)
@@ -386,7 +407,7 @@ impl LayerColumns {
             witness,
             dimensions: Dimensions {
                 authorized: true,
-                conflicted: false,
+                conflicted: self.conflicted[n],
                 currency: if i.head(i.revision_logical(r)) == r {
                     Currency::Current
                 } else {

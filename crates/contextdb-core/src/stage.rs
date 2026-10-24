@@ -49,7 +49,42 @@ pub(crate) struct Stage<'a> {
     /// SD19); None for a single-branch database.
     pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
 }
+/// What a stage publishes, detached from the published state it borrows.
+pub(crate) struct Parts {
+    pub new_logicals: Vec<Logical>,
+    pub new_heads: Vec<RevisionId>,
+    pub new_revisions: Vec<Revision>,
+    pub new_base: Vec<bool>,
+    pub new_rules: Vec<Rule>,
+    pub new_artifacts: Vec<Artifact>,
+    pub heads: BTreeMap<LogicalId, RevisionId>,
+    pub base: BTreeMap<RevisionId, bool>,
+    pub enabled: BTreeMap<RuleId, bool>,
+    pub artifact_open: BTreeMap<ArtifactId, bool>,
+    pub metadata: BTreeMap<LogicalId, Metadata>,
+    pub validations: BTreeMap<(RuleId, HeadVector), ValidationRecord>,
+    pub watermarks: BTreeMap<String, Vec<u8>>,
+    pub policy: Option<PolicyDoc>,
+}
 impl<'a> Stage<'a> {
+    pub fn into_parts(self) -> Parts {
+        Parts {
+            new_logicals: self.new_logicals,
+            new_heads: self.new_heads,
+            new_revisions: self.new_revisions,
+            new_base: self.new_base,
+            new_rules: self.new_rules,
+            new_artifacts: self.new_artifacts,
+            heads: self.heads,
+            base: self.base,
+            enabled: self.enabled,
+            artifact_open: self.artifact_open,
+            metadata: self.metadata,
+            validations: self.validations,
+            watermarks: self.watermarks,
+            policy: self.policy,
+        }
+    }
     pub fn new(
         tables: &'a Inputs,
         logicals: &'a LogicalArena,

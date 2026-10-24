@@ -12,7 +12,11 @@
 //! §11a): a branch that stages a revision or rule identical to one created
 //! on another branch imports that object instead of allocating a new id.
 use crate::{CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink};
+#[path = "kernel_merge.rs"]
+mod merge;
 use contextdb_model::*;
+use merge::SyncPoint;
+pub use merge::{ConflictKind, MergeConflictEntry, MergeReport, MetadataField};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
@@ -20,7 +24,7 @@ use std::{
 };
 
 /// The id kinds the kernel maps.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Logical = 0,
     Revision = 1,
@@ -69,8 +73,10 @@ pub struct BranchInfo {
 /// epoch, a `branch_visibility` row (ADR 0013 §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Import {
+    Logical(LogicalId),
     Revision(RevisionId),
     Rule(RuleId),
+    Artifact(ArtifactId),
 }
 #[derive(Clone, Debug)]
 struct Branch<M: Maintainer, S: StatsSink> {
@@ -99,6 +105,8 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     rule_origins: Vec<(BranchId, Epoch)>,
     revision_ids: HashMap<(u32, ContentHash), u32>,
     rule_ids: HashMap<RuleKey, u32>,
+    /// Every sync point, in creation order (ADR 0013 §6.1).
+    syncs: Vec<SyncPoint<M, S>>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -177,6 +185,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             rule_origins,
             revision_ids,
             rule_ids,
+            syncs: Vec::new(),
         }
     }
     pub fn epoch(&self) -> Epoch {
@@ -200,19 +209,33 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
     ) -> Result<CommitResult, TxError> {
-        self.run(b, blobs, true)
+        self.run(b, blobs, true).map(|(r, _)| r)
+    }
+    /// Commits and also returns a merge's report (the format-3 merge
+    /// trailer; ADR 0013 §8).
+    pub fn commit_detailed(
+        &mut self,
+        b: &Batch,
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        self.run(b, &AllPresent, true)
+    }
+    pub fn what_if_detailed(
+        &mut self,
+        b: &Batch,
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        self.run(b, &AllPresent, false)
     }
     /// `WHAT_IF` on one branch (ADR 0013 §5): the result the batch would
     /// have, with the global ids it would allocate; nothing changes.
     pub fn what_if(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
-        self.run(b, &AllPresent, false)
+        self.run(b, &AllPresent, false).map(|(r, _)| r)
     }
     fn run(
         &mut self,
         b: &Batch,
         blobs: &dyn BlobPresence,
         publish: bool,
-    ) -> Result<CommitResult, TxError> {
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
         // Batch level, in the §6.2 P6 order.
         let branch = self
             .branches
@@ -252,6 +275,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     kind: CapacityKind::Epoch,
                 })?,
         );
+        let mut report = None;
         let result = match b.ops.first() {
             Some(Op::CreateBranch { name }) if b.ops.len() == 1 => {
                 self.create_branch(b.branch, name, next, publish)?
@@ -259,13 +283,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             Some(Op::ArchiveBranch { name }) if b.ops.len() == 1 => {
                 self.archive_branch(b.branch, name, next, publish)?
             }
-            _ if merges == 1 => return Err(TxError::InvalidMerge),
+            _ if merges == 1 => {
+                let (result, r) = self.merge(b, next, publish)?;
+                report = Some(r);
+                result
+            }
             _ => self.commit_ops(b, blobs, next, publish)?,
         };
         if publish {
             self.epoch = next;
         }
-        Ok(result)
+        Ok((result, report))
     }
     fn empty_result(epoch: Epoch) -> CommitResult {
         CommitResult {
@@ -309,6 +337,13 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             ids: Arc::clone(&from.ids),
             imports: Vec::new(),
         };
+        self.syncs.push(SyncPoint {
+            src: parent,
+            dst: BranchId(id),
+            epoch,
+            db: Arc::clone(&child.db),
+            ids: Arc::clone(&child.ids),
+        });
         self.branches.push(child);
         self.names.insert(name.into(), BranchId(id));
         Ok(Self::empty_result(epoch))

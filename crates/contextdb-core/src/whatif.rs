@@ -30,6 +30,9 @@ pub(crate) struct Journal {
     pub watermarks: BTreeMap<String, Option<Vec<u8>>>,
     pub metadata: BTreeMap<LogicalId, Metadata>,
     pub artifact_open: BTreeMap<ArtifactId, bool>,
+    /// Open-Conflict counts per target before the commit.
+    pub conflicts: BTreeMap<RevisionId, Option<u32>>,
+    pub anchor_unobserved: std::collections::BTreeSet<LogicalId>,
 }
 
 impl<M: Maintainer, S: StatsSink> Db<M, S> {
@@ -44,6 +47,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         blobs: &dyn BlobPresence,
         ctx: &CommitContext<'_>,
     ) -> Result<CommitResult, TxError> {
+        self.dry(|db| db.commit_inner(b, blobs, ctx))
+    }
+    /// Runs `f`, which makes at most one commit, under the journal; then
+    /// restores the database whatever `f` returns. `f` may read the
+    /// committed state before returning.
+    pub(crate) fn dry<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<R, TxError>,
+    ) -> Result<R, TxError> {
         // A materialized snapshot is set aside rather than patched.
         let derived = std::mem::take(&mut self.derived);
         let (epoch, stats, history) = (self.epoch, self.stats.clone(), self.history.len());
@@ -61,11 +73,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             layer_lens: self.layers.lens(),
             layers: (!M::INCREMENTAL_LAYERS).then(|| self.layers.clone()),
             policy: Some(self.tables.policy.clone()),
+            anchor_unobserved: self.anchor_unobserved.clone(),
             ..Journal::default()
         }));
-        let result = self.commit_inner(b, blobs, ctx);
+        let result = f(self);
         let journal = *self.journal.take().expect("opened above");
-        if result.is_ok() {
+        if journal.record.is_some() {
             self.roll_back(journal);
         }
         self.maintainer.rollback_journal();
@@ -109,6 +122,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             };
         }
         self.tables.policy = j.policy.expect("saved");
+        self.anchor_unobserved = j.anchor_unobserved;
         for (scope, old) in j.watermarks {
             match old {
                 Some(position) => self.tables.watermarks.insert(scope, position),
@@ -117,6 +131,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         }
         for (l, m) in j.metadata {
             self.logicals.put_metadata(l, m);
+        }
+        for (r, old) in j.conflicts {
+            match old {
+                Some(n) => self.indexes.open_conflicts.insert(r, n),
+                None => self.indexes.open_conflicts.remove(&r),
+            };
         }
         for (a, open) in j.artifact_open {
             self.tables.artifacts[a.index()].open = open;
@@ -156,6 +176,10 @@ impl<M: Maintainer, S: StatsSink + PartialEq> Db<M, S> {
                 (self.epoch, self.initial_epoch) == (other.epoch, other.initial_epoch),
             ),
             ("stats", self.stats == other.stats),
+            (
+                "anchor_unobserved",
+                self.anchor_unobserved == other.anchor_unobserved,
+            ),
             ("journal", self.journal.is_none() && other.journal.is_none()),
         ]
         .into_iter()
