@@ -170,6 +170,9 @@ fn edge_of(s: &str) -> Result<EdgeKind, String> {
 }
 fn tools() -> Value {
     let target = json!({ "type": "string", "description": "handle (from ctx_recall), key@rev, or key (current head)" });
+    let ops = json!({ "type": "array", "items": { "type": "object", "properties": {
+        "op": { "enum": ["create", "revise", "set_head", "assert_base", "retract_base", "add_rule", "set_rule_enabled", "expect_heads"] } },
+        "required": ["op"] } });
     json!([
         { "name": "ctx_recall", "description": "Find context records by key. certified mode returns only CERTIFIED items (others are withheld) and handles usable as deps.",
           "inputSchema": { "type": "object", "properties": {
@@ -205,6 +208,22 @@ fn tools() -> Value {
             "action": { "type": "object", "properties": { "tool": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "command": { "type": "string" } } } } } },
         { "name": "ctx_txn_status", "description": "Committed{epoch} or NotCommitted for a client_txn_id.",
           "inputSchema": { "type": "object", "properties": { "client_txn_id": { "type": "string" } }, "required": ["client_txn_id"] } },
+        { "name": "ctx_commit", "description": "Commit several ops atomically on this session's branch. With expect_cert_valid, the session certificate must still be valid at commit time, else nothing commits (first committer wins). Ops: create, revise, set_head, assert_base, retract_base, add_rule, set_rule_enabled, expect_heads; revisions are key@rev or new:N.",
+          "inputSchema": { "type": "object", "properties": { "ops": ops.clone(),
+              "expect_cert_valid": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
+            "required": ["ops"] } },
+        { "name": "ctx_what_if", "description": "What the ops would do on this session's branch (status changes, allocations); nothing is committed.",
+          "inputSchema": { "type": "object", "properties": { "ops": ops }, "required": ["ops"] } },
+        { "name": "ctx_branch", "description": "Branches: create (from main or `from`), list, or archive. Sessions bind to the branch named like their git branch.",
+          "inputSchema": { "type": "object", "properties": {
+              "action": { "enum": ["create", "list", "archive"] }, "name": { "type": "string" }, "from": { "type": "string" } },
+            "required": ["action"] } },
+        { "name": "ctx_merge", "description": "Merge branch `source` into `into` (default: this session's branch). require_certified (default true) refuses the merge unless the moved, new and conflicted records (or `certify` keys) are CERTIFIED afterwards.",
+          "inputSchema": { "type": "object", "properties": {
+              "source": { "type": "string" }, "into": { "type": "string" },
+              "require_certified": { "type": "boolean" },
+              "certify": { "type": "array", "items": { "type": "string" } } },
+            "required": ["source"] } },
     ])
 }
 /// The session a `tools/call` acts for, from the harness's `_meta` (ADR 0010
@@ -253,6 +272,114 @@ fn action_of(v: &Value) -> Result<Action, String> {
 fn arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
     args.get(name).and_then(Value::as_str)
 }
+/// `key@rev` (an existing revision) or `new:N` (the batch's N-th new one).
+fn rev_ref(s: &str) -> Result<RevRef, String> {
+    if let Some(n) = s.strip_prefix("new:") {
+        return n
+            .parse()
+            .map(RevRef::New)
+            .map_err(|_| format!("bad new revision {s}"));
+    }
+    match parse_target(s)? {
+        Target::KeyRev { rev, .. } => Ok(RevRef::Existing(rev)),
+        _ => Err(format!("{s}: expected key@rev or new:N")),
+    }
+}
+/// The key a target names (`key` or `key@rev`).
+fn key_of(s: &str) -> String {
+    s.rsplit_once('@').map_or(s, |(k, _)| k).to_owned()
+}
+/// `ctx_commit` / `ctx_what_if` ops from JSON (ADR 0013 §10): logicals by
+/// key, revisions as `key@rev` or `new:N`, bodies as text (stored as blobs).
+fn ops_of(args: &Value) -> Result<(Vec<Op>, Vec<Vec<u8>>), String> {
+    let list = args
+        .get("ops")
+        .and_then(Value::as_array)
+        .ok_or("ops must be an array")?;
+    let (mut ops, mut blobs) = (Vec::new(), Vec::new());
+    for o in list {
+        let s = |k: &str| -> Result<&str, String> {
+            o.get(k)
+                .and_then(Value::as_str)
+                .ok_or(format!("{k} required"))
+        };
+        let b = |k: &str| o.get(k).and_then(Value::as_bool);
+        let mut body = |k: &str| -> Result<ContentHash, String> {
+            let bytes = s(k)?.as_bytes().to_vec();
+            let hash = contextdb_proto::proto::content_hash(&bytes);
+            blobs.push(bytes);
+            Ok(hash)
+        };
+        ops.push(match s("op")? {
+            "create" => Op::CreateLogical {
+                key: s("key")?.into(),
+                kind: kind_of(s("kind")?)?,
+                scope_lane: o
+                    .get("scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("repo")
+                    .into(),
+                content: body("body")?,
+                adopt_as_base: b("adopt_as_base").ok_or("adopt_as_base required (SD1)")?,
+            },
+            "revise" => Op::AddRevision {
+                logical: LogicalRef::Key(key_of(s("target")?)),
+                content: body("body")?,
+                adopt_as_base: b("adopt_as_base").ok_or("adopt_as_base required (SD1)")?,
+            },
+            "set_head" => Op::SetHead {
+                logical: LogicalRef::Key(key_of(s("target")?)),
+                expected: rev_ref(s("expected")?)?,
+                new: rev_ref(s("new")?)?,
+            },
+            "assert_base" => Op::AssertBase {
+                rev: rev_ref(s("rev")?)?,
+            },
+            "retract_base" => Op::RetractBase {
+                rev: rev_ref(s("rev")?)?,
+            },
+            "add_rule" => Op::AddRule {
+                conclusion: rev_ref(s("conclusion")?)?,
+                incidences: (o.get("premises").and_then(Value::as_array))
+                    .ok_or("premises required")?
+                    .iter()
+                    .map(|p| {
+                        let f = |k: &str| {
+                            p.get(k)
+                                .and_then(Value::as_str)
+                                .ok_or(format!("premise {k} required"))
+                        };
+                        Ok((rev_ref(f("target")?)?, edge_of(f("kind")?)?))
+                    })
+                    .collect::<Result<_, String>>()?,
+                enabled: b("enabled").unwrap_or(true),
+            },
+            "set_rule_enabled" => Op::SetRuleEnabled {
+                rule: RuleId(
+                    o.get("rule")
+                        .and_then(Value::as_u64)
+                        .ok_or("rule required")? as u32,
+                )
+                .into(),
+                enabled: b("enabled").ok_or("enabled required")?,
+            },
+            "expect_heads" => Op::ExpectHeads {
+                entries: (o.get("entries").and_then(Value::as_array))
+                    .ok_or("entries required")?
+                    .iter()
+                    .map(|e| match e.as_str().map(parse_target).transpose()? {
+                        Some(Target::KeyRev { key, rev }) => Ok((LogicalRef::Key(key), rev)),
+                        _ => Err("entries are key@rev".to_owned()),
+                    })
+                    .collect::<Result<_, String>>()?,
+                source: ReadSource::Client,
+            },
+            other => return Err(format!("unknown op {other}")),
+        });
+    }
+    Ok((ops, blobs))
+}
+
 impl<B: Backend> Server<B> {
     pub fn new(backend: B, harness: &str, repo: &str, head_sha: &str) -> Self {
         Self {
@@ -566,7 +693,12 @@ impl<B: Backend> Server<B> {
                     "ctx_why_not" => Request::WhyNot { target, depth },
                     _ => Request::Impact { target },
                 };
-                let env = self.call(request)?;
+                // On this session's branch (ADR 0013 §7). An unclaimed call
+                // falls back to this server's session (`bound_tool`).
+                let env = self.call(Request::OnBranch {
+                    branch: BranchSel::Session(binding.clone()),
+                    request: Box::new(request),
+                })?;
                 let detail = match env.response {
                     Response::Why { proof } => format!("{proof:?}"),
                     Response::WhyNot { why_not } => format!("{why_not:?}"),
@@ -657,6 +789,96 @@ impl<B: Backend> Server<B> {
                     Some((epoch, _)) => json!({ "status": "Committed", "epoch": epoch.0 }),
                     None => json!({ "status": "NotCommitted" }),
                 })
+            }
+            "ctx_commit" => {
+                let (ops, blobs) = ops_of(args)?;
+                let env = self.call(Request::Commit {
+                    binding: binding.clone(),
+                    ops,
+                    blobs,
+                    expect_cert_valid: args
+                        .get("expect_cert_valid")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    client_txn_id: txn(args)?,
+                })?;
+                match env.response {
+                    Response::Refused { validation } => {
+                        Ok(json!({ "epoch": env.epoch.0, "refused": format!("{validation:?}") }))
+                    }
+                    _ => committed(env),
+                }
+            }
+            "ctx_what_if" => {
+                let (ops, _) = ops_of(args)?;
+                let env = self.call(Request::WhatIf {
+                    binding: binding.clone(),
+                    ops,
+                })?;
+                let Response::WhatIf { result, merge } = env.response else {
+                    return Err("unexpected response".into());
+                };
+                Ok(json!({
+                    "epoch": result.epoch.0,
+                    "revisions": result.allocations.new_revisions.iter().map(|r| r.0).collect::<Vec<_>>(),
+                    "status_diff": result.status_diff.iter().map(|r| r.0).collect::<Vec<_>>(),
+                    "merge": merge.map(|m| format!("{m:?}")),
+                }))
+            }
+            "ctx_branch" => {
+                let name = || arg(args, "name").map(str::to_owned).ok_or("name required");
+                let request = match arg(args, "action") {
+                    Some("create") => Request::BranchCreate {
+                        name: name()?,
+                        from: arg(args, "from").map(str::to_owned),
+                    },
+                    Some("archive") => Request::BranchArchive { name: name()? },
+                    Some("list") => Request::BranchList,
+                    _ => return Err("action must be create, list or archive".into()),
+                };
+                let env = self.call(request)?;
+                match env.response {
+                    Response::Branches { branches } => Ok(json!({
+                        "epoch": env.epoch.0,
+                        "branches": branches.iter().map(|b| json!({
+                            "name": b.name, "parent": b.parent.map(|p| p.0),
+                            "fork_epoch": b.fork_epoch.0, "archived": b.archived,
+                        })).collect::<Vec<_>>(),
+                    })),
+                    _ => committed(env),
+                }
+            }
+            "ctx_merge" => {
+                let env = self.call(Request::Merge {
+                    binding: Some(binding.clone()),
+                    source: arg(args, "source").ok_or("source required")?.into(),
+                    into: arg(args, "into").map(str::to_owned),
+                    // D2: required unless explicitly declined.
+                    require_certified: args
+                        .get("require_certified")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    certify: (args.get("certify").and_then(Value::as_array))
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })?;
+                let Response::Merged { result, report } = env.response else {
+                    return Err("unexpected response".into());
+                };
+                Ok(json!({
+                    "epoch": result.epoch.0,
+                    "moved_heads": report.moved_heads.len(),
+                    "conflicts": report.conflicts.iter().map(|c| json!({
+                        "kind": format!("{:?}", c.kind), "target": c.target.0, "artifact": c.artifact.0,
+                    })).collect::<Vec<_>>(),
+                    "metadata_conflicts": report.metadata_conflicts.len(),
+                    "newly_visible": report.newly_visible,
+                    "convergent": report.convergent,
+                }))
             }
             other => Err(format!("unknown tool {other}")),
         }

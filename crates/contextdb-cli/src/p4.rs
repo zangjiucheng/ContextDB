@@ -374,7 +374,7 @@ pub fn check(dir: &Path, args: &[String]) -> Result<u8, String> {
 // ---------------------------------------------------------------- hooks
 
 /// The ContextDB MCP tools the Claude claim entry matches (ADR 0010 §2.3).
-const CLAIMED: &str = "ctx_recall|ctx_read|ctx_record|ctx_supersede|ctx_check";
+const CLAIMED: &str = "ctx_recall|ctx_read|ctx_record|ctx_supersede|ctx_check|ctx_why|ctx_why_not|ctx_impact|ctx_commit|ctx_what_if|ctx_merge";
 /// The harness tool-name form of an MCP server name: characters outside
 /// `[A-Za-z0-9_-]` become `_`, then regex-escaped (`-` needs no escape).
 pub fn mcp_server_name(name: &str) -> Result<String, String> {

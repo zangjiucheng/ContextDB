@@ -301,6 +301,109 @@ pub enum Request {
         expected_head: Vec<u8>,
         expected_position: Vec<u8>,
     },
+    /// An unbound request (`Why`, `WhyNot`, `Impact`, `ImpactBatch`, `Diff`,
+    /// `Status`, `Validate`) on a branch instead of `main` (protocol 4,
+    /// ADR 0013 §8). Not nested.
+    OnBranch {
+        branch: BranchSel,
+        request: Box<Request>,
+    },
+    /// `ctx_commit` (ADR 0013 §4): the client's ops as one batch on the
+    /// session's branch. With `expect_cert_valid`, the session's certificate
+    /// must validate at commit time and its vector is checked by the kernel
+    /// in the same step. Branch ops and certificate read sets are refused.
+    Commit {
+        binding: Binding,
+        ops: Vec<Op>,
+        blobs: Vec<Vec<u8>>,
+        expect_cert_valid: bool,
+        client_txn_id: Option<[u8; 16]>,
+    },
+    /// `ctx_what_if` (ADR 0013 §5): the result the ops would have on the
+    /// session's branch; nothing changes.
+    WhatIf {
+        binding: Binding,
+        ops: Vec<Op>,
+    },
+    /// Forks `from` (default `main`) as `name`.
+    BranchCreate {
+        name: String,
+        from: Option<String>,
+    },
+    BranchList,
+    BranchArchive {
+        name: String,
+    },
+    /// `ctx_merge` (ADR 0013 §6): `source` into `into`, else the bound
+    /// session's branch, else `main`. `certify` names logical keys.
+    Merge {
+        binding: Option<Binding>,
+        source: String,
+        into: Option<String>,
+        require_certified: bool,
+        certify: Vec<String>,
+    },
+}
+/// A payload's content hash (SPEC §6.1 contract 4), for clients that send
+/// ops with their bodies (`Commit`, `WhatIf`).
+pub fn content_hash(bytes: &[u8]) -> ContentHash {
+    *blake3::hash(bytes).as_bytes()
+}
+/// Which branch an `OnBranch` request reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchSel {
+    /// A branch by name.
+    Named(String),
+    /// The bound session's branch.
+    Session(Binding),
+}
+impl Wire for BranchSel {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Named(name) => {
+                0u8.encode(o);
+                name.encode(o);
+            }
+            Self::Session(binding) => {
+                1u8.encode(o);
+                binding.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Named(Wire::decode(i)?),
+            1 => Self::Session(Wire::decode(i)?),
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// One branch-table entry (ADR 0013 §2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchEntry {
+    pub id: BranchId,
+    pub name: String,
+    pub parent: Option<BranchId>,
+    pub fork_epoch: Epoch,
+    pub archived: bool,
+}
+impl Wire for BranchEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.id.encode(o);
+        self.name.encode(o);
+        self.parent.encode(o);
+        self.fork_epoch.encode(o);
+        self.archived.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            id: Wire::decode(i)?,
+            name: Wire::decode(i)?,
+            parent: Wire::decode(i)?,
+            fork_epoch: Wire::decode(i)?,
+            archived: Wire::decode(i)?,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorEntry {
@@ -437,6 +540,22 @@ pub enum Response {
         branch: BranchId,
         watermark: Option<Vec<u8>>,
         anchors: Vec<AnchorEntry>,
+    },
+    WhatIf {
+        result: CommitResult,
+        merge: Option<MergeReport>,
+    },
+    Branches {
+        branches: Vec<BranchEntry>,
+    },
+    Merged {
+        result: CommitResult,
+        report: MergeReport,
+    },
+    /// `expect_cert_valid`: the certificate's verdict at commit time; nothing
+    /// was committed.
+    Refused {
+        validation: Validation,
     },
 }
 /// Every response names the snapshot epoch it was computed on.
@@ -930,6 +1049,54 @@ impl Wire for Request {
                 expected_head.encode(o);
                 expected_position.encode(o);
             }
+            Self::OnBranch { branch, request } => {
+                25u8.encode(o);
+                branch.encode(o);
+                request.encode(o);
+            }
+            Self::Commit {
+                binding,
+                ops,
+                blobs,
+                expect_cert_valid,
+                client_txn_id,
+            } => {
+                26u8.encode(o);
+                binding.encode(o);
+                ops.encode(o);
+                blobs.encode(o);
+                expect_cert_valid.encode(o);
+                client_txn_id.encode(o);
+            }
+            Self::WhatIf { binding, ops } => {
+                27u8.encode(o);
+                binding.encode(o);
+                ops.encode(o);
+            }
+            Self::BranchCreate { name, from } => {
+                28u8.encode(o);
+                name.encode(o);
+                from.encode(o);
+            }
+            Self::BranchList => 29u8.encode(o),
+            Self::BranchArchive { name } => {
+                30u8.encode(o);
+                name.encode(o);
+            }
+            Self::Merge {
+                binding,
+                source,
+                into,
+                require_certified,
+                certify,
+            } => {
+                31u8.encode(o);
+                binding.encode(o);
+                source.encode(o);
+                into.encode(o);
+                require_certified.encode(o);
+                certify.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1060,6 +1227,44 @@ impl Wire for Request {
                 paths: Wire::decode(i)?,
                 expected_head: Wire::decode(i)?,
                 expected_position: Wire::decode(i)?,
+            },
+            25 => {
+                let branch = Wire::decode(i)?;
+                let request = Request::decode(i)?;
+                // One level only: no recursion budget to spend.
+                if matches!(request, Request::OnBranch { .. }) {
+                    return Err(WireError::InvalidEncoding);
+                }
+                Self::OnBranch {
+                    branch,
+                    request: Box::new(request),
+                }
+            }
+            26 => Self::Commit {
+                binding: Wire::decode(i)?,
+                ops: Wire::decode(i)?,
+                blobs: Wire::decode(i)?,
+                expect_cert_valid: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+            },
+            27 => Self::WhatIf {
+                binding: Wire::decode(i)?,
+                ops: Wire::decode(i)?,
+            },
+            28 => Self::BranchCreate {
+                name: Wire::decode(i)?,
+                from: Wire::decode(i)?,
+            },
+            29 => Self::BranchList,
+            30 => Self::BranchArchive {
+                name: Wire::decode(i)?,
+            },
+            31 => Self::Merge {
+                binding: Wire::decode(i)?,
+                source: Wire::decode(i)?,
+                into: Wire::decode(i)?,
+                require_certified: Wire::decode(i)?,
+                certify: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1199,6 +1404,24 @@ impl Wire for Response {
                 watermark.encode(o);
                 anchors.encode(o);
             }
+            Self::WhatIf { result, merge } => {
+                21u8.encode(o);
+                result.encode(o);
+                merge.encode(o);
+            }
+            Self::Branches { branches } => {
+                22u8.encode(o);
+                branches.encode(o);
+            }
+            Self::Merged { result, report } => {
+                23u8.encode(o);
+                result.encode(o);
+                report.encode(o);
+            }
+            Self::Refused { validation } => {
+                24u8.encode(o);
+                validation.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1285,6 +1508,20 @@ impl Wire for Response {
                 branch: Wire::decode(i)?,
                 watermark: Wire::decode(i)?,
                 anchors: Wire::decode(i)?,
+            },
+            21 => Self::WhatIf {
+                result: Wire::decode(i)?,
+                merge: Wire::decode(i)?,
+            },
+            22 => Self::Branches {
+                branches: Wire::decode(i)?,
+            },
+            23 => Self::Merged {
+                result: Wire::decode(i)?,
+                report: Wire::decode(i)?,
+            },
+            24 => Self::Refused {
+                validation: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1522,6 +1759,43 @@ mod tests {
                 since: 3,
                 limit: 100,
             },
+            Request::OnBranch {
+                branch: BranchSel::Named("feature/x".into()),
+                request: Box::new(Request::Status),
+            },
+            Request::OnBranch {
+                branch: BranchSel::Session(Binding::root(s)),
+                request: Box::new(Request::Diff {
+                    from: Epoch(1),
+                    to: Epoch(2),
+                }),
+            },
+            Request::Commit {
+                binding: Binding::root(s),
+                ops: vec![Op::AssertBase {
+                    rev: RevisionId(1).into(),
+                }],
+                blobs: vec![b"x".to_vec()],
+                expect_cert_valid: true,
+                client_txn_id: Some([3; 16]),
+            },
+            Request::WhatIf {
+                binding: Binding::root(s),
+                ops: Vec::new(),
+            },
+            Request::BranchCreate {
+                name: "b".into(),
+                from: Some("main".into()),
+            },
+            Request::BranchList,
+            Request::BranchArchive { name: "b".into() },
+            Request::Merge {
+                binding: None,
+                source: "b".into(),
+                into: Some("main".into()),
+                require_certified: true,
+                certify: vec!["plan".into()],
+            },
         ]
     }
     fn responses() -> Vec<Response> {
@@ -1597,7 +1871,61 @@ mod tests {
                 ],
                 next: 3,
             },
+            Response::WhatIf {
+                result: CommitResult {
+                    epoch: Epoch(2),
+                    allocations: Allocations::default(),
+                    net_delta: NetDelta::default(),
+                    l0_flips: Vec::new(),
+                    status_diff: vec![RevisionId(1)],
+                },
+                merge: Some(MergeReport::default()),
+            },
+            Response::Branches {
+                branches: vec![BranchEntry {
+                    id: BranchId(1),
+                    name: "b".into(),
+                    parent: Some(MAIN),
+                    fork_epoch: Epoch(3),
+                    archived: false,
+                }],
+            },
+            Response::Merged {
+                result: CommitResult {
+                    epoch: Epoch(4),
+                    allocations: Allocations::default(),
+                    net_delta: NetDelta::default(),
+                    l0_flips: Vec::new(),
+                    status_diff: Vec::new(),
+                },
+                report: MergeReport {
+                    source: BranchId(1),
+                    convergent: 2,
+                    ..MergeReport::default()
+                },
+            },
+            Response::Refused {
+                validation: Validation::Invalid {
+                    reason: InvalidReason::BranchMismatch,
+                    diffs: Vec::new(),
+                },
+            },
         ]
+    }
+    /// `OnBranch` nests one level only.
+    #[test]
+    fn on_branch_does_not_nest() {
+        let nested = Request::OnBranch {
+            branch: BranchSel::Named("a".into()),
+            request: Box::new(Request::OnBranch {
+                branch: BranchSel::Named("b".into()),
+                request: Box::new(Request::Status),
+            }),
+        };
+        assert_eq!(
+            Request::from_bytes(&nested.canonical_bytes()),
+            Err(WireError::InvalidEncoding)
+        );
     }
     #[test]
     fn new_responses_round_trip() {

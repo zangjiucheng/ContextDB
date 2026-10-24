@@ -52,6 +52,9 @@ pub enum StoreError {
     /// `main`'s local ids differ from the global ids (branches allocated
     /// ids or `main` imported objects): read through the kernel.
     BranchAwareReadRequired,
+    /// `expect_cert_valid`: the certificate's verdict at commit time was not
+    /// Valid or ValidRecertified, so nothing was committed (ADR 0013 §4).
+    CertificateNotValid(Box<Validation>),
     /// The log changed between `plan_truncate_before` and `truncate_before`.
     PlanOutdated,
     Io(String),
@@ -166,6 +169,22 @@ fn rows<'a>(
             .collect(),
     }
 }
+/// One write of a group: the batch, and an idempotency hash when the batch
+/// will be extended before it commits (ADR 0013 §4).
+#[derive(Clone, Debug)]
+pub struct Write {
+    pub batch: Batch,
+    pub client_hash: Option<ContentHash>,
+}
+/// See [`Store::commit_group_with`].
+/// `(write index, live kernel, op_log checksum at an epoch, batch)`.
+pub type Prepare<'a> = dyn FnMut(
+        usize,
+        &Kernel,
+        &dyn Fn(Epoch) -> Option<ContentHash>,
+        &Batch,
+    ) -> Result<Batch, StoreError>
+    + 'a;
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     pub strict_tail: bool,
@@ -507,7 +526,9 @@ impl<D: Durability> Store<D> {
                 report.replayed += 1;
             }
             if let Some(id) = f.row.client_txn_id {
-                store.ids.insert(id, (f.row.epoch, f.row.batch_hash));
+                store
+                    .ids
+                    .insert(id, (f.row.epoch, f.row.idempotency_hash()));
             }
             store
                 .index
@@ -680,22 +701,90 @@ impl<D: Durability> Store<D> {
     /// fails after the first apply, the store is poisoned and every batch of
     /// the group gets `Poisoned` (the daemon reports `OutcomeUnknown`).
     pub fn commit_group(&mut self, batches: &[Batch]) -> Vec<Result<CommitResult, StoreError>> {
+        let writes: Vec<Write> = batches
+            .iter()
+            .map(|b| Write {
+                batch: b.clone(),
+                client_hash: None,
+            })
+            .collect();
+        self.commit_group_with(&writes, &mut |_, _, _, b| Ok(b.clone()))
+    }
+    /// As [`Self::commit_group`] for writes that may carry an idempotency
+    /// hash of their own (ADR 0013 §4). After the idempotency check and
+    /// before staging, each write passes through `prepare` with the live
+    /// kernel (every earlier batch of the group applied) and the op_log
+    /// checksum at an epoch; it returns the batch to commit, or refuses it.
+    pub fn commit_group_with(
+        &mut self,
+        writes: &[Write],
+        prepare: &mut Prepare<'_>,
+    ) -> Vec<Result<CommitResult, StoreError>> {
         if let Err(e) = self.usable() {
-            return batches.iter().map(|_| Err(e.clone())).collect();
+            return writes.iter().map(|_| Err(e.clone())).collect();
         }
         enum Slot {
             Done(Box<Result<CommitResult, StoreError>>),
             Applied(usize),
             Duplicate(usize),
         }
-        let mut slots = Vec::with_capacity(batches.len());
+        let mut slots = Vec::with_capacity(writes.len());
         let mut staged_ids: BTreeMap<[u8; 16], (usize, ContentHash)> = BTreeMap::new();
         let mut applied: Vec<(LogRow, CommitResult)> = Vec::new();
-        let mut applied_batch: Vec<usize> = Vec::new();
+        let mut applied_batch: Vec<Batch> = Vec::new();
         let prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
         self.in_flight = true;
-        for (n, batch) in batches.iter().enumerate() {
+        for (index, write) in writes.iter().enumerate() {
+            let batch = &write.batch;
             if !encodable(batch) {
+                slots.push(Slot::Done(Box::new(Err(StoreError::Tx(
+                    TxError::CapacityExceeded {
+                        kind: CapacityKind::Encoding,
+                    },
+                )))));
+                continue;
+            }
+            let idempotency = write
+                .client_hash
+                .unwrap_or_else(|| *blake3::hash(&batch.canonical_bytes()).as_bytes());
+            // Step 1: idempotency, durable ids first, then ids staged in this group.
+            if let Some(id) = batch.client_txn_id {
+                if let Some((epoch, hash)) = self.ids.get(&id).copied() {
+                    slots.push(Slot::Done(Box::new(if hash != idempotency {
+                        Err(StoreError::Tx(TxError::TxnIdReuse { id }))
+                    } else {
+                        self.read_frame(epoch)
+                            .and_then(|r| r.acked().map_err(|e| StoreError::Io(e.to_string())))
+                    })));
+                    continue;
+                }
+                if let Some((k, hash)) = staged_ids.get(&id).copied() {
+                    slots.push(if hash != idempotency {
+                        Slot::Done(Box::new(Err(StoreError::Tx(TxError::TxnIdReuse { id }))))
+                    } else {
+                        Slot::Duplicate(k)
+                    });
+                    continue;
+                }
+            }
+            // The caller's last word on the batch, on the live state.
+            let (disk, frames) = (&self.disk, &self.index);
+            let checksum = |e: Epoch| -> Option<ContentHash> {
+                match e.0 {
+                    0 => Some(log::GENESIS),
+                    _ => read_frame(disk, frames, e)
+                        .ok()
+                        .map(|r| log::checksum(&r.encode_body())),
+                }
+            };
+            let batch = match prepare(index, &self.db, &checksum, batch) {
+                Ok(b) => b,
+                Err(e) => {
+                    slots.push(Slot::Done(Box::new(Err(e))));
+                    continue;
+                }
+            };
+            if !encodable(&batch) {
                 slots.push(Slot::Done(Box::new(Err(StoreError::Tx(
                     TxError::CapacityExceeded {
                         kind: CapacityKind::Encoding,
@@ -705,28 +794,8 @@ impl<D: Durability> Store<D> {
             }
             let batch_blob = batch.canonical_bytes();
             let batch_hash = *blake3::hash(&batch_blob).as_bytes();
-            // Step 1: idempotency, durable ids first, then ids staged in this group.
-            if let Some(id) = batch.client_txn_id {
-                if let Some((epoch, hash)) = self.ids.get(&id).copied() {
-                    slots.push(Slot::Done(Box::new(if hash != batch_hash {
-                        Err(StoreError::Tx(TxError::TxnIdReuse { id }))
-                    } else {
-                        self.read_frame(epoch)
-                            .and_then(|r| r.acked().map_err(|e| StoreError::Io(e.to_string())))
-                    })));
-                    continue;
-                }
-                if let Some((k, hash)) = staged_ids.get(&id).copied() {
-                    slots.push(if hash != batch_hash {
-                        Slot::Done(Box::new(Err(StoreError::Tx(TxError::TxnIdReuse { id }))))
-                    } else {
-                        Slot::Duplicate(k)
-                    });
-                    continue;
-                }
-            }
             // Step 2: apply with blob presence; a rejection leaves no trace.
-            match self.db.commit_detailed_with(batch, &self.blobs) {
+            match self.db.commit_detailed_with(&batch, &self.blobs) {
                 Err(e) => slots.push(Slot::Done(Box::new(Err(StoreError::Tx(e))))),
                 Ok((result, merge)) => {
                     let trailer = ResultTrailer {
@@ -745,12 +814,13 @@ impl<D: Durability> Store<D> {
                         acked_result: None,
                         prev_checksum: prev,
                         group: log::GroupPos::default(),
+                        client_hash: write.client_hash,
                     };
                     if let Some(id) = batch.client_txn_id {
-                        staged_ids.insert(id, (applied.len(), batch_hash));
+                        staged_ids.insert(id, (applied.len(), idempotency));
                     }
                     slots.push(Slot::Applied(applied.len()));
-                    applied_batch.push(n);
+                    applied_batch.push(batch);
                     applied.push((row, result));
                 }
             }
@@ -783,14 +853,14 @@ impl<D: Durability> Store<D> {
                 Err(_) => {
                     self.in_flight = false;
                     let e = self.poison();
-                    return batches.iter().map(|_| Err(e.clone())).collect();
+                    return writes.iter().map(|_| Err(e.clone())).collect();
                 }
             };
             if std::mem::take(&mut self.crash_after_sync) {
                 // Durable but never published or acked: the process "dies" here.
                 self.in_flight = false;
                 let e = self.poison();
-                return batches.iter().map(|_| Err(e.clone())).collect();
+                return writes.iter().map(|_| Err(e.clone())).collect();
             }
             // Step 4: publish.
             self.group_seq = seq;
@@ -808,11 +878,11 @@ impl<D: Durability> Store<D> {
                     });
                 from = end;
                 if let Some(id) = row.client_txn_id {
-                    self.ids.insert(id, (result.epoch, row.batch_hash));
+                    self.ids.insert(id, (result.epoch, row.idempotency_hash()));
                 }
                 // Projections after durability; a failure only makes them stale.
                 let mut base = Vec::new();
-                let batch = &batches[applied_batch[k]];
+                let batch = &applied_batch[k];
                 if self
                     .proj
                     .apply(&rows(&self.db, batch, result, sums[k], &mut base))
@@ -1125,6 +1195,14 @@ impl<D: Durability> Store<D> {
         self.readable()?;
         self.db.what_if(batch).map_err(StoreError::Tx)
     }
+    /// `WHAT_IF` with a merge's report (ADR 0013 §5).
+    pub fn what_if_detailed(
+        &mut self,
+        batch: &Batch,
+    ) -> Result<(CommitResult, Option<MergeReport>), StoreError> {
+        self.readable()?;
+        self.db.what_if_detailed(batch).map_err(StoreError::Tx)
+    }
     /// The op_log frame checksum at `epoch` (genesis at 0): certificate log
     /// linkage (ADR 0008 §4).
     pub fn checksum_at(&self, epoch: Epoch) -> Result<ContentHash, StoreError> {
@@ -1234,6 +1312,20 @@ impl<D: Durability> LogReader<D> {
             return Err(StoreError::Tx(TxError::UnknownRef));
         }
         read_frame(&self.disk, &self.index, epoch)
+    }
+    /// Every branch as of `e`, by replaying the verified prefix.
+    pub fn replay_kernel_to(&self, e: Epoch) -> Result<Kernel, StoreError> {
+        if e > self.tail {
+            return Err(StoreError::Tx(TxError::UnknownRef));
+        }
+        let mut k = Kernel::default();
+        for n in 1..=e.0 {
+            let row = self.read_row(Epoch(n))?;
+            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+            k.commit(&batch)
+                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+        }
+        Ok(k)
     }
     /// `main` as of `e` by replaying the verified prefix (ADR 0006 §8 source 3).
     pub fn replay_to(&self, e: Epoch) -> Result<Db, StoreError> {

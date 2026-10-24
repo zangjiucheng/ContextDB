@@ -24,7 +24,9 @@ Usage (offline; refused while ctxd runs):
   ctx export <dir>                     print the op_log as EventLog JSONL (v0 lines unless a batch needs v1)
 
 Usage (via a running ctxd, admin socket):
-  ctx status <dir>                     epoch, logicals, revisions, sessions
+  ctx status <dir> [--branch B]        epoch, logicals, revisions, sessions
+                                       (--branch on status, why, why-not, impact,
+                                       diff and validate reads that branch)
   ctx why <dir> <key[@rev]>            base, active rules, premises
   ctx why-not <dir> <key[@rev]>        failing incidences per rule
   ctx impact <dir> <key[@rev]>         dependents (reachable impact)
@@ -33,6 +35,11 @@ Usage (via a running ctxd, admin socket):
                                        controlled validation of Sem rules (shows the
                                        vectors, records exactly what was shown)
   ctx shutdown <dir>                   stop ctxd
+  ctx branch create <dir> <name> [--from B] | list <dir> | archive <dir> <name>
+                                       branches (sessions bind to the branch named
+                                       like their git branch)
+  ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
+                                       merge a branch (default into main)
 
 Hooks and gating (P4, ADR 0010):
   ctx check <dir> (--session HEX | --harness H --key K) [--agent A] [--strict]
@@ -205,6 +212,11 @@ fn run(args: &[String]) -> Result<u8, String> {
         Some("ui") => ui::run(&args[1..]),
         Some("gate-report") => p4::gate_report(&args[1..]),
         Some("dogfood") => p4::dogfood(&args[1..]),
+        Some("branch") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            daemon::branch(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
+        }
+        Some("merge") => daemon::merge(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
         _ => run_p3(args).map(|()| 0),
     }
 }

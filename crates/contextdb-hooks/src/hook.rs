@@ -24,12 +24,19 @@ use std::{
 
 /// ContextDB's session-scoped MCP tools, which the PreToolUse hook claims
 /// (ADR 0010 §2.3).
-pub const CLAIMED_TOOLS: [&str; 5] = [
+pub const CLAIMED_TOOLS: [&str; 11] = [
     "ctx_recall",
     "ctx_read",
     "ctx_record",
     "ctx_supersede",
     "ctx_check",
+    // Session-branch reads and writes (protocol 4, ADR 0013 §10).
+    "ctx_why",
+    "ctx_why_not",
+    "ctx_impact",
+    "ctx_commit",
+    "ctx_what_if",
+    "ctx_merge",
 ];
 /// An Empty warning is rendered at most this often per stream and agent.
 const EMPTY_EVERY: u64 = 600;

@@ -10,7 +10,7 @@
 use crate::publish::{self, Published};
 use contextdb_core::{BranchView, Db, Kernel};
 use contextdb_model::*;
-use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus};
+use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus, Write};
 use std::{
     sync::{
         Arc,
@@ -55,13 +55,29 @@ pub struct WriteRequest {
     /// Payload bodies stored (durably) before the batch is applied.
     pub blobs: Vec<Vec<u8>>,
     pub batch: Batch,
+    /// Idempotency hash when the actor extends the batch (`expect`).
+    pub client_hash: Option<ContentHash>,
+    /// `expect_cert_valid` (ADR 0013 §4).
+    pub expect: Option<Box<Expect>>,
     pub reply: mpsc::Sender<Result<CommitResult, StoreError>>,
+}
+/// A certificate the batch's commit depends on: validated by the actor on
+/// the live state just before staging; a valid one's vector becomes an
+/// `ExpectHeads{source: Certificate}` the kernel checks in the same step.
+pub struct Expect {
+    pub cert: Certificate,
+    pub live: std::collections::BTreeMap<String, Vec<u8>>,
 }
 pub enum Message {
     Write(WriteRequest),
     ImpactExact {
         batch: Batch,
         reply: mpsc::Sender<Result<CommitResult, StoreError>>,
+    },
+    /// `WHAT_IF` on the batch's branch, with a merge's report.
+    WhatIf {
+        batch: Batch,
+        reply: mpsc::Sender<Result<(CommitResult, Option<MergeReport>), StoreError>>,
     },
     TxnStatus {
         id: [u8; 16],
@@ -124,6 +140,27 @@ impl<D: Durability> ActorHandle<D> {
         self.submit(Message::Write(WriteRequest {
             blobs,
             batch,
+            client_hash: None,
+            expect: None,
+            reply,
+        }))?;
+        self.wait(rx)
+    }
+    /// A write whose commit is conditional on a certificate (`ctx_commit`
+    /// with `expect_cert_valid`).
+    pub fn write_expecting(
+        &self,
+        blobs: Vec<Vec<u8>>,
+        batch: Batch,
+        client_hash: ContentHash,
+        expect: Option<Expect>,
+    ) -> Result<Result<CommitResult, StoreError>, SubmitError> {
+        let (reply, rx) = mpsc::channel();
+        self.submit(Message::Write(WriteRequest {
+            blobs,
+            batch,
+            client_hash: Some(client_hash),
+            expect: expect.map(Box::new),
             reply,
         }))?;
         self.wait(rx)
@@ -228,7 +265,9 @@ impl<D: Durability + Clone> Actor<D> {
             for m in others {
                 match m {
                     Message::Shutdown { reply } => return Some(reply),
-                    m @ Message::ImpactExact { .. } => impacts.push_back(m),
+                    m @ (Message::ImpactExact { .. } | Message::WhatIf { .. }) => {
+                        impacts.push_back(m)
+                    }
                     m => self.handle(m),
                 }
             }
@@ -242,6 +281,9 @@ impl<D: Durability + Clone> Actor<D> {
             Message::Write(_) | Message::Shutdown { .. } => unreachable!("handled by run"),
             Message::ImpactExact { batch, reply } => {
                 let _ = reply.send(self.store.impact_exact(&batch));
+            }
+            Message::WhatIf { batch, reply } => {
+                let _ = reply.send(self.store.what_if_detailed(&batch));
             }
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
@@ -260,11 +302,35 @@ impl<D: Durability + Clone> Actor<D> {
             .flat_map(|w| w.blobs.iter().map(Vec::as_slice))
             .collect();
         let blob_error = self.store.stage_blobs(&blobs).err();
-        let batches: Vec<Batch> = writes.iter().map(|w| w.batch.clone()).collect();
+        let group: Vec<Write> = (writes.iter())
+            .map(|w| Write {
+                batch: w.batch.clone(),
+                client_hash: w.client_hash,
+            })
+            .collect();
+        // What each write actually committed: certificate-conditional batches
+        // gain their `ExpectHeads` here, and the replica replays those.
+        let mut batches: Vec<Batch> = writes.iter().map(|w| w.batch.clone()).collect();
         let before = self.store.epoch();
         let results = match blob_error {
             Some(e) => batches.iter().map(|_| Err(e.clone())).collect(),
-            None => self.store.commit_group(&batches),
+            None => {
+                let expects: Vec<Option<&Expect>> =
+                    writes.iter().map(|w| w.expect.as_deref()).collect();
+                let mut prepare = |n: usize,
+                                   kernel: &Kernel,
+                                   checksum: &dyn Fn(Epoch) -> Option<ContentHash>,
+                                   batch: &Batch|
+                 -> Result<Batch, StoreError> {
+                    let Some(expect) = expects[n] else {
+                        return Ok(batch.clone());
+                    };
+                    let extended = expect_certificate(kernel, checksum, batch, expect)?;
+                    batches[n] = extended.clone();
+                    Ok(extended)
+                };
+                self.store.commit_group_with(&group, &mut prepare)
+            }
         };
         self.stats.groups.fetch_add(1, Ordering::Relaxed);
         self.stats
@@ -350,4 +416,41 @@ impl<D: Durability + Clone> Actor<D> {
             .fetch_add(waited, Ordering::Relaxed);
         Some(std::mem::take(&mut s.kernel))
     }
+}
+/// Validates `expect`'s certificate on the live kernel (every earlier batch
+/// of the group applied) and appends its vector as
+/// `ExpectHeads{source: Certificate}`, so validation and the kernel's read
+/// check run on one state (ADR 0013 §4, §3.5 #13).
+fn expect_certificate(
+    kernel: &Kernel,
+    checksum: &dyn Fn(Epoch) -> Option<ContentHash>,
+    batch: &Batch,
+    expect: &Expect,
+) -> Result<Batch, StoreError> {
+    let cert = &expect.cert;
+    let view = kernel
+        .branch(batch.branch)
+        .ok_or(StoreError::Tx(TxError::UnknownBranch))?;
+    let link = contextdb_core::LogLink {
+        matches: checksum(cert.issued_epoch) == Some(cert.log_checksum_at_issue),
+        current_checksum: checksum(kernel.epoch()).unwrap_or([0; 32]),
+    };
+    let verdict = view
+        .validate_certificate(cert, &expect.live, link)
+        .unwrap_or(Validation::Unknown {
+            lag: vec!["history".into()],
+        });
+    let vector = match verdict {
+        Validation::Valid => cert.vector.clone(),
+        Validation::ValidRecertified { new_cert, .. } => new_cert.vector,
+        other => return Err(StoreError::CertificateNotValid(Box::new(other))),
+    };
+    let mut extended = batch.clone();
+    extended.ops.push(Op::ExpectHeads {
+        entries: (vector.into_iter())
+            .map(|v| (LogicalRef::Existing(v.logical), v.rev))
+            .collect(),
+        source: ReadSource::Certificate(cert.cert_id),
+    });
+    Ok(extended)
 }

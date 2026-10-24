@@ -239,6 +239,25 @@ fn err(code: &str, detail: impl Into<String>) -> Response {
         detail: detail.into(),
     }
 }
+/// Only the actor appends certificate read sets (ADR 0013 §4, N6).
+fn certificate_reads(ops: &[Op]) -> Option<Response> {
+    ops.iter()
+        .any(|op| {
+            matches!(
+                op,
+                Op::ExpectHeads {
+                    source: ReadSource::Certificate(_),
+                    ..
+                }
+            )
+        })
+        .then(|| {
+            err(
+                "ChannelRestricted",
+                "certificate read sets are appended by the daemon",
+            )
+        })
+}
 fn submit_err(e: SubmitError) -> Response {
     match e {
         SubmitError::Busy => err("Busy", "write queue full"),
@@ -642,8 +661,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// their group, so a queued writer never pins a replica the actor wants
     /// to reclaim (ADR 0008 §3.3).
     fn dispatch(&self, id: Identity, req: Request, snap: Arc<Snapshot<D>>) -> Response {
-        // Unbound reads use `main` (protocol 4 adds a branch to them).
-        let db = &snap.view(MAIN);
+        self.dispatch_at(id, req, snap, MAIN)
+    }
+    /// Unbound requests read (and `ImpactBatch`/`Validate` write) `branch`:
+    /// `main`, or the branch an `OnBranch` named (protocol 4).
+    fn dispatch_at(
+        &self,
+        id: Identity,
+        req: Request,
+        snap: Arc<Snapshot<D>>,
+        branch: BranchId,
+    ) -> Response {
+        let db = &snap.view(branch);
         match req {
             Request::SessionStart {
                 harness,
@@ -792,6 +821,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Request::ImpactBatch { batch } => {
                 drop(snap);
                 let mut batch = batch;
+                if branch != MAIN {
+                    batch.branch = branch;
+                }
                 batch.channel = id.channel;
                 batch.principal = id.principal;
                 match self
@@ -831,8 +863,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 let result = if from.min(to) >= db.initial_epoch() {
                     db.diff(from, to)
                 } else {
-                    match snap.log.replay_to(from.max(to)) {
-                        Ok(full) => full.diff(from, to),
+                    match snap.log.replay_kernel_to(from.max(to)) {
+                        Ok(full) => match full.branch(branch) {
+                            Some(v) => v.diff(from, to),
+                            None => Err(TxError::UnknownBranch),
+                        },
                         Err(e) => {
                             let (c, d) = store_code(&e);
                             return err(&c, d);
@@ -860,6 +895,130 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 &expected_position,
                 &snap,
             ),
+            Request::OnBranch { branch, request } => {
+                let on = match branch {
+                    BranchSel::Named(name) => match snap.kernel.branch_by_name(&name) {
+                        Some(b) => b,
+                        None => return err("UnknownBranch", format!("no branch named {name}")),
+                    },
+                    BranchSel::Session(binding) => match self.bind(id, &binding, &snap) {
+                        Ok((_, s, _, _)) => s.lock().expect("session").branch,
+                        Err(r) => return r,
+                    },
+                };
+                match *request {
+                    inner @ (Request::Why { .. }
+                    | Request::WhyNot { .. }
+                    | Request::Impact { .. }
+                    | Request::ImpactBatch { .. }
+                    | Request::Diff { .. }
+                    | Request::Status
+                    | Request::Validate { .. }) => self.dispatch_at(id, inner, snap, on),
+                    _ => err("InvalidRequest", "OnBranch carries only unbound requests"),
+                }
+            }
+            Request::Commit {
+                binding,
+                ops,
+                blobs,
+                expect_cert_valid,
+                client_txn_id,
+            } => match self.bind(id, &binding, &snap) {
+                Ok(b) => self.commit_ops(id, b, ops, blobs, expect_cert_valid, client_txn_id, snap),
+                Err(r) => r,
+            },
+            Request::WhatIf { binding, ops } => match self.bind(id, &binding, &snap) {
+                Ok((_, s, _, _)) => {
+                    if let Some(r) = certificate_reads(&ops) {
+                        return r;
+                    }
+                    let mut batch = Batch::new(ops);
+                    batch.branch = s.lock().expect("session").branch;
+                    batch.channel = id.channel;
+                    batch.principal = id.principal;
+                    drop(snap);
+                    match self.actor.request(|reply| Message::WhatIf { batch, reply }) {
+                        Ok(Ok((result, merge))) => Response::WhatIf { result, merge },
+                        Ok(Err(e)) => {
+                            let (c, d) = store_code(&e);
+                            err(&c, d)
+                        }
+                        Err(e) => submit_err(e),
+                    }
+                }
+                Err(r) => r,
+            },
+            Request::BranchCreate { name, from } => {
+                let from = match from.as_deref().map(|f| snap.kernel.branch_by_name(f)) {
+                    None => MAIN,
+                    Some(Some(b)) => b,
+                    Some(None) => return err("UnknownBranch", "no such source branch"),
+                };
+                drop(snap);
+                let mut batch = Batch::new(vec![Op::CreateBranch { name }]);
+                batch.branch = from;
+                self.commit(id, Vec::new(), batch, None)
+            }
+            Request::BranchList => Response::Branches {
+                branches: (snap.kernel.branches())
+                    .map(|b| BranchEntry {
+                        id: b.id,
+                        name: b.name.clone(),
+                        parent: b.parent,
+                        fork_epoch: b.fork_epoch,
+                        archived: b.archived,
+                    })
+                    .collect(),
+            },
+            Request::BranchArchive { name } => {
+                let Some(on) = snap.kernel.branch_by_name(&name) else {
+                    return err("UnknownBranch", format!("no branch named {name}"));
+                };
+                drop(snap);
+                let mut batch = Batch::new(vec![Op::ArchiveBranch { name }]);
+                batch.branch = on;
+                self.commit(id, Vec::new(), batch, None)
+            }
+            Request::Merge {
+                binding,
+                source,
+                into,
+                require_certified,
+                certify,
+            } => {
+                let target = match (&into, &binding) {
+                    (Some(name), _) => match snap.kernel.branch_by_name(name) {
+                        Some(b) => b,
+                        None => return err("UnknownBranch", format!("no branch named {name}")),
+                    },
+                    (None, Some(b)) => match self.bind(id, b, &snap) {
+                        Ok((_, s, _, _)) => s.lock().expect("session").branch,
+                        Err(r) => return r,
+                    },
+                    (None, None) => MAIN,
+                };
+                // Branches are not secret: an unknown source is InvalidMerge.
+                let Some(source) = snap.kernel.branch_by_name(&source) else {
+                    return err("InvalidMerge", format!("no branch named {source}"));
+                };
+                drop(snap);
+                let mut batch = Batch::new(vec![Op::Merge {
+                    source,
+                    require_certified,
+                    certify: certify.into_iter().map(LogicalRef::Key).collect(),
+                }]);
+                batch.branch = target;
+                match self.commit(id, Vec::new(), batch, None) {
+                    Response::Committed { result } => {
+                        let report = (self.actor.snapshot().log.read_row(result.epoch).ok())
+                            .and_then(|row| row.trailer().ok().flatten())
+                            .and_then(|t| t.merge)
+                            .unwrap_or_default();
+                        Response::Merged { result, report }
+                    }
+                    other => other,
+                }
+            }
             Request::Status => Response::Status {
                 revisions: db.revision_count() as u64,
                 logicals: db.logical_count() as u64,
@@ -897,12 +1056,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         "ctx validate requires the admin socket",
                     );
                 }
-                let batch = Batch::new(vec![Op::RecordValidation {
+                let mut batch = Batch::new(vec![Op::RecordValidation {
                     rule: rule.into(),
                     curvec_seen,
                     verdict,
                     validator,
                 }]);
+                batch.branch = branch;
                 self.commit(id, Vec::new(), batch, None)
             }
             Request::Raw { blobs, batch } => {
@@ -912,6 +1072,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         "ChannelRestricted",
                         "raw batches require the observer or admin socket",
                     );
+                }
+                if let Some(r) = certificate_reads(&batch.ops) {
+                    return r;
                 }
                 self.commit(id, blobs, batch, None)
             }
@@ -1205,6 +1368,70 @@ impl<D: Durability + Clone + 'static> Service<D> {
         batch.client_txn_id = Some(txn.unwrap_or_else(random_id));
         match self.actor.write(blobs, batch) {
             Ok(Ok(result)) => Response::Committed { result },
+            Ok(Err(e)) => {
+                let (c, d) = store_code(&e);
+                err(&c, d)
+            }
+            Err(e) => submit_err(e),
+        }
+    }
+    /// `ctx_commit` (ADR 0013 §4).
+    #[allow(clippy::too_many_arguments)]
+    fn commit_ops(
+        &self,
+        id: Identity,
+        (_, s, agent, _): Bound,
+        ops: Vec<Op>,
+        blobs: Vec<Vec<u8>>,
+        expect_cert_valid: bool,
+        client_txn_id: Option<[u8; 16]>,
+        snap: Arc<Snapshot<D>>,
+    ) -> Response {
+        if let Some(r) = certificate_reads(&ops) {
+            return r;
+        }
+        if ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. }
+            )
+        }) {
+            return err("InvalidRequest", "branch ops have their own requests");
+        }
+        let (branch, cert) = {
+            let s = s.lock().expect("session");
+            let cert = (s.agents.get(&agent)).and_then(|a| a.session_cert.clone());
+            (s.branch, cert)
+        };
+        let expect = match (expect_cert_valid, cert) {
+            (false, _) => None,
+            (true, None) => return err("NoCertificate", "no session certificate to expect"),
+            (true, Some(cert)) => Some(crate::actor::Expect {
+                live: self.anchor_live(&snap.view(branch)),
+                cert,
+            }),
+        };
+        drop(snap);
+        // The idempotency hash covers what the client sent: its ops, the
+        // flag and the certificate, never the appended read set.
+        let mut client = Vec::new();
+        ops.encode(&mut client);
+        expect_cert_valid.encode(&mut client);
+        expect.as_ref().map(|e| e.cert.cert_id).encode(&mut client);
+        let client_hash = *blake3::hash(&client).as_bytes();
+        let mut batch = Batch::new(ops);
+        batch.branch = branch;
+        batch.channel = id.channel;
+        batch.principal = id.principal;
+        batch.client_txn_id = Some(client_txn_id.unwrap_or_else(random_id));
+        match self
+            .actor
+            .write_expecting(blobs, batch, client_hash, expect)
+        {
+            Ok(Ok(result)) => Response::Committed { result },
+            Ok(Err(StoreError::CertificateNotValid(validation))) => Response::Refused {
+                validation: *validation,
+            },
             Ok(Err(e)) => {
                 let (c, d) = store_code(&e);
                 err(&c, d)

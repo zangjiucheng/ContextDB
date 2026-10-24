@@ -116,3 +116,65 @@ fn ctx_status_validate_and_shutdown_through_the_admin_socket() {
     assert!(!ok && out.contains("not running"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Protocol 4 from the CLI (ADR 0013 §10): `ctx branch`, `--branch` reads
+/// and `ctx merge`.
+#[test]
+fn ctx_branches_and_merge() {
+    let dir = std::env::temp_dir().join(format!("ctx-branch-cli-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = Daemon::start(&dir, &Options::default()).unwrap();
+    let path = dir.to_str().unwrap();
+    let (ok, out) = ctx(&["branch", "create", path, "feature"], "");
+    assert!(ok, "{out}");
+    let (ok, out) = ctx(&["branch", "list", path], "");
+    assert!(
+        ok && out.contains("main") && out.contains("feature"),
+        "{out}"
+    );
+    // A session on the branch records x; main does not see it.
+    let mut agent = Client::connect(d.socket(Channel::Agent)).unwrap();
+    let Response::Session { session } = agent
+        .call(&Request::SessionStart {
+            harness: "t".into(),
+            repo: "r".into(),
+            head_sha: "h".into(),
+            parent: None,
+            branch: Some("feature".into()),
+            git_branch: None,
+        })
+        .unwrap()
+        .response
+    else {
+        panic!()
+    };
+    let r = agent
+        .call(&Request::Record {
+            binding: Binding::root(session),
+            kind: RecordKind::Fact,
+            body: b"x".to_vec(),
+            target: WriteTarget::Create {
+                key: "x".into(),
+                scope_lane: "repo".into(),
+            },
+            deps: Vec::new(),
+            adopt_as_base: true,
+            client_txn_id: None,
+        })
+        .unwrap();
+    assert!(matches!(r.response, Response::Committed { .. }), "{r:?}");
+    let (ok, out) = ctx(&["why", path, "x"], "");
+    assert!(!ok && out.contains("UnknownRef"), "{out}");
+    let (ok, out) = ctx(&["why", path, "x", "--branch", "feature"], "");
+    assert!(ok, "{out}");
+    let (ok, out) = ctx(&["merge", path, "feature", "--no-require-certified"], "");
+    assert!(ok && out.contains("merged at epoch"), "{out}");
+    let (ok, out) = ctx(&["why", path, "x"], "");
+    assert!(ok, "after the merge main sees x: {out}");
+    let (ok, out) = ctx(&["branch", "archive", path, "feature"], "");
+    assert!(ok, "{out}");
+    let (ok, _) = ctx(&["shutdown", path], "");
+    assert!(ok);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
+}

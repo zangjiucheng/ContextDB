@@ -266,3 +266,237 @@ fn anchor_state_follows_the_observer_branch() {
         }
     }
 }
+
+fn certified_read(s: &Service<SimDisk>, session: SessionId, key: &str) -> Item {
+    match call(
+        s,
+        AGENT,
+        Request::Read {
+            binding: Binding::root(session),
+            target: Target::Key(key.into()),
+            mode: Mode::Certified,
+        },
+    ) {
+        Response::Read { item, .. } => item,
+        other => panic!("{other:?}"),
+    }
+}
+fn check(s: &Service<SimDisk>, session: SessionId) -> Response {
+    call(
+        s,
+        AGENT,
+        Request::Check {
+            binding: Binding::root(session),
+            cert_id: None,
+            live_pos: Vec::new(),
+            action: None,
+            mode: None,
+            harness_version: String::new(),
+            strict: false,
+        },
+    )
+}
+/// Ops that move `item`'s logical to a new revision with `body`.
+fn supersede_ops(item: &Item, body: &[u8]) -> Vec<Op> {
+    vec![
+        Op::AddRevision {
+            logical: item.logical.into(),
+            content: *blake3::hash(body).as_bytes(),
+            adopt_as_base: true,
+        },
+        Op::SetHead {
+            logical: item.logical.into(),
+            expected: item.rev.into(),
+            new: RevRef::New(0),
+        },
+    ]
+}
+fn commit(
+    s: &Service<SimDisk>,
+    session: SessionId,
+    ops: Vec<Op>,
+    blobs: Vec<Vec<u8>>,
+    txn: Option<[u8; 16]>,
+) -> Response {
+    call(
+        s,
+        AGENT,
+        Request::Commit {
+            binding: Binding::root(session),
+            ops,
+            blobs,
+            expect_cert_valid: true,
+            client_txn_id: txn,
+        },
+    )
+}
+
+/// T19 through `ctx_commit(expect_cert_valid)`: two plans read A and B and
+/// write different keys; the second to commit is refused (write skew).
+/// An idempotent retry returns the first result even after the state
+/// moved; a different batch under the same id is `TxnIdReuse`.
+#[test]
+fn t19_expect_cert_valid_first_committer_wins() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let seed = session(start(&s, None, None));
+    for key in ["a", "b", "c"] {
+        assert_eq!(code(&record(&s, seed, key)), "ok");
+    }
+    let (p1, p2) = (
+        session(start(&s, None, None)),
+        session(start(&s, None, None)),
+    );
+    let mut items = Vec::new();
+    for p in [p1, p2] {
+        items.push(certified_read(&s, p, "a"));
+        certified_read(&s, p, "b");
+        assert!(matches!(check(&s, p), Response::Check { .. }));
+    }
+    let c = certified_read(&s, seed, "c");
+    let txn = Some([7; 16]);
+    let first = commit(
+        &s,
+        p1,
+        supersede_ops(&items[0], b"a2"),
+        vec![b"a2".to_vec()],
+        txn,
+    );
+    let Response::Committed { result } = first else {
+        panic!("{first:?}")
+    };
+    // Plan 2 read the same A: refused with the verdict, nothing committed.
+    let second = commit(&s, p2, supersede_ops(&c, b"c2"), vec![b"c2".to_vec()], None);
+    assert!(
+        matches!(
+            second,
+            Response::Refused {
+                validation: Validation::Invalid { .. }
+            }
+        ),
+        "{second:?}"
+    );
+    // The retry matches the client hash, not the extended batch.
+    let retry = commit(
+        &s,
+        p1,
+        supersede_ops(&items[0], b"a2"),
+        vec![b"a2".to_vec()],
+        txn,
+    );
+    assert_eq!(retry, Response::Committed { result });
+    let reuse = commit(&s, p1, supersede_ops(&c, b"c3"), vec![b"c3".to_vec()], txn);
+    assert_eq!(code(&reuse), "TxnIdReuse");
+    // Clients never send certificate read sets themselves.
+    let forged = commit(
+        &s,
+        p1,
+        vec![Op::ExpectHeads {
+            entries: Vec::new(),
+            source: ReadSource::Certificate([0; 32]),
+        }],
+        Vec::new(),
+        None,
+    );
+    assert_eq!(code(&forged), "ChannelRestricted");
+}
+
+/// Branch requests: create, list, archive, merge with its report, reads
+/// on a named branch and dry runs on the session's branch.
+#[test]
+fn branch_requests() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let main = session(start(&s, None, None));
+    assert_eq!(code(&record(&s, main, "a")), "ok");
+    let created = call(
+        &s,
+        AGENT,
+        Request::BranchCreate {
+            name: "feature".into(),
+            from: None,
+        },
+    );
+    assert_eq!(code(&created), "ok");
+    match call(&s, AGENT, Request::BranchList) {
+        Response::Branches { branches } => {
+            let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+            assert_eq!(names, ["main", "feature"]);
+            assert_eq!(branches[1].parent, Some(MAIN));
+        }
+        other => panic!("{other:?}"),
+    }
+    let on_b = session(start(&s, Some("feature"), None));
+    assert_eq!(code(&record(&s, on_b, "x")), "ok");
+    // A dry run on the session's branch changes nothing.
+    let x = match read(&s, on_b, "x") {
+        Response::Read { item, .. } => item,
+        other => panic!("{other:?}"),
+    };
+    let dry = call(
+        &s,
+        AGENT,
+        Request::WhatIf {
+            binding: Binding::root(on_b),
+            ops: vec![Op::RetractBase { rev: x.rev.into() }],
+        },
+    );
+    assert!(matches!(dry, Response::WhatIf { .. }), "{dry:?}");
+    // Unbound reads on a named branch.
+    let why = |branch: Option<&str>| {
+        let inner = Request::Why {
+            target: Target::Key("x".into()),
+            depth: 1,
+        };
+        let req = match branch {
+            Some(b) => Request::OnBranch {
+                branch: BranchSel::Named(b.into()),
+                request: Box::new(inner),
+            },
+            None => inner,
+        };
+        code(&call(&s, AGENT, req)).to_owned()
+    };
+    assert_eq!(why(Some("feature")), "ok");
+    assert_eq!(why(None), "UnknownRef");
+    assert_eq!(why(Some("nope")), "UnknownBranch");
+    // Merge into main: x arrives; the report says so.
+    match call(
+        &s,
+        AGENT,
+        Request::Merge {
+            binding: None,
+            source: "feature".into(),
+            into: None,
+            require_certified: false,
+            certify: Vec::new(),
+        },
+    ) {
+        Response::Merged { report, .. } => assert_eq!(report.newly_visible[0], 1),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(code(&read(&s, main, "x")), "ok");
+    let unknown = call(
+        &s,
+        AGENT,
+        Request::Merge {
+            binding: None,
+            source: "nope".into(),
+            into: None,
+            require_certified: true,
+            certify: Vec::new(),
+        },
+    );
+    assert_eq!(code(&unknown), "InvalidMerge");
+    assert_eq!(
+        code(&call(
+            &s,
+            AGENT,
+            Request::BranchArchive {
+                name: "feature".into()
+            }
+        )),
+        "ok"
+    );
+    assert_eq!(code(&record(&s, on_b, "y")), "BranchArchived");
+}

@@ -864,6 +864,43 @@ The certificate `BranchMismatch` reason belongs to §6.4 (it is not a
     and `policy apply`.
 - **Hooks:** PreToolUse checks the session branch's certificate.
 
+**Implementation (r0.5).**
+
+- **Requests.** Protocol 4 adds `Commit`, `WhatIf`, `BranchCreate`,
+  `BranchList`, `BranchArchive` and `Merge` (it replies `Merged` with the
+  report from the result trailer).
+  - Instead of a branch field on every unbound read, one wrapper:
+    `OnBranch{branch: Named(name) | Session(binding), request}` carries
+    `Why`, `WhyNot`, `Impact`, `ImpactBatch`, `Diff`, `Status` or
+    `Validate`, one level deep.
+  - The MCP read tools use `Session`, so they read the session's branch.
+- **`ctx_commit`.**
+  - Branch ops and client-sent certificate read sets are refused (the
+    latter also in `Raw`).
+  - The idempotency hash covers the client's ops, the flag and the cert id.
+    It is stored as the format-3 `client_hash` row field, so a retry after
+    the state moved returns the original result.
+  - The store calls a `prepare` hook per write, after idempotency and
+    before staging, with every earlier batch of the group applied. There
+    the actor validates the session certificate and appends
+    `ExpectHeads{source: Certificate}`.
+  - A verdict other than Valid or ValidRecertified replies `Refused` and
+    commits nothing.
+  - The replica replays the extended batch.
+- **MCP tools.** `ctx_commit` and `ctx_what_if` take JSON ops (logicals by
+  key, revisions as `key@rev` or `new:N`, bodies as text). `ctx_branch`
+  and `ctx_merge` complete the set, with `require_certified` defaulting to
+  true (D2).
+  - The hooks claim the session-branch tools: `ctx_why`, `ctx_why_not`,
+    `ctx_impact`, `ctx_commit`, `ctx_what_if` and `ctx_merge`.
+  - Hooks installed before protocol 4 need `ctx hooks install` again.
+    Until then those calls run on the MCP server's own session, which is
+    bound to the same git branch.
+- **CLI.** `ctx branch create|list|archive`, `ctx merge`, and `--branch` on
+  `status`, `why`, `why-not`, `impact`, `diff` and `validate`.
+- **Deferred.** `policy apply --branch`, `CheckAnchors` on a branch, and a
+  hypothetical batch on `ctx_impact`; `ctx_what_if` covers the last.
+
 ## 11. Verification (review M11)
 
 - **G1.** fmt, Clippy, tests, deny, dependency policy, and loom on the

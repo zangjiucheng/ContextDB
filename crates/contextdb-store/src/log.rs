@@ -93,6 +93,11 @@ pub struct LogRow {
     pub prev_checksum: ContentHash,
     /// Format 2. Rows decoded from formats 0 and 1 carry the default.
     pub group: GroupPos,
+    /// Format 3: the idempotency hash of a `ctx_commit` whose batch the
+    /// actor extended (ADR 0013 §4): it covers the client's ops,
+    /// `expect_cert_valid` and the certificate, not the appended
+    /// `ExpectHeads`. `None` means the batch hash serves.
+    pub client_hash: Option<ContentHash>,
 }
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     (bytes.len() as u64).encode(out);
@@ -105,7 +110,11 @@ fn get_bytes(input: &mut Decoder<'_>) -> Result<Vec<u8>, WireError> {
 }
 impl LogRow {
     pub fn encode_body(&self) -> Vec<u8> {
-        let mut o = Vec::with_capacity(self.batch_blob.len() + self.result_blob.len() + 140);
+        self.encode_body_format(FORMAT_VERSION)
+    }
+    /// The body in `format`: fields a format lacks are left out.
+    pub fn encode_body_format(&self, format: u32) -> Vec<u8> {
+        let mut o = Vec::with_capacity(self.batch_blob.len() + self.result_blob.len() + 180);
         self.epoch.encode(&mut o);
         self.branch.encode(&mut o);
         self.principal.encode(&mut o);
@@ -119,8 +128,17 @@ impl LogRow {
             put_bytes(&mut o, r);
         }
         self.prev_checksum.encode(&mut o);
-        self.group.encode(&mut o);
+        if format >= 2 {
+            self.group.encode(&mut o);
+        }
+        if format >= 3 {
+            self.client_hash.encode(&mut o);
+        }
         o
+    }
+    /// What a retry with the same `client_txn_id` must match.
+    pub fn idempotency_hash(&self) -> ContentHash {
+        self.client_hash.unwrap_or(self.batch_hash)
     }
     /// Decodes the current format.
     pub fn decode_body(body: &[u8]) -> Result<Self, WireError> {
@@ -145,9 +163,13 @@ impl LogRow {
             },
             prev_checksum: Wire::decode(&mut i)?,
             group: GroupPos::default(),
+            client_hash: None,
         };
         if format >= 2 {
             row.group = Wire::decode(&mut i)?;
+        }
+        if format >= 3 {
+            row.client_hash = Wire::decode(&mut i)?;
         }
         if i.remaining() != 0 {
             return Err(WireError::TrailingBytes);
@@ -269,11 +291,7 @@ pub fn frame(row: &LogRow) -> (Vec<u8>, ContentHash) {
 }
 /// op_log frame of a row in a legacy format (migration fixtures and tests).
 pub fn frame_format(row: &LogRow, format: u32) -> (Vec<u8>, ContentHash) {
-    let mut body = row.encode_body();
-    if format < 2 {
-        body.truncate(body.len() - 12);
-    }
-    frame_with(&OP_LOG, &body)
+    frame_with(&OP_LOG, &row.encode_body_format(format))
 }
 /// Check bytes over the first 52 op_log header bytes.
 pub fn header_check(header: &[u8]) -> [u8; 8] {

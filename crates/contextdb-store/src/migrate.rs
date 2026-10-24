@@ -162,6 +162,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
             acked_result,
             prev_checksum: prev,
             group,
+            client_hash: None,
             ..old.clone()
         };
         let (bytes, sum) = log::frame(&row);
@@ -347,6 +348,7 @@ fn write_format_with(
                 result.canonical_bytes()
             },
             acked_result: None,
+            client_hash: None,
             prev_checksum: prev,
             group: if format >= 2 {
                 log::GroupPos {
