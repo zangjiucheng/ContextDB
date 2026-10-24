@@ -1066,8 +1066,10 @@ fn review8_unbuildable_snapshot_is_ignored() {
     let disk = SimDisk::new();
     let store = populated(&disk, 6);
     let (epoch, digest) = (store.epoch(), store.db().unwrap().digest());
-    let mut inputs = store.db().unwrap().inputs();
+    let mut kernel = store.kernel().unwrap().export();
     drop(store);
+    let state = &mut kernel.states[0];
+    let inputs = &mut state.inputs;
     // A cycle: verifies as a snapshot file, but the core cannot rebuild it.
     let n = inputs.revisions.len() as u32;
     assert!(n >= 2);
@@ -1083,10 +1085,12 @@ fn review8_unbuildable_snapshot_is_ignored() {
             origin_branch: MAIN,
             origin_epoch: epoch,
         });
+        let g = state.to_global[2].len() as u32;
+        state.to_global[2].push(g);
     }
     let scan = log::scan(&disk, &Path::new(DIR).join("log")).unwrap();
     let checksum = scan.frames.last().unwrap().checksum;
-    contextdb_store::snapshot::write(&disk, Path::new(DIR), epoch, &checksum, &inputs).unwrap();
+    contextdb_store::snapshot::write(&disk, Path::new(DIR), epoch, &checksum, &kernel).unwrap();
     let (store, report) = open(&disk).unwrap();
     assert_eq!(report.snapshot_epoch, None);
     assert_eq!(report.rejected_snapshots.len(), 1);
@@ -1620,9 +1624,11 @@ fn g4_staged_blobs_never_trail_their_frame() {
     }
 }
 /// Without the barrier the same harness finds frames whose payloads are gone.
+/// A torn crash keeps a whole unsynced frame about once per frame length,
+/// so the seed range covers several such crashes.
 #[test]
 fn g4_staged_harness_detects_a_missing_barrier() {
-    let detected = (0..200).any(|seed| {
+    let detected = (0..2000).any(|seed| {
         let disk = SimDisk::new();
         let store = populated(&disk, 1);
         let p = format!("unordered-{seed}").into_bytes();

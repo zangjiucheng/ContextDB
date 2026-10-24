@@ -324,7 +324,7 @@ fn t32_retry_after_conflict_references_exactly_what_was_read() {
     };
     let snap = s.actor.snapshot();
     let new_rev = result.allocations.new_revisions[0];
-    let rules = snap.db.rules_concluding(new_rev);
+    let rules = snap.db().rules_concluding(new_rev);
     assert_eq!(rules.len(), 1, "nothing added or rebound implicitly");
     assert_eq!(
         rules[0].2.iter().map(|p| p.premise).collect::<Vec<_>>(),
@@ -392,16 +392,16 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
     let snap = s.actor.snapshot();
     let v2 = result.allocations.new_revisions[0];
     assert_eq!(
-        snap.db.rules_concluding(v2).len(),
+        snap.db().rules_concluding(v2).len(),
         1,
         "own justification copied"
     );
     // The child still pins v1, so it goes stale (not silently rebound).
     assert_eq!(
-        snap.db.status(RevisionId(2)).unwrap(),
+        snap.db().status(RevisionId(2)).unwrap(),
         Summary::Stale(StaleReason::SupersededPinnedPremise(RevisionId(1)))
     );
-    assert_eq!(snap.db.status(v2).unwrap(), Summary::Certified);
+    assert_eq!(snap.db().status(v2).unwrap(), Summary::Certified);
     let validate = Request::Validate {
         rule: RuleId(0),
         verdict: Verdict::Verified,

@@ -16,7 +16,6 @@ use crate::{CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink}
 mod merge;
 use contextdb_model::*;
 use merge::SyncPoint;
-pub use merge::{ConflictKind, MergeConflictEntry, MergeReport, MetadataField};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
@@ -36,6 +35,8 @@ enum Kind {
 struct IdMap {
     to_global: [Vec<u32>; 4],
     to_local: [HashMap<u32, u32>; 4],
+    /// Whether some local id differs from its global id.
+    renumbered: bool,
 }
 /// A global id with no local counterpart maps here, so the branch's own
 /// resolver reports `UnknownRef` at the right Op (§6.2 order).
@@ -55,6 +56,7 @@ impl IdMap {
     }
     fn push(&mut self, k: Kind, global: u32) {
         let local = self.to_global[k as usize].len() as u32;
+        self.renumbered |= local != global;
         self.to_global[k as usize].push(global);
         self.to_local[k as usize].insert(global, local);
     }
@@ -193,6 +195,20 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     }
     pub fn branches(&self) -> impl Iterator<Item = &BranchInfo> {
         self.branches.iter().map(|b| &b.info)
+    }
+    /// Whether `main`'s local ids still equal the global ids, so a reader of
+    /// its single-branch database sees global ids (until protocol 4 makes
+    /// every reader branch-aware).
+    pub fn main_is_identity(&self) -> bool {
+        !self.branches[0].ids.renumbered
+    }
+    /// Commits with blob presence and also returns a merge's report.
+    pub fn commit_detailed_with(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        self.run(b, blobs, true)
     }
     pub fn branch_by_name(&self, name: &str) -> Option<BranchId> {
         self.names.get(name).copied()
@@ -589,11 +605,198 @@ fn names_invisible(b: &Batch, ids: &IdMap) -> bool {
     found.get()
 }
 
+/// A database and id map shared by branches and sync points.
+type Shared<M, S> = (Arc<Db<M, S>>, Arc<IdMap>);
+/// One branch database state in a snapshot: its inputs under local ids,
+/// local → global ids per kind, and its unobserved anchors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelState {
+    pub inputs: Inputs,
+    pub to_global: [Vec<u32>; 4],
+    pub unobserved: Vec<LogicalId>,
+}
+/// A branch in a snapshot: its table entry, its state's index and its
+/// `branch_visibility` rows.
+pub type SnapshotBranch = (BranchInfo, u32, Vec<(Import, Epoch)>);
+/// The whole kernel as inputs (ADR 0013 §8): distinct states, the branch
+/// table (each branch naming its state) and the sync points. Global tables
+/// are derived on import: every global object stays visible on the branch
+/// that created it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelSnapshot {
+    pub epoch: Epoch,
+    pub states: Vec<KernelState>,
+    pub branches: Vec<SnapshotBranch>,
+    /// `(src, dst, epoch, state)`.
+    pub syncs: Vec<(BranchId, BranchId, Epoch, u32)>,
+}
+
+impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
+    /// Exports every branch and sync point; states shared in memory are
+    /// written once.
+    pub fn export(&self) -> KernelSnapshot {
+        let mut states: Vec<KernelState> = Vec::new();
+        let mut seen: Vec<(*const Db<M, S>, *const IdMap)> = Vec::new();
+        let mut state_of = |db: &Arc<Db<M, S>>, ids: &Arc<IdMap>| -> u32 {
+            let key = (Arc::as_ptr(db), Arc::as_ptr(ids));
+            if let Some(n) = seen.iter().position(|k| *k == key) {
+                return n as u32;
+            }
+            seen.push(key);
+            states.push(KernelState {
+                inputs: db.inputs(),
+                to_global: ids.to_global.clone(),
+                unobserved: db.anchors_unobserved(),
+            });
+            (states.len() - 1) as u32
+        };
+        let branches = (self.branches.iter())
+            .map(|b| (b.info.clone(), state_of(&b.db, &b.ids), b.imports.clone()))
+            .collect();
+        let syncs = (self.syncs.iter())
+            .map(|s| (s.src, s.dst, s.epoch, state_of(&s.db, &s.ids)))
+            .collect();
+        KernelSnapshot {
+            epoch: self.epoch,
+            states,
+            branches,
+            syncs,
+        }
+    }
+    /// Rebuilds a kernel from [`Self::export`]. Each state is rebuilt from
+    /// its inputs (history starts at the snapshot epoch, as for one
+    /// database); the global tables are derived from the branches.
+    pub fn import(s: KernelSnapshot) -> Result<Self, TxError> {
+        let bad = || TxError::CapacityExceeded {
+            kind: CapacityKind::Encoding,
+        };
+        let mut built: Vec<Shared<M, S>> = Vec::new();
+        for state in s.states {
+            let mut ids = IdMap::default();
+            for (k, list) in [Kind::Logical, Kind::Revision, Kind::Rule, Kind::Artifact]
+                .into_iter()
+                .zip(&state.to_global)
+            {
+                for g in list {
+                    ids.push(k, *g);
+                }
+            }
+            let counts = [
+                state.inputs.logicals.len(),
+                state.inputs.revisions.len(),
+                state.inputs.rules.len(),
+                state.inputs.artifacts.len(),
+            ];
+            if counts != [0, 1, 2, 3].map(|k| state.to_global[k].len()) {
+                return Err(bad());
+            }
+            let mut db = Db::from_inputs(state.inputs, s.epoch)?;
+            db.set_anchors_unobserved(&state.unobserved);
+            built.push((Arc::new(db), Arc::new(ids)));
+        }
+        let pick = |n: u32| built.get(n as usize).cloned().ok_or_else(bad);
+        let mut branches = Vec::new();
+        let mut names = BTreeMap::new();
+        for (info, state, imports) in s.branches {
+            if info.id.0 as usize != branches.len() {
+                return Err(bad());
+            }
+            let (db, ids) = pick(state)?;
+            names.insert(info.name.clone(), info.id);
+            branches.push(Branch {
+                info,
+                db,
+                ids,
+                imports,
+            });
+        }
+        if branches.is_empty() {
+            return Err(bad());
+        }
+        let mut syncs = Vec::new();
+        for (src, dst, epoch, state) in s.syncs {
+            let (db, ids) = pick(state)?;
+            syncs.push(SyncPoint {
+                src,
+                dst,
+                epoch,
+                db,
+                ids,
+            });
+        }
+        // Global tables from the branches.
+        let mut next = [0u32; 4];
+        let mut keys = HashSet::new();
+        let mut revisions: BTreeMap<u32, Revision> = BTreeMap::new();
+        let mut rules: BTreeMap<u32, (RuleKey, (BranchId, Epoch))> = BTreeMap::new();
+        for b in &branches {
+            let inputs = b.db.inputs();
+            let g = |k: Kind, l: u32| b.ids.global(k, l);
+            for (k, n) in [Kind::Logical, Kind::Revision, Kind::Rule, Kind::Artifact]
+                .into_iter()
+                .zip([
+                    inputs.logicals.len(),
+                    inputs.revisions.len(),
+                    inputs.rules.len(),
+                    inputs.artifacts.len(),
+                ])
+            {
+                for l in 0..n as u32 {
+                    next[k as usize] = next[k as usize].max(g(k, l) + 1);
+                }
+            }
+            keys.extend(inputs.logicals.iter().map(|l| l.key.clone()));
+            for (n, r) in inputs.revisions.iter().enumerate() {
+                let logical = LogicalId(g(Kind::Logical, r.logical.0));
+                revisions
+                    .entry(g(Kind::Revision, n as u32))
+                    .or_insert(Revision {
+                        logical,
+                        ..r.clone()
+                    });
+            }
+            for (n, j) in inputs.rules.iter().enumerate() {
+                rules.entry(g(Kind::Rule, n as u32)).or_insert_with(|| {
+                    (
+                        rule_key(j, |r| g(Kind::Revision, r.0)),
+                        (j.origin_branch, j.origin_epoch),
+                    )
+                });
+            }
+        }
+        if revisions.len() != next[Kind::Revision as usize] as usize
+            || rules.len() != next[Kind::Rule as usize] as usize
+        {
+            return Err(bad());
+        }
+        let revision_ids = (revisions.iter())
+            .map(|(g, r)| ((r.logical.0, r.content), *g))
+            .collect();
+        let rule_ids = rules
+            .iter()
+            .map(|(g, (key, _))| (key.clone(), *g))
+            .collect();
+        let rule_origins = rules.values().map(|(_, origin)| *origin).collect();
+        Ok(Self {
+            branches,
+            names,
+            keys,
+            next,
+            epoch: s.epoch,
+            revisions: revisions.into_values().collect(),
+            rule_origins,
+            revision_ids,
+            rule_ids,
+            syncs,
+        })
+    }
+}
+
 /// Read access to one branch with global ids.
-pub struct BranchView<'a, M: Maintainer, S: StatsSink> {
+pub struct BranchView<'a, M: Maintainer = Counting, S: StatsSink = NoStats> {
     b: &'a Branch<M, S>,
 }
-impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
+impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     pub fn info(&self) -> &BranchInfo {
         &self.b.info
     }
@@ -602,7 +805,7 @@ impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
         &self.b.imports
     }
     /// The branch's single-branch database (local ids).
-    pub fn db(&self) -> &Db<M, S> {
+    pub fn db(&self) -> &'a Db<M, S> {
         &self.b.db
     }
     /// Whether the branch still shares its state with the branch it forked
@@ -647,6 +850,10 @@ impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
     pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
         let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
         self.b.db.is_base(RevisionId(local))
+    }
+    pub fn rule_enabled(&self, j: RuleId) -> Option<bool> {
+        let local = self.local(Kind::Rule, j.0)?;
+        Some(self.b.db.rules.enabled[local as usize])
     }
     pub fn is_visible_revision(&self, r: RevisionId) -> bool {
         self.local(Kind::Revision, r.0).is_some()

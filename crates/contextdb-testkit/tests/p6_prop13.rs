@@ -4,7 +4,7 @@
 //! objects, records, input values, `anchor_unobserved`, every node and rule
 //! state, all in global ids) equals the oracle's; results agree, dry runs
 //! promise the real results and change nothing.
-use contextdb_core::{Kernel, MergeReport};
+use contextdb_core::Kernel;
 use contextdb_model::*;
 use contextdb_oracle::{BranchOracle, Canonical, MergeOutcome, canonical};
 use rand_chacha::ChaCha8Rng;

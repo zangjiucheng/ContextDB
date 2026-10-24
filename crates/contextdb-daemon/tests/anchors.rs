@@ -351,7 +351,7 @@ fn t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_fai
     let watermark = s
         .actor
         .snapshot()
-        .db
+        .db()
         .inputs()
         .watermarks
         .into_iter()

@@ -41,7 +41,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 detail: "observer/admin only".into(),
             };
         }
-        let inputs = snap.db.inputs();
+        let inputs = snap.db().inputs();
         let mut anchors = Vec::new();
         for (index, l) in inputs.logicals.iter().enumerate() {
             if l.kind != RecordKind::CodeAnchor || l.scope_lane != scope {
@@ -312,7 +312,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 detail: "range check requires admin".into(),
             };
         }
-        let db = &snap.db;
+        let db = snap.db();
         let inputs = db.inputs();
         // Bind the pushed-tree comparison to this exact committed snapshot AND
         // the same bounded live capture. A watcher committing newer U after

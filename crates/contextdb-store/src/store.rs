@@ -7,7 +7,7 @@ use crate::{
     pack::{self, PackIndex},
     projection::{EpochRows, ProjectionFile, Projections},
 };
-use contextdb_core::Db;
+use contextdb_core::{BranchView, Db, Import, Kernel};
 use contextdb_model::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -49,6 +49,9 @@ pub enum StoreError {
     MigrationIncomplete,
     /// No store at this path and `OpenOptions::create` is false.
     NotAStore,
+    /// `main`'s local ids differ from the global ids (branches allocated
+    /// ids or `main` imported objects): read through the kernel.
+    BranchAwareReadRequired,
     /// The log changed between `plan_truncate_before` and `truncate_before`.
     PlanOutdated,
     Io(String),
@@ -106,14 +109,16 @@ fn watermark_moves(db: &Db, batch: &Batch) -> Vec<(String, Vec<u8>)> {
         })
         .collect()
 }
-/// Projection rows for the epoch just committed to `db`.
+/// Projection rows for the epoch just committed to the batch's branch, read
+/// with global ids.
 fn rows<'a>(
-    db: &Db,
+    kernel: &Kernel,
     batch: &Batch,
     result: &'a CommitResult,
     checksum: ContentHash,
     base: &'a mut Vec<(RevisionId, bool)>,
 ) -> EpochRows<'a> {
+    let db: BranchView<'_> = kernel.branch(batch.branch).expect("committed branch");
     base.clear();
     base.extend(
         result
@@ -122,12 +127,38 @@ fn rows<'a>(
             .iter()
             .map(|r| (*r, db.is_base(*r).expect("committed revision"))),
     );
+    let (created, archived) = match &batch.ops[..] {
+        [Op::CreateBranch { name }] => (
+            Some((kernel.branch_by_name(name).expect("created"), name.clone())),
+            false,
+        ),
+        [Op::ArchiveBranch { .. }] => (None, true),
+        _ => (None, false),
+    };
+    let visible = (db.imports().iter())
+        .filter(|(_, at)| *at == result.epoch)
+        .map(|(import, _)| match import {
+            Import::Logical(x) => (0, x.0),
+            Import::Revision(x) => (1, x.0),
+            Import::Rule(x) => (2, x.0),
+            Import::Artifact(x) => (3, x.0),
+        })
+        .collect();
+    let enabled = (result.net_delta.enable_flips.iter())
+        .chain(&result.net_delta.new_rules)
+        .filter_map(|j| Some((*j, db.rule_enabled(*j)?)))
+        .collect();
     EpochRows {
         epoch: result.epoch,
+        branch: batch.branch,
+        created,
+        archived,
+        visible,
+        enabled,
         checksum,
         result,
         base,
-        watermarks: watermark_moves(db, batch),
+        watermarks: watermark_moves(db.db(), batch),
         posts: result
             .status_diff
             .iter()
@@ -217,7 +248,8 @@ struct Tail {
 pub struct Store<D: Durability> {
     disk: D,
     dir: PathBuf,
-    db: Db,
+    /// The multi-branch kernel (ADR 0013); `main` alone before any branch.
+    db: Kernel,
     index: Arc<RwLock<LogIndex>>,
     ids: BTreeMap<[u8; 16], (Epoch, ContentHash)>,
     blobs: BTreeSet<ContentHash>,
@@ -404,7 +436,7 @@ impl<D: Durability> Store<D> {
         report.projection_watermark = proj.watermark();
         let mut store = Self {
             dir: dir.to_path_buf(),
-            db: Db::default(),
+            db: Kernel::default(),
             index: Arc::new(RwLock::new(LogIndex {
                 segments: log::segments(&disk, &log_dir).map_err(io)?,
                 frames: Vec::new(),
@@ -426,8 +458,8 @@ impl<D: Durability> Store<D> {
         // Newest valid snapshot at or below the tail (ADR 0006 §4 step 4, §6);
         // one the core cannot rebuild is ignored, and replay starts earlier.
         let (base, rejected) =
-            crate::snapshot::load_newest(&store.disk, dir, &checksums, |(epoch, inputs)| {
-                Db::from_inputs(inputs, epoch).ok()
+            crate::snapshot::load_newest(&store.disk, dir, &checksums, |(_, kernel)| {
+                Kernel::import(kernel).ok()
             })
             .map_err(io)?;
         report.rejected_snapshots = rejected;
@@ -452,11 +484,17 @@ impl<D: Durability> Store<D> {
                 .expect("scanned segment");
             if f.row.epoch.0 > skip {
                 let batch = f.row.batch().expect("verified frame");
-                let result = store
+                let (result, merge) = store
                     .db
-                    .commit(&batch)
+                    .commit_detailed(&batch)
                     .map_err(|_| StoreError::ReplayDivergence { epoch: f.row.epoch })?;
-                if result != f.row.result().expect("verified frame") {
+                let trailer = ResultTrailer {
+                    branch: batch.branch,
+                    merge,
+                };
+                if result != f.row.result().expect("verified frame")
+                    || Some(trailer) != f.row.trailer().expect("verified frame")
+                {
                     return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
                 }
                 if f.row.epoch > store.proj.watermark() {
@@ -488,27 +526,32 @@ impl<D: Durability> Store<D> {
                 checksum: f.checksum,
             });
         }
-        // Sampled self-check (ADR 0006 §4 step 7), seeded by the head checksum.
-        let n = store.db.revision_count();
-        if n > 0 {
-            let seed = store.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
-            let mut x = u64::from_le_bytes(seed[..8].try_into().expect("eight bytes")) | 1;
-            let sample: Vec<RevisionId> = if n <= SELF_CHECK_SAMPLE {
-                (0..n).map(|r| RevisionId(r as u32)).collect()
-            } else {
-                (0..SELF_CHECK_SAMPLE)
-                    .map(|_| {
-                        x ^= x << 13;
-                        x ^= x >> 7;
-                        x ^= x << 17;
-                        RevisionId((x % n as u64) as u32)
-                    })
-                    .collect()
-            };
-            if let Err(r) = store.db.verify_counting_sample(&sample) {
-                return Err(StoreError::SelfCheckFailed { revision: r });
+        // Sampled self-check (ADR 0006 §4 step 7), seeded by the head checksum,
+        // on every branch.
+        let ids: Vec<BranchId> = store.db.branches().map(|b| b.id).collect();
+        for branch in ids {
+            let db = store.db.branch(branch).expect("listed").db();
+            let n = db.revision_count();
+            if n > 0 {
+                let seed = store.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
+                let mut x = u64::from_le_bytes(seed[..8].try_into().expect("eight bytes")) | 1;
+                let sample: Vec<RevisionId> = if n <= SELF_CHECK_SAMPLE {
+                    (0..n).map(|r| RevisionId(r as u32)).collect()
+                } else {
+                    (0..SELF_CHECK_SAMPLE)
+                        .map(|_| {
+                            x ^= x << 13;
+                            x ^= x >> 7;
+                            x ^= x << 17;
+                            RevisionId((x % n as u64) as u32)
+                        })
+                        .collect()
+                };
+                if let Err(r) = db.verify_counting_sample(&sample) {
+                    return Err(StoreError::SelfCheckFailed { revision: r });
+                }
+                report.self_checked += sample.len();
             }
-            report.self_checked = sample.len();
         }
         // Projection rows rolled forward are committed only after the
         // self-check accepted the state they came from (review N5).
@@ -535,11 +578,24 @@ impl<D: Durability> Store<D> {
         }
         Ok((store, report))
     }
-    /// The live database. Unavailable once poisoned: it may hold an epoch
-    /// that never became durable (review finding 5).
+    /// The live `main` database. Unavailable once poisoned: it may hold an
+    /// epoch that never became durable (review finding 5). Refused once
+    /// `main`'s local ids differ from the global ids: such a store needs a
+    /// branch-aware reader ([`Self::kernel`], protocol 4).
     pub fn db(&self) -> Result<&Db, StoreError> {
         self.readable()?;
+        self.main()
+    }
+    /// The live multi-branch kernel.
+    pub fn kernel(&self) -> Result<&Kernel, StoreError> {
+        self.readable()?;
         Ok(&self.db)
+    }
+    fn main(&self) -> Result<&Db, StoreError> {
+        if !self.db.main_is_identity() {
+            return Err(StoreError::BranchAwareReadRequired);
+        }
+        Ok(self.db.branch(MAIN).expect("main").db())
     }
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -670,9 +726,13 @@ impl<D: Durability> Store<D> {
                 }
             }
             // Step 2: apply with blob presence; a rejection leaves no trace.
-            match self.db.commit_with(batch, &self.blobs) {
+            match self.db.commit_detailed_with(batch, &self.blobs) {
                 Err(e) => slots.push(Slot::Done(Box::new(Err(StoreError::Tx(e))))),
-                Ok(result) => {
+                Ok((result, merge)) => {
+                    let trailer = ResultTrailer {
+                        branch: batch.branch,
+                        merge,
+                    };
                     let row = LogRow {
                         epoch: result.epoch,
                         branch: batch.branch,
@@ -681,7 +741,7 @@ impl<D: Durability> Store<D> {
                         client_txn_id: batch.client_txn_id,
                         batch_hash,
                         batch_blob,
-                        result_blob: result.canonical_bytes(),
+                        result_blob: log::encode_result(&result, &trailer),
                         acked_result: None,
                         prev_checksum: prev,
                         group: log::GroupPos::default(),
@@ -752,15 +812,10 @@ impl<D: Durability> Store<D> {
                 }
                 // Projections after durability; a failure only makes them stale.
                 let mut base = Vec::new();
+                let batch = &batches[applied_batch[k]];
                 if self
                     .proj
-                    .apply(&rows(
-                        &self.db,
-                        &batches[applied_batch[k]],
-                        result,
-                        sums[k],
-                        &mut base,
-                    ))
+                    .apply(&rows(&self.db, batch, result, sums[k], &mut base))
                     .is_err()
                 {
                     self.proj.mark_stale();
@@ -921,17 +976,15 @@ impl<D: Durability> Store<D> {
         if e > self.epoch() {
             return Err(StoreError::Tx(TxError::UnknownRef));
         }
-        if e >= self.db.initial_epoch() {
-            return Ok(std::borrow::Cow::Borrowed(&self.db));
+        let main = self.main()?;
+        if e >= main.initial_epoch() {
+            return Ok(std::borrow::Cow::Borrowed(main));
         }
-        let mut db = Db::default();
-        for n in 1..=e.0 {
-            let row = self.read_row(Epoch(n))?;
-            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
-            db.commit(&batch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
-        }
-        Ok(std::borrow::Cow::Owned(db))
+        Ok(std::borrow::Cow::Owned(self.replay_main(e)?))
+    }
+    /// `main` as of `e`, by replaying the verified log prefix.
+    fn replay_main(&self, e: Epoch) -> Result<Db, StoreError> {
+        replay_main(|n| self.read_row(n), e)
     }
     /// `ReadMode::Historical(e)` (SPEC §6.1): status as of `e` plus payload state now.
     pub fn read_historical(
@@ -940,13 +993,14 @@ impl<D: Durability> Store<D> {
         e: Epoch,
     ) -> Result<(NodeState, Payload), StoreError> {
         self.readable()?;
-        if e < self.db.initial_epoch() && self.proj.covers(e) {
+        let main = self.main()?;
+        if e < main.initial_epoch() && self.proj.covers(e) {
             let state = self
                 .proj
-                .state_at(r, e)
+                .state_at(MAIN, r, e)
                 .map_err(sql)?
                 .ok_or(StoreError::Tx(TxError::UnknownRef))?;
-            return Ok((state, self.get_blob(&self.db.revision_content(r)?)?));
+            return Ok((state, self.get_blob(&main.revision_content(r)?)?));
         }
         let db = self.db_at(e)?;
         let state = db.read_historical(r, e)?;
@@ -957,21 +1011,15 @@ impl<D: Durability> Store<D> {
     pub fn diff(&self, a: Epoch, b: Epoch) -> Result<contextdb_core::EpochDiff, StoreError> {
         self.readable()?;
         let low = a.min(b);
-        if low >= self.db.initial_epoch() {
-            return Ok(self.db.diff(a, b)?);
+        let main = self.main()?;
+        if low >= main.initial_epoch() {
+            return Ok(main.diff(a, b)?);
         }
         let high = a.max(b);
         if high <= self.epoch() && self.proj.covers(high) {
-            return self.proj.diff(a, b).map_err(sql);
+            return self.proj.diff(MAIN, a, b).map_err(sql);
         }
-        let mut db = Db::default();
-        for n in 1..=high.0 {
-            let row = self.read_row(Epoch(n))?;
-            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
-            db.commit(&batch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
-        }
-        Ok(db.diff(a, b)?)
+        Ok(self.replay_main(high)?.diff(a, b)?)
     }
     /// `ReadMode::Snapshot(e)` (SPEC §6.1): head as of `e` and its status then.
     pub fn read_snapshot(
@@ -980,15 +1028,15 @@ impl<D: Durability> Store<D> {
         e: Epoch,
     ) -> Result<(RevisionId, NodeState), StoreError> {
         self.readable()?;
-        if e < self.db.initial_epoch() && self.proj.covers(e) {
+        if e < self.main()?.initial_epoch() && self.proj.covers(e) {
             let r = self
                 .proj
-                .head_at(l, e)
+                .head_at(MAIN, l, e)
                 .map_err(sql)?
                 .ok_or(StoreError::Tx(TxError::UnknownRef))?;
             let state = self
                 .proj
-                .state_at(r, e)
+                .state_at(MAIN, r, e)
                 .map_err(sql)?
                 .ok_or(StoreError::Tx(TxError::UnknownRef))?;
             return Ok((r, state));
@@ -1006,7 +1054,7 @@ impl<D: Durability> Store<D> {
         // One bulk transaction; any failure rolls back to the old watermark (N6).
         self.proj.begin_bulk().map_err(sql)?;
         let filled = (|| {
-            let mut db = Db::default();
+            let mut db = Kernel::default();
             let mut base = Vec::new();
             for n in 1..=self.epoch().0 {
                 let row = self.read_row(Epoch(n))?;
@@ -1042,17 +1090,17 @@ impl<D: Durability> Store<D> {
             return Ok(None);
         }
         self.proj
-            .watermark_advanced(scope, since, until)
+            .watermark_advanced(MAIN, scope, since, until)
             .map(Some)
             .map_err(sql)
     }
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
     }
-    /// Replaces the live database with `replica`, which must be at the same
+    /// Replaces the live kernel with `replica`, which must be at the same
     /// epoch and state (ADR 0008 §3.3 two-replica publication); returns the
-    /// previous database. Debug builds compare digests.
-    pub fn replace_db(&mut self, replica: Db) -> Result<Db, StoreError> {
+    /// previous kernel. Debug builds compare every branch's digest.
+    pub fn replace_kernel(&mut self, replica: Kernel) -> Result<Kernel, StoreError> {
         self.readable()?;
         if replica.epoch() != self.db.epoch() {
             return Err(StoreError::Io(format!(
@@ -1062,15 +1110,20 @@ impl<D: Durability> Store<D> {
             )));
         }
         if cfg!(debug_assertions) {
-            assert_eq!(replica.digest(), self.db.digest(), "replica diverged");
+            let digests = |k: &Kernel| -> Vec<ContentHash> {
+                k.branches()
+                    .map(|b| k.branch(b.id).unwrap().digest())
+                    .collect()
+            };
+            assert_eq!(digests(&replica), digests(&self.db), "replica diverged");
         }
         Ok(std::mem::replace(&mut self.db, replica))
     }
-    /// Exact IMPACT of a hypothetical batch on the live database, restored
-    /// afterwards (P1 `impact_exact`; ADR 0008 §3.3 runs it on the actor).
+    /// Exact IMPACT (`WHAT_IF`) of a hypothetical batch on the live kernel,
+    /// changing nothing (ADR 0013 §5; the actor runs it, ADR 0008 §3.3).
     pub fn impact_exact(&mut self, batch: &Batch) -> Result<CommitResult, StoreError> {
         self.readable()?;
-        self.db.impact_exact(batch).map_err(StoreError::Tx)
+        self.db.what_if(batch).map_err(StoreError::Tx)
     }
     /// The op_log frame checksum at `epoch` (genesis at 0): certificate log
     /// linkage (ADR 0008 §4).
@@ -1097,7 +1150,7 @@ impl<D: Durability> Store<D> {
         self.usable()?;
         let epoch = self.epoch();
         let checksum = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
-        crate::snapshot::write(&self.disk, &self.dir, epoch, &checksum, &self.db.inputs())
+        crate::snapshot::write(&self.disk, &self.dir, epoch, &checksum, &self.db.export())
             .map_err(io)?;
         Ok(epoch)
     }
@@ -1182,18 +1235,28 @@ impl<D: Durability> LogReader<D> {
         }
         read_frame(&self.disk, &self.index, epoch)
     }
-    /// The database as of `e` by replaying the verified prefix (ADR 0006 §8 source 3).
+    /// `main` as of `e` by replaying the verified prefix (ADR 0006 §8 source 3).
     pub fn replay_to(&self, e: Epoch) -> Result<Db, StoreError> {
         if e > self.tail {
             return Err(StoreError::Tx(TxError::UnknownRef));
         }
-        let mut db = Db::default();
-        for n in 1..=e.0 {
-            let row = self.read_row(Epoch(n))?;
-            let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
-            db.commit(&batch)
-                .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
-        }
-        Ok(db)
+        replay_main(|n| self.read_row(n), e)
     }
+}
+/// `main` as of `e` through the kernel; refused once `main` is renumbered.
+fn replay_main(
+    read: impl Fn(Epoch) -> Result<LogRow, StoreError>,
+    e: Epoch,
+) -> Result<Db, StoreError> {
+    let mut k = Kernel::default();
+    for n in 1..=e.0 {
+        let row = read(Epoch(n))?;
+        let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
+        k.commit(&batch)
+            .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
+    }
+    if !k.main_is_identity() {
+        return Err(StoreError::BranchAwareReadRequired);
+    }
+    Ok(k.branch(MAIN).expect("main").db().clone())
 }

@@ -193,6 +193,27 @@ fn random_branch_histories() {
                 );
             }
         }
+        // A snapshot round trip rebuilds every branch, and both copies
+        // continue identically.
+        let mut copy = Kernel::import(k.export()).unwrap();
+        assert_eq!(digests(&copy), digests(&k), "seed {seed}: import");
+        assert_eq!(copy.epoch(), k.epoch());
+        for info in k.branches() {
+            let (a, b) = (k.branch(info.id).unwrap(), copy.branch(info.id).unwrap());
+            assert_eq!(a.info(), b.info());
+            assert_eq!(a.imports(), b.imports());
+        }
+        for step in 0..5 {
+            let n = k.branches().count();
+            let branch = BranchId(g.pick(n) as u16);
+            let batch = g.batch(&k, branch);
+            assert_eq!(
+                copy.commit_detailed(&batch),
+                k.commit_detailed(&batch),
+                "seed {seed} +{step}"
+            );
+        }
+        assert_eq!(digests(&copy), digests(&k));
         imports += k
             .branches()
             .map(|b| {

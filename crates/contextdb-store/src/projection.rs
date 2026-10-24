@@ -1,6 +1,9 @@
 //! Rebuildable SQLite projections (ADR 0006 §1, §8): diff_log, head_history,
 //! base_history and a watermark naming the log checksum at its epoch. Never a
 //! source of truth: reads use them only when the watermark covers the epoch.
+//! Schema 2 (ADR 0013 §8) keys every history by branch and adds the branch
+//! table, `branch_visibility` and `rule_enabled`; a schema mismatch clears
+//! the tables for a rebuild from the log.
 use contextdb_core::EpochDiff;
 use contextdb_model::*;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -23,6 +26,15 @@ pub struct Projections {
 /// Post-states and head/base movements of one committed epoch.
 pub struct EpochRows<'a> {
     pub epoch: Epoch,
+    /// The batch's branch; every row below belongs to it.
+    pub branch: BranchId,
+    /// A branch this epoch created (id, name, parent) or archived.
+    pub created: Option<(BranchId, String)>,
+    pub archived: bool,
+    /// Objects that became visible on the branch: (kind 0–3, global id).
+    pub visible: Vec<(u8, u32)>,
+    /// Rules whose `enabled` this epoch set on the branch.
+    pub enabled: Vec<(RuleId, bool)>,
     pub checksum: ContentHash,
     pub result: &'a CommitResult,
     pub base: &'a [(RevisionId, bool)],
@@ -40,41 +52,67 @@ struct Bulk {
 /// One epoch's rows, through cached statements.
 fn write_rows(conn: &Connection, rows: &EpochRows<'_>) -> Sql<()> {
     let e = rows.epoch.0 as i64;
-    let mut diff =
-        conn.prepare_cached("INSERT INTO diff_log(epoch, revision, post) VALUES (?1, ?2, ?3)")?;
+    let b = rows.branch.0;
+    let mut diff = conn.prepare_cached(
+        "INSERT INTO diff_log(branch, epoch, revision, post) VALUES (?1, ?2, ?3, ?4)",
+    )?;
     for (r, s) in &rows.posts {
-        diff.execute(params![e, r.0, s.canonical_bytes()])?;
+        diff.execute(params![b, e, r.0, s.canonical_bytes()])?;
     }
     for (l, old, new) in &rows.result.net_delta.head_moves {
         if old.is_some() {
             conn.prepare_cached(
-                "UPDATE head_history SET to_epoch = ?1 WHERE logical_id = ?2 AND to_epoch IS NULL",
+                "UPDATE head_history SET to_epoch = ?1
+                 WHERE branch = ?2 AND logical_id = ?3 AND to_epoch IS NULL",
             )?
-            .execute(params![e, l.0])?;
+            .execute(params![e, b, l.0])?;
         }
         conn.prepare_cached(
             "INSERT INTO head_history(branch, logical_id, rev_id, from_epoch) VALUES (?1, ?2, ?3, ?4)",
         )?
-        .execute(params![MAIN.0, l.0, new.0, e])?;
+        .execute(params![b, l.0, new.0, e])?;
     }
     for (r, asserted) in rows.base {
         if *asserted {
             conn.prepare_cached(
                 "INSERT INTO base_history(branch, rev_id, asserted_epoch) VALUES (?1, ?2, ?3)",
             )?
-            .execute(params![MAIN.0, r.0, e])?;
+            .execute(params![b, r.0, e])?;
         } else {
             conn.prepare_cached(
-                "UPDATE base_history SET retracted_epoch = ?1 WHERE rev_id = ?2 AND retracted_epoch IS NULL",
+                "UPDATE base_history SET retracted_epoch = ?1
+                 WHERE branch = ?2 AND rev_id = ?3 AND retracted_epoch IS NULL",
             )?
-            .execute(params![e, r.0])?;
+            .execute(params![e, b, r.0])?;
         }
     }
     for (scope, position) in &rows.watermarks {
         conn.prepare_cached(
-            "INSERT INTO watermark_history(scope, position, from_epoch) VALUES (?1, ?2, ?3)",
+            "INSERT INTO watermark_history(branch, scope, position, from_epoch) VALUES (?1, ?2, ?3, ?4)",
         )?
-        .execute(params![scope, position, e])?;
+        .execute(params![b, scope, position, e])?;
+    }
+    if let Some((id, name)) = &rows.created {
+        conn.prepare_cached(
+            "INSERT INTO branches(id, name, parent, fork_epoch) VALUES (?1, ?2, ?3, ?4)",
+        )?
+        .execute(params![id.0, name, b, e])?;
+    }
+    if rows.archived {
+        conn.prepare_cached("UPDATE branches SET archived_epoch = ?1 WHERE id = ?2")?
+            .execute(params![e, b])?;
+    }
+    for (kind, id) in &rows.visible {
+        conn.prepare_cached(
+            "INSERT INTO branch_visibility(branch, kind, id, epoch) VALUES (?1, ?2, ?3, ?4)",
+        )?
+        .execute(params![b, kind, id, e])?;
+    }
+    for (j, enabled) in &rows.enabled {
+        conn.prepare_cached(
+            "INSERT INTO rule_enabled(branch, rule_id, enabled, from_epoch) VALUES (?1, ?2, ?3, ?4)",
+        )?
+        .execute(params![b, j.0, enabled, e])?;
     }
     Ok(())
 }
@@ -86,24 +124,48 @@ fn write_watermark(conn: &Connection, epoch: Epoch, checksum: &ContentHash) -> S
     .execute(params![epoch.0 as i64, checksum.as_slice()])?;
     Ok(())
 }
+/// Bump with every incompatible table change: a mismatch clears all tables.
+const SCHEMA_VERSION: i64 = 2;
+const TABLES: [&str; 9] = [
+    "projection_watermark",
+    "diff_log",
+    "head_history",
+    "base_history",
+    "watermark_history",
+    "branches",
+    "branch_visibility",
+    "rule_enabled",
+    "projection_schema",
+];
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS projection_schema(
+    id INTEGER PRIMARY KEY CHECK (id = 0), version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS projection_watermark(
     id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, log_checksum BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS diff_log(
-    epoch INTEGER NOT NULL, revision INTEGER NOT NULL, post BLOB NOT NULL,
-    PRIMARY KEY (revision, epoch));
-CREATE INDEX IF NOT EXISTS diff_log_epoch ON diff_log(epoch);
+    branch INTEGER NOT NULL, epoch INTEGER NOT NULL, revision INTEGER NOT NULL, post BLOB NOT NULL,
+    PRIMARY KEY (branch, revision, epoch));
+CREATE INDEX IF NOT EXISTS diff_log_epoch ON diff_log(branch, epoch);
 CREATE TABLE IF NOT EXISTS head_history(
     branch INTEGER NOT NULL, logical_id INTEGER NOT NULL, rev_id INTEGER NOT NULL,
     from_epoch INTEGER NOT NULL, to_epoch INTEGER);
-CREATE INDEX IF NOT EXISTS head_history_logical ON head_history(logical_id, from_epoch);
+CREATE INDEX IF NOT EXISTS head_history_logical ON head_history(branch, logical_id, from_epoch);
 CREATE TABLE IF NOT EXISTS base_history(
     branch INTEGER NOT NULL, rev_id INTEGER NOT NULL,
     asserted_epoch INTEGER NOT NULL, retracted_epoch INTEGER);
-CREATE INDEX IF NOT EXISTS base_history_rev ON base_history(rev_id, asserted_epoch);
+CREATE INDEX IF NOT EXISTS base_history_rev ON base_history(branch, rev_id, asserted_epoch);
 CREATE TABLE IF NOT EXISTS watermark_history(
-    scope TEXT NOT NULL, position BLOB NOT NULL, from_epoch INTEGER NOT NULL,
-    PRIMARY KEY (scope, from_epoch));
+    branch INTEGER NOT NULL, scope TEXT NOT NULL, position BLOB NOT NULL, from_epoch INTEGER NOT NULL,
+    PRIMARY KEY (branch, scope, from_epoch));
+CREATE TABLE IF NOT EXISTS branches(
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, parent INTEGER,
+    fork_epoch INTEGER NOT NULL, archived_epoch INTEGER);
+CREATE TABLE IF NOT EXISTS branch_visibility(
+    branch INTEGER NOT NULL, kind INTEGER NOT NULL, id INTEGER NOT NULL, epoch INTEGER NOT NULL,
+    PRIMARY KEY (branch, kind, id));
+CREATE TABLE IF NOT EXISTS rule_enabled(
+    branch INTEGER NOT NULL, rule_id INTEGER NOT NULL, enabled INTEGER NOT NULL,
+    from_epoch INTEGER NOT NULL, PRIMARY KEY (branch, rule_id, from_epoch));
 ";
 impl Projections {
     /// Opens the tables and returns the watermark if it names `checksums`
@@ -115,7 +177,26 @@ impl Projections {
         };
         // Rebuildable: NORMAL suffices; a lost tail only lowers the watermark.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        // An older schema is dropped wholesale and rebuilt from the log.
+        let version: Option<i64> = conn
+            .query_row(
+                "SELECT version FROM projection_schema WHERE id = 0",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        if version != Some(SCHEMA_VERSION) {
+            for t in TABLES {
+                conn.execute_batch(&format!("DROP TABLE IF EXISTS {t};"))?;
+            }
+        }
         conn.execute_batch(SCHEMA)?;
+        conn.execute(
+            "INSERT INTO projection_schema(id, version) VALUES (0, ?1)
+             ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+            params![SCHEMA_VERSION],
+        )?;
         let mark: Option<(i64, Vec<u8>)> = conn
             .query_row(
                 "SELECT epoch, log_checksum FROM projection_watermark WHERE id = 0",
@@ -146,7 +227,8 @@ impl Projections {
     pub fn clear(&mut self) -> Sql<()> {
         self.conn.execute_batch(
             "DELETE FROM diff_log; DELETE FROM head_history; DELETE FROM base_history;
-             DELETE FROM watermark_history; DELETE FROM projection_watermark;",
+             DELETE FROM watermark_history; DELETE FROM branches; DELETE FROM branch_visibility;
+             DELETE FROM rule_enabled; DELETE FROM projection_watermark;",
         )?;
         self.watermark = Epoch(0);
         Ok(())
@@ -227,12 +309,13 @@ impl Projections {
         NodeState::from_bytes_with(&bytes, DecodeLimits::DURABLE)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     }
-    /// Historical(e): last post-state of `r` at or before `e`.
-    pub fn state_at(&self, r: RevisionId, e: Epoch) -> Sql<Option<NodeState>> {
+    /// Historical(e): last post-state of `r` on `branch` at or before `e`.
+    pub fn state_at(&self, branch: BranchId, r: RevisionId, e: Epoch) -> Sql<Option<NodeState>> {
         self.conn
             .query_row(
-                "SELECT post FROM diff_log WHERE revision = ?1 AND epoch <= ?2 ORDER BY epoch DESC LIMIT 1",
-                params![r.0, e.0 as i64],
+                "SELECT post FROM diff_log WHERE branch = ?1 AND revision = ?2 AND epoch <= ?3
+                 ORDER BY epoch DESC LIMIT 1",
+                params![branch.0, r.0, e.0 as i64],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?
@@ -241,33 +324,41 @@ impl Projections {
     }
     /// Did `scope`'s watermark advance in `(since, until]`? Strict-mode history
     /// beyond the in-memory change log (ADR 0008 §6.3).
-    pub fn watermark_advanced(&self, scope: &str, since: Epoch, until: Epoch) -> Sql<bool> {
+    pub fn watermark_advanced(
+        &self,
+        branch: BranchId,
+        scope: &str,
+        since: Epoch,
+        until: Epoch,
+    ) -> Sql<bool> {
         self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM watermark_history WHERE scope = ?1 AND from_epoch > ?2 AND from_epoch <= ?3)",
-            params![scope, since.0 as i64, until.0 as i64],
+            "SELECT EXISTS(SELECT 1 FROM watermark_history WHERE branch = ?1 AND scope = ?2
+             AND from_epoch > ?3 AND from_epoch <= ?4)",
+            params![branch.0, scope, since.0 as i64, until.0 as i64],
             |r| r.get(0),
         )
     }
     /// Snapshot(e): the logical's head as of `e`.
-    pub fn head_at(&self, l: LogicalId, e: Epoch) -> Sql<Option<RevisionId>> {
+    pub fn head_at(&self, branch: BranchId, l: LogicalId, e: Epoch) -> Sql<Option<RevisionId>> {
         self.conn
             .query_row(
-                "SELECT rev_id FROM head_history WHERE logical_id = ?1 AND from_epoch <= ?2
-                 AND (to_epoch IS NULL OR to_epoch > ?2)",
-                params![l.0, e.0 as i64],
+                "SELECT rev_id FROM head_history WHERE branch = ?1 AND logical_id = ?2
+                 AND from_epoch <= ?3 AND (to_epoch IS NULL OR to_epoch > ?3)",
+                params![branch.0, l.0, e.0 as i64],
                 |row| row.get::<_, u32>(0),
             )
             .optional()
             .map(|r| r.map(RevisionId))
     }
     /// DIFF(a, b) from diff_log through the shared endpoint comparison.
-    pub fn diff(&self, a: Epoch, b: Epoch) -> Sql<EpochDiff> {
+    pub fn diff(&self, branch: BranchId, a: Epoch, b: Epoch) -> Sql<EpochDiff> {
         let high = a.max(b).0 as i64;
         let mut stmt = self.conn.prepare_cached(
-            "SELECT epoch, revision, post FROM diff_log WHERE epoch <= ?1 ORDER BY epoch, revision",
+            "SELECT epoch, revision, post FROM diff_log WHERE branch = ?1 AND epoch <= ?2
+             ORDER BY epoch, revision",
         )?;
         let rows = stmt
-            .query_map(params![high], |row| {
+            .query_map(params![branch.0, high], |row| {
                 Ok((
                     Epoch(row.get::<_, i64>(0)? as u64),
                     RevisionId(row.get(1)?),
@@ -281,5 +372,93 @@ impl Projections {
             b,
             rows.iter().map(|(e, r, s)| (*e, *r, s)),
         ))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows<'a>(
+        epoch: u64,
+        branch: u16,
+        result: &'a CommitResult,
+        post: NodeState,
+    ) -> EpochRows<'a> {
+        EpochRows {
+            epoch: Epoch(epoch),
+            branch: BranchId(branch),
+            created: None,
+            archived: false,
+            visible: vec![(1, 0)],
+            enabled: Vec::new(),
+            checksum: [epoch as u8; 32],
+            result,
+            base: &[],
+            watermarks: Vec::new(),
+            posts: vec![(RevisionId(0), post)],
+        }
+    }
+    fn result(epoch: u64) -> CommitResult {
+        CommitResult {
+            epoch: Epoch(epoch),
+            allocations: Allocations::default(),
+            net_delta: NetDelta::default(),
+            l0_flips: Vec::new(),
+            status_diff: Vec::new(),
+        }
+    }
+
+    /// Histories are per branch; a schema-1 file (no branch columns) is
+    /// dropped and rebuilt on open (ADR 0013 §8).
+    #[test]
+    fn branch_keyed_rows_and_schema_rebuild() {
+        let dir = std::env::temp_dir().join(format!("ctxdb-proj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = ProjectionFile::Path(dir.join("p.sqlite"));
+        {
+            // A schema-1 file: diff_log without a branch column.
+            let conn = Connection::open(dir.join("p.sqlite")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE diff_log(epoch INTEGER NOT NULL, revision INTEGER NOT NULL,
+                 post BLOB NOT NULL, PRIMARY KEY (revision, epoch));",
+            )
+            .unwrap();
+        }
+        let checksums = [[1u8; 32], [2u8; 32]];
+        let mut p = Projections::open(&file, &checksums).unwrap();
+        assert_eq!(p.watermark(), Epoch(0));
+        let mut db = contextdb_core::Db::default();
+        db.commit(&Batch::new(vec![Op::CreateLogical {
+            key: "a".into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: [0; 32],
+            adopt_as_base: true,
+        }]))
+        .unwrap();
+        let on_main = db.node(RevisionId(0)).unwrap();
+        let mut on_b = on_main.clone();
+        on_b.support = 2;
+        let (r1, r2) = (result(1), result(2));
+        p.apply(&rows(1, 0, &r1, on_main.clone())).unwrap();
+        p.apply(&rows(2, 1, &r2, on_b.clone())).unwrap();
+        assert_eq!(
+            p.state_at(MAIN, RevisionId(0), Epoch(2)).unwrap(),
+            Some(on_main)
+        );
+        assert_eq!(
+            p.state_at(BranchId(1), RevisionId(0), Epoch(2)).unwrap(),
+            Some(on_b)
+        );
+        assert_eq!(
+            p.state_at(BranchId(1), RevisionId(0), Epoch(1)).unwrap(),
+            None
+        );
+        drop(p);
+        // Same schema: the watermark survives.
+        let p = Projections::open(&file, &checksums).unwrap();
+        assert_eq!(p.watermark(), Epoch(2));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

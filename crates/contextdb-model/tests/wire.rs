@@ -92,7 +92,7 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
 #[test]
 fn log_rejects_unknown_version_bad_hex_and_unbounded_lengths() {
     assert_eq!(
-        EventLog::from_jsonl("{\"version\":1,\"batch_hex\":\"\"}"),
+        EventLog::from_jsonl("{\"version\":2,\"batch_hex\":\"\"}"),
         Err(WireError::UnknownVersion)
     );
     for line in [
@@ -124,4 +124,28 @@ fn unordered_and_duplicate_collections_are_rejected() {
     let empty =
         EventLog::from_jsonl("{\"version\":0,\"batch_hex\":\"000000000000000000000000\"}").unwrap();
     assert_eq!(empty.batches, vec![Batch::new(vec![])]);
+}
+
+/// EventLog v1 (ADR 0013 §8): batches with P6 features export as v1 lines,
+/// others stay v0; a v0 line carrying a P6 batch is refused.
+#[test]
+fn eventlog_v1_carries_branch_ops_only() {
+    let plain = Batch::new(vec![Op::AssertBase {
+        rev: RevisionId(0).into(),
+    }]);
+    let mut branch = Batch::new(vec![Op::CreateBranch { name: "b".into() }]);
+    branch.branch = BranchId(1);
+    let log = EventLog {
+        batches: vec![plain.clone(), branch.clone()],
+    };
+    let text = log.to_jsonl();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("{\"version\":0,"));
+    assert!(lines[1].starts_with("{\"version\":1,"));
+    assert_eq!(EventLog::from_jsonl(&text).unwrap(), log);
+    let forged = lines[1].replacen("\"version\":1", "\"version\":0", 1);
+    assert_eq!(
+        EventLog::from_jsonl(&forged),
+        Err(WireError::UnknownVersion)
+    );
 }

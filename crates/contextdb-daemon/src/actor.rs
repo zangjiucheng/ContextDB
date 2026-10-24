@@ -8,7 +8,7 @@
 //! new published snapshot. A replica still held by a reader after a bounded
 //! wait is replaced by a clone (counted; the fallback trigger of §3.3).
 use crate::publish::{self, Published};
-use contextdb_core::Db;
+use contextdb_core::{Db, Kernel};
 use contextdb_model::*;
 use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus};
 use std::{
@@ -29,8 +29,20 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// What readers see: one epoch, its database and a log reader bounded by it.
 pub struct Snapshot<D: Durability> {
     pub epoch: Epoch,
-    pub db: Db,
+    /// Every branch (ADR 0013); readers use `main` until protocol 4.
+    pub kernel: Kernel,
     pub log: LogReader<D>,
+}
+impl<D: Durability> Snapshot<D> {
+    /// `main`'s database. Protocol-3 readers use ids as global ids, which
+    /// holds while `main` is not renumbered (no other branch allocated ids).
+    pub fn db(&self) -> &Db {
+        debug_assert!(
+            self.kernel.main_is_identity(),
+            "a protocol-4 reader is required"
+        );
+        self.kernel.branch(MAIN).expect("main").db()
+    }
 }
 pub struct WriteRequest {
     /// Payload bodies stored (durably) before the batch is applied.
@@ -137,10 +149,10 @@ struct Actor<D: Durability> {
 pub fn spawn<D: Durability + Clone + 'static>(
     store: Store<D>,
 ) -> Result<ActorHandle<D>, StoreError> {
-    let db = store.db()?.clone();
+    let kernel = store.kernel()?.clone();
     let snapshot = Snapshot {
         epoch: store.epoch(),
-        db,
+        kernel,
         log: store.log_reader(),
     };
     let published = Arc::new(Published::new(snapshot));
@@ -304,24 +316,24 @@ impl<D: Durability + Clone> Actor<D> {
             Some(db) => db,
             None => {
                 self.stats.clone_fallbacks.fetch_add(1, Ordering::Relaxed);
-                match self.store.db() {
-                    Ok(db) => db.clone(),
+                match self.store.kernel() {
+                    Ok(kernel) => kernel.clone(),
                     Err(_) => return, // poisoned: nothing more is published
                 }
             }
         };
-        let Ok(newest) = self.store.replace_db(replica) else {
+        let Ok(newest) = self.store.replace_kernel(replica) else {
             return;
         };
         let snapshot = Arc::new(Snapshot {
             epoch: newest.epoch(),
-            db: newest,
+            kernel: newest,
             log: self.store.log_reader(),
         });
         self.spare = Some(self.published.swap(snapshot));
     }
     /// The replica published two groups ago, once no reader holds it.
-    fn reclaim(&mut self) -> Option<Db> {
+    fn reclaim(&mut self) -> Option<Kernel> {
         let mut spare = self.spare.take()?;
         let start = Instant::now();
         let s = publish::reclaim(&mut spare, || start.elapsed() >= RECLAIM_WAIT)?;
@@ -329,6 +341,6 @@ impl<D: Durability + Clone> Actor<D> {
         self.stats
             .reclaim_wait_micros
             .fetch_add(waited, Ordering::Relaxed);
-        Some(std::mem::take(&mut s.db))
+        Some(std::mem::take(&mut s.kernel))
     }
 }

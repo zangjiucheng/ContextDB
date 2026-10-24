@@ -718,6 +718,36 @@ before new commits land. **Schedule (review m4):** the dogfood stores are
 upgraded only after the P4 dogfood report (due ≥ 2026-11-04), unless the
 owner decides otherwise.
 
+**Implementation (r0.5).**
+
+- **Store.** It holds the kernel. Replay recommits every frame and checks
+  both its `CommitResult` and its trailer.
+- **Result trailer.** A format-3 result is the `CommitResult` bytes followed
+  by `ResultTrailer{branch, merge: Option<MergeReport>}`, version byte 1.
+  Format-2 rows carry no trailer. The merge report types live in the model.
+- **Snapshots.** A snapshot holds `Kernel::export`: distinct branch-database
+  states (inputs, local → global ids, unobserved anchors), the branch
+  table with each branch's `branch_visibility` rows, and the sync points.
+  States shared in memory are written once. `Kernel::import` rebuilds each
+  state with `Db::from_inputs` and derives the global tables from the
+  branches, since every object stays visible on the branch that created
+  it.
+- **Migration.** `ctx migrate` takes formats 0–2 to 3. Every result is
+  re-derived under the P6 kernel. The originally acked result is kept as
+  `acked_result` wherever it differs, and those epochs are printed. Format
+  2 keeps its groups.
+- **Projections.** Schema 2 keys `diff_log`, `head_history`,
+  `base_history` and `watermark_history` by branch and adds `branches`,
+  `branch_visibility` and `rule_enabled`. A `projection_schema` version
+  mismatch drops the tables for a rebuild. Artifact and metadata
+  projections wait for their first protocol-4 reader.
+- **EventLog.** Each line carries the lowest version that can represent
+  its batch; a v0 line carrying P6 features is refused.
+- **Protocol-3 readers** (`Store::db`, the daemon's snapshots) read `main`'s
+  database. Its ids equal the global ids only until another branch
+  allocates. After that, `Store::db` returns `BranchAwareReadRequired`.
+  Protocol 4 makes every reader branch-aware.
+
 **Historical reads on a branch (review M8).**
 
 - `Historical(e)`, `Snapshot(e)` and `diff` for `e < fork_epoch(b)` resolve

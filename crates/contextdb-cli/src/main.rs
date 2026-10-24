@@ -21,7 +21,7 @@ Usage (offline; refused while ctxd runs):
                                        without --yes only prints what would be lost
   ctx snapshot <dir>                   write an input-layer snapshot
   ctx migrate <dir>                    migrate an older op_log format (keeps a backup)
-  ctx export <dir>                     print the op_log as EventLog v0 JSONL
+  ctx export <dir>                     print the op_log as EventLog JSONL (v0 lines unless a batch needs v1)
 
 Usage (via a running ctxd, admin socket):
   ctx status <dir>                     epoch, logicals, revisions, sessions
@@ -218,9 +218,9 @@ fn run_p3(args: &[String]) -> Result<(), String> {
                 let row = store
                     .read_row(Epoch(e))
                     .map_err(|e| format!("read: {e:?}"))?;
-                // EventLog v0 keeps its import limits (ADR 0006 review R4).
+                // EventLog keeps its import limits (ADR 0006 review R4).
                 let batch = Batch::from_bytes(&row.batch_blob).map_err(|_| {
-                    format!("ExportLimit {{ epoch: {e} }}: batch exceeds EventLog v0 limits")
+                    format!("ExportLimit {{ epoch: {e} }}: batch exceeds EventLog limits")
                 })?;
                 log.batches.push(batch);
             }
@@ -234,6 +234,14 @@ fn run_p3(args: &[String]) -> Result<(), String> {
                 "migrated format {} -> {} ({} frames); backup {}",
                 r.from, r.to, r.frames, r.backup
             );
+            if !r.changed.is_empty() {
+                let epochs: Vec<String> = r.changed.iter().map(|e| e.0.to_string()).collect();
+                println!(
+                    "{} results changed under the new kernel (originally acked results kept): epochs {}",
+                    r.changed.len(),
+                    epochs.join(", ")
+                );
+            }
             Ok(())
         }
         Some("doctor") => {

@@ -190,11 +190,11 @@ fn g6_three_agents_stale_plan_invalid_and_semantic_plan_recertified() {
     assert_eq!(c.ok("ctx_check", json!({}))["verdict"], "Pending");
     let snap = s.actor.snapshot();
     let d3_rev = snap
-        .db
-        .head(snap.db.logical_by_key("d3-deploy").unwrap())
+        .db()
+        .head(snap.db().logical_by_key("d3-deploy").unwrap())
         .unwrap();
-    let (rule, ..) = snap.db.rules_concluding(d3_rev)[0].clone();
-    let d1 = snap.db.logical_by_key("d1-db").unwrap();
+    let (rule, ..) = snap.db().rules_concluding(d3_rev)[0].clone();
+    let d1 = snap.db().logical_by_key("d1-db").unwrap();
     let admin = Identity {
         channel: Channel::Admin,
         principal: PrincipalId(0),

@@ -14,8 +14,7 @@ mod fast;
 mod history;
 mod kernel;
 pub use kernel::{
-    BranchInfo, BranchView, ConflictKind, Import, Kernel, MergeConflictEntry, MergeReport,
-    MetadataField, valid_branch_name,
+    BranchInfo, BranchView, Import, Kernel, KernelSnapshot, KernelState, valid_branch_name,
 };
 mod memory;
 mod merge;
@@ -396,6 +395,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     /// Whether a merged code anchor still awaits this branch's observer.
     pub fn anchor_unobserved(&self, l: LogicalId) -> bool {
         self.anchor_unobserved.contains(&l)
+    }
+    /// Every merged code anchor still awaiting this branch's observer
+    /// (snapshots, ADR 0013 §8).
+    pub fn anchors_unobserved(&self) -> Vec<LogicalId> {
+        self.anchor_unobserved.iter().copied().collect()
+    }
+    pub(crate) fn set_anchors_unobserved(&mut self, all: &[LogicalId]) {
+        self.anchor_unobserved = all.iter().copied().collect();
     }
     pub fn watermark(&self, scope: &str) -> Option<&[u8]> {
         self.tables.watermarks.get(scope).map(Vec::as_slice)

@@ -119,7 +119,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let filtered = targets.is_some();
         let mut selected = Vec::new();
         for e in entries {
-            let current = snap.db.head(e.logical).unwrap_or(e.rev);
+            let current = snap.db().head(e.logical).unwrap_or(e.rev);
             let support = self
                 .root_proof(
                     Certificate {
@@ -138,7 +138,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         vector: Vec::new(),
                         strict_no_aba: false,
                     },
-                    &snap.db,
+                    snap.db(),
                 )
                 .paths;
             let old = proofs
@@ -151,7 +151,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Validation::Unknown {
                         lag: vec!["MissingBaseline".into()],
                     },
-                    &snap.db,
+                    snap.db(),
                     live,
                     !filtered && cert_id.is_none(),
                 ));
@@ -166,9 +166,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
             // never on key substrings; an unmapped key counts as relevant.
             let relevant = targets.as_ref().is_none_or(|t| {
                 paths.is_empty()
-                    || paths
-                        .iter()
-                        .any(|k| self.anchor_file_key(&snap.db, k).is_none_or(|f| t.contains(&f)))
+                    || paths.iter().any(|k| {
+                        self.anchor_file_key(snap.db(), k)
+                            .is_none_or(|f| t.contains(&f))
+                    })
             });
             if !relevant {
                 continue;
@@ -213,7 +214,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             if strict {
                 let mut c = p.cert.clone();
                 c.strict_no_aba = true;
-                match snap.db.validate_certificate(
+                match snap.db().validate_certificate(
                     &c,
                     live,
                     LogLink {
@@ -258,7 +259,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         aggregate.vector = vector.into_values().collect();
         aggregate.cert_id = *blake3::hash(&aggregate.body_bytes()).as_bytes();
-        let mut validation = match snap.db.validate_certificate(
+        let mut validation = match snap.db().validate_certificate(
             &aggregate,
             live,
             LogLink {
@@ -311,7 +312,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => return Some(r),
             };
             let fresh = match snap
-                .db
+                .db()
                 .issue_certificate(&request, &aggregate.entries, live)
             {
                 Ok(c) => c,
@@ -337,7 +338,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     logical,
                     cert_rev: Some(old),
                     current: Some(new),
-                    summary: snap.db.summary_at(new, live).ok(),
+                    summary: snap.db().summary_at(new, live).ok(),
                 })
                 .collect();
             if changed {
@@ -374,7 +375,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             &mut s,
             agent,
             validation,
-            &snap.db,
+            snap.db(),
             live,
             !filtered && cert_id.is_none(),
         ))

@@ -6,9 +6,10 @@ use crate::durability::Durability;
 use contextdb_model::*;
 use std::path::{Path, PathBuf};
 
-/// op_log format 2 adds the group header (ADR 0008 §3.2). Formats 0 and 1
-/// migrate explicitly (`migrate`).
-pub const FORMAT_VERSION: u32 = 2;
+/// op_log format 2 adds the group header (ADR 0008 §3.2); format 3 adds
+/// the branch ops (tags 14–17) and the result trailer (ADR 0013 §8). Older
+/// formats migrate explicitly (`migrate`).
+pub const FORMAT_VERSION: u32 = 3;
 pub const SEGMENT_TARGET: usize = 64 * 1024 * 1024;
 /// magic 8 + format 4 + first record number 8 + prev_checksum 32 + header_check 8.
 pub const HEADER_LEN: usize = 60;
@@ -157,15 +158,37 @@ impl LogRow {
         Batch::from_bytes_with(&self.batch_blob, DecodeLimits::DURABLE)
     }
     pub fn result(&self) -> Result<CommitResult, WireError> {
-        CommitResult::from_bytes_with(&self.result_blob, DecodeLimits::DURABLE)
+        Ok(decode_result(&self.result_blob)?.0)
+    }
+    /// The format-3 trailer: the batch's branch and a merge's report.
+    pub fn trailer(&self) -> Result<Option<ResultTrailer>, WireError> {
+        Ok(decode_result(&self.result_blob)?.1)
     }
     /// What an idempotent retry returns (ADR 0006 §3 step 1, §7).
     pub fn acked(&self) -> Result<CommitResult, WireError> {
         match &self.acked_result {
-            Some(r) => CommitResult::from_bytes_with(r, DecodeLimits::DURABLE),
+            Some(r) => Ok(decode_result(r)?.0),
             None => self.result(),
         }
     }
+}
+/// A durable result: `CommitResult`, then (format 3) its trailer.
+pub fn encode_result(result: &CommitResult, trailer: &ResultTrailer) -> Vec<u8> {
+    let mut out = result.canonical_bytes();
+    trailer.encode(&mut out);
+    out
+}
+fn decode_result(bytes: &[u8]) -> Result<(CommitResult, Option<ResultTrailer>), WireError> {
+    let mut i = Decoder::new(bytes, DecodeLimits::DURABLE);
+    let result = CommitResult::decode(&mut i)?;
+    let trailer = match i.remaining() {
+        0 => None,
+        _ => Some(ResultTrailer::decode(&mut i)?),
+    };
+    if i.remaining() != 0 {
+        return Err(WireError::TrailingBytes);
+    }
+    Ok((result, trailer))
 }
 impl Record for LogRow {
     fn decode(body: &[u8], format: u32) -> Result<Self, WireError> {

@@ -26,47 +26,6 @@ type State = (BranchId, Epoch);
 /// Containment answers already computed, `(x, y) → x ⊑ y`.
 type Memo = HashMap<(State, State), bool>;
 
-/// What a merge conflicts on (ADR 0013 §6.2), in canonical opening order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConflictKind {
-    Head,
-    Base,
-    Enabled,
-    ArtifactOpen,
-    Validation,
-}
-/// One `Conflict` artifact a merge opened.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MergeConflictEntry {
-    pub kind: ConflictKind,
-    pub logical: Option<LogicalId>,
-    pub rule: Option<RuleId>,
-    /// The artifact's target revision.
-    pub target: RevisionId,
-    pub artifact: ArtifactId,
-    /// The canonical payload; the artifact's `payload_hash` is its BLAKE3.
-    pub payload: Vec<u8>,
-}
-/// A metadata field both sides changed differently: listed, never gating.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MetadataField {
-    Tags,
-    Dirs,
-}
-/// A merge's typed result (the `CommitResult` merge trailer of §8).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MergeReport {
-    pub source: BranchId,
-    /// Heads the merge moved on existing logicals, `(logical, old, new)`.
-    pub moved_heads: Vec<(LogicalId, RevisionId, RevisionId)>,
-    pub conflicts: Vec<MergeConflictEntry>,
-    pub metadata_conflicts: Vec<(LogicalId, MetadataField)>,
-    /// Newly visible logicals, revisions, rules and artifacts.
-    pub newly_visible: [usize; 4],
-    /// Values both sides changed the same way.
-    pub convergent: usize,
-}
-
 /// One branch state read with global ids.
 struct View<'a, M: Maintainer, S: StatsSink> {
     db: &'a Db<M, S>,

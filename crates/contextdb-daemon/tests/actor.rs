@@ -31,7 +31,7 @@ fn writes_publish_epochs_and_old_snapshots_never_change() {
     let r = h.write(blobs, b).unwrap().unwrap();
     assert_eq!(r.epoch, Epoch(1));
     let held = h.snapshot();
-    let held_digest = held.db.digest();
+    let held_digest = held.db().digest();
     assert_eq!(held.epoch, Epoch(1));
     for n in 0..20 {
         let (blobs, b) = create(&format!("k{n}"), format!("body {n}").as_bytes());
@@ -39,8 +39,8 @@ fn writes_publish_epochs_and_old_snapshots_never_change() {
     }
     assert_eq!(h.snapshot().epoch, Epoch(21));
     // The held snapshot is immutable although 20 groups were published.
-    assert_eq!(held.db.digest(), held_digest);
-    assert_eq!(held.db.epoch(), Epoch(1));
+    assert_eq!(held.db().digest(), held_digest);
+    assert_eq!(held.db().epoch(), Epoch(1));
     let stats = &h.stats;
     assert!(
         stats
@@ -79,14 +79,14 @@ fn concurrent_writers_group_and_lose_nothing() {
     );
     let snap = h.snapshot();
     assert_eq!(snap.epoch, Epoch(200));
-    assert_eq!(snap.db.revision_count(), 200);
+    assert_eq!(snap.db().revision_count(), 200);
     let groups = h.stats.groups.load(std::sync::atomic::Ordering::Relaxed);
     assert!(groups <= 200, "{groups} groups");
     // The log reader in the snapshot is bounded by the same epoch.
     assert_eq!(snap.log.tail(), Epoch(200));
     assert_eq!(
         snap.log.replay_to(snap.epoch).unwrap().digest(),
-        snap.db.digest()
+        snap.db().digest()
     );
 }
 #[test]

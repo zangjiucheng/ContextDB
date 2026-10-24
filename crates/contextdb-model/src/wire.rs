@@ -664,6 +664,118 @@ impl Wire for NetDelta {
     }
 }
 /// Durable `result_blob` (ADR 0006 §2): field declaration order.
+impl Wire for ConflictKind {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o)
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        match u8::decode(i)? {
+            0 => Ok(Self::Head),
+            1 => Ok(Self::Base),
+            2 => Ok(Self::Enabled),
+            3 => Ok(Self::ArtifactOpen),
+            4 => Ok(Self::Validation),
+            _ => Err(WireError::InvalidEncoding),
+        }
+    }
+}
+impl Wire for MetadataField {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o)
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        match u8::decode(i)? {
+            0 => Ok(Self::Tags),
+            1 => Ok(Self::Dirs),
+            _ => Err(WireError::InvalidEncoding),
+        }
+    }
+}
+impl Wire for MergeConflictEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.kind.encode(o);
+        self.logical.encode(o);
+        self.rule.encode(o);
+        self.target.encode(o);
+        self.artifact.encode(o);
+        self.payload.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            kind: Wire::decode(i)?,
+            logical: Wire::decode(i)?,
+            rule: Wire::decode(i)?,
+            target: Wire::decode(i)?,
+            artifact: Wire::decode(i)?,
+            payload: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for MergeReport {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.source.encode(o);
+        (self.moved_heads.len() as u32).encode(o);
+        for (l, old, new) in &self.moved_heads {
+            l.encode(o);
+            old.encode(o);
+            new.encode(o);
+        }
+        self.conflicts.encode(o);
+        (self.metadata_conflicts.len() as u32).encode(o);
+        for (l, f) in &self.metadata_conflicts {
+            l.encode(o);
+            f.encode(o);
+        }
+        for n in self.newly_visible {
+            (n as u64).encode(o);
+        }
+        (self.convergent as u64).encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let source = Wire::decode(i)?;
+        let n = u32::decode(i)?;
+        let mut moved_heads = Vec::new();
+        for _ in 0..n {
+            moved_heads.push((Wire::decode(i)?, Wire::decode(i)?, Wire::decode(i)?));
+        }
+        let conflicts = Wire::decode(i)?;
+        let n = u32::decode(i)?;
+        let mut metadata_conflicts = Vec::new();
+        for _ in 0..n {
+            metadata_conflicts.push((Wire::decode(i)?, Wire::decode(i)?));
+        }
+        let mut newly_visible = [0; 4];
+        for v in &mut newly_visible {
+            *v = usize::try_from(u64::decode(i)?).map_err(|_| WireError::LimitExceeded)?;
+        }
+        let convergent = usize::try_from(u64::decode(i)?).map_err(|_| WireError::LimitExceeded)?;
+        Ok(Self {
+            source,
+            moved_heads,
+            conflicts,
+            metadata_conflicts,
+            newly_visible,
+            convergent,
+        })
+    }
+}
+impl Wire for ResultTrailer {
+    fn encode(&self, o: &mut Vec<u8>) {
+        // Version 1 of the trailer.
+        1u8.encode(o);
+        self.branch.encode(o);
+        self.merge.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        if u8::decode(i)? != 1 {
+            return Err(WireError::InvalidEncoding);
+        }
+        Ok(Self {
+            branch: Wire::decode(i)?,
+            merge: Wire::decode(i)?,
+        })
+    }
+}
 impl Wire for CommitResult {
     fn encode(&self, o: &mut Vec<u8>) {
         self.epoch.encode(o);
@@ -1129,12 +1241,34 @@ pub struct EventLog {
     pub batches: Vec<Batch>,
 }
 impl EventLog {
-    pub const VERSION: u16 = 0;
+    /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches.
+    pub const VERSION: u16 = 1;
+    /// The lowest version that can carry `batch`.
+    pub fn version_of(batch: &Batch) -> u16 {
+        let p6 = batch.branch != MAIN
+            || batch.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::CreateBranch { .. }
+                        | Op::ArchiveBranch { .. }
+                        | Op::ExpectHeads { .. }
+                        | Op::Merge { .. }
+                )
+            });
+        u16::from(p6)
+    }
+    /// One line per batch, each at the lowest version that carries it, so a
+    /// log without P6 features stays readable by v0 importers.
     pub fn to_jsonl(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
         for batch in &self.batches {
-            out.push_str("{\"version\":0,\"batch_hex\":\"");
+            write!(
+                out,
+                "{{\"version\":{},\"batch_hex\":\"",
+                Self::version_of(batch)
+            )
+            .expect("string write");
             for b in batch.canonical_bytes() {
                 write!(out, "{b:02x}").expect("string write")
             }
@@ -1158,9 +1292,11 @@ impl EventLog {
             let (v, rest) = rest
                 .split_once(",\"batch_hex\":\"")
                 .ok_or(WireError::InvalidEncoding)?;
-            if v != "0" {
-                return Err(WireError::UnknownVersion);
-            }
+            let version: u16 = match v {
+                "0" => 0,
+                "1" => 1,
+                _ => return Err(WireError::UnknownVersion),
+            };
             let hex = rest.strip_suffix("\"}").ok_or(WireError::InvalidEncoding)?;
             if hex.len() % 2 != 0 || !hex.is_ascii() {
                 return Err(WireError::InvalidEncoding);
@@ -1173,7 +1309,12 @@ impl EventLog {
                     u8::from_str_radix(s, 16).map_err(|_| WireError::InvalidEncoding)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            batches.push(Batch::from_bytes(&bytes)?)
+            let batch = Batch::from_bytes(&bytes)?;
+            // A v0 line cannot carry P6 features.
+            if Self::version_of(&batch) > version {
+                return Err(WireError::UnknownVersion);
+            }
+            batches.push(batch)
         }
         Ok(Self { batches })
     }

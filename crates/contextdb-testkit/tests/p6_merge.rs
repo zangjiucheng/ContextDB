@@ -1,7 +1,7 @@
 //! P6 merge (SPEC SD19, ADR 0013 §6): merge base by containment through
 //! sync points, three-way classification, conflicts and the gate, the cycle
 //! recheck (T72), certification (T20a/T20b), read sets and dry runs.
-use contextdb_core::{ConflictKind, Kernel, MergeReport, MetadataField};
+use contextdb_core::Kernel;
 use contextdb_model::*;
 
 fn create(key: &str, content: u8) -> Op {

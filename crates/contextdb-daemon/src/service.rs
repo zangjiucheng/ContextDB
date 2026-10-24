@@ -612,7 +612,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// their group, so a queued writer never pins a replica the actor wants
     /// to reclaim (ADR 0008 §3.3).
     fn dispatch(&self, id: Identity, req: Request, snap: Arc<Snapshot<D>>) -> Response {
-        let db = &snap.db;
+        let db = snap.db();
         match req {
             Request::SessionStart {
                 harness,
@@ -1228,7 +1228,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let limit = limit.clamp(1, MAX_RECALL);
-        let db = &snap.db;
+        let db = snap.db();
         // Basic retrieval (ADR 0008 §9): exact key, then prefix, then substring.
         let mut found: Vec<(u8, LogicalId)> = (0..db.logical_count() as u32)
             .map(LogicalId)
@@ -1364,7 +1364,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         mode: Mode,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let db = &snap.db;
+        let db = snap.db();
         let resolved = match target {
             Target::Handle(h) => {
                 let s = s.lock().expect("session");
@@ -1501,7 +1501,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         txn: Option<[u8; 16]>,
         snap: Arc<Snapshot<D>>,
     ) -> Response {
-        let incidences = match self.deps(&s, &deps, &snap.db) {
+        let incidences = match self.deps(&s, &deps, snap.db()) {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -1619,7 +1619,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if carry_rules {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
-            for (_, enabled, premises, _) in snap.db.rules_concluding(expected_head) {
+            for (_, enabled, premises, _) in snap.db().rules_concluding(expected_head) {
                 if enabled {
                     ops.push(Op::AddRule {
                         conclusion: RevRef::New(0),
@@ -1653,7 +1653,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         strict_req: bool,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let db = &snap.db;
+        let db = snap.db();
         let link = |c: &Certificate| -> Result<LogLink, Response> {
             Ok(LogLink {
                 matches: c.issued_epoch <= snap.epoch
@@ -1911,7 +1911,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut live = live;
         // A caller cannot replace failed local evidence with a fresh position.
         for scope in snap
-            .db
+            .db()
             .inputs()
             .logicals
             .iter()
@@ -1920,7 +1920,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             live.remove(scope);
         }
-        live.extend(self.anchor_live(&snap.db));
+        live.extend(self.anchor_live(snap.db()));
         let mut response =
             match self.proof_check(&bound, cert_id, action.as_ref(), strict, &live, snap) {
                 Some(response) => response,
@@ -1937,12 +1937,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             {
                 let s = s.lock().expect("session");
-                *updates_pending = update_items(&s, &agent, &snap.db, &live).len() as u32;
+                *updates_pending = update_items(&s, &agent, snap.db(), &live).len() as u32;
                 if !matches!(
                     validation,
                     Validation::Valid | Validation::ValidRecertified { .. }
                 ) {
-                    *named = named_reads(&s, &agent, &snap.db, &live);
+                    *named = named_reads(&s, &agent, snap.db(), &live);
                 }
             }
             if let Some(mode) = mode {
@@ -1993,7 +1993,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         max_items: usize,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let live = self.anchor_live(&snap.db);
+        let live = self.anchor_live(snap.db());
         let mut s = s.lock().expect("session");
         if let Some(token) = ack {
             let st = s.agent(&agent);
@@ -2011,7 +2011,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }]);
             }
         }
-        let mut items = update_items(&s, &agent, &snap.db, &live);
+        let mut items = update_items(&s, &agent, snap.db(), &live);
         let max = if max_items == 0 { 50 } else { max_items };
         let more = items.len() > max;
         items.truncate(max);
@@ -2274,7 +2274,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// Advisory SessionStart briefing (ADR 0010 §4.5): adds no ledger entry.
     fn briefing(&self, budget: usize, snap: &Arc<Snapshot<D>>) -> Response {
-        let db = &snap.db;
+        let db = snap.db();
         let live = self.anchor_live(db);
         let (mut stale, mut pending, mut conflicted) = (0u32, 0u32, 0u32);
         for l in (0..db.logical_count() as u32).map(LogicalId) {
@@ -2618,7 +2618,7 @@ fn indexer<D: Durability>(
     let text = |snap: &Snapshot<D>,
                 l: LogicalId|
      -> Option<(LogicalId, String, RecordKind, String, String)> {
-        let db = &snap.db;
+        let db = snap.db();
         let (key, kind, scope) = db.logical_info(l)?;
         let content = db.revision_content(db.head(l)?).ok()?;
         let body = match snap.log.read_blob(&content) {
@@ -2645,7 +2645,7 @@ fn indexer<D: Durability>(
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
-        let db = &snap.db;
+        let db = snap.db();
         let touched: Vec<LogicalId> = if indexed > snap.epoch || indexed.0 == 0 {
             let _ = recall.lock().expect("recall").clear();
             (0..db.logical_count() as u32).map(LogicalId).collect()
