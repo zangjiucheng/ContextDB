@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 /// Pre-batch values of overwritten published entries; the `Before` view reads
 /// through them. Structural commits also record replaced validation records.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Undo {
     pub base: BTreeMap<RevisionId, bool>,
     pub heads: BTreeMap<LogicalId, RevisionId>,

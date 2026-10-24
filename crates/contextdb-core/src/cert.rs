@@ -42,6 +42,38 @@ impl ChangeLog {
             self.watermarks.entry(s.clone()).or_default().push(epoch);
         }
     }
+    /// Undoes the latest [`Self::record`] with the same arguments (WHAT_IF).
+    pub(crate) fn unrecord(
+        &mut self,
+        epoch: Epoch,
+        delta: &NetDelta,
+        watermark_moves: &[String],
+        old_revisions: usize,
+    ) {
+        fn pop<K: Ord + Clone>(m: &mut BTreeMap<K, Vec<Epoch>>, k: &K, epoch: Epoch) {
+            let row = m.get_mut(k).expect("recorded row");
+            crate::invariant_assert!(row.last() == Some(&epoch));
+            row.pop();
+            if row.is_empty() {
+                m.remove(k);
+            }
+        }
+        for (l, old, _) in &delta.head_moves {
+            if old.is_some() {
+                pop(&mut self.heads, l, epoch);
+            }
+        }
+        for r in delta
+            .base_flips
+            .iter()
+            .filter(|r| r.index() < old_revisions)
+        {
+            pop(&mut self.base, r, epoch);
+        }
+        for s in watermark_moves {
+            pop(&mut self.watermarks, s, epoch);
+        }
+    }
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::{btree_slots, vec_bytes as b};
         btree_slots(self.rebindings.len())

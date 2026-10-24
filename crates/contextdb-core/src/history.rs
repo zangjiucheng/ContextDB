@@ -16,7 +16,7 @@ pub struct EpochDiff {
 }
 /// Only post-states are retained: a change's pre-state is the revision's
 /// previous post-state, or absent for a revision created in that epoch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Transition {
     pub epoch: Epoch,
     pub changes: Vec<(RevisionId, NodeState)>,
@@ -182,45 +182,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             supported: seen.difference(&root_set).copied().collect(),
         })
     }
-    /// Staged commit followed by unconditional undo. Arena suffixes are truncated;
-    /// derived columns and mutable tables are restored, including caches and stats.
+    /// `IMPACT{Exact}`: the same journalled dry run as `WHAT_IF`
+    /// (ADR 0013 §5).
     pub fn impact_exact(&mut self, batch: &Batch) -> Result<CommitResult, TxError> {
-        let revisions = self.revisions.len();
-        let rules = self.rules.len();
-        let enabled = self.rules.enabled.clone();
-        let tables = self.tables.clone();
-        let logicals = self.logicals.clone();
-        let maintainer = self.maintainer.clone();
-        let stats = self.stats.clone();
-        let pk = self.pk.clone();
-        let indexes = self.indexes.clone();
-        let epoch = self.epoch;
-        let derived = self.derived.clone();
-        let layers = self.layers.clone();
-        let changes = self.changes.clone();
-        let history_len = self.history.len();
-        #[cfg(feature = "timing")]
-        let timing = self.timing.clone();
-        let result = self.commit(batch);
-        self.revisions.truncate(revisions);
-        self.rules.truncate(rules);
-        self.rules.enabled = enabled;
-        self.tables = tables;
-        self.logicals = logicals;
-        self.maintainer = maintainer;
-        self.stats = stats;
-        self.pk = pk;
-        self.indexes = indexes;
-        self.epoch = epoch;
-        self.derived = derived;
-        self.layers = layers;
-        self.changes = changes;
-        self.history.truncate(history_len);
-        #[cfg(feature = "timing")]
-        {
-            self.timing = timing;
-        }
-        result
+        self.what_if(batch)
     }
 }
 impl Wire for NodeChange {

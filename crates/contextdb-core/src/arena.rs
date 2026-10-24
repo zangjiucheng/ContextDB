@@ -48,6 +48,29 @@ impl KeyTable {
         self.place(hash, id);
         self.len += 1;
     }
+    /// Removes `id` (stored under `hash`), shifting later probe-chain
+    /// entries back so every remaining key stays reachable.
+    fn remove(&mut self, hash: u64, id: u32, rehash: impl Fn(u32) -> u64) {
+        let mask = self.slots.len() - 1;
+        let mut hole = hash as usize & mask;
+        while self.slots[hole] != id {
+            crate::invariant_assert!(self.slots[hole] != EMPTY, "removed key is present");
+            hole = (hole + 1) & mask;
+        }
+        self.slots[hole] = EMPTY;
+        self.len -= 1;
+        let mut n = (hole + 1) & mask;
+        while self.slots[n] != EMPTY {
+            let home = rehash(self.slots[n]) as usize & mask;
+            // Move back when the hole lies cyclically within [home, n).
+            if (n.wrapping_sub(home) & mask) >= (n.wrapping_sub(hole) & mask) {
+                self.slots[hole] = self.slots[n];
+                self.slots[n] = EMPTY;
+                hole = n;
+            }
+            n = (n + 1) & mask;
+        }
+    }
     fn place(&mut self, hash: u64, id: u32) {
         let mask = self.slots.len() - 1;
         let mut n = hash as usize & mask;
@@ -160,6 +183,38 @@ impl LogicalArena {
         self.owner.push(l.owner);
         self.branch.push(l.origin_branch);
         self.epoch.push(l.origin_epoch);
+    }
+    /// Drops logicals `n..` (WHAT_IF rollback): their keys, interned lanes
+    /// first used by them, and their metadata.
+    pub fn truncate(&mut self, n: usize) {
+        for id in (n..self.len()).rev() {
+            let (buffer, ends) = (&self.keys, &self.key_end);
+            self.keys_by_hash
+                .remove(key_hash(self.key(id)), id as u32, |old| {
+                    key_hash(key_at(buffer, ends, old as usize))
+                });
+        }
+        if n < self.len() {
+            let start = if n == 0 {
+                0
+            } else {
+                self.key_end[n - 1] as usize
+            };
+            self.keys.truncate(start);
+            // Lanes are interned at first use, so logicals `..n` use exactly
+            // the lanes `..=max`.
+            let lanes = self.scope[..n].iter().max().map_or(0, |m| *m as usize + 1);
+            for lane in self.scopes.drain(lanes..) {
+                self.scope_ids.remove(&lane);
+            }
+        }
+        self.key_end.truncate(n);
+        self.kind.truncate(n);
+        self.scope.truncate(n);
+        self.owner.truncate(n);
+        self.branch.truncate(n);
+        self.epoch.truncate(n);
+        self.metadata.retain(|l, _| l.index() < n);
     }
     pub fn metadata(&self, l: LogicalId) -> Metadata {
         self.metadata.get(&l).cloned().unwrap_or_default()
@@ -481,6 +536,23 @@ impl<T> Adjacency<T> {
     pub(crate) fn ensure_rows(&mut self, n: usize) {
         self.rows = self.rows.max(n);
     }
+    /// Removes the last appended entry of `row` (WHAT_IF rollback; nothing is
+    /// compacted while a journal is open).
+    pub(crate) fn pop(&mut self, row: usize) -> Option<T> {
+        let extra = self.extra.get_mut(&(row as u32))?;
+        let value = extra.pop();
+        if extra.is_empty() {
+            self.extra.remove(&(row as u32));
+        }
+        self.extra_len -= 1;
+        value
+    }
+    pub(crate) fn truncate_rows(&mut self, n: usize) {
+        crate::invariant_assert!(
+            self.extra.range(n as u32..).next().is_none() && self.offsets.len() <= n + 1
+        );
+        self.rows = n;
+    }
     /// Appends after every existing entry of `row`.
     pub(crate) fn append(&mut self, row: usize, value: T) {
         debug_assert!(row < self.rows);
@@ -618,6 +690,7 @@ impl Indexes {
         i: &impl crate::InputView,
         old_revisions: usize,
         old_rules: usize,
+        compact: bool,
     ) {
         let (revisions, logicals) = (i.revision_count(), i.logical_count());
         for a in [
@@ -669,6 +742,9 @@ impl Indexes {
             self.rule_start
                 .push(u32::try_from(self.inc_rule.len()).expect("bounded index"));
         }
+        if !compact {
+            return;
+        }
         self.rules_by_premise.maybe_compact();
         self.rules_by_concl.maybe_compact();
         self.exact_by_rev.maybe_compact();
@@ -676,6 +752,68 @@ impl Indexes {
         self.sem_by_logical.maybe_compact();
         self.refs_by_target.maybe_compact();
         self.revisions_by_logical.maybe_compact();
+    }
+}
+impl Indexes {
+    /// Lengths that [`Self::truncate`] restores.
+    pub(crate) fn mark(&self) -> (usize, usize) {
+        (self.inc_rule.len(), self.rule_start.len())
+    }
+    /// Undoes [`Self::append`] (made without compaction): `i` still holds the
+    /// appended revisions and rules.
+    pub(crate) fn truncate(
+        &mut self,
+        i: &impl crate::InputView,
+        (old_logicals, old_revisions, old_rules): (usize, usize, usize),
+        (incs, starts): (usize, usize),
+    ) {
+        fn pop<T: PartialEq + std::fmt::Debug>(a: &mut Adjacency<T>, row: usize, want: T) {
+            let got = a.pop(row);
+            crate::invariant_assert!(got.as_ref() == Some(&want), "{got:?} != {want:?}");
+        }
+        for n in (old_rules..i.rule_count()).rev() {
+            let j = RuleId(n as u32);
+            for r in i.references(j).iter().rev() {
+                pop(&mut self.refs_by_target, r.index(), j);
+            }
+            let premises: Vec<_> = i.premises(j).collect();
+            for (k, p) in premises.iter().enumerate().rev() {
+                let id = IncId(self.rule_start[n] + k as u32);
+                pop(&mut self.rules_by_premise, p.premise.index(), id);
+                match p.kind {
+                    EdgeKind::Cur => pop(&mut self.exact_by_rev, p.premise.index(), id),
+                    EdgeKind::Pin => pop(&mut self.pin_by_rev, p.premise.index(), id),
+                    EdgeKind::Sem => pop(
+                        &mut self.sem_by_logical,
+                        i.revision_logical(p.premise).index(),
+                        id,
+                    ),
+                    EdgeKind::Ref => unreachable!("canonical premises"),
+                }
+            }
+            pop(&mut self.rules_by_concl, i.conclusion(j).index(), j);
+        }
+        for n in (old_revisions..i.revision_count()).rev() {
+            let r = RevisionId(n as u32);
+            pop(
+                &mut self.revisions_by_logical,
+                i.revision_logical(r).index(),
+                r,
+            );
+        }
+        self.inc_rule.truncate(incs);
+        self.rule_start.truncate(starts);
+        for a in [
+            &mut self.rules_by_premise,
+            &mut self.exact_by_rev,
+            &mut self.pin_by_rev,
+        ] {
+            a.truncate_rows(old_revisions);
+        }
+        self.rules_by_concl.truncate_rows(old_revisions);
+        self.refs_by_target.truncate_rows(old_revisions);
+        self.sem_by_logical.truncate_rows(old_logicals);
+        self.revisions_by_logical.truncate_rows(old_logicals);
     }
 }
 #[cfg(test)]

@@ -6,6 +6,8 @@ use contextdb_model::*;
 #[derive(Clone, Debug, Default)]
 pub struct FullRecompute {
     state: CountingState,
+    /// The whole pre-state: this mode recomputes everything anyway.
+    journal: Option<CountingState>,
 }
 impl Maintainer for FullRecompute {
     const INCREMENTAL_LAYERS: bool = false;
@@ -14,6 +16,14 @@ impl Maintainer for FullRecompute {
     }
     fn state(&self) -> &CountingState {
         &self.state
+    }
+    fn begin_journal(&mut self) {
+        self.journal = Some(self.state.clone());
+    }
+    fn rollback_journal(&mut self) {
+        if let Some(state) = self.journal.take() {
+            self.state = state;
+        }
     }
     fn update<S: StatsSink, V: InputView>(
         &mut self,

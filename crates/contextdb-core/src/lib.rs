@@ -31,6 +31,7 @@ pub use pk::PearceKelly;
 pub use stats::{CommitStats, NoStats, StatsSink};
 mod txn;
 mod view;
+mod whatif;
 pub use arena::{Adjacency, Indexes};
 use arena::{LogicalArena, RevisionArena, RuleArena};
 use contextdb_model::*;
@@ -81,6 +82,8 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     indexes: Indexes,
     history: Vec<history::Transition>,
     initial_epoch: Epoch,
+    /// Open only inside `what_if`.
+    journal: Option<Box<whatif::Journal>>,
     #[cfg(feature = "timing")]
     timing: Option<CommitTiming>,
 }
@@ -111,6 +114,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             stats: S::default(),
             history: Vec::new(),
             initial_epoch: Epoch(0),
+            journal: None,
             #[cfg(feature = "timing")]
             timing: None,
         }
@@ -587,7 +591,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(error);
             }
         };
-        self.pk.commit();
+        match &mut self.journal {
+            Some(journal) => journal.pk = Some(pk_mark),
+            None => self.pk.commit(),
+        }
         // Publication: append, then apply overrides while recording pre-states.
         let (old_logicals, old_revisions, old_rules) =
             (self.logicals.len(), self.revisions.len(), self.rules.len());
@@ -633,6 +640,22 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         if let Some(p) = policy {
             self.tables.policy = p;
         }
+        if let Some(journal) = &mut self.journal {
+            for scope in watermarks.keys() {
+                let old = self.tables.watermarks.get(scope).cloned();
+                journal.watermarks.entry(scope.clone()).or_insert(old);
+            }
+            for l in metadata.keys().filter(|l| l.index() < old_logicals) {
+                journal
+                    .metadata
+                    .entry(*l)
+                    .or_insert_with(|| self.logicals.metadata(*l));
+            }
+            for a in artifact_open.keys() {
+                let old = self.tables.artifacts[a.index()].open;
+                journal.artifact_open.entry(*a).or_insert(old);
+            }
+        }
         // Advances only (ADR 0008 §6.3): a committed position that differs.
         let watermark_moves: Vec<String> = watermarks
             .iter()
@@ -653,7 +676,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             revisions: &self.revisions,
             rules: &self.rules,
         };
-        self.indexes.append(&view, old_revisions, old_rules);
+        let compact = self.journal.is_none();
+        self.indexes
+            .append(&view, old_revisions, old_rules, compact);
         #[cfg(feature = "paranoid")]
         assert!(self.indexes == Indexes::build(&self.inputs()));
         let mut base_flips: Vec<RevisionId> = undo.base.keys().copied().collect();
@@ -776,6 +801,11 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     .unwrap_or_else(|| state.row(r));
                 self.layers.node_state(&before_view, r, old)
             });
+            if let Some(journal) = &mut self.journal
+                && let Some(rows) = self.layers.footprint(&self.indexes, r, journal.layer_lens)
+            {
+                journal.layer_rows.push(rows);
+            }
             self.layers.refresh(&view, state, &self.indexes, r);
             let after = self.layers.node_state(&view, r, state.row(r));
             let propagates = before.as_ref().is_none_or(|before| {
@@ -954,6 +984,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         }
         self.changes
             .record(epoch, &delta, &watermark_moves, old_revisions);
+        if let Some(journal) = &mut self.journal {
+            journal.record = Some((epoch, delta.clone(), watermark_moves, old_revisions));
+            journal.undo = Some(undo);
+        }
         let l0_flips = update.flips;
         let status_diff = changes.iter().map(|c| c.revision).collect();
         self.record(epoch, changes);

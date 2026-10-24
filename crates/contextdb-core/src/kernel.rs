@@ -200,6 +200,19 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
     ) -> Result<CommitResult, TxError> {
+        self.run(b, blobs, true)
+    }
+    /// `WHAT_IF` on one branch (ADR 0013 §5): the result the batch would
+    /// have, with the global ids it would allocate; nothing changes.
+    pub fn what_if(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        self.run(b, &AllPresent, false)
+    }
+    fn run(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+        publish: bool,
+    ) -> Result<CommitResult, TxError> {
         // Batch level, in the §6.2 P6 order.
         let branch = self
             .branches
@@ -241,15 +254,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         );
         let result = match b.ops.first() {
             Some(Op::CreateBranch { name }) if b.ops.len() == 1 => {
-                self.create_branch(b.branch, name, next)?
+                self.create_branch(b.branch, name, next, publish)?
             }
             Some(Op::ArchiveBranch { name }) if b.ops.len() == 1 => {
-                self.archive_branch(b.branch, name, next)?
+                self.archive_branch(b.branch, name, next, publish)?
             }
             _ if merges == 1 => return Err(TxError::InvalidMerge),
-            _ => self.commit_ops(b, blobs, next)?,
+            _ => self.commit_ops(b, blobs, next, publish)?,
         };
-        self.epoch = next;
+        if publish {
+            self.epoch = next;
+        }
         Ok(result)
     }
     fn empty_result(epoch: Epoch) -> CommitResult {
@@ -266,6 +281,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         parent: BranchId,
         name: &str,
         epoch: Epoch,
+        publish: bool,
     ) -> Result<CommitResult, TxError> {
         if !valid_branch_name(name) {
             return Err(TxError::InvalidBranchName { name: name.into() });
@@ -276,6 +292,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let id = u16::try_from(self.branches.len()).map_err(|_| TxError::CapacityExceeded {
             kind: CapacityKind::Branch,
         })?;
+        if !publish {
+            return Ok(Self::empty_result(epoch));
+        }
         let from = &self.branches[parent.0 as usize];
         let child = Branch {
             info: BranchInfo {
@@ -299,12 +318,13 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         branch: BranchId,
         name: &str,
         epoch: Epoch,
+        publish: bool,
     ) -> Result<CommitResult, TxError> {
         let b = &mut self.branches[branch.0 as usize];
         if branch == MAIN || b.info.name != name {
             return Err(TxError::InvalidBranchName { name: name.into() });
         }
-        b.info.archived = true;
+        b.info.archived |= publish;
         Ok(Self::empty_result(epoch))
     }
     fn commit_ops(
@@ -312,6 +332,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
         epoch: Epoch,
+        publish: bool,
     ) -> Result<CommitResult, TxError> {
         let Self {
             branches,
@@ -346,12 +367,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut attempts = 0;
         let (result, staged, assigned) = loop {
             let local = map_batch(b, &|k, g| resolve(&branch.ids, next, plan.as_ref(), k, g));
-            if ambiguous && backup.is_none() {
+            if ambiguous && publish && backup.is_none() {
                 backup = Some(Arc::clone(&branch.db));
             }
             // Copies the database only if a fork (or the backup) shares it.
+            // WHAT_IF leaves it unchanged, but needs it unshared too.
             let db = Arc::make_mut(&mut branch.db);
-            let result = db.commit_in(&local, blobs, &ctx);
+            let result = if publish {
+                db.commit_in(&local, blobs, &ctx)
+            } else {
+                db.what_if_in(&local, blobs, &ctx)
+            };
             let staged = sink.take();
             let assigned = assign(&staged, &branch.ids, next, revision_ids, rule_ids);
             attempts += 1;
@@ -361,13 +387,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             if settled {
                 break (result, staged, assigned);
             }
-            if result.is_ok() {
+            if result.is_ok() && publish {
                 branch.db = Arc::clone(backup.as_ref().expect("taken when ambiguous"));
             }
             plan = Some(assigned);
         };
         drop(backup);
-        let result = result.map_err(|e| map_error(e, &branch.ids, next, &assigned))?;
+        let staged_global = |k, x| staged_global(&branch.ids, next, &assigned, k, x);
+        let result = result.map_err(|e| map_error(e, &staged_global))?;
+        if !publish {
+            return Ok(map_result(result, &staged_global));
+        }
         let db = Arc::make_mut(&mut branch.db);
         let ids = Arc::make_mut(&mut branch.ids);
         // Logicals and artifacts are never shared: fresh ids in local order.
@@ -422,7 +452,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 keys.insert(key);
             }
         }
-        Ok(map_result(result, ids))
+        Ok(map_result(result, &|k, x| ids.global(k, x)))
     }
 }
 
@@ -713,16 +743,10 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
     }
 }
 
-fn g_l(ids: &IdMap, l: LogicalId) -> LogicalId {
-    LogicalId(ids.global(Kind::Logical, l.0))
-}
-fn g_r(ids: &IdMap, r: RevisionId) -> RevisionId {
-    RevisionId(ids.global(Kind::Revision, r.0))
-}
-fn g_j(ids: &IdMap, j: RuleId) -> RuleId {
-    RuleId(ids.global(Kind::Rule, j.0))
-}
-fn map_result(r: CommitResult, ids: &IdMap) -> CommitResult {
+fn map_result(r: CommitResult, map: &dyn Fn(Kind, u32) -> u32) -> CommitResult {
+    let g_l = |_: (), x: LogicalId| LogicalId(map(Kind::Logical, x.0));
+    let g_r = |_: (), x: RevisionId| RevisionId(map(Kind::Revision, x.0));
+    let g_j = |_: (), x: RuleId| RuleId(map(Kind::Rule, x.0));
     CommitResult {
         epoch: r.epoch,
         allocations: Allocations {
@@ -730,71 +754,68 @@ fn map_result(r: CommitResult, ids: &IdMap) -> CommitResult {
                 .allocations
                 .new_logicals
                 .iter()
-                .map(|x| g_l(ids, *x))
+                .map(|x| g_l((), *x))
                 .collect(),
             new_revisions: r
                 .allocations
                 .new_revisions
                 .iter()
-                .map(|x| g_r(ids, *x))
+                .map(|x| g_r((), *x))
                 .collect(),
             new_rules: r
                 .allocations
                 .new_rules
                 .iter()
-                .map(|x| g_j(ids, *x))
+                .map(|x| g_j((), *x))
                 .collect(),
             new_artifacts: r
                 .allocations
                 .new_artifacts
                 .iter()
-                .map(|x| ArtifactId(ids.global(Kind::Artifact, x.0)))
+                .map(|x| ArtifactId(map(Kind::Artifact, x.0)))
                 .collect(),
         },
         net_delta: NetDelta {
-            base_flips: r
-                .net_delta
-                .base_flips
-                .iter()
-                .map(|x| g_r(ids, *x))
-                .collect(),
+            base_flips: r.net_delta.base_flips.iter().map(|x| g_r((), *x)).collect(),
             head_moves: r
                 .net_delta
                 .head_moves
                 .iter()
-                .map(|(l, old, new)| (g_l(ids, *l), old.map(|o| g_r(ids, o)), g_r(ids, *new)))
+                .map(|(l, old, new)| (g_l((), *l), old.map(|o| g_r((), o)), g_r((), *new)))
                 .collect(),
             enable_flips: r
                 .net_delta
                 .enable_flips
                 .iter()
-                .map(|x| g_j(ids, *x))
+                .map(|x| g_j((), *x))
                 .collect(),
-            new_rules: r.net_delta.new_rules.iter().map(|x| g_j(ids, *x)).collect(),
+            new_rules: r.net_delta.new_rules.iter().map(|x| g_j((), *x)).collect(),
         },
-        l0_flips: r.l0_flips.iter().map(|x| g_r(ids, *x)).collect(),
-        status_diff: r.status_diff.iter().map(|x| g_r(ids, *x)).collect(),
+        l0_flips: r.l0_flips.iter().map(|x| g_r((), *x)).collect(),
+        status_diff: r.status_diff.iter().map(|x| g_r((), *x)).collect(),
     }
 }
 /// Errors carry ids of objects visible in the branch, or of objects the
 /// failed batch staged: map the former back, and give the latter the global
 /// id they would have received.
-fn map_error(e: TxError, ids: &IdMap, next: &[u32; 4], assigned: &Assignment) -> TxError {
-    let map = |k: Kind, x: u32| {
-        let len = ids.len(k) as u32;
-        let staged: &[u32] = match k {
-            Kind::Revision => &assigned.revisions,
-            Kind::Rule => &assigned.rules,
-            _ => &[],
-        };
-        match x.checked_sub(len) {
-            None => ids.global(k, x),
-            Some(i) => staged.get(i as usize).copied().unwrap_or_else(|| {
-                let fresh = staged.iter().filter(|g| **g >= next[k as usize]).count();
-                next[k as usize] + fresh as u32 + (i - staged.len() as u32)
-            }),
-        }
+/// The global id of local `x`: mapped, or staged by the batch (the id it
+/// was assigned, or would receive).
+fn staged_global(ids: &IdMap, next: &[u32; 4], assigned: &Assignment, k: Kind, x: u32) -> u32 {
+    let len = ids.len(k) as u32;
+    let staged: &[u32] = match k {
+        Kind::Revision => &assigned.revisions,
+        Kind::Rule => &assigned.rules,
+        _ => &[],
     };
+    match x.checked_sub(len) {
+        None => ids.global(k, x),
+        Some(i) => staged.get(i as usize).copied().unwrap_or_else(|| {
+            let fresh = staged.iter().filter(|g| **g >= next[k as usize]).count();
+            next[k as usize] + fresh as u32 + (i - staged.len() as u32)
+        }),
+    }
+}
+fn map_error(e: TxError, map: &dyn Fn(Kind, u32) -> u32) -> TxError {
     let l = |x: LogicalId| LogicalId(map(Kind::Logical, x.0));
     let r = |x: RevisionId| RevisionId(map(Kind::Revision, x.0));
     let j = |x: RuleId| RuleId(map(Kind::Rule, x.0));

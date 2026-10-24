@@ -62,4 +62,9 @@ pub trait Maintainer: Clone + std::fmt::Debug + Default + Send + Sync {
     ) -> Maintenance;
     fn state(&self) -> &CountingState;
     fn retained_bytes(&self) -> usize;
+    /// Starts journalling what the next [`Self::update`] writes (WHAT_IF,
+    /// ADR 0013 §5).
+    fn begin_journal(&mut self);
+    /// Restores the state at [`Self::begin_journal`] and closes the journal.
+    fn rollback_journal(&mut self);
 }

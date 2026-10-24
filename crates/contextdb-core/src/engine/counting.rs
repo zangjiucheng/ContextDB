@@ -1,4 +1,4 @@
-use super::{CountingState, Maintainer, Maintenance};
+use super::{CountingRow, CountingState, Maintainer, Maintenance};
 use crate::InputView;
 use crate::{Indexes, PearceKelly, StatsSink, stats::Work};
 use contextdb_model::*;
@@ -16,8 +16,45 @@ pub struct Counting {
     queued: Vec<bool>,
     pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
     pending_rule: BTreeMap<RevisionId, Vec<RuleId>>,
+    journal: Option<Journal>,
 }
+/// Pre-values of everything one `update` wrote. A popped revision's
+/// footprint is its row, the rules concluding it and their incidences; the
+/// pass writes nothing else in pre-existing rows.
+#[derive(Clone, Debug)]
+struct Journal {
+    /// Revision, rule and incidence counts at `begin_journal`.
+    lens: [usize; 3],
+    rows: Vec<Footprint>,
+}
+/// One popped revision's row, its rules' `(unsat, counted)` and their
+/// incidences' `sat`.
+type Footprint = (
+    RevisionId,
+    CountingRow,
+    Vec<(RuleId, u32, bool)>,
+    Vec<(usize, bool)>,
+);
 impl Counting {
+    fn save(&mut self, r: RevisionId, index: &Indexes) {
+        let Some(journal) = &mut self.journal else {
+            return;
+        };
+        let [revisions, rules, _] = journal.lens;
+        if r.index() >= revisions {
+            return;
+        }
+        let state = &self.state;
+        let mut by_rule = Vec::new();
+        let mut by_inc = Vec::new();
+        for j in index.rules_by_concl.row(r.index()) {
+            if j.index() < rules {
+                by_rule.push((*j, state.unsat[j.index()], state.counted[j.index()]));
+                by_inc.extend(index.rule_incidences(*j).map(|n| (n, state.sat[n])));
+            }
+        }
+        journal.rows.push((r, state.row(r), by_rule, by_inc));
+    }
     fn queue<S: StatsSink>(
         &mut self,
         r: RevisionId,
@@ -74,6 +111,40 @@ impl Maintainer for Counting {
     }
     fn state(&self) -> &CountingState {
         &self.state
+    }
+    fn begin_journal(&mut self) {
+        let s = &self.state;
+        self.journal = Some(Journal {
+            lens: [s.s.len(), s.unsat.len(), s.sat.len()],
+            rows: Vec::new(),
+        });
+    }
+    fn rollback_journal(&mut self) {
+        let Some(Journal { lens, rows }) = self.journal.take() else {
+            return;
+        };
+        let s = &mut self.state;
+        for (r, row, by_rule, by_inc) in rows {
+            (s.s[r.index()], s.support[r.index()], s.witness[r.index()]) =
+                (row.s, row.support, row.witness);
+            for (j, unsat, counted) in by_rule {
+                (s.unsat[j.index()], s.counted[j.index()]) = (unsat, counted);
+            }
+            for (n, sat) in by_inc {
+                s.sat[n] = sat;
+            }
+        }
+        let [revisions, rules, incs] = lens;
+        for v in [&mut s.s, &mut self.queued] {
+            v.truncate(revisions);
+        }
+        s.support.truncate(revisions);
+        s.witness.truncate(revisions);
+        s.unsat.truncate(rules);
+        s.counted.truncate(rules);
+        self.dirty_rule.truncate(rules);
+        s.sat.truncate(incs);
+        self.dirty_inc.truncate(incs);
     }
     fn update<S: StatsSink, V: InputView>(
         &mut self,
@@ -136,6 +207,7 @@ impl Maintainer for Counting {
             if r.index() < old_len {
                 before.insert(r, self.state.row(r));
             }
+            self.save(r, index);
             // DA3 / DA6: all supporting premises precede their conclusion.
             crate::invariant_assert!(index.rules_by_concl.row(r.index()).iter().all(|j| {
                 i.premises(*j)

@@ -59,7 +59,78 @@ pub(crate) struct LayerColumns {
     pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
     pending_rule: BTreeMap<RevisionId, Vec<RuleId>>,
 }
+/// Pre-values of one popped revision's footprint in the layer columns: its
+/// node columns, the rules concluding it and their literals (`refresh`
+/// writes nothing else in pre-existing rows).
+#[derive(Clone, Debug)]
+pub(crate) struct LayerRows {
+    r: RevisionId,
+    node: ([bool; 2], [Option<Witness>; 2], StaleReason),
+    rules: Vec<(RuleId, [u32; 2], [bool; 2], SemState)>,
+    lits: Vec<(usize, u8)>,
+}
 impl LayerColumns {
+    /// Revision, rule and incidence counts.
+    pub(crate) fn lens(&self) -> [usize; 3] {
+        [self.truth.len(), self.unsat.len(), self.lit.len()]
+    }
+    /// `r`'s footprint, limited to rows below `lens`.
+    pub(crate) fn footprint(
+        &self,
+        index: &Indexes,
+        r: RevisionId,
+        lens: [usize; 3],
+    ) -> Option<LayerRows> {
+        let n = r.index();
+        if n >= lens[0] {
+            return None;
+        }
+        let mut rules = Vec::new();
+        let mut lits = Vec::new();
+        for j in index.rules_by_concl.row(n) {
+            if j.index() < lens[1] {
+                let k = j.index();
+                rules.push((*j, self.unsat[k], self.active[k], self.sem[k]));
+                lits.extend(index.rule_incidences(*j).map(|id| (id, self.lit[id])));
+            }
+        }
+        Some(LayerRows {
+            r,
+            node: (self.truth[n], self.witness[n], self.reason[n].clone()),
+            rules,
+            lits,
+        })
+    }
+    /// Restores saved footprints, then drops rows at or above `lens`.
+    pub(crate) fn restore(&mut self, saved: Vec<LayerRows>, lens: [usize; 3]) {
+        for LayerRows {
+            r,
+            node,
+            rules,
+            lits,
+        } in saved
+        {
+            let n = r.index();
+            (self.truth[n], self.witness[n], self.reason[n]) = node;
+            for (j, unsat, active, sem) in rules {
+                let k = j.index();
+                (self.unsat[k], self.active[k], self.sem[k]) = (unsat, active, sem);
+            }
+            for (id, lit) in lits {
+                self.lit[id] = lit;
+            }
+        }
+        let [revisions, rules, incs] = lens;
+        self.truth.truncate(revisions);
+        self.witness.truncate(revisions);
+        self.reason.truncate(revisions);
+        self.unsat.truncate(rules);
+        self.active.truncate(rules);
+        self.sem.truncate(rules);
+        self.dirty_rule.truncate(rules);
+        self.lit.truncate(incs);
+        self.dirty_inc.truncate(incs);
+    }
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::{bool_bytes, vec_bytes as b};
         b(&self.lit)

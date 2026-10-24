@@ -323,6 +323,32 @@ equals that of a real commit of the same batch on a copy.
 **Cost.** O(affected), and **G5 requires ≤ 2× an equivalent real commit**,
 excluding durable sync. The clone-based `impact_exact` is removed.
 
+**Implementation (r0.5).** `Db::what_if` (`core/src/whatif.rs`) opens a
+journal, runs the ordinary commit path and rolls back:
+
+- **Maintainers.** The counting maintainer and the layer walk write, in
+  pre-existing rows, only the popped revision's row, the rules concluding
+  it and their incidences. Each saves that footprint when it pops a
+  revision, so the journal is O(popped). FullRecompute saves its whole
+  state, since it rebuilds everything anyway.
+- **Pearce–Kelly.** A structural commit leaves the staging journal open
+  instead of committing it, and rollback undoes it.
+- **Indexes.** Appends are not compacted while a journal is open, so
+  rollback pops them from the overflow rows.
+- **Inputs.** The commit's own undo (heads, base, enabled, validations) is
+  kept; policy, watermarks, metadata and artifact states are saved on first
+  touch; arenas truncate, and the logical key table removes keys by
+  backward shift.
+- **ChangeLog, history, epoch, stats.** The change-log record is undone;
+  history, epoch, stats and timing are restored. A materialized derived
+  snapshot is set aside, not patched.
+
+`impact_exact` is now this call. `Kernel::what_if` adds global ids: the
+result names the ids a commit would allocate, imports included, and
+branch Ops are validated without being applied. A dry run on a branch that
+still shares its database with a fork copies it first, like a first
+write.
+
 ## 6. Merge
 
 `Merge{source: BranchId, require_certified: bool, certify:
