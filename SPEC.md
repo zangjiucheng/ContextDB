@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.7 · Date: 2026-10-23 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.8 · Date: 2026-10-23 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -200,10 +200,10 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 2. 否则 `¬L0(r)` → `Unsupported`；
 3. 否则（`L0 ∧ ¬L1`）取 r 的 canonical L0 witness 规则 j：若 `sem(j) = Rejected` → `Rejected`；否则取 j 中 RevisionId 最小的 `lit1` 失败 incidence `(p, kind)`：若 `kind = Pin` 且 p 是已 supersede 的非 Evidence revision → `SupersededPinnedPremise(p)`；若 `kind = Sem` 且 `¬L1(h)`（`h = head(l(p)) ≠ p`）→ 继承 h 的 STALE reason；否则（p 自身 `¬L1`）继承 p 的 STALE reason（在含 `V_l` 边的 DAG 上递归，必然终止）。
 
-`PENDING(Semantic)` 的上游原因若为 open Conflict（P7 起），是否单列 `PENDING(Conflict)` 在 P7 G0 决定；此前不可达。
+`PENDING(Semantic)` 的上游原因若为 open Conflict（P6 起）：**不单列** `PENDING(Conflict)`（v1.6.8，ADR 0013 §6.4）；目标 revision 汇总为 CONFLICTED，下游因前提不满足 L2 而为 `PENDING(Semantic)`，WHY 指出该 Conflict。
 
 底层逐维度保留：
-- head currency `CURRENT / SUPERSEDED / BRANCH_ONLY`（SD19）
+- head currency `CURRENT / SUPERSEDED / BRANCH_ONLY`（SD19）：派生快照、status_diff、digest 与证书只含按本 branch 计算的 `CURRENT / SUPERSEDED`；`BRANCH_ONLY` 仅在 main 的 current-mode 读取时作为读时标注出现（v1.6.8）
 - structural `SUPPORTED / UNSUPPORTED / UNKNOWN`
 - semantic `VERIFIED / PENDING / REJECTED / NOT_REQUIRED / N_A`：revision 的 semantic = 依次取 L2 witness、L1 witness、L0 witness 规则的 `sem`（第一个存在者）；witness 为 base 时为 `NOT_REQUIRED`；`¬L0` 时为 `N_A`
 - conflict `NONE / CONFLICTED`
@@ -222,7 +222,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 **SD16 epoch 与时间。** 全局 u64，跨 branch 共用，成功提交才 +1。certificate 依赖版本向量，**从不依赖 epoch 相等**。只建模 transaction time；valid time 仅作 metadata（非目标）。
 
-**SD17 conflict 与递归预留。** P0–P6 中 Conflict 恒为 NONE（字段保留）。P7 起 open 的 Conflict artifact 是 L2 的 eager node gate，不影响 L0/L1（de Kleer：contradiction 检测始终 eager）。节点布局预留 `cnr/cr` 计数器、规则 flags 预留 `RECURSIVE` 位；oracle 用 least fixpoint，对有环输入同样正确，作为 P11 递归支持的 reference。
+**SD17 conflict 与递归预留。** P0–P5b 中 Conflict 恒为 NONE（字段保留）。P6 起（v1.6.8 owner 决定，ADR 0013 §6.4：merge 冲突须阻塞 CERTIFIED）open 的 Conflict artifact 是 L2 的 eager node gate，不影响 L0/L1（de Kleer：contradiction 检测始终 eager）。节点布局预留 `cnr/cr` 计数器、规则 flags 预留 `RECURSIVE` 位；oracle 用 least fixpoint，对有环输入同样正确，作为 P11 递归支持的 reference。
 
 **SD18 CodeAnchor（P5 起）。**
 1. logical 键 `code:<repo>/<path>[#<symbol>]`，kind = CodeAnchor。P5b 起 symbol 按 ADR 0012 §3 可逆编码到小写字母表（大写 → `-`+小写，`_` → `.`，段分隔 `:`，`#` 标记 trait / 哈希段；哈希段固定为对源文本去掉 ASCII 空白后 BLAKE3 的前 8 位小写十六进制，永不随 normaliser 改变）；文件路径不得再含 `#`；key 到路径的映射取自已提交的 descriptor，不拆分 key。
@@ -242,6 +242,18 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - `BRANCH_ONLY`：revision 是某 branch 的 head 但不是 main 的 head；在 main 视角汇总为 `STALE(HeadSuperseded)`。
 - **WHAT_IF 不是 branch**：在目标 branch 的 staged 状态上执行 batch，计算 diff，然后用 undo log 全部回滚。不写 op_log、不分配持久 ID、不推进 epoch（与 IMPACT{Exact} 同一机制）。
 - merge 是显式事务：把源 branch 新增的对象设为在目标 branch 可见，并在目标 cycle 图上重做 cycle 检查（失败 → `CycleDetected`，merge 拒绝）；enabled 与 ValidationRecord 按三方差分合入；然后在目标 branch 上提交 head 移动（逐 logical CAS）；下游按 incidence kind 得 STALE/PENDING；仅当 `require_certified=true` 且合并后任一指定条目不是 CERTIFIED 时拒绝（`MergeNotCertified{logical, status}`）。三方分类与冲突见 P6。
+
+**SD19 补充（v1.6.8，P6 G0 定稿，完整定义见 ADR 0013 r0.4；以下为规范性摘要）。**
+- **可见性递归**：`vis(b, o, E)` ⇔ (1) `origin_branch(o)=b ∧ origin_epoch(o)≤E`；或 (2) 存在 `branch_visibility(b, o, m)` 且 `m≤E`（merge 或跨 branch 去重写入）；或 (3) `b≠main ∧ vis(parent(b), o, min(E, fork_epoch(b)))`。当前可见即 `vis(b, o, ∞)`；因此 merge 进父 branch 的对象对其后 fork 的子 branch 可见。branch 名与 id 公开（不属于保密对象）；全局稠密 ID 与容量计数可能透露其他 branch 的分配活动，隔离保证不覆盖 ID 数值，PROP13 在 canonical 重命名下比较。
+- **branch 表**（全局输入）：`id, name（git ref 字符集，1–128 字节，main 保留）, parent, fork_epoch, state ∈ {Open, Archived}, syncs`。Op：`CreateBranch{name}`（在父 branch 的 batch 中且独占该 batch；fork_epoch = 该提交的 epoch）、`ArchiveBranch{name}`（在被归档 branch 上且独占；之后该 branch 的 batch → `BranchArchived`；main 不可归档；不支持删除）。
+- **按 branch 的状态**：heads、base、enabled、artifact open、`anchor_unobserved`、ValidationRecord、metadata、watermark、policy、可见集合与 sync points；派生状态（counting、L1/L2、cycle 图与 topo rank、ChangeLog、history、digest）亦按 branch。digest 不含 head currency；branch 表条目与 sync point 只计入**接收方** branch 的 digest。fork 为 O(1) 共享（COW），不复制历史。
+- **head currency 按 branch**：branch b 内，b 的 head 为 CURRENT，否则 SUPERSEDED；`BRANCH_ONLY` 仅在 main 的 current-mode 读取中标注“在 main 被取代、但是某个 open branch 的 head”的可见 revision，汇总为 `STALE(HeadSuperseded)`；历史 / 快照读取不报告 BRANCH_ONLY（T13）。b 中新建未合并的 revision 在 main 不可见（`UnknownRef`）。
+- **sync point 与 merge base**：fork 记 (parent, child) = parent@fork_epoch；merge S→T 记 {S, T} = S@merge_epoch。sync point 是输入（进快照、可重放），全部保留（P10 前不修剪）。merge 基点 B 为“同时被 S 与 T 当前包含”的 sync-point 状态中的极大者（包含关系沿 sync point 与 branch 自身历史传递）；多个极大者（criss-cross）时，对 S≠T 且各候选基值不一致的值一律判冲突（fail closed）。
+- **merge 三方分类**（逐 head、base、enabled、(rule, curvec) 的 ValidationRecord、artifact open、metadata 键、policy；“不存在”为独立取值）：S 未变 → 保留 T；仅 S 变 → 取 S；两边变且相同 → 收敛；两边变且不同 → 冲突。head 冲突：保留 T 的 head 并对其开 Conflict artifact；ValidationRecord 冲突：对规则结论 revision 开 Conflict；criss-cross 下 base / enabled / artifact open 冲突分别对该 revision / 规则结论 / artifact 目标开 Conflict；policy 冲突 → `MergeConflict{Policy}`（拒绝）；metadata 冲突不开 gating artifact（SD7），保留 T 的值并列入 merge 结果，dirs 按路径前缀求交、空结果视为冲突而不应用。冲突 artifact 按 (kind, logical id, rule id) 规范顺序打开，payload 由内核按规范编码导出。
+- **merge 步骤**：可见性引入 → 按 RuleId 升序在 T 的 cycle 图上重检（`CycleDetected` 拒绝）→ 应用分类结果（head 移动对 T 的合并前 head 做 CAS；新可见规则与 revision 作为新对象 seed）→ 重算状态 → `require_certified` 检查 → 写 sync point → 类型化结果。`require_certified`（默认 true，D2）：`certify` 为空时，被 merge 移动 head 的 logical 与被 merge 开冲突的 logical 都须 CERTIFIED，否则 `MergeNotCertified`（含冲突的默认 merge 因此被拒）。
+- **observer 域与 merge**：对 T 中已可见的 logical，merge 不取仅 observer 通道可写的状态（CodeAnchor 的 head / base、AnchorBroken、ObserverWatermark），因此 agent 通道可执行 merge。新可见的 CodeAnchor logical 以 S 的 head / base 作为初始观察，并置 `anchor_unobserved`：期间无论 watermark 如何都读作 `PENDING(ObservationLag)`（**SD14b 扩展**）；T 上提交覆盖该 scope 的 `ObserverWatermark` 时清除。
+- **跨 branch 规则去重（SD6 例外）**：`AddRule` 的 canonical 去重跨 branch 进行，命中不可见的同 canonical 规则时复用其 RuleId、引入当前 branch 可见集合并按 Op 设置本 branch 的 enabled；仍占用 `New(k)` 序号、计入 new_rules、进入本 branch cycle 图（可 `CycleDetected`）；`Rebind` 同理。
+- **session 与 git（D1）**：session 起始时绑定显式给出的 branch，否则绑定与当前 git branch 同名且 open 的 branch，否则 main；整个 session 固定。observer 按其 worktree 当前 git branch 的同名 branch 提交，否则 main。git merge 后由显式 `ctx_merge` / `ctx merge` 认定。agent 可创建、提交与合并（含合并进 main）。
 
 ### 2.4 已决策的取舍（2026-10-19 用户确认，见 `docs/adr/0001-semantic-decisions.md`）
 
@@ -362,7 +374,7 @@ commit(batch):
              head_moves → exact_by_rev[old|new] ∪ pin_by_rev[old|new] 的 incidence；
                           sem_by_logical[l] 的规则 gate
              RecordValidation(j) → 规则 j 的 gate
-             base_flips、Conflict open/resolve（P7）→ 对应节点
+             base_flips、Conflict open/resolve（P6 起，v1.6.8）→ 对应节点
              L1/L2 翻转的 r 若是 head(l(r)) → sem_by_logical[l(r)] 的 Sem incidence（经 V_l 的 rank）
            同一 rank 序传播（rank 含 V_l 节点），L1/L2 各自维护 active/counted 位
   Phase 4  持久化（P2 起：op log append 并 durable 之后才 ack）→ 发布 snapshot 与 diff（l0_flips + status_diff，SD8.4）→ epoch += 1
@@ -618,8 +630,8 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `BRANCH_ONLY` head currency。
 
 **Gate P6**
-- G2：T14、T19（全部变体）、T20a、T20b、T47、T48、T72、T73、T75、S13-rows-e2e（BRANCH_ONLY 行）。
-- G3：PROP13（branch 派生状态 == 在 branch 输入上运行 oracle）；PROP7 扩展到 branch 操作。
+- G2：T14、T19（全部变体，见 ADR 0013 §11）、T20a、T20b、T47、T48、T51、T62（跨 branch）、T72、T73、T75、S13-rows-e2e（BRANCH_ONLY 与 CONFLICTED 行）；可见性、merge base、分类、observer 域与跨 branch 规则去重 goldens（ADR 0013 §11）。
+- G3：PROP13（branch 派生状态 == 在 branch 输入上运行**独立** oracle branch 模型）；PROP7 扩展到 branch 操作；oracle 实现 Conflict node gate（SD17）。
 - G4：并发 branch 创建 / 提交 / merge stress；I4 跨 branch 成立。
 - G5（initial）：创建 branch O(1)（不复制历史）；WHAT_IF 成本 ≤ 等价真实 commit 的 2×（不含 durable sync）。
 
@@ -638,7 +650,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `ctx_changes(since_epoch)` 与订阅流。
 
 **Gate P7**
-- G2：T49、T50、T51、T52、T53、S13-rows-e2e（CONFLICTED 行）。
+- G2：T49、T50、T52、T53（T51 与 CONFLICTED 行已于 v1.6.8 移至 P6，P7 保持回归）。
 - G3：oracle 扩展 Conflict node gate（SD17）并精确比较；PROP1 加入 Conflict 操作。
 - G6：mock validator 的确定性场景 + 一次真实 LLM validator 的小规模评测，报告 validator 调用数、token、与独立参考标签的一致率及标签来源（确定性 oracle 或独立 agent；人工标签可选），争议/无法判定项单列（**单独报告，不与内核正确性混合**）。
 
@@ -767,6 +779,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 9. **ObserverWatermark**：`scope: String`（≤ 256 字节），`position: Bytes`（≤ 64 字节，只比较相等），`expected: Option<Bytes>`（`None` 表示该 scope 尚无 watermark）。
 10. **SetMetadata**：dirs 是相对目录路径集合；空集合表示未收窄。目录非空，不能包含空分段、`.`、`..` 或 `*`。已有 dirs 非空时，后续每个目录必须等于或位于某个已有目录之下，且不能恢复为空集合。非法或扩大范围返回 `InvalidMetadata`；tags 不参与派生状态。该错误在引用与通道检查之后、CAS 之前检查。
 11. **P0 EventLog v0**：每行规范 JSON 为 `{"version":0,"batch_hex":"..."}`；batch_hex 是 model 的规范小端二进制编码的十六进制。规范键顺序固定，支持空行，未知 version 拒绝。二进制按声明字段顺序编码，枚举 tag、集合长度与字节边界详见 `docs/EVENTLOG.md`。这是 P0 的测试 trace 格式，P2 durable op_log 另行版本化。P0 仅接受 MAIN branch，其他 branch 返回 UnknownRef。
+12. **Read set（P6）**：`ExpectHeads{entries, source: Client|Certificate(cert_id)}` 在 batch 末尾检查（A5 `PolicyViolation` 之后），逐项与**该 batch 之前**本 branch 已提交的 head 比较，不等 → `ReadSetConflict{logical, read, now}`；同一 logical 多个不同值或 `New` 引用 → `InvalidReadSet`；`source: Certificate` 只能由 daemon actor 追加（客户端提交 → `ChannelRestricted`）。`ctx_commit(expect_cert_valid=true)`：actor 在同组前序 batch 之后、本 batch 之前按完整证书判定校验（非 Valid/ValidRecertified 即拒绝；ValidRecertified 用新 vector），再追加 `ExpectHeads{Certificate}`；幂等以客户端 hash（客户端 ops + flag + cert_id，不含追加项）判定并持久化于 op_log 帧。
+13. **Branch Op（P6）**：`CreateBranch`、`ArchiveBranch` 须独占 batch，`Merge` 只能与 `ExpectHeads` 同 batch，否则 `SoleOpRequired`；`Merge` 不分配新 revision，A5 对其为空检查；merge 结果以 `CommitResult` 的版本化尾部返回（op_log 格式 3，ADR 0013 §8）。
 
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
@@ -804,6 +818,12 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `CapacityExceeded{kind}` | ID / 计数器溢出（§3.3 checked） | 同名 |
 | `ReadSetConflict{logical, read, now}` | P6 read-set 认证 | 同名 |
 | `MergeNotCertified{logical, status}` | SD19 `require_certified` merge | 同名 |
+| `BranchExists{name}` / `InvalidBranchName{name}` / `UnknownBranch` / `BranchArchived{name}` | P6 branch 管理（SD19 补充） | 同名 |
+| `SoleOpRequired{op}` | CreateBranch / ArchiveBranch 未独占，或 Merge 与 ExpectHeads 以外的 Op 同 batch | 同名 |
+| `InvalidMerge` / `MergeConflict{kind}` | merge 源不存在或等于目标；policy 不可合并 | 同名 |
+| `InvalidReadSet{logical}` | ExpectHeads 重复或 `New` 引用 | 同名 |
+
+**P6 检查顺序**（v1.6.8，ADR 0013 §9）：幂等 → store 可编码性 → batch 级 `UnknownBranch → BranchArchived → SoleOpRequired` → 各 Op（ExpectHeads：`UnknownRef → ChannelRestricted → InvalidReadSet`；CreateBranch：`InvalidBranchName → BranchExists → CapacityExceeded{Branch}`；Merge：`InvalidMerge → MergeConflict{Policy} → CycleDetected → UnknownRef(certify)`）→ batch 末 `PolicyViolation → ReadSetConflict → MergeNotCertified`。
 
 **单个 Op 的检查顺序**（规范性；oracle 与 front-end 相同，PROP1 / P0 G3 的错误等价按此判定）：
 `UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。P2 起 store 在所有 Op 检查之前做 batch 级检查：先幂等（`TxnIdReuse` 或返回原结果），再编码容量（`CapacityExceeded{kind: Encoding}`）。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
@@ -820,13 +840,17 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径）；P4 起 `context_update` 在 MCP 中只是不消费的 peek，由 UserPromptSubmit 确认（ADR 0010 A6） |
 | `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker |
 | `ctx_txn_status` | `(client_txn_id)` → `Committed{epoch, result} \| NotCommitted`；所有写工具都接受可选 `client_txn_id` | P3 |
-| `ctx_commit` | 多 head 原子 + `expect_cert_valid` | P6 |
-| `ctx_branch` / `ctx_what_if` / `ctx_merge` | | P6 |
+| `ctx_commit` | `(ops, expect_cert_valid?, client_txn_id?)`：多 head 原子；expect_cert_valid 见 §6.1 契约 12 | P6 |
+| `ctx_branch` | `(create\|list\|archive, name?)` | P6 |
+| `ctx_what_if` | `(ops)` → diff；在 standby replica 上以 undo journal 执行后回滚，不写 op_log、不分配持久 ID、不推进 epoch | P6 |
+| `ctx_merge` | `(source, require_certified = true, certify?)` → 类型化 merge 结果 | P6 |
 | `ctx_conflicts` / `ctx_resolve` / `ctx_handoff_begin` / `ctx_handoff_accept` / `ctx_changes` | | P7 |
 
 所有工具返回逐维度状态，汇总遵守 SD13。
 
 ### 6.4 Certificate
+
+**Branch（v1.6.8）**：证书绑定签发 session 的 branch，按该 branch 的状态与 ChangeLog 校验；在其他 branch 出示 → `Invalid`（原因 `BranchMismatch`，按 `Denied > Invalid > …` 聚合）。其他 branch 的提交从不改变证书判定（T62 跨 branch）。
 
 ```
 Certificate {
@@ -888,13 +912,15 @@ Certificate {
 
 `ctx init | status | check [--strict] | why | why-not | impact | log | diff | replay | doctor [--rebuild] | reindex | export-mirror | gate-report <Pn>`
 
+P6：`ctx branch create|list|archive <dir> …`、`ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K …]`；`status / why / why-not / impact / diff / validate / policy apply` 接受 `--branch`。
+
 ---
 
 ## 7. 数据与存储格式
 
 ```sql
 op_log(epoch, branch, batch_blob, principal, channel, client_txn_id NULL /*唯一*/,
-       batch_hash, result_blob, prev_checksum, checksum)   -- 唯一真相源：自有分段日志的帧（ADR 0006），一帧 = 一个完整已提交 batch；hash 链
+       client_hash /*格式 3：幂等用客户端 hash*/, batch_hash, result_blob, prev_checksum, checksum)   -- 唯一真相源：自有分段日志的帧（ADR 0006），一帧 = 一个完整已提交 batch；hash 链
 -- 以下表为 SQLite 中的可重建投影，带 projection_watermark(epoch)
 logicals(id, key UNIQUE, kind, scope_lane, dirs_json, owner, origin_branch, origin_epoch)
 revisions(id, logical_id, payload_ref /*blake3*/, content_hash, code_commit,
@@ -907,6 +933,10 @@ base_history(branch, rev_id, asserted_epoch, retracted_epoch)
 rules(id, concl_rev, canonical_hash, origin_branch, origin_epoch, meta_json /*source, prompt_sha256, model*/)
 rule_enabled(branch, rule_id, enabled)                                      -- SD19 按 branch
 branch_visibility(branch, object_kind, object_id, merged_epoch)            -- SD19 merge 引入的可见性
+branches(id, name UNIQUE, parent, fork_epoch, state)                         -- P6（v1.6.8）
+branch_syncs(a, b, epoch, base_ref)                                          -- P6 sync points（全部保留）
+anchor_unobserved(branch, logical_id, epoch)                                 -- P6 merge 引入、待 observer 覆盖
+diff_log 与 watermark_history 增加 branch 列；projection_schema(version)   -- P6
 incidences(rule_id, premise_rev, kind /*Pin|Cur|Sem|Ref*/)
 validation_records(branch, rule_id, curvec_hash, curvec_json, verdict, label, validator, prompt_sha256, epoch)
 policies(branch, epoch, content_hash, policy_json)                           -- 按 branch（SD19）；正文内联
@@ -982,7 +1012,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T17 / T17b | P9 | 未授权主体 → UNAVAILABLE，不泄露 payload / witness / WHY；WHY 中未授权 premise 为 `Redacted{count}` |
 | T18 | P2 | 日志写入中断（含未同步写丢失）：所有已 ack 提交都被恢复；未 durable 的不出现；恢复状态是 durable 前缀 |
 | T18b | P2 | durable 后、ack 前崩溃：重启后该事务可见；用同一 `client_txn_id` 重试返回原 `CommitResult`，不重复应用；`txn_status` 返回 `Committed{epoch}` |
-| T19 | P6 | write skew：两个计划都读 A、B，写不同 key，第二个 `ReadSetConflict` |
+| T19 | P6 | write skew：两个计划都读 A、B，写不同 key，第二个 `ReadSetConflict`；变体：raw ExpectHeads、expect_cert_valid + head 移动、窗口内仅 base/enable/ValidationRecord/watermark 变化、同 actor 组、同 batch 先读后 supersede（须提交）、跨 branch（不冲突）、durable 未 ack 的幂等重试 |
 | T20a | P6 | branch 中 `D2[Cur]→D1@v1`，main 改为 v2，merge 后 D2 STALE |
 | T20b | P6 | 同上但 `require_certified=true` → merge 被拒 |
 | T21 | P3 | 证书向量中同一 logical 两个生效版本 → Ambiguous，签发失败 |
@@ -1028,7 +1058,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T48 | P6 | 多 head 原子提交中任一 CAS 失败 → 全部回滚 |
 | T49 | P7 | validator 提交时 curvec 已变 → `CurvecMoved`，任务重排队 |
 | T50 | P7 | LLM verdict=conflict 只产生 PendingReview，sem 保持 Pending |
-| T51 | P7 | open Conflict 阻塞 CERTIFIED 但不改变 S / L1 |
+| T51 | P6 | open Conflict 阻塞 CERTIFIED 但不改变 S / L1（v1.6.8 自 P7 移入） |
 | T52 | P7 | handoff 只能被接受一次 |
 | T53 | P7 | 同一 (rule, curvec) 并发任务只执行一次 |
 | T54 | P8 | 检索结果中 STALE 项被过滤（certified）或显式标注（advisory） |
@@ -1271,6 +1301,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.5 | 2026-10-22 | P5b G0（ADR 0012 r0.3）：symbol key 可逆编码（哈希段为冻结的源文本哈希）、文件路径禁止 `#`；descriptor `CTXANC02` 与机械导出的 normaliser 版本（仅 migrate 跨版本）；同路径声明合并代替歧义；局部解析错误规则；宿主文件粒度的 `CTXPOS02` 位置，daemon 不解析；G6 改为 missed ≤ 文件级 + 2 个百分点（owner 决定），加权点估计；新增 T42d、T42e、T45b、T46d、T46e |
 | 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |
 | 1.6.7 | 2026-10-23 | P5b G6 标注口径（ADR 0012 r0.8，owner 决定，于重测标注之后作出并披露）：纯移动或改名计为失效（锚点须重新绑定）。walk 3 重测按此口径通过：symbol FI 18.7%（≤ 文件级 79.7% 的一半），missed +0.0 pp；原口径下 FI 70.4% 未过，一并报告 |
+| 1.6.8 | 2026-10-23 | P6 G0（ADR 0013 r0.4，独立复核 + 三轮闭环）：SD19 补充（递归可见性、branch 表与 Op、按 branch 状态与 digest、currency 按 branch 与 BRANCH_ONLY 读时标注、sync point 与 merge base、三方分类与冲突、observer 域与 anchor_unobserved、跨 branch 规则去重、session/git 绑定 D1、agent 合并 D2）；SD17 Conflict gate 提前到 P6（owner 决定），不单列 PENDING(Conflict)；§6.1 契约 12（read set）与 13（branch Op）；§6.2 新错误与 P6 检查顺序；§6.3、§6.4、§6.6、§7；T51 与 CONFLICTED 行移至 P6；T19 变体 |
 | 1.6.4 | 2026-10-22 | owner 决定取消项目人工参与门槛：标注、独立复核、dogfood 维护和验收由 agent 执行（§4.4）；P5a G6 改为 ≥200 条有来源/理由/证据的 agent 标签，人工抽查和一致率仅作可选诊断（ADR 0011 r0.6 §11）；P4/P7 评测允许 agent 参考标签，保留真实使用时长、确定性 oracle、失败状态及通道/CAS/LLM 不自证边界 |
 | 1.6.3 | 2026-10-22 | P5a G6（owner 决定）：ground truth 由「≥ 200 人工标注」改为「≥ 200 预先分层抽样的 AI 预标注 + owner 在每个分层内按顺序复核前缀（每层 ≥ 5、总数 ≥ 80）且一致率 ≥ 90%」，不一致者记为有争议、只进敏感性区间；分层报告并披露非盲、非总体样本（ADR 0011 r0.5 §10） |
 | 1.6.2 | 2026-10-22 | P5a 实现复核 M2：ADR 0011 r0.4 用 O(1) 的全局 announce 记录（先通告后追加，epoch + 计数，原子替换）取代逐 stream 的 hint cutoff；丢弃的事实不再影响 freshness（采样覆盖先前编辑）；所有 outbox 写入者须为 P5a+ hook（`announce-v1` 标记）；stream GC 仍推迟 |

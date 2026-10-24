@@ -1,6 +1,7 @@
 # ADR 0013 — P6 versioned transactions, branches and WHAT_IF
 
-Status: **draft r0.4**, 2026-10-23, for the P6 G0 closure. r0.1 was
+Status: **accepted r0.4**, 2026-10-23. **P6 G0 passed.** SPEC v1.6.8
+mirrors this ADR, and the owner confirmed the SD17 gate on 2026-10-23. r0.1 was
 reviewed independently: 4 blockers, 12 majors, 6 minors. The closure check
 of r0.2 found 6 findings partial and 4 new majors plus 5 minors. The
 re-check of r0.3 found R1–R4. r0.4 answers all of them (§13). It finalises SD19 and lists the SPEC amendments that must
@@ -31,8 +32,8 @@ branch ops. Per §6.4, T51 and the S13 `CONFLICTED` row move here from P7.
 - **D2, merge permission.** Agents may create branches, commit and merge,
   including into `main`. `require_certified` defaults to **true**.
 
-**Owner confirmation still requested:** the SD17 amendment in §6.4, a
-minimal Conflict gate in P6.
+**D3, SD17 (confirmed 2026-10-23).** A minimal Conflict gate moves into P6
+(§6.4).
 
 Out of scope:
 
@@ -835,3 +836,9 @@ SPEC v1.6.8 must land with the G0 closure:
   - the `ObserverWatermark` commit clears `anchor_unobserved` (§6.2);
   - the bit is named in the digest projection (§3), the WHAT_IF journal
     (§5), the PROP13 oracle and the golden (§11).
+
+- **G0 closed (2026-10-23):** the owner confirmed D3 (the SD17 gate). SPEC
+  v1.6.8 carries the §12 amendments: the SD19 supplement, SD17, SD13,
+  SD14b, SD6, §3.4, §6.1 contracts 12 and 13 (contract 11 was already
+  taken by EventLog v0), §6.2–§6.4, §6.6, §7, the P6 and P7 gates, T51 and
+  T19.
