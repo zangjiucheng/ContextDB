@@ -390,6 +390,83 @@ fn normaliser_version_mismatch_needs_migrate() {
     let _ = std::fs::remove_dir_all(&rig.root);
 }
 
+/// ADR 0012 §3/§7: legacy '#' paths stay literal and become Broken; a
+/// colliding symbol registration must never change their descriptor kind.
+#[test]
+fn legacy_hash_file_uses_descriptor_path_and_rejects_symbol_key_collision() {
+    use contextdb_anchors::{
+        AnchorDescriptor, AnchorObservation, Descriptor,
+        capture::blob_oid,
+        observer::{state_by_key, submit},
+        prepare_anchors,
+    };
+    let rig = rig(
+        "legacy-hash",
+        &[("src/lib.rs", LIB), ("src/lib.rs#foo", "legacy bytes")],
+    );
+    let repo = contextdb_anchors::Repo::open(
+        &rig.root,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+    )
+    .unwrap();
+    // Seed a P5a descriptor directly: new registrations now prohibit '#'.
+    let descriptor = Descriptor {
+        repo: repo.id.clone(),
+        path: "src/lib.rs#foo".into(),
+        format: repo.format,
+        oid: blob_oid(repo.format, b"legacy bytes").unwrap(),
+    };
+    let key = descriptor.key();
+    let observations = [(
+        key.clone(),
+        (
+            descriptor.path.clone(),
+            AnchorObservation::Present(AnchorDescriptor::File(descriptor)),
+        ),
+    )]
+    .into();
+    let prepared = prepare_anchors(
+        &repo.id,
+        &observations,
+        &Default::default(),
+        &Default::default(),
+        None,
+        vec![0; 32],
+    )
+    .unwrap();
+    let mut client = rig.client(Channel::Observer);
+    submit(&mut client, prepared).unwrap().unwrap();
+    assert_eq!(rig.scan().0, 0);
+    let head = rig.head_of("#foo");
+    assert!(!rig.anchors()[0].base);
+    assert_eq!(rig.anchors()[0].breaks.len(), 1);
+    let captured = repo
+        .capture(
+            &["src/lib.rs#foo".to_owned()].into(),
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(
+        captured.entries["src/lib.rs#foo"],
+        contextdb_anchors::Observation::Broken("reserved-character".into())
+    );
+    let (_, committed) = state_by_key(&mut client, &repo.scope()).unwrap();
+    assert!(matches!(&committed[&key].0, AnchorDescriptor::File(d) if d.path == "src/lib.rs#foo"));
+    // Editing the apparent host must not retarget the literal legacy file.
+    rig.write(&LIB.replace("x + 1", "x + 9"));
+    assert_eq!(rig.scan().0, 0);
+    assert_eq!(rig.head_of("#foo"), head);
+    // Both spellings encode the same key. Adding the symbol must fail
+    // atomically, rather than rewriting the old logical's descriptor kind.
+    let before = rig.state();
+    let (rc, out) = ctx(&["anchors", "add", rig.ds(), rig.rs(), "src/lib.rs#foo"]);
+    assert_ne!(rc, 0, "collision was accepted: {out}");
+    assert!(out.contains("legacy") && out.contains("rename"), "{out}");
+    assert_eq!(rig.state(), before);
+    drop(rig.daemon);
+    let _ = std::fs::remove_dir_all(&rig.root);
+}
+
 /// A repository with `src/lib.rs` committed and a daemon on `.contextdb/db`.
 fn rig(name: &str, files: &[(&str, &str)]) -> Rig {
     let root = temp(name);

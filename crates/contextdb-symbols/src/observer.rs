@@ -154,6 +154,16 @@ pub fn targets(
             "{scope}/{path}#{}",
             contextdb_anchors::symbol::encode_symbol(symbol).map_err(unavailable)?
         );
+        // Legacy file paths may contain '#'. A matching logical key belongs
+        // to that file forever; never revise it into a different anchor kind.
+        if committed
+            .get(&key)
+            .is_some_and(|(d, _)| matches!(d, AnchorDescriptor::File(_)))
+        {
+            return Err(unavailable(format!(
+                "LogicalExists: {key} belongs to a legacy file anchor; rename that file"
+            )));
+        }
         symbols.insert(key, (path.clone(), symbol.clone()));
     }
     Ok((files, symbols))
