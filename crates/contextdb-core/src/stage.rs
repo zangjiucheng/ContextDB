@@ -45,6 +45,9 @@ pub(crate) struct Stage<'a> {
     /// `ExpectHeads` entries (SPEC §6.1 contract 12), checked at batch end
     /// against the published (pre-batch) heads.
     pub read_set: BTreeMap<LogicalId, RevisionId>,
+    /// Keys taken by logicals invisible here (the global key namespace,
+    /// SD19); None for a single-branch database.
+    pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
 }
 impl<'a> Stage<'a> {
     pub fn new(
@@ -79,7 +82,12 @@ impl<'a> Stage<'a> {
             new_rule_keys: BTreeMap::new(),
             incidences: index.inc_rule.len() as u64,
             read_set: BTreeMap::new(),
+            foreign_key: None,
         }
+    }
+    /// Whether another branch's logical holds `key` (SD19's one exception).
+    pub fn key_taken_elsewhere(&self, key: &str) -> bool {
+        self.foreign_key.is_some_and(|taken| taken(key))
     }
     /// The head before this batch; logicals created in the batch have none.
     pub fn published_head(&self, l: LogicalId) -> Option<RevisionId> {

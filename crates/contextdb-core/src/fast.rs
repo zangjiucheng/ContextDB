@@ -100,7 +100,6 @@ impl Undo {
         revisions: &RevisionArena,
         rules: &mut RuleArena,
         b: &Batch,
-        epoch: Epoch,
     ) -> Result<Self, TxError> {
         let mut undo = Self::default();
         let result = (|| {
@@ -170,9 +169,6 @@ impl Undo {
                     });
                 }
             }
-            epoch.0.checked_add(1).ok_or(TxError::CapacityExceeded {
-                kind: CapacityKind::Epoch,
-            })?;
             Ok(())
         })();
         if let Err(error) = result {

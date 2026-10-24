@@ -366,7 +366,7 @@ pub(crate) fn apply<S: StatsSink>(
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
-            if i.find_key(&key).is_some() {
+            if i.find_key(&key).is_some() || i.key_taken_elsewhere(&key) {
                 return Err(TxError::LogicalExists { key });
             }
             id(i.logical_count(), CapacityKind::Logical)?;

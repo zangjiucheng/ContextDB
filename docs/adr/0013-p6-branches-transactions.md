@@ -1,6 +1,7 @@
 # ADR 0013 — P6 versioned transactions, branches and WHAT_IF
 
-Status: **accepted r0.4**, 2026-10-23. **P6 G0 passed.** SPEC v1.6.8
+Status: **accepted r0.4**, 2026-10-23, with the r0.5 implementation note
+(§3.1). **P6 G0 passed.** SPEC v1.6.8
 mirrors this ADR, and the owner confirmed the SD17 gate on 2026-10-23. r0.1 was
 reviewed independently: 4 blockers, 12 majors, 6 minors. The closure check
 of r0.2 found 6 findings partial and 4 new majors plus 5 minors. The
@@ -187,6 +188,43 @@ read-only.
 copy after its first structural commit. G5 reports the per-branch overhead.
 There is no hard budget in P6 (initial). Archived branches' derived state
 can be evicted.
+
+### 3.1 Implementation note (r0.5, 2026-10-23)
+
+The first kernel milestone realises §3 with coarser sharing. Semantics are
+unchanged; only the representation differs.
+
+- **One single-branch `Db` per branch.** It holds exactly the objects
+  visible on that branch, under branch-local dense ids. Visibility is
+  therefore membership; there are no visibility bitsets and no invisible
+  neighbours to skip. Isolation holds by construction: a commit runs on one
+  branch's database.
+- **Global ids at the boundary.** The kernel keeps the global counters and,
+  per branch, a local ⇄ global id map. Batches arrive with global ids and
+  results and errors leave with them.
+  - A global id with no local counterpart maps to a sentinel, so the branch
+    resolver reports `UnknownRef` at the right Op (§6.2 order).
+  - A batch may name an object it staged by the global id that object will
+    receive (`next + i`), exactly as the single-branch engine allows with
+    dense ids.
+  - Errors that name staged objects report the global id they would have
+    received.
+- **Global key namespace.** The branch database consults a callback for
+  keys taken on other branches, so `LogicalExists` (T75) is raised in its
+  normal place.
+- **Fork** clones two `Arc`s: O(1) in the store size. The **first write**
+  to either side copies that branch's whole database (`Arc::make_mut`),
+  O(N), once; later writes are ordinary in-place commits. This replaces the
+  per-chunk copy of §3. G5 measures fork time and first-write time. If the
+  first write misses the branch-commit budget, the chunked columns of §3
+  move inside `Db` behind the same kernel interface.
+- **Digest per branch.** It is the branch database's digest under its local
+  ids. Local ids are dense in creation order on that branch, so the
+  projection is canonical. Branch-table entries and sync points join it
+  with the merge milestone.
+- **Equivalence.** With only `main`, global and local ids coincide and the
+  kernel returns the single-branch results, errors, epochs and digests
+  (tested on 1,000 generated traces).
 
 ## 4. Transactions: multi-head atomicity and read-set certification
 
@@ -842,3 +880,7 @@ SPEC v1.6.8 must land with the G0 closure:
   SD14b, SD6, §3.4, §6.1 contracts 12 and 13 (contract 11 was already
   taken by EventLog v0), §6.2–§6.4, §6.6, §7, the P6 and P7 gates, T51 and
   T19.
+- **r0.5** (2026-10-23): implementation note §3.1. Each branch is a
+  single-branch database with local ids behind a global id map. Fork is
+  O(1); the first write copies the branch, O(N), which G5 measures. No
+  semantic change.

@@ -12,6 +12,8 @@ mod cert;
 pub use cert::{HistoryUnavailable, IssueRequest, LogLink};
 mod fast;
 mod history;
+mod kernel;
+pub use kernel::{BranchInfo, BranchView, Kernel, valid_branch_name};
 mod memory;
 pub use history::{EpochDiff, Impact, NodeChange, diff_rows};
 pub use memory::MemoryFootprint;
@@ -40,6 +42,18 @@ pub use view::InputView;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitTiming {
     pub total_nanos: u128,
+}
+/// How the multi-branch kernel commits into one branch's database (ADR 0013
+/// r0.5): at the global epoch, for any branch id, with the global key
+/// namespace.
+#[derive(Clone, Copy, Default)]
+pub struct CommitContext<'a> {
+    /// The global epoch of this commit; None means `epoch + 1`.
+    pub epoch: Option<Epoch>,
+    /// Set by the kernel: the batch's branch is this database's branch.
+    pub kernel: bool,
+    /// Keys taken by logicals not visible in this branch.
+    pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
 }
 #[derive(Clone, Debug)]
 pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
@@ -288,6 +302,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn revision_count(&self) -> usize {
         self.revisions.len()
     }
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+    pub fn artifact_count(&self) -> usize {
+        self.tables.artifacts.len()
+    }
     /// Logical by key (SPEC §6.1 contract 6).
     pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
         self.logicals.find_key(key)
@@ -396,6 +416,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
     ) -> Result<CommitResult, TxError> {
+        self.commit_in(b, blobs, &CommitContext::default())
+    }
+    /// Commit for the multi-branch kernel (see `CommitContext`).
+    pub fn commit_in(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+        ctx: &CommitContext<'_>,
+    ) -> Result<CommitResult, TxError> {
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
         // Rebind mutates a RuleId's premises. Retain only its pre-change rows
@@ -413,7 +442,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 _ => None,
             })
             .collect();
-        let result = self.commit_inner(b, blobs);
+        let result = self.commit_inner(b, blobs, ctx);
         if let Ok(committed) = &result {
             for (rule, old) in rebound {
                 self.changes
@@ -435,14 +464,29 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         &mut self,
         b: &Batch,
         blobs: &dyn BlobPresence,
+        ctx: &CommitContext<'_>,
     ) -> Result<CommitResult, TxError> {
-        if b.branch != MAIN {
+        if b.branch != MAIN && !ctx.kernel {
             return Err(TxError::UnknownRef);
         }
+        let next = match ctx.epoch {
+            Some(e) => {
+                crate::invariant_assert!(e > self.epoch, "commit epochs increase");
+                e
+            }
+            None => Epoch(
+                self.epoch
+                    .0
+                    .checked_add(1)
+                    .ok_or(TxError::CapacityExceeded {
+                        kind: CapacityKind::Epoch,
+                    })?,
+            ),
+        };
         if fast::eligible(b) {
-            return self.commit_mutable(b);
+            return self.commit_mutable(b, next);
         }
-        self.commit_structural(b, blobs)
+        self.commit_structural(b, blobs, next, ctx.foreign_key)
     }
     /// Structural batches (ADR 0007): validate against an overlay, publish
     /// incrementally, then walk statuses from the net-delta seeds.
@@ -450,14 +494,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         &mut self,
         b: &Batch,
         blobs: &dyn BlobPresence,
+        next: Epoch,
+        foreign_key: Option<&dyn Fn(&str) -> bool>,
     ) -> Result<CommitResult, TxError> {
         #[cfg(any(debug_assertions, feature = "paranoid"))]
         let pk_before = self.pk.clone();
         let pk_mark = self.pk.begin();
         let mut stats = S::default();
         let mut allocations = Allocations::default();
-        let now = self.epoch;
-        let next = Epoch(now.0.saturating_add(1));
         let mut staged = stage::Stage::new(
             &self.tables,
             &self.logicals,
@@ -465,6 +509,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             &self.rules,
             &self.indexes,
         );
+        staged.foreign_key = foreign_key;
         let pk = &mut self.pk;
         let result = (|| {
             for (n, op) in b.ops.iter().enumerate() {
@@ -483,12 +528,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             txn::final_policy(&staged)?;
             txn::final_read_set(&staged)?;
             pk.sync(&staged, b.ops.len().saturating_sub(1), &mut stats)?;
-            now.0
-                .checked_add(1)
-                .map(Epoch)
-                .ok_or(TxError::CapacityExceeded {
-                    kind: CapacityKind::Epoch,
-                })
+            Ok::<_, TxError>(next)
         })();
         let stage::Stage {
             new_logicals,
@@ -635,17 +675,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             stats,
         ))
     }
-    fn commit_mutable(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+    fn commit_mutable(&mut self, b: &Batch, epoch: Epoch) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
             &mut self.tables,
             &self.logicals,
             &self.revisions,
             &mut self.rules,
             b,
-            self.epoch,
         )?;
         let delta = undo.delta(&self.tables, &self.rules);
-        let epoch = Epoch(self.epoch.0 + 1); // checked by stage
         let old_revisions = self.revisions.len();
         Ok(self.finish(
             undo,
