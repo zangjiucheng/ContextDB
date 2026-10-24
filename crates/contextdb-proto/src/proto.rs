@@ -7,7 +7,7 @@ use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -148,11 +148,16 @@ pub enum WriteTarget {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// `branch` names the session's branch explicitly; otherwise the
+    /// branch named like `git_branch` (the client's checked-out git branch)
+    /// if it exists and is open, else `main` (ADR 0013 §7, D1).
     SessionStart {
         harness: String,
         repo: String,
         head_sha: String,
         parent: Option<SessionId>,
+        branch: Option<String>,
+        git_branch: Option<String>,
     },
     SessionEnd {
         session: SessionId,
@@ -244,6 +249,8 @@ pub enum Request {
         harness_session: String,
         repo: String,
         head_sha: String,
+        branch: Option<String>,
+        git_branch: Option<String>,
     },
     /// Claude Code PreToolUse on a ContextDB MCP tool: the call with this
     /// tool-use id acts for this session and agent (ADR 0010 §2.3).
@@ -280,8 +287,12 @@ pub enum Request {
         limit: u32,
     },
     /// Bounded committed scope state, observer/admin only (ADR 0011).
+    /// `branch` is the observer worktree's git branch: the scope is read
+    /// (and its next batch committed) on the branch of that name if it
+    /// exists and is open, else `main` (ADR 0013 §7, m3).
     AnchorState {
         scope: String,
+        branch: Option<String>,
     },
     /// Point-in-time range check of all current roots reachable from anchors.
     CheckAnchors {
@@ -422,6 +433,8 @@ pub enum Response {
         next: u64,
     },
     AnchorState {
+        /// The branch the state was read on; the observer commits there.
+        branch: BranchId,
         watermark: Option<Vec<u8>>,
         anchors: Vec<AnchorEntry>,
     },
@@ -696,12 +709,16 @@ impl Wire for Request {
                 repo,
                 head_sha,
                 parent,
+                branch,
+                git_branch,
             } => {
                 0u8.encode(o);
                 harness.encode(o);
                 repo.encode(o);
                 head_sha.encode(o);
                 parent.encode(o);
+                branch.encode(o);
+                git_branch.encode(o);
             }
             Self::SessionEnd { session } => {
                 1u8.encode(o);
@@ -838,12 +855,16 @@ impl Wire for Request {
                 harness_session,
                 repo,
                 head_sha,
+                branch,
+                git_branch,
             } => {
                 17u8.encode(o);
                 harness.encode(o);
                 harness_session.encode(o);
                 repo.encode(o);
                 head_sha.encode(o);
+                branch.encode(o);
+                git_branch.encode(o);
             }
             Self::Claim {
                 session,
@@ -892,9 +913,10 @@ impl Wire for Request {
                 since.encode(o);
                 limit.encode(o);
             }
-            Self::AnchorState { scope } => {
+            Self::AnchorState { scope, branch } => {
                 23u8.encode(o);
                 scope.encode(o);
+                branch.encode(o);
             }
             Self::CheckAnchors {
                 scope,
@@ -917,6 +939,8 @@ impl Wire for Request {
                 repo: Wire::decode(i)?,
                 head_sha: Wire::decode(i)?,
                 parent: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                git_branch: Wire::decode(i)?,
             },
             1 => Self::SessionEnd {
                 session: Wire::decode(i)?,
@@ -999,6 +1023,8 @@ impl Wire for Request {
                 harness_session: Wire::decode(i)?,
                 repo: Wire::decode(i)?,
                 head_sha: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                git_branch: Wire::decode(i)?,
             },
             18 => Self::Claim {
                 session: Wire::decode(i)?,
@@ -1027,6 +1053,7 @@ impl Wire for Request {
             },
             23 => Self::AnchorState {
                 scope: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
             },
             24 => Self::CheckAnchors {
                 scope: Wire::decode(i)?,
@@ -1162,8 +1189,13 @@ impl Wire for Response {
                 entries.encode(o);
                 next.encode(o);
             }
-            Self::AnchorState { watermark, anchors } => {
+            Self::AnchorState {
+                branch,
+                watermark,
+                anchors,
+            } => {
                 20u8.encode(o);
+                branch.encode(o);
                 watermark.encode(o);
                 anchors.encode(o);
             }
@@ -1250,6 +1282,7 @@ impl Wire for Response {
                 next: Wire::decode(i)?,
             },
             20 => Self::AnchorState {
+                branch: Wire::decode(i)?,
                 watermark: Wire::decode(i)?,
                 anchors: Wire::decode(i)?,
             },
@@ -1340,6 +1373,7 @@ mod tests {
         vec![
             Request::AnchorState {
                 scope: "code:repo".into(),
+                branch: Some("feature/x".into()),
             },
             Request::CheckAnchors {
                 scope: "code:repo".into(),
@@ -1352,6 +1386,8 @@ mod tests {
                 repo: "r".into(),
                 head_sha: "abc".into(),
                 parent: Some([1; 16]),
+                branch: None,
+                git_branch: Some("main".into()),
             },
             Request::SessionEnd { session: s },
             Request::Recall {
@@ -1454,6 +1490,8 @@ mod tests {
                 harness_session: "abc".into(),
                 repo: "r".into(),
                 head_sha: "h".into(),
+                branch: Some("b".into()),
+                git_branch: None,
             },
             Request::Claim {
                 session: s,
@@ -1489,6 +1527,7 @@ mod tests {
     fn responses() -> Vec<Response> {
         vec![
             Response::AnchorState {
+                branch: BranchId(2),
                 watermark: Some(vec![1; 32]),
                 anchors: vec![AnchorEntry {
                     logical: LogicalId(1),

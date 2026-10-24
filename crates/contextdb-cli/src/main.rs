@@ -121,22 +121,32 @@ fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
         .catch_up_projections()
         .map_err(|e| format!("projections: {e:?}"))?;
     println!("projections complete through epoch {}", mark.0);
-    let db = store.db().map_err(|e| format!("{e:?}"))?;
-    let inputs = db.inputs();
-    let oracle = contextdb_oracle::jacobi(&inputs);
-    if DerivedView::derived(db) != &oracle {
-        return Err("derived state differs from the oracle".into());
+    // Every branch (ADR 0013): each database is checked under its own ids.
+    let kernel = store.kernel().map_err(|e| format!("{e:?}"))?;
+    let mut contents = std::collections::BTreeSet::new();
+    let mut revisions = 0;
+    for info in kernel.branches() {
+        let db = kernel.branch(info.id).expect("listed").db();
+        let inputs = db.inputs();
+        if DerivedView::derived(db) != &contextdb_oracle::jacobi(&inputs) {
+            return Err(format!(
+                "{}: derived state differs from the oracle",
+                info.name
+            ));
+        }
+        revisions += inputs.revisions.len();
+        contents.extend(inputs.revisions.iter().map(|r| r.content));
     }
     println!(
-        "oracle check: derived state == jacobi(inputs) for {} revisions",
-        inputs.revisions.len()
+        "oracle check: derived state == jacobi(inputs) on {} branches ({revisions} revisions)",
+        kernel.branches().count()
     );
     let mut problems = 0;
-    for (n, r) in inputs.revisions.iter().enumerate() {
+    for content in &contents {
         if let contextdb_store::Payload::Unavailable(why) =
-            store.get_blob(&r.content).map_err(|e| format!("{e:?}"))?
+            store.get_blob(content).map_err(|e| format!("{e:?}"))?
         {
-            println!("revision {n}: payload {why:?} ({})", hex(&r.content));
+            println!("payload {why:?} ({})", hex(content));
             problems += 1;
         }
     }

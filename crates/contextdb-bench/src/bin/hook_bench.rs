@@ -96,6 +96,8 @@ fn attach(c: &mut Client, key: &str) -> SessionId {
             harness_session: key.into(),
             repo: String::new(),
             head_sha: String::new(),
+            branch: None,
+            git_branch: None,
         },
     ) {
         Response::Attached { session, .. } => session,

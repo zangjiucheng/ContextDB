@@ -286,6 +286,14 @@ impl<B: Backend> Server<B> {
             repo: self.repo.clone(),
             head_sha: self.head_sha.clone(),
             parent: None,
+            // The session's branch (ADR 0013 §7, D1): `CONTEXTDB_BRANCH`, else
+            // the branch named like the working directory's git branch.
+            branch: std::env::var("CONTEXTDB_BRANCH")
+                .ok()
+                .filter(|b| !b.is_empty()),
+            git_branch: contextdb_proto::git::checked_out_branch_above(std::path::Path::new(
+                &self.repo,
+            )),
         })?;
         match env.response {
             Response::Session { session } => {

@@ -41,6 +41,8 @@ fn start(s: &Service<SimDisk>) -> SessionId {
             repo: "r".into(),
             head_sha: "h".into(),
             parent: None,
+            branch: None,
+            git_branch: None,
         },
     ) {
         Response::Session { session } => session,

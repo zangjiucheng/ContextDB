@@ -87,6 +87,8 @@ fn attach_repo(s: &Service<SimDisk>, key: &str, repo: &str) -> (SessionId, bool)
             harness_session: key.into(),
             repo: repo.into(),
             head_sha: "h".into(),
+            branch: None,
+            git_branch: None,
         },
     ) {
         Response::Attached { session, created } => (session, created),
@@ -1104,6 +1106,8 @@ fn briefing_counts_pending_heads_and_stop_writer_syncs_lazy_events() {
                 harness_session: "k".into(),
                 repo: String::new(),
                 head_sha: String::new(),
+                branch: None,
+                git_branch: None,
             },
         )
         .response

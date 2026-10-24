@@ -135,6 +135,8 @@ fn attach(c: &mut Client, harness: &str, key: &str) -> SessionId {
             harness_session: key.into(),
             repo: String::new(),
             head_sha: String::new(),
+            branch: None,
+            git_branch: None,
         })
         .unwrap()
         .response

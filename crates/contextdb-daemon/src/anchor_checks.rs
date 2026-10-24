@@ -10,7 +10,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 parent: None,
                 harness: "anchors-range".into(),
                 repo: scope.into(),
-                branch: MAIN,
+                branch: cert.branch,
                 head_sha: cert.code_commit.clone(),
                 principal: cert.principal,
                 channel: Channel::Admin,
@@ -27,7 +27,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         ]);
         self.flush()
     }
-    fn root_proof(&self, cert: Certificate, db: &Db) -> RootProof {
+    fn root_proof(&self, cert: Certificate, db: &BranchView<'_>) -> RootProof {
         let roots: Vec<_> = cert
             .entries
             .iter()
@@ -59,6 +59,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     ) -> Option<Response> {
         let (session_id, session, agent, _) = bound;
         let mut s = session.lock().expect("session");
+        let view = snap.view(s.branch);
         if s.log_broken {
             return Some(proof_response(
                 Validation::Invalid {
@@ -119,14 +120,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let filtered = targets.is_some();
         let mut selected = Vec::new();
         for e in entries {
-            let current = snap.db().head(e.logical).unwrap_or(e.rev);
+            let current = view.head(e.logical).unwrap_or(e.rev);
             let support = self
                 .root_proof(
                     Certificate {
                         cert_id: [0; 32],
                         session_id: [0; 16],
                         principal: s.principal,
-                        branch: MAIN,
+                        branch: s.branch,
                         issued_epoch: snap.epoch,
                         log_checksum_at_issue: [0; 32],
                         code_commit: String::new(),
@@ -138,7 +139,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         vector: Vec::new(),
                         strict_no_aba: false,
                     },
-                    snap.db(),
+                    &view,
                 )
                 .paths;
             let old = proofs
@@ -151,7 +152,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Validation::Unknown {
                         lag: vec!["MissingBaseline".into()],
                     },
-                    snap.db(),
+                    &view,
                     live,
                     !filtered && cert_id.is_none(),
                 ));
@@ -167,7 +168,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             let relevant = targets.as_ref().is_none_or(|t| {
                 paths.is_empty()
                     || paths.iter().any(|k| {
-                        self.anchor_file_key(snap.db(), k)
+                        self.anchor_file_key(&view, k)
                             .is_none_or(|f| t.contains(&f))
                     })
             });
@@ -214,7 +215,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             if strict {
                 let mut c = p.cert.clone();
                 c.strict_no_aba = true;
-                match snap.db().validate_certificate(
+                match view.validate_certificate(
                     &c,
                     live,
                     LogLink {
@@ -259,7 +260,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         aggregate.vector = vector.into_values().collect();
         aggregate.cert_id = *blake3::hash(&aggregate.body_bytes()).as_bytes();
-        let mut validation = match snap.db().validate_certificate(
+        let mut validation = match view.validate_certificate(
             &aggregate,
             live,
             LogLink {
@@ -338,7 +339,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     logical,
                     cert_rev: Some(old),
                     current: Some(new),
-                    summary: snap.db().summary_at(new, live).ok(),
+                    summary: view.summary_at(new, live).ok(),
                 })
                 .collect();
             if changed {
@@ -375,7 +376,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             &mut s,
             agent,
             validation,
-            snap.db(),
+            &view,
             live,
             !filtered && cert_id.is_none(),
         ))
@@ -383,7 +384,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// The file key (`code:<repo>/<path>`) an anchor key observes: itself for
     /// a file anchor, the host file for a symbol anchor. A key's path never
     /// changes, and it is read from the head descriptor.
-    fn anchor_file_key(&self, db: &Db, key: &str) -> Option<String> {
+    fn anchor_file_key(&self, db: &BranchView<'_>, key: &str) -> Option<String> {
         let logical = db.logical_by_key(key)?;
         let head = db.head(logical)?;
         let content = db.revision_content(head).ok()?;
@@ -482,7 +483,7 @@ fn proof_finish(
     s: &mut Session,
     agent: &Agent,
     validation: Validation,
-    db: &Db,
+    db: &BranchView<'_>,
     live: &BTreeMap<String, Vec<u8>>,
     consume: bool,
 ) -> Response {

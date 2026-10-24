@@ -72,6 +72,8 @@ fn t41_policy_violations_are_rejected_on_every_channel() {
             harness_session: "k".into(),
             repo: String::new(),
             head_sha: String::new(),
+            branch: None,
+            git_branch: None,
         })
         .unwrap()
         .response
@@ -119,6 +121,8 @@ fn ctx_check_exit_codes_dry_run_and_unavailable() {
             harness_session: key.into(),
             repo: String::new(),
             head_sha: String::new(),
+            branch: None,
+            git_branch: None,
         })
         .unwrap()
         .response

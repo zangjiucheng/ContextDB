@@ -48,6 +48,8 @@ fn attach(s: &Service<SimDisk>, key: &str) -> (SessionId, bool) {
             harness_session: key.into(),
             repo: "/repo".into(),
             head_sha: "h".into(),
+            branch: None,
+            git_branch: None,
         },
     ) {
         Response::Attached { session, created } => (session, created),
@@ -265,6 +267,8 @@ fn harness_keys_attach_on_first_use_and_unknown_agents_are_the_root() {
             harness_session: "thread-1".into(),
             repo: "/repo".into(),
             head_sha: "h".into(),
+            branch: None,
+            git_branch: None,
         },
     ) {
         Response::Attached { session, created } => (session, created),

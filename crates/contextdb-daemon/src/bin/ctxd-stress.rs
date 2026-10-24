@@ -56,6 +56,8 @@ fn session(c: &mut Client) -> SessionId {
         repo: "r".into(),
         head_sha: "h".into(),
         parent: None,
+        branch: None,
+        git_branch: None,
     });
     match r.map(|e| e.response) {
         Ok(Response::Session { session }) => session,

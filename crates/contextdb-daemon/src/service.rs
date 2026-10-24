@@ -7,7 +7,7 @@ use crate::{
     actor::{ActorHandle, Message, Snapshot, SubmitError},
     proto::*,
 };
-use contextdb_core::{Db, IssueRequest, LogLink};
+use contextdb_core::{BranchView, IssueRequest, LogLink};
 use contextdb_model::*;
 use contextdb_store::recall::RecallIndex;
 use contextdb_store::{
@@ -66,6 +66,9 @@ struct Session {
     principal: PrincipalId,
     head_sha: String,
     repo: String,
+    /// The branch every read, write, check and certificate of the session
+    /// uses, fixed for its lifetime (ADR 0013 §7, D1).
+    branch: BranchId,
     /// The harness session this session serves, if any.
     key: Option<(String, String)>,
     started_epoch: Epoch,
@@ -169,6 +172,31 @@ impl<D: Durability> Service<D> {
 type Bound = (SessionId, Arc<Mutex<Session>>, Agent, bool);
 /// Most items one recall returns (ADR 0008 §9).
 pub const MAX_RECALL: usize = 1_000;
+/// A session's branch (ADR 0013 §7, D1): the named branch, which must exist
+/// and be open; else the branch named like the client's git branch, if it
+/// exists and is open; else `main`.
+pub(crate) fn resolve_branch<D: Durability>(
+    snap: &Snapshot<D>,
+    explicit: Option<&str>,
+    git_branch: Option<&str>,
+) -> Result<BranchId, Response> {
+    let open = |name: &str| {
+        let id = snap.kernel.branch_by_name(name)?;
+        let archived = snap.kernel.branch(id)?.info().archived;
+        Some((id, archived))
+    };
+    match explicit {
+        Some(name) => match open(name) {
+            Some((id, false)) => Ok(id),
+            Some((_, true)) => Err(err("BranchArchived", format!("branch {name} is archived"))),
+            None => Err(err("UnknownBranch", format!("no branch named {name}"))),
+        },
+        None => Ok(match git_branch.and_then(open) {
+            Some((id, false)) => id,
+            _ => MAIN,
+        }),
+    }
+}
 fn random_id() -> [u8; 16] {
     use std::io::Read;
     let mut id = [0u8; 16];
@@ -355,13 +383,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     principal,
                     head_sha,
                     repo,
+                    branch,
                     started_epoch,
                     log_checksum,
                     ..
                 } => {
                     let log_broken = started_epoch > tail
                         || snap.log.checksum_at(started_epoch).ok() != Some(log_checksum);
-                    let mut session = Session::new(principal, head_sha, repo, started_epoch);
+                    let mut session =
+                        Session::new(principal, head_sha, repo, started_epoch, branch);
                     session.log_broken = log_broken;
                     map.insert(session_id, Arc::new(Mutex::new(session)));
                 }
@@ -612,14 +642,21 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// their group, so a queued writer never pins a replica the actor wants
     /// to reclaim (ADR 0008 §3.3).
     fn dispatch(&self, id: Identity, req: Request, snap: Arc<Snapshot<D>>) -> Response {
-        let db = snap.db();
+        // Unbound reads use `main` (protocol 4 adds a branch to them).
+        let db = &snap.view(MAIN);
         match req {
             Request::SessionStart {
                 harness,
                 repo,
                 head_sha,
                 parent,
+                branch,
+                git_branch,
             } => {
+                let branch = match resolve_branch(&snap, branch.as_deref(), git_branch.as_deref()) {
+                    Ok(b) => b,
+                    Err(r) => return r,
+                };
                 let session_id = random_id();
                 let log_checksum = match self.checksum(snap.epoch) {
                     Ok(c) => c,
@@ -632,6 +669,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         head_sha.clone(),
                         repo.clone(),
                         snap.epoch,
+                        branch,
                     ))),
                 );
                 self.log(vec![SessionEvent::Start {
@@ -639,7 +677,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     parent,
                     harness,
                     repo,
-                    branch: MAIN,
+                    branch,
                     head_sha,
                     principal: id.principal,
                     channel: id.channel,
@@ -806,7 +844,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => err(&code(&e), format!("{e:?}")),
                 }
             }
-            Request::AnchorState { scope } => self.anchor_state(id, &scope, &snap),
+            Request::AnchorState { scope, branch } => {
+                self.anchor_state(id, &scope, branch.as_deref(), &snap)
+            }
             Request::CheckAnchors {
                 scope,
                 paths,
@@ -890,7 +930,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 harness_session,
                 repo,
                 head_sha,
-            } => match self.attach(id, harness, harness_session, repo, head_sha, &snap) {
+                branch,
+                git_branch,
+            } => match self.attach(
+                id,
+                harness,
+                harness_session,
+                repo,
+                head_sha,
+                (branch, git_branch),
+                &snap,
+            ) {
                 Ok((session, _, _, created)) => Response::Attached { session, created },
                 Err(r) => r,
             },
@@ -939,7 +989,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 binding,
                 budget_chars,
             } => match binding.map(|b| self.bind(id, &b, &snap)).transpose() {
-                Ok(_) => self.briefing(budget_chars as usize, &snap),
+                Ok(bound) => {
+                    let branch =
+                        bound.map_or(MAIN, |(_, s, _, _)| s.lock().expect("session").branch);
+                    self.briefing(budget_chars as usize, branch, &snap)
+                }
                 Err(r) => r,
             },
             Request::Telemetry { since, limit } => {
@@ -981,6 +1035,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// The live session of a harness session key, started (durably, with
     /// its key) if there is none (ADR 0010 §2.1).
+    #[allow(clippy::too_many_arguments)]
     fn attach(
         &self,
         id: Identity,
@@ -988,6 +1043,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         harness_session: String,
         repo: String,
         head_sha: String,
+        (branch, git_branch): (Option<String>, Option<String>),
         snap: &Arc<Snapshot<D>>,
     ) -> Result<Bound, Response> {
         let key = (harness.clone(), harness_session.clone());
@@ -1016,6 +1072,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if let Some(hit) = live(self) {
             return found(hit);
         }
+        let branch = resolve_branch(snap, branch.as_deref(), git_branch.as_deref())?;
         let session_id = random_id();
         let undo = |this: &Self| {
             this.sessions.lock().expect("sessions").remove(&session_id);
@@ -1032,7 +1089,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         };
         let session = {
-            let mut st = Session::new(id.principal, head_sha.clone(), repo.clone(), snap.epoch);
+            let mut st = Session::new(
+                id.principal,
+                head_sha.clone(),
+                repo.clone(),
+                snap.epoch,
+                branch,
+            );
             st.key = Some(key.clone());
             Arc::new(Mutex::new(st))
         };
@@ -1051,7 +1114,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 parent: None,
                 harness: harness.clone(),
                 repo,
-                branch: MAIN,
+                branch,
                 head_sha,
                 principal: id.principal,
                 channel: id.channel,
@@ -1093,6 +1156,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     harness_session.clone(),
                     String::new(),
                     String::new(),
+                    (None, None),
                     snap,
                 )?;
                 // Only ids a hook reported are children; any other is the
@@ -1150,7 +1214,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     fn item_at(
         &self,
-        db: &Db,
+        db: &BranchView<'_>,
         l: LogicalId,
         r: RevisionId,
         handle: Option<String>,
@@ -1170,7 +1234,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
     }
     /// Target → (logical, revision) without session context (no handles).
-    fn resolve_plain(&self, target: &Target, db: &Db) -> Result<(LogicalId, RevisionId), Response> {
+    fn resolve_plain(
+        &self,
+        target: &Target,
+        db: &BranchView<'_>,
+    ) -> Result<(LogicalId, RevisionId), Response> {
         let head = |l: LogicalId| {
             db.head(l)
                 .map(|r| (l, r))
@@ -1228,10 +1296,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let limit = limit.clamp(1, MAX_RECALL);
-        let db = snap.db();
+        let db = &snap.view(s.lock().expect("session").branch);
         // Basic retrieval (ADR 0008 §9): exact key, then prefix, then substring.
-        let mut found: Vec<(u8, LogicalId)> = (0..db.logical_count() as u32)
-            .map(LogicalId)
+        let mut found: Vec<(u8, LogicalId)> = db
+            .logicals()
             .filter_map(|l| {
                 let (key, _, lane) = db.logical_info(l)?;
                 if !scope.is_empty() && lane != scope {
@@ -1258,7 +1326,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .search(query, scope, limit)
         {
             for (n, l) in hits.into_iter().enumerate() {
-                if l.index() < db.logical_count() && !found.iter().any(|(_, f)| *f == l) {
+                if db.logical_info(l).is_some() && !found.iter().any(|(_, f)| *f == l) {
                     found.push((3 + n.min(250) as u8, l));
                 }
             }
@@ -1351,7 +1419,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         Ok(IssueRequest {
             session_id: session,
             principal: s.principal,
-            branch: MAIN,
+            branch: s.branch,
             log_checksum: self.checksum(epoch)?,
             code_commit: s.head_sha.clone(),
             strict_no_aba: strict,
@@ -1364,7 +1432,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         mode: Mode,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let db = snap.db();
+        let db = &snap.view(s.lock().expect("session").branch);
         let resolved = match target {
             Target::Handle(h) => {
                 let s = s.lock().expect("session");
@@ -1442,7 +1510,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         &self,
         session: &Arc<Mutex<Session>>,
         deps: &[Dep],
-        db: &Db,
+        db: &BranchView<'_>,
     ) -> Result<Vec<(RevRef, EdgeKind)>, Response> {
         let mut needs_flush = false;
         let mut out = Vec::new();
@@ -1501,7 +1569,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         txn: Option<[u8; 16]>,
         snap: Arc<Snapshot<D>>,
     ) -> Response {
-        let incidences = match self.deps(&s, &deps, snap.db()) {
+        let branch = s.lock().expect("session").branch;
+        let incidences = match self.deps(&s, &deps, &snap.view(branch)) {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -1540,7 +1609,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             });
         }
         let txn = txn.unwrap_or_else(random_id);
-        let response = self.commit(id, vec![body], Batch::new(ops), Some(txn));
+        let mut batch = Batch::new(ops);
+        batch.branch = branch;
+        let response = self.commit(id, vec![body], batch, Some(txn));
         if let Response::Committed { result } = &response {
             self.wrote(
                 session,
@@ -1603,6 +1674,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         txn: Option<[u8; 16]>,
         snap: Arc<Snapshot<D>>,
     ) -> Response {
+        let branch = s.lock().expect("session").branch;
         let content = *blake3::hash(&body).as_bytes();
         let mut ops = vec![
             Op::AddRevision {
@@ -1619,7 +1691,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if carry_rules {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
-            for (_, enabled, premises, _) in snap.db().rules_concluding(expected_head) {
+            for (_, enabled, premises, _) in snap.view(branch).rules_concluding(expected_head) {
                 if enabled {
                     ops.push(Op::AddRule {
                         conclusion: RevRef::New(0),
@@ -1637,7 +1709,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .iter()
             .any(|op| matches!(op, Op::AddRule { incidences, .. } if !incidences.is_empty()));
         let txn = txn.unwrap_or_else(random_id);
-        let response = self.commit(id, vec![body], Batch::new(ops), Some(txn));
+        let mut batch = Batch::new(ops);
+        batch.branch = branch;
+        let response = self.commit(id, vec![body], batch, Some(txn));
         if let Response::Committed { result } = &response {
             self.wrote(session, &s, &agent, txn, result.epoch, reason, with_deps);
         }
@@ -1653,7 +1727,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         strict_req: bool,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let db = snap.db();
+        let db = &snap.view(s.lock().expect("session").branch);
         let link = |c: &Certificate| -> Result<LogLink, Response> {
             Ok(LogLink {
                 matches: c.issued_epoch <= snap.epoch
@@ -1868,7 +1942,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     cert_id: [0; 32],
                     session_id: session,
                     principal: request.principal,
-                    branch: MAIN,
+                    branch: request.branch,
                     issued_epoch: snap.epoch,
                     log_checksum_at_issue: request.log_checksum,
                     code_commit: request.code_commit.clone(),
@@ -1908,9 +1982,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         let (session, s, agent, _) = bound.clone();
+        let view = snap.view(s.lock().expect("session").branch);
         let mut live = live;
         // A caller cannot replace failed local evidence with a fresh position.
-        for scope in snap
+        for scope in view
             .db()
             .inputs()
             .logicals
@@ -1920,7 +1995,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             live.remove(scope);
         }
-        live.extend(self.anchor_live(snap.db()));
+        live.extend(self.anchor_live(&view));
         let mut response =
             match self.proof_check(&bound, cert_id, action.as_ref(), strict, &live, snap) {
                 Some(response) => response,
@@ -1937,12 +2012,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         {
             {
                 let s = s.lock().expect("session");
-                *updates_pending = update_items(&s, &agent, snap.db(), &live).len() as u32;
+                *updates_pending = update_items(&s, &agent, &view, &live).len() as u32;
                 if !matches!(
                     validation,
                     Validation::Valid | Validation::ValidRecertified { .. }
                 ) {
-                    *named = named_reads(&s, &agent, snap.db(), &live);
+                    *named = named_reads(&s, &agent, &view, &live);
                 }
             }
             if let Some(mode) = mode {
@@ -1993,7 +2068,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         max_items: usize,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
-        let live = self.anchor_live(snap.db());
+        let view = snap.view(s.lock().expect("session").branch);
+        let live = self.anchor_live(&view);
         let mut s = s.lock().expect("session");
         if let Some(token) = ack {
             let st = s.agent(&agent);
@@ -2011,7 +2087,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }]);
             }
         }
-        let mut items = update_items(&s, &agent, snap.db(), &live);
+        let mut items = update_items(&s, &agent, &view, &live);
         let max = if max_items == 0 { 50 } else { max_items };
         let more = items.len() > max;
         items.truncate(max);
@@ -2065,7 +2141,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     // Evicted from the ended: record the facts against it
                     // without bringing it back to life.
                     let mut gone =
-                        Session::new(id.principal, String::new(), String::new(), snap.epoch);
+                        Session::new(id.principal, String::new(), String::new(), snap.epoch, MAIN);
                     gone.ended_epoch = Some(snap.epoch);
                     (sid, Arc::new(Mutex::new(gone)))
                 }
@@ -2076,6 +2152,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 harness_session,
                 String::new(),
                 String::new(),
+                (None, None),
                 snap,
             ) {
                 Ok((sid, s, _, _)) => {
@@ -2273,11 +2350,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
         report
     }
     /// Advisory SessionStart briefing (ADR 0010 §4.5): adds no ledger entry.
-    fn briefing(&self, budget: usize, snap: &Arc<Snapshot<D>>) -> Response {
-        let db = snap.db();
+    fn briefing(&self, budget: usize, branch: BranchId, snap: &Arc<Snapshot<D>>) -> Response {
+        let db = &snap.view(branch);
         let live = self.anchor_live(db);
         let (mut stale, mut pending, mut conflicted) = (0u32, 0u32, 0u32);
-        for l in (0..db.logical_count() as u32).map(LogicalId) {
+        for l in db.logicals() {
             let Some(r) = db.head(l) else { continue };
             match db.summary_at(r, &live) {
                 Ok(Summary::Stale(_)) => stale += 1,
@@ -2336,11 +2413,18 @@ impl AgentState {
     }
 }
 impl Session {
-    fn new(principal: PrincipalId, head_sha: String, repo: String, started: Epoch) -> Self {
+    fn new(
+        principal: PrincipalId,
+        head_sha: String,
+        repo: String,
+        started: Epoch,
+        branch: BranchId,
+    ) -> Self {
         Self {
             principal,
             head_sha,
             repo,
+            branch,
             key: None,
             started_epoch: started,
             ended_epoch: None,
@@ -2445,7 +2529,7 @@ fn unix_now() -> u64 {
 fn named_reads(
     s: &Session,
     agent: &Agent,
-    db: &Db,
+    db: &BranchView<'_>,
     live: &BTreeMap<String, Vec<u8>>,
 ) -> Vec<NamedRead> {
     s.view_with_agents(agent)
@@ -2474,7 +2558,7 @@ fn named_reads(
 fn update_items(
     s: &Session,
     agent: &Agent,
-    db: &Db,
+    db: &BranchView<'_>,
     live: &BTreeMap<String, Vec<u8>>,
 ) -> Vec<UpdateItem> {
     let reported = s.agents.get(agent).map(|a| &a.reported);
@@ -2615,10 +2699,15 @@ fn indexer<D: Durability>(
     recall: Arc<Mutex<RecallIndex>>,
     stop: Arc<AtomicBool>,
 ) {
+    // Logical ids are global: each logical is indexed once, with its head on
+    // the first branch (main first) that sees it. Recall re-reads every
+    // candidate on the session's branch.
     let text = |snap: &Snapshot<D>,
                 l: LogicalId|
      -> Option<(LogicalId, String, RecordKind, String, String)> {
-        let db = snap.db();
+        let db = (snap.kernel.branches())
+            .map(|b| snap.view(b.id))
+            .find(|v| v.logical_info(l).is_some())?;
         let (key, kind, scope) = db.logical_info(l)?;
         let content = db.revision_content(db.head(l)?).ok()?;
         let body = match snap.log.read_blob(&content) {
@@ -2645,10 +2734,13 @@ fn indexer<D: Durability>(
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
-        let db = snap.db();
         let touched: Vec<LogicalId> = if indexed > snap.epoch || indexed.0 == 0 {
             let _ = recall.lock().expect("recall").clear();
-            (0..db.logical_count() as u32).map(LogicalId).collect()
+            let mut all = std::collections::BTreeSet::new();
+            for b in snap.kernel.branches() {
+                all.extend(snap.view(b.id).logicals());
+            }
+            all.into_iter().collect()
         } else {
             let mut t = std::collections::BTreeSet::new();
             for e in indexed.0 + 1..=snap.epoch.0 {

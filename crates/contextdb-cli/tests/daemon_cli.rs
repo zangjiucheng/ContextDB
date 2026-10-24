@@ -41,6 +41,8 @@ fn ctx_status_validate_and_shutdown_through_the_admin_socket() {
             repo: "r".into(),
             head_sha: "h".into(),
             parent: None,
+            branch: None,
+            git_branch: None,
         })
         .unwrap()
         .response

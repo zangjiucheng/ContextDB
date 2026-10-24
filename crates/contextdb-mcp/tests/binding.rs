@@ -47,6 +47,8 @@ fn attach(s: &Service<SimDisk>, harness: &str, key: &str) -> SessionId {
                 harness_session: key.into(),
                 repo: "repo".into(),
                 head_sha: "h".into(),
+                branch: None,
+                git_branch: None,
             },
         )
         .response

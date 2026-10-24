@@ -81,6 +81,8 @@ fn main() {
                     harness_session: "bench".into(),
                     repo: repo.root.to_str().unwrap().into(),
                     head_sha: String::new(),
+                    branch: None,
+                    git_branch: None,
                 })
                 .unwrap()
                 .response;

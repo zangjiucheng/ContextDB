@@ -39,6 +39,7 @@ fn watermark(d: &Daemon, scope: &str) -> Option<Vec<u8>> {
     match c
         .call(&Request::AnchorState {
             scope: scope.into(),
+            branch: None,
         })
         .unwrap()
         .response

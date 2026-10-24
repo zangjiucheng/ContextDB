@@ -69,7 +69,10 @@ impl Rig {
         let scope = self.scope();
         match self
             .client(Channel::Observer)
-            .call(&Request::AnchorState { scope })
+            .call(&Request::AnchorState {
+                scope,
+                branch: None,
+            })
             .unwrap()
             .response
         {
@@ -133,6 +136,8 @@ impl Rig {
                 repo: self.rs().into(),
                 head_sha: String::new(),
                 parent: None,
+                branch: None,
+                git_branch: None,
             })
             .unwrap()
             .response
@@ -489,7 +494,10 @@ impl Rig {
         let scope = self.scope();
         let mut r = self
             .client(Channel::Observer)
-            .call(&Request::AnchorState { scope })
+            .call(&Request::AnchorState {
+                scope,
+                branch: None,
+            })
             .unwrap()
             .response;
         if let Response::AnchorState { anchors, .. } = &mut r {

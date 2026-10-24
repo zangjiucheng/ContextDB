@@ -428,6 +428,12 @@ impl Hook {
             harness_session: self.ev.session.clone(),
             repo: self.main.to_string_lossy().into_owned(),
             head_sha: String::new(),
+            // The session's branch (ADR 0013 §7, D1): `CONTEXTDB_BRANCH`,
+            // else the branch named like this checkout's git branch.
+            branch: std::env::var("CONTEXTDB_BRANCH")
+                .ok()
+                .filter(|b| !b.is_empty()),
+            git_branch: contextdb_proto::git::checked_out_branch(&self.root),
         })?;
         match env.response {
             Response::Attached { session, .. } => Ok((d, session)),

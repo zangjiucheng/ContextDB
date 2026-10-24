@@ -37,6 +37,8 @@ fn channel_is_bound_by_socket_and_shutdown_cleans_up() {
         repo: "r".into(),
         head_sha: "h".into(),
         parent: None,
+        branch: None,
+        git_branch: None,
     };
     let Response::Session { session } = agent.call(&start).unwrap().response else {
         panic!()
@@ -96,6 +98,8 @@ fn session(c: &mut Client) -> SessionId {
         repo: "r".into(),
         head_sha: "h".into(),
         parent: None,
+        branch: None,
+        git_branch: None,
     };
     match c.call(&start).unwrap().response {
         Response::Session { session } => session,

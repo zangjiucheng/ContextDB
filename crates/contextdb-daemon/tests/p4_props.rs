@@ -96,6 +96,8 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                     harness_session: key.into(),
                     repo: String::new(),
                     head_sha: String::new(),
+                    branch: None,
+                    git_branch: None,
                 },
             )
             .response)

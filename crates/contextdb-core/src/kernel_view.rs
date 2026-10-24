@@ -291,6 +291,18 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
             })
             .collect()
     }
+    /// Revisions an observation/path proof of `roots` rests on.
+    pub fn observation_support(&self, roots: &[RevisionId]) -> Result<Vec<RevisionId>, TxError> {
+        let roots = roots
+            .iter()
+            .map(|r| self.lr(*r))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out: Vec<RevisionId> = (self.b.db.observation_support(&roots)?.into_iter())
+            .map(|r| self.global_revision(r))
+            .collect();
+        out.sort_unstable();
+        Ok(out)
+    }
     pub fn impact_reachable(&self, roots: &[RevisionId]) -> Result<Impact, TxError> {
         let roots = roots
             .iter()

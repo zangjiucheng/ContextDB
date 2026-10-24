@@ -1,10 +1,10 @@
 //! P5a trusted routing, bounded registry and local live evidence.
 use crate::{
     actor::Snapshot,
-    service::{Identity, Service},
+    service::{Identity, Service, resolve_branch},
 };
 use contextdb_anchors::{AnchorDescriptor, Repo, capture::MAX_ANCHORS};
-use contextdb_core::{Db, IssueRequest, LogLink};
+use contextdb_core::{BranchView, IssueRequest, LogLink};
 use contextdb_model::*;
 use contextdb_proto::proto::*;
 use contextdb_store::{Durability, Payload};
@@ -33,6 +33,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         &self,
         id: Identity,
         scope: &str,
+        git_branch: Option<&str>,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         if id.channel == Channel::Agent {
@@ -41,7 +42,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 detail: "observer/admin only".into(),
             };
         }
-        let inputs = snap.db().inputs();
+        // The observer worktree's branch (ADR 0013 §7, m3); ids are global.
+        let branch = match resolve_branch(snap, None, git_branch) {
+            Ok(b) => b,
+            Err(r) => return r,
+        };
+        let view = snap.view(branch);
+        let inputs = view.db().inputs();
         let mut anchors = Vec::new();
         for (index, l) in inputs.logicals.iter().enumerate() {
             if l.kind != RecordKind::CodeAnchor || l.scope_lane != scope {
@@ -67,31 +74,35 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         && inputs.revisions[a.target.index()].logical == logical
                 })
                 .map(|(i, _)| ArtifactId(i as u32))
-                .collect();
+                .collect::<Vec<_>>();
             anchors.push(AnchorEntry {
-                logical,
+                logical: view.global_logical(logical),
                 key: l.key.clone(),
-                head,
+                head: view.global_revision(head),
                 content,
                 base: inputs.base[head.index()],
-                breaks,
+                breaks: breaks
+                    .into_iter()
+                    .map(|a| view.global_artifact(a))
+                    .collect(),
                 descriptor,
             });
         }
         Response::AnchorState {
+            branch: view.info().id,
             watermark: inputs.watermarks.get(scope).cloned(),
             anchors,
         }
     }
     /// Config is operator-controlled and outside kernel truth; absent/bad data
     /// yields no live evidence and thus Unknown, including after restart.
-    pub(crate) fn anchor_live(&self, db: &Db) -> BTreeMap<String, Vec<u8>> {
+    pub(crate) fn anchor_live(&self, db: &BranchView<'_>) -> BTreeMap<String, Vec<u8>> {
         self.anchor_evidence(db)
             .into_iter()
             .map(|(scope, (position, _))| (scope, position))
             .collect()
     }
-    fn anchor_evidence(&self, db: &Db) -> BTreeMap<String, (Vec<u8>, Vec<u8>)> {
+    fn anchor_evidence(&self, db: &BranchView<'_>) -> BTreeMap<String, (Vec<u8>, Vec<u8>)> {
         let deadline = Instant::now() + *self.anchor_live_timeout.lock().expect("timeout");
         let Some(path) = self.anchor_routes.lock().expect("routes").clone() else {
             return BTreeMap::new();
@@ -123,7 +134,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         })()
         .and_then(|b| Vec::<(String, String)>::from_bytes(&b).ok())
         .unwrap_or_default();
-        let inputs = db.inputs();
+        let inputs = db.db().inputs();
         // Paths come from the head descriptors, never from splitting keys
         // (ADR 0012 §7): file anchors, symbol host files and the normaliser
         // version of each symbol language. A scope whose layout cannot be
@@ -312,8 +323,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 detail: "range check requires admin".into(),
             };
         }
-        let db = snap.db();
-        let inputs = db.inputs();
+        // Protocol 4 has no branch for this admin check: `main`.
+        let db = &snap.view(MAIN);
+        let inputs = db.db().inputs();
         // Bind the pushed-tree comparison to this exact committed snapshot AND
         // the same bounded live capture. A watcher committing newer U after
         // the CLI verified T must never certify T using U's freshness proof.
@@ -385,8 +397,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .enumerate()
             .filter(|(_, r)| affected.contains(r))
             .map(|(l, r)| CertItem {
-                logical: LogicalId(l as u32),
-                rev: *r,
+                logical: db.global_logical(LogicalId(l as u32)),
+                rev: db.global_revision(*r),
                 required: true,
                 via: Via::Head,
                 since_epoch: snap.epoch,

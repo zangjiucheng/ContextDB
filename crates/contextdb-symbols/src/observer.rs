@@ -6,7 +6,7 @@ use contextdb_anchors::{
     AnchorDescriptor, AnchorObservation, Language, Observation, Repo, SymbolDescriptor,
     Unavailable,
     capture::{git, position},
-    observer::{state_by_key, submit},
+    observer::{state_by_key_on, submit_on},
     prepare_anchors,
     symbol::validate_symbol,
     validate_path,
@@ -105,8 +105,8 @@ pub fn reconcile(
             .checked_duration_since(Instant::now())
             .ok_or_else(|| unavailable("observer deadline"))?;
         client.set_timeout(timeout).map_err(unavailable)?;
-        let prepared = scan(client, repo, added, mode, deadline)?;
-        match submit(client, prepared) {
+        let (branch, prepared) = scan(client, repo, added, mode, deadline)?;
+        match submit_on(client, prepared, branch) {
             Ok(result) => return Ok(result),
             Err(e)
                 if ["HeadConflict", "WatermarkConflict", "LogicalExists"]
@@ -297,9 +297,11 @@ fn scan(
     added: &Added,
     mode: Mode,
     deadline: Instant,
-) -> Result<contextdb_anchors::Prepared, Unavailable> {
+) -> Result<(contextdb_model::BranchId, contextdb_anchors::Prepared), Unavailable> {
     let scope = repo.scope();
-    let (watermark, committed) = state_by_key(client, &scope)?;
+    // On the branch of the worktree's checked-out git branch (ADR 0013 §7).
+    let git_branch = contextdb_proto::git::checked_out_branch(&repo.root);
+    let (branch, (watermark, committed)) = state_by_key_on(client, &scope, git_branch.as_deref())?;
     let targets = targets(&scope, &committed, added, mode)?;
     let hosts = hosts(&targets);
     let all: BTreeSet<String> = targets.0.union(&hosts).cloned().collect();
@@ -319,4 +321,5 @@ fn scan(
         &mut |host, content| edited(repo, host, content, deadline),
         deadline,
     )
+    .map(|prepared| (branch, prepared))
 }

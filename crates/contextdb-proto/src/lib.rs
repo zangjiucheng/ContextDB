@@ -8,3 +8,4 @@ pub mod outbox;
 pub mod proto;
 
 pub use client::Client;
+pub mod git;

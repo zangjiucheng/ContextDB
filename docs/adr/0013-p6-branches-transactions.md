@@ -690,6 +690,30 @@ state. A certificate presented on another branch is `Invalid` with
 read equals the single-branch database's (tested on generated traces).
 PROP13 also checks every view node against the oracle.
 
+**Implementation (r0.5): sessions and the observer.**
+
+- **Protocol 4 fields.** `SessionStart` and `SessionAttach` carry `branch`
+  (explicit) and `git_branch`. The client reads its checkout's `HEAD`
+  (`contextdb_proto::git`), which handles linked worktrees, so the daemon
+  never guesses from the main worktree path.
+  - The hook reads its own checkout.
+  - `ctx-mcp` reads the nearest checkout above its working directory.
+  - Both take an explicit name from `CONTEXTDB_BRANCH`.
+- **Resolution.** An explicit name must exist and be open, else
+  `UnknownBranch` or `BranchArchived`. A git name binds when such an open
+  branch exists, else the session uses `main`.
+- **Daemon.** The branch is stored in the session and in
+  `SessionEvent::Start`, and restored on replay; old sessions replay as
+  `main`. Every bound read, record, supersede, check, certificate, update
+  and briefing goes through `Snapshot::view(branch)` with global ids, and
+  writes commit on that branch. The recall index holds every branch's
+  logicals; candidates are re-read on the session's branch.
+- **Observer.** `AnchorState` carries the worktree's git branch and returns
+  the branch it read; the observer commits its batch there.
+- **Still on `main` until 9c:** the unbound reads (`Why`, `WhyNot`,
+  `Impact`, `ImpactBatch`, `Diff`, `Status`), admin `Validate` and
+  `CheckAnchors`. 9c adds a branch parameter to them.
+
 ## 8. Persistence, wire and upgrade
 
 **op_log format 3.**

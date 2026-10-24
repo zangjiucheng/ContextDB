@@ -105,11 +105,14 @@ impl Fixture {
     }
     /// Load the committed anchor state, capture and classify (no submit).
     fn prepare(&self, s: &Service<SimDisk>, added: &[&str]) -> contextdb_anchors::Prepared {
-        let Response::AnchorState { watermark, anchors } = s
+        let Response::AnchorState {
+            watermark, anchors, ..
+        } = s
             .handle(
                 OBSERVER,
                 Request::AnchorState {
                     scope: self.repo.scope(),
+                    branch: None,
                 },
             )
             .response
@@ -158,6 +161,8 @@ impl Fixture {
                     repo: self.repo.root.to_str().unwrap().into(),
                     head_sha: String::new(),
                     parent: None,
+                    branch: None,
+                    git_branch: None,
                 },
             )
             .response
@@ -898,11 +903,14 @@ fn unanchored_reads_remain_required_and_briefing_uses_fresh_evidence() {
     s.handle(ADMIN, Request::Shutdown);
 }
 fn anchor_state(f: &Fixture, s: &Service<SimDisk>) -> (Option<Vec<u8>>, Vec<ContentHash>) {
-    let Response::AnchorState { watermark, anchors } = s
+    let Response::AnchorState {
+        watermark, anchors, ..
+    } = s
         .handle(
             OBSERVER,
             Request::AnchorState {
                 scope: f.repo.scope(),
+                branch: None,
             },
         )
         .response
@@ -1046,6 +1054,7 @@ fn g4_corrupt_descriptor_makes_the_scope_unknown() {
             OBSERVER,
             Request::AnchorState {
                 scope: f.repo.scope(),
+                branch: None,
             },
         )
         .response

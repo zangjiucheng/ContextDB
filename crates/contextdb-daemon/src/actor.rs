@@ -8,7 +8,7 @@
 //! new published snapshot. A replica still held by a reader after a bounded
 //! wait is replaced by a clone (counted; the fallback trigger of §3.3).
 use crate::publish::{self, Published};
-use contextdb_core::{Db, Kernel};
+use contextdb_core::{BranchView, Db, Kernel};
 use contextdb_model::*;
 use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus};
 use std::{
@@ -42,6 +42,13 @@ impl<D: Durability> Snapshot<D> {
             "a protocol-4 reader is required"
         );
         self.kernel.branch(MAIN).expect("main").db()
+    }
+    /// Branch `b` read with global ids (protocol 4); `main` when `b` is
+    /// unknown.
+    pub fn view(&self, b: BranchId) -> BranchView<'_> {
+        self.kernel
+            .branch(b)
+            .unwrap_or_else(|| self.kernel.branch(MAIN).expect("main"))
     }
 }
 pub struct WriteRequest {
