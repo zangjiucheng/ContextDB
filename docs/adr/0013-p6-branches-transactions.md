@@ -241,6 +241,17 @@ unchanged; only the representation differs.
 - **Equivalence.** With only `main`, global and local ids coincide and the
   kernel returns the single-branch results, errors, epochs and digests
   (tested on 1,000 generated traces).
+- **Canonical order (decision).** SD15 picks the active rule with the
+  smallest RuleId as the canonical witness. SD13 picks the failing
+  incidence with the smallest RevisionId. Several sites order by id
+  likewise. On a branch, "smallest" follows the branch's canonical order:
+  the order in which objects became visible on that branch. A fork
+  inherits its parent's order; a commit appends in staging order (fresh
+  objects and imports alike); a merge appends newly visible objects in
+  ascending global id, then its Conflicts. These are exactly the local ids.
+  The order depends only on the branch's own history, never on when other
+  branches allocated ids, so isolation holds under canonical renaming
+  (review m1). On `main` with no imports it is the global order.
 
 ## 4. Transactions: multi-head atomicity and read-set certification
 
@@ -503,7 +514,10 @@ occur, since visibility only grows.
 4. Apply the classified changes. Head moves CAS against `T`'s pre-merge
    heads. The net delta treats newly visible rules and revisions as new
    rules and revisions, seeding their conclusions. A5 is vacuous, since a
-   merge allocates no new revision.
+   merge allocates no new revision. **Corrected in r0.5:** A5 is not
+   vacuous. A merge can import base revisions of a required kind or take a
+   stricter policy, so it checks A5 on the merged state, newly visible
+   revisions counting as new, first among the end-of-batch checks (§9).
 5. Recompute statuses on the merged `T`. The derivation itself rechecks Sem
    and Cur against the merged heads.
 6. **Certification (review M5).** If `require_certified`, every logical in
@@ -846,6 +860,23 @@ The certificate `BranchMismatch` reason belongs to §6.4 (it is not a
 - **G7.** P0–P5b regressions at gate counts.
 - **G8.** README (branches, `ctx merge`, upgrade), CHANGELOG, status.
 
+**PROP13 implementation (r0.5).** `contextdb-oracle::BranchOracle` keeps
+global arenas, `branch_visibility` rows, a full overlay per branch and per
+sync point, and each branch's canonical order. Each commit runs the
+single-branch `InputModel` on the branch's projection in that order, with
+the global key namespace. New objects identical to invisible ones become
+imports by a linear scan. Merges use naive containment over all sync
+points, naive classification, and recomputation through `jacobi`. Every
+projection asserts that its order lists exactly the objects SD19 rules 1–3
+make visible. The test (`p6_prop13.rs`) runs 10,000 seeds of up to four
+branches with code anchors, watermarks, AnchorBroken, policy, metadata,
+validations, read sets, dedup and merges both ways. Before every step it
+compares the kernel's dry run with the oracle's; after every step it
+compares every branch's canonical state (records, inputs, every node and
+rule state, in global ids). Six planted kernel bugs are all caught. The
+oracle compares errors that may name staged objects by kind, and cycle
+paths not at all.
+
 **§11a Cross-branch rule dedup (review M3).** `AddRule` canonical dedup
 spans all branches, like revision dedup (contract 5). If an identical
 canonical rule exists but is invisible, `AddRule` reuses its `RuleId`,
@@ -968,6 +999,8 @@ SPEC v1.6.8 must land with the G0 closure:
   SD14b, SD6, §3.4, §6.1 contracts 12 and 13 (contract 11 was already
   taken by EventLog v0), §6.2–§6.4, §6.6, §7, the P6 and P7 gates, T51 and
   T19.
+- **r0.5** (2026-10-24): canonical order per branch (§3.1), A5 on merges
+  (§6.3 step 4), PROP13 oracle (§11), found by PROP13.
 - **r0.5** (2026-10-23): implementation note §3.1. Each branch is a
   single-branch database with local ids behind a global id map. Fork is
   O(1); the first write copies the branch, O(N), which G5 measures. No

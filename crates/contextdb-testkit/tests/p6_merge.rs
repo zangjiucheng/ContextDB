@@ -535,3 +535,40 @@ fn read_set_errors_follow_op_order() {
         Err(TxError::CycleDetected { .. })
     ));
 }
+
+/// A merge checks A5 on the merged state (ADR 0013 r0.5): taking a policy
+/// that the target's base revisions violate refuses the merge.
+#[test]
+fn merge_checks_policy_on_the_merged_state() {
+    let mut k = setup();
+    let b = fork(&mut k, MAIN, "b");
+    k.commit(&Batch::new(vec![Op::CreateLogical {
+        key: "plan".into(),
+        kind: RecordKind::Plan,
+        scope_lane: "repo".into(),
+        content: [5; 32],
+        adopt_as_base: true,
+    }]))
+    .unwrap();
+    let mut policy = on(
+        b,
+        vec![Op::SetPolicy {
+            policy: PolicyDoc {
+                version: 1,
+                require_deps: [RecordKind::Plan].into_iter().collect(),
+            },
+        }],
+    );
+    policy.channel = Channel::Admin;
+    k.commit(&policy).unwrap();
+    let before = digest(&k, MAIN);
+    assert_eq!(
+        k.commit(&Batch::new(vec![merge_op(b, false)])),
+        Err(TxError::PolicyViolation {
+            kind: RecordKind::Plan,
+            logical: LogicalId(2),
+            reason: PolicyReason::BaseNotAllowed,
+        })
+    );
+    assert_eq!(digest(&k, MAIN), before);
+}

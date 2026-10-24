@@ -751,17 +751,22 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         };
         let branch = &mut self.branches[target.0 as usize];
         let db = Arc::make_mut(&mut branch.db);
-        // Steps 2–6, then the end-of-batch checks in the §9 order.
-        let checked = |db: &mut Db<M, S>| -> Result<CommitResult, TxError> {
-            let result = db.commit_merge(&plan, op_index, &ctx)?;
-            let required = required.clone()?;
-            if let Some(e) = late.clone() {
-                return Err(e);
+        // Steps 2–6 with the §9 order: the cycle check, the remaining Op
+        // errors (`certify` refs, later `ExpectHeads`), A5 on the merged
+        // state, then the read set and certification.
+        let op_errors = || -> Result<(), TxError> {
+            required.clone()?;
+            match late.clone() {
+                Some(e) => Err(e),
+                None => Ok(()),
             }
+        };
+        let checked = |db: &mut Db<M, S>| -> Result<CommitResult, TxError> {
+            let result = db.commit_merge(&plan, op_index, &ctx, op_errors)?;
             if let Some(e) = stale.clone() {
                 return Err(e);
             }
-            for l in required.iter().flatten() {
+            for l in required.clone()?.iter().flatten() {
                 let status = db.status(db.head(*l).expect("visible"))?;
                 if status != Summary::Certified {
                     return Err(TxError::MergeNotCertified {
@@ -772,14 +777,14 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
             Ok(result)
         };
-        // A merge that can fail only in steps 2–3 commits directly; one
-        // that checks the merged state is tried first.
+        // A merge that can fail only before publication commits directly;
+        // one that checks the merged state is tried first.
         let direct = publish && stale.is_none() && late.is_none() && matches!(required, Ok(None));
         let result = if direct {
-            db.commit_merge(&plan, op_index, &ctx)
+            db.commit_merge(&plan, op_index, &ctx, op_errors)
         } else {
             db.dry(checked).and_then(|r| match publish {
-                true => db.commit_merge(&plan, op_index, &ctx),
+                true => db.commit_merge(&plan, op_index, &ctx, || Ok(())),
                 false => Ok(r),
             })
         };

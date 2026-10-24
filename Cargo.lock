@@ -210,6 +210,7 @@ version = "0.1.3"
 name = "contextdb-oracle"
 version = "0.1.3"
 dependencies = [
+ "blake3",
  "contextdb-model",
 ]
 

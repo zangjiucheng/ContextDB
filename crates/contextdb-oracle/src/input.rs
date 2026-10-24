@@ -32,6 +32,28 @@ impl InputModel {
         if batch.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
+        self.apply_inner(batch, blobs, &|_| false)
+    }
+    /// A model over one branch's projected inputs (the branch oracle).
+    pub fn from_inputs(inputs: Inputs, epoch: Epoch) -> Self {
+        Self { inputs, epoch }
+    }
+    /// Applies a batch of any branch to this branch projection; `foreign`
+    /// names keys taken by logicals invisible here (SD19's global key
+    /// namespace).
+    pub fn apply_on_branch(
+        &mut self,
+        batch: &Batch,
+        foreign: &dyn Fn(&str) -> bool,
+    ) -> Result<ApplyResult, TxError> {
+        self.apply_inner(batch, &AllPresent, foreign)
+    }
+    fn apply_inner(
+        &mut self,
+        batch: &Batch,
+        blobs: &dyn BlobPresence,
+        foreign: &dyn Fn(&str) -> bool,
+    ) -> Result<ApplyResult, TxError> {
         let mut staged = self.inputs.clone();
         let mut ids = Allocations::default();
         let next = Epoch(self.epoch.0.saturating_add(1));
@@ -47,6 +69,7 @@ impl InputModel {
                 next,
                 blobs,
                 &mut read_set,
+                foreign,
             )?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
@@ -454,6 +477,7 @@ fn apply_op(
     epoch: Epoch,
     blobs: &dyn BlobPresence,
     read_set: &mut std::collections::BTreeMap<LogicalId, RevisionId>,
+    foreign: &dyn Fn(&str) -> bool,
 ) -> Result<(), TxError> {
     let original = op;
     let published = i.logicals.len() - a.new_logicals.len();
@@ -483,7 +507,7 @@ fn apply_op(
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
-            if i.logicals.iter().any(|l| l.key == key) {
+            if i.logicals.iter().any(|l| l.key == key) || foreign(&key) {
                 return Err(TxError::LogicalExists { key });
             }
             let l = LogicalId(checked_id(i.logicals.len(), CapacityKind::Logical)?);

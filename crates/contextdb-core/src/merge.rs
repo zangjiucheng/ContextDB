@@ -33,12 +33,15 @@ pub(crate) struct MergePlan {
 impl<M: Maintainer, S: StatsSink> Db<M, S> {
     /// Publishes a merge plan. Newly visible rules enter the cycle graph in
     /// ascending id (step 3); a cycle refuses the merge with
-    /// `CycleDetected` at `op_index` and changes nothing.
+    /// `CycleDetected` at `op_index` and changes nothing. `op_errors` then
+    /// reports the merge's remaining Op-level errors, before A5 checks the
+    /// merged state (newly visible revisions count as new; §9 order).
     pub(crate) fn commit_merge(
         &mut self,
         plan: &MergePlan,
         op_index: usize,
         ctx: &CommitContext<'_>,
+        op_errors: impl FnOnce() -> Result<(), TxError>,
     ) -> Result<CommitResult, TxError> {
         let epoch = ctx.epoch.expect("the kernel supplies merge epochs");
         crate::invariant_assert!(epoch > self.epoch, "commit epochs increase");
@@ -73,7 +76,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .extend(plan.metadata.iter().map(|(l, m)| (*l, m.clone())));
         staged.validations.extend(plan.validations.clone());
         staged.policy = plan.policy.clone();
-        if let Err(error) = self.pk.sync(&staged, op_index, &mut stats) {
+        let checked = (self.pk.sync(&staged, op_index, &mut stats))
+            .and_then(|()| op_errors())
+            .and_then(|()| crate::txn::final_policy(&staged));
+        if let Err(error) = checked {
             drop(staged);
             self.pk.rollback(pk_mark);
             return Err(error);
