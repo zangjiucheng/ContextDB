@@ -13,7 +13,7 @@ pub use cert::{HistoryUnavailable, IssueRequest, LogLink};
 mod fast;
 mod history;
 mod kernel;
-pub use kernel::{BranchInfo, BranchView, Kernel, valid_branch_name};
+pub use kernel::{BranchInfo, BranchView, Import, Kernel, valid_branch_name};
 mod memory;
 pub use history::{EpochDiff, Impact, NodeChange, diff_rows};
 pub use memory::MemoryFootprint;
@@ -54,6 +54,16 @@ pub struct CommitContext<'a> {
     pub kernel: bool,
     /// Keys taken by logicals not visible in this branch.
     pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
+    /// Receives the revisions and rules the batch staged, in staging order,
+    /// whether it commits or fails: the kernel gives them global ids.
+    pub staged: Option<&'a std::cell::RefCell<Staged>>,
+}
+/// The objects a batch staged that the kernel may map to existing global
+/// objects (cross-branch dedup, SPEC §6.1 contract 5 and ADR 0013 §11a).
+#[derive(Clone, Debug, Default)]
+pub struct Staged {
+    pub revisions: Vec<Revision>,
+    pub rules: Vec<Rule>,
 }
 #[derive(Clone, Debug)]
 pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
@@ -308,6 +318,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn artifact_count(&self) -> usize {
         self.tables.artifacts.len()
     }
+    /// Provenance of an imported revision (kernel only; not part of any
+    /// derived state).
+    pub(crate) fn set_revision_origin(&mut self, r: RevisionId, origin: &Revision) {
+        self.revisions
+            .set_origin(r, origin.author, origin.origin_branch, origin.origin_epoch);
+    }
+    pub(crate) fn set_rule_origin(&mut self, j: RuleId, branch: BranchId, epoch: Epoch) {
+        self.rules.set_origin(j, branch, epoch);
+    }
     /// Logical by key (SPEC §6.1 contract 6).
     pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
         self.logicals.find_key(key)
@@ -484,9 +503,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             ),
         };
         if fast::eligible(b) {
+            if let Some(staged) = ctx.staged {
+                *staged.borrow_mut() = Staged::default();
+            }
             return self.commit_mutable(b, next);
         }
-        self.commit_structural(b, blobs, next, ctx.foreign_key)
+        self.commit_structural(b, blobs, next, ctx)
     }
     /// Structural batches (ADR 0007): validate against an overlay, publish
     /// incrementally, then walk statuses from the net-delta seeds.
@@ -495,7 +517,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
         next: Epoch,
-        foreign_key: Option<&dyn Fn(&str) -> bool>,
+        ctx: &CommitContext<'_>,
     ) -> Result<CommitResult, TxError> {
         #[cfg(any(debug_assertions, feature = "paranoid"))]
         let pk_before = self.pk.clone();
@@ -509,7 +531,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             &self.rules,
             &self.indexes,
         );
-        staged.foreign_key = foreign_key;
+        staged.foreign_key = ctx.foreign_key;
         let pk = &mut self.pk;
         let result = (|| {
             for (n, op) in b.ops.iter().enumerate() {
@@ -547,6 +569,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             policy,
             ..
         } = staged;
+        if let Some(sink) = ctx.staged {
+            *sink.borrow_mut() = Staged {
+                revisions: new_revisions.clone(),
+                rules: new_rules.clone(),
+            };
+        }
         let epoch = match result {
             Ok(epoch) => epoch,
             Err(error) => {

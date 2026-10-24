@@ -240,6 +240,19 @@ impl RevisionArena {
         self.branch.push(r.origin_branch);
         self.epoch.push(r.origin_epoch);
     }
+    /// The kernel's cross-branch dedup: a branch's copy of an imported
+    /// revision carries the original's provenance.
+    pub fn set_origin(
+        &mut self,
+        r: RevisionId,
+        author: PrincipalId,
+        branch: BranchId,
+        epoch: Epoch,
+    ) {
+        self.author[r.index()] = author;
+        self.branch[r.index()] = branch;
+        self.epoch[r.index()] = epoch;
+    }
     pub fn export(&self) -> Vec<Revision> {
         (0..self.len())
             .map(|n| Revision {
@@ -291,6 +304,10 @@ impl RuleArena {
             + bool_bytes(&self.enabled)
             + b(&self.branch)
             + b(&self.epoch)
+    }
+    pub fn set_origin(&mut self, j: RuleId, branch: BranchId, epoch: Epoch) {
+        self.branch[j.index()] = branch;
+        self.epoch[j.index()] = epoch;
     }
     pub fn conclusion(&self, j: RuleId) -> RevisionId {
         self.conclusion[j.index()]

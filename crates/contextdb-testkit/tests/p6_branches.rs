@@ -51,6 +51,33 @@ fn main_only_kernel_equals_db() {
     }
 }
 
+/// A branch forked from an empty `main` that nobody else writes is the
+/// single-branch database too, one epoch later (the fork's).
+#[test]
+fn lone_branch_equals_db() {
+    for seed in 0..300 {
+        let trace = generate(seed);
+        let mut k = Kernel::default();
+        let b = fork(&mut k, MAIN, "b");
+        let mut db = Db::default();
+        for (tx, batch) in trace.batches.iter().enumerate() {
+            let want = db.commit(batch).map(|mut r| {
+                r.epoch = Epoch(r.epoch.0 + 1);
+                r
+            });
+            let mut on_b = batch.clone();
+            on_b.branch = b;
+            assert_eq!(k.commit(&on_b), want, "seed {seed} tx {tx}");
+            let view = k.branch(b).unwrap();
+            assert_eq!(
+                view.db().derived_digest(),
+                db.derived_digest(),
+                "seed {seed} tx {tx}"
+            );
+        }
+    }
+}
+
 /// The branch table: names, sole-op batches, archiving, unknown branches.
 #[test]
 fn branch_table() {

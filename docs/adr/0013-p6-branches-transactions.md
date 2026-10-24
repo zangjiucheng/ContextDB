@@ -212,6 +212,22 @@ unchanged; only the representation differs.
 - **Global key namespace.** The branch database consults a callback for
   keys taken on other branches, so `LogicalExists` (T75) is raised in its
   normal place.
+- **Cross-branch dedup (contract 5, §11a).** The kernel keeps global
+  indexes of revisions by `(logical, content)` and of rules by canonical
+  form under global ids, plus each object's provenance. The branch database
+  reports the revisions and rules a batch staged. A staged object identical
+  to one created elsewhere receives that object's id: it is an import,
+  recorded as a `branch_visibility` row `(b, o, epoch)`, and the branch's
+  copy carries the original's author and origin. Base, rules and
+  validations are not imported, since the copy is a new object of the
+  branch database (T73). An imported rule enters the branch's cycle graph
+  like any new rule.
+- **Naming staged objects.** Which global id a staged object receives is
+  known only after staging. When a batch names a revision or rule id that
+  is invisible on the branch, and imports are possible, the kernel stages
+  it again with the ids the previous attempt assigned until the two agree.
+  The first attempt runs on a copy, so the retry costs one database copy,
+  and only for such batches.
 - **Fork** clones two `Arc`s: O(1) in the store size. The **first write**
   to either side copies that branch's whole database (`Arc::make_mut`),
   O(N), once; later writes are ordinary in-place commits. This replaces the

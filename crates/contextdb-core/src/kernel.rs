@@ -7,9 +7,14 @@
 //! ids. Isolation therefore holds by construction: a commit touches one
 //! branch's database. A fork shares the parent's database and id map
 //! (`Arc`, O(1)); the first write to either side copies it.
-use crate::{CommitContext, Counting, Db, Maintainer, NoStats, StatsSink};
+//!
+//! Revision and rule identity is global (SPEC §6.1 contract 5, ADR 0013
+//! §11a): a branch that stages a revision or rule identical to one created
+//! on another branch imports that object instead of allocating a new id.
+use crate::{CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink};
 use contextdb_model::*;
 use std::{
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
@@ -41,15 +46,6 @@ impl IdMap {
             .copied()
             .unwrap_or(INVISIBLE)
     }
-    /// Like [`Self::local`], but a batch may also name an object it staged
-    /// by the global id it will receive: `next + i` is the batch's `i`-th
-    /// new object of that kind, local `len + i`.
-    fn local_in_batch(&self, k: Kind, global: u32, next: &[u32; 4]) -> u32 {
-        match global.checked_sub(next[k as usize]) {
-            Some(i) => (self.len(k) as u32).saturating_add(i),
-            None => self.local(k, global),
-        }
-    }
     fn global(&self, k: Kind, local: u32) -> u32 {
         self.to_global[k as usize][local as usize]
     }
@@ -69,12 +65,24 @@ pub struct BranchInfo {
     pub fork_epoch: Epoch,
     pub archived: bool,
 }
+/// An object a branch imported from another branch by dedup; with the
+/// epoch, a `branch_visibility` row (ADR 0013 §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Import {
+    Revision(RevisionId),
+    Rule(RuleId),
+}
 #[derive(Clone, Debug)]
 struct Branch<M: Maintainer, S: StatsSink> {
     info: BranchInfo,
     db: Arc<Db<M, S>>,
     ids: Arc<IdMap>,
+    /// Rows written on this branch; children inherit them through the
+    /// shared database (visibility rule 3).
+    imports: Vec<(Import, Epoch)>,
 }
+/// A rule's canonical identity under global ids.
+type RuleKey = (u32, Vec<(u32, u8)>, Vec<u32>);
 
 #[derive(Clone, Debug)]
 pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
@@ -85,6 +93,12 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     /// Next global id per kind.
     next: [u32; 4],
     epoch: Epoch,
+    /// Every global revision (global logical) and rule origin, and the
+    /// dedup indexes over them.
+    revisions: Vec<Revision>,
+    rule_origins: Vec<(BranchId, Epoch)>,
+    revision_ids: HashMap<(u32, ContentHash), u32>,
+    rule_ids: HashMap<RuleKey, u32>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -131,6 +145,16 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
         }
         let keys = inputs.logicals.iter().map(|l| l.key.clone()).collect();
+        let revision_ids = (inputs.revisions.iter().enumerate())
+            .map(|(n, r)| ((r.logical.0, r.content), n as u32))
+            .collect();
+        let rule_ids = (inputs.rules.iter().enumerate())
+            .map(|(n, j)| (rule_key(j, |r| r.0), n as u32))
+            .collect();
+        let rule_origins = (inputs.rules.iter())
+            .map(|j| (j.origin_branch, j.origin_epoch))
+            .collect();
+        let revisions = inputs.revisions;
         let epoch = db.epoch();
         Self {
             branches: vec![Branch {
@@ -143,11 +167,16 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 },
                 db: Arc::new(db),
                 ids: Arc::new(ids),
+                imports: Vec::new(),
             }],
             names: [("main".to_owned(), MAIN)].into(),
             keys,
             next: counts.map(|n| n as u32),
             epoch,
+            revisions,
+            rule_origins,
+            revision_ids,
+            rule_ids,
         }
     }
     pub fn epoch(&self) -> Epoch {
@@ -259,6 +288,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             // O(1): the child shares the parent's state until either writes.
             db: Arc::clone(&from.db),
             ids: Arc::clone(&from.ids),
+            imports: Vec::new(),
         };
         self.branches.push(child);
         self.names.insert(name.into(), BranchId(id));
@@ -287,36 +317,104 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             branches,
             keys,
             next,
+            revisions,
+            rule_origins,
+            revision_ids,
+            rule_ids,
             ..
         } = self;
         let branch = &mut branches[b.branch.0 as usize];
-        let local = map_batch(b, &branch.ids, next);
+        let sink = RefCell::new(Staged::default());
         let foreign = |key: &str| keys.contains(key);
         let ctx = CommitContext {
             epoch: Some(epoch),
             kernel: true,
             foreign_key: Some(&foreign),
+            staged: Some(&sink),
         };
-        // Copies the database only if a fork still shares it.
+        // Which global ids a batch's staged objects receive is known only
+        // after staging, since a staged object may be an import. A batch
+        // that names a global id invisible here may mean such an object; it
+        // is staged again with the ids the previous attempt assigned, until
+        // the two agree.
+        // Imports are possible only once other branches have objects.
+        let ambiguous = (next[Kind::Revision as usize] as usize > branch.ids.len(Kind::Revision)
+            || next[Kind::Rule as usize] as usize > branch.ids.len(Kind::Rule))
+            && names_invisible(b, &branch.ids);
+        let mut plan: Option<Assignment> = None;
+        let mut backup = None;
+        let mut attempts = 0;
+        let (result, staged, assigned) = loop {
+            let local = map_batch(b, &|k, g| resolve(&branch.ids, next, plan.as_ref(), k, g));
+            if ambiguous && backup.is_none() {
+                backup = Some(Arc::clone(&branch.db));
+            }
+            // Copies the database only if a fork (or the backup) shares it.
+            let db = Arc::make_mut(&mut branch.db);
+            let result = db.commit_in(&local, blobs, &ctx);
+            let staged = sink.take();
+            let assigned = assign(&staged, &branch.ids, next, revision_ids, rule_ids);
+            attempts += 1;
+            let settled = !ambiguous
+                || attempts > b.ops.len()
+                || map_batch(b, &|k, g| resolve(&branch.ids, next, Some(&assigned), k, g)) == local;
+            if settled {
+                break (result, staged, assigned);
+            }
+            if result.is_ok() {
+                branch.db = Arc::clone(backup.as_ref().expect("taken when ambiguous"));
+            }
+            plan = Some(assigned);
+        };
+        drop(backup);
+        let result = result.map_err(|e| map_error(e, &branch.ids, next, &assigned))?;
         let db = Arc::make_mut(&mut branch.db);
-        let result = db
-            .commit_in(&local, blobs, &ctx)
-            .map_err(|e| map_error(e, &branch.ids, next))?;
-        // New local objects get the next global ids, in local order.
         let ids = Arc::make_mut(&mut branch.ids);
-        let counts = [
-            db.logical_count(),
-            db.revision_count(),
-            db.rule_count(),
-            db.artifact_count(),
-        ];
-        for (k, n) in [Kind::Logical, Kind::Revision, Kind::Rule, Kind::Artifact]
-            .into_iter()
-            .zip(counts)
-        {
+        // Logicals and artifacts are never shared: fresh ids in local order.
+        for (k, n) in [
+            (Kind::Logical, db.logical_count()),
+            (Kind::Artifact, db.artifact_count()),
+        ] {
             while ids.len(k) < n {
                 ids.push(k, next[k as usize]);
                 next[k as usize] += 1;
+            }
+        }
+        crate::invariant_assert!(
+            ids.len(Kind::Revision) + assigned.revisions.len() == db.revision_count()
+                && ids.len(Kind::Rule) + assigned.rules.len() == db.rule_count(),
+            "every staged object is assigned"
+        );
+        for (r, &g) in staged.revisions.iter().zip(&assigned.revisions) {
+            let local = RevisionId(ids.len(Kind::Revision) as u32);
+            ids.push(Kind::Revision, g);
+            if g == next[Kind::Revision as usize] {
+                let logical = LogicalId(ids.global(Kind::Logical, r.logical.0));
+                revision_ids.insert((logical.0, r.content), g);
+                revisions.push(Revision {
+                    logical,
+                    ..r.clone()
+                });
+                next[Kind::Revision as usize] += 1;
+            } else {
+                db.set_revision_origin(local, &revisions[g as usize]);
+                branch
+                    .imports
+                    .push((Import::Revision(RevisionId(g)), epoch));
+            }
+        }
+        for (j, &g) in staged.rules.iter().zip(&assigned.rules) {
+            let local = RuleId(ids.len(Kind::Rule) as u32);
+            ids.push(Kind::Rule, g);
+            if g == next[Kind::Rule as usize] {
+                let key = rule_key(j, |r| ids.global(Kind::Revision, r.0));
+                rule_ids.insert(key, g);
+                rule_origins.push((j.origin_branch, j.origin_epoch));
+                next[Kind::Rule as usize] += 1;
+            } else {
+                let (origin, at) = rule_origins[g as usize];
+                db.set_rule_origin(local, origin, at);
+                branch.imports.push((Import::Rule(RuleId(g)), epoch));
             }
         }
         for l in &result.allocations.new_logicals {
@@ -328,6 +426,104 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     }
 }
 
+/// The global ids a batch's staged revisions and rules receive, in staging
+/// order: an existing object's id for an import, else the next fresh id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Assignment {
+    revisions: Vec<u32>,
+    rules: Vec<u32>,
+}
+fn assign(
+    staged: &Staged,
+    ids: &IdMap,
+    next: &[u32; 4],
+    revision_ids: &HashMap<(u32, ContentHash), u32>,
+    rule_ids: &HashMap<RuleKey, u32>,
+) -> Assignment {
+    let mut out = Assignment::default();
+    let staged_global = |k: Kind, local: u32, fresh: &[u32]| {
+        let len = ids.len(k) as u32;
+        match local.checked_sub(len) {
+            None => ids.global(k, local),
+            Some(i) => fresh
+                .get(i as usize)
+                .copied()
+                .unwrap_or(next[k as usize] + i),
+        }
+    };
+    let mut fresh = next[Kind::Revision as usize];
+    for r in &staged.revisions {
+        let logical = staged_global(Kind::Logical, r.logical.0, &[]);
+        let g = match revision_ids.get(&(logical, r.content)) {
+            Some(&g) => g,
+            None => {
+                fresh += 1;
+                fresh - 1
+            }
+        };
+        out.revisions.push(g);
+    }
+    let mut fresh = next[Kind::Rule as usize];
+    for j in &staged.rules {
+        let key = rule_key(j, |r| staged_global(Kind::Revision, r.0, &out.revisions));
+        let g = match rule_ids.get(&key) {
+            Some(&g) => g,
+            None => {
+                fresh += 1;
+                fresh - 1
+            }
+        };
+        out.rules.push(g);
+    }
+    out
+}
+fn rule_key(j: &Rule, global: impl Fn(RevisionId) -> u32) -> RuleKey {
+    let mut premises: Vec<_> = (j.premises.iter())
+        .map(|p| (global(p.premise), p.kind as u8))
+        .collect();
+    premises.sort_unstable();
+    let mut refs: Vec<_> = j.references.iter().map(|r| global(*r)).collect();
+    refs.sort_unstable();
+    (global(j.conclusion), premises, refs)
+}
+
+/// The local id of global `g`. Invisible ids resolve to staged objects:
+/// with a plan, those it assigns; otherwise, or past its end, dense fresh
+/// ids, as the single-branch engine allows (`next + i` is the batch's
+/// `i`-th new object of that kind).
+fn resolve(ids: &IdMap, next: &[u32; 4], plan: Option<&Assignment>, k: Kind, g: u32) -> u32 {
+    let local = ids.local(k, g);
+    if local != INVISIBLE {
+        return local;
+    }
+    let len = ids.len(k) as u32;
+    let staged: &[u32] = match (k, plan) {
+        (Kind::Revision, Some(p)) => &p.revisions,
+        (Kind::Rule, Some(p)) => &p.rules,
+        _ => &[],
+    };
+    if let Some(i) = staged.iter().position(|x| *x == g) {
+        return len + i as u32;
+    }
+    let fresh = staged.iter().filter(|x| **x >= next[k as usize]).count() as u32;
+    match g.checked_sub(next[k as usize] + fresh) {
+        Some(i) => len.saturating_add(staged.len() as u32).saturating_add(i),
+        None => INVISIBLE,
+    }
+}
+/// Whether the batch names a revision or rule not visible in the branch.
+fn names_invisible(b: &Batch, ids: &IdMap) -> bool {
+    let found = Cell::new(false);
+    map_batch(b, &|k, g| {
+        let local = ids.local(k, g);
+        if local == INVISIBLE && matches!(k, Kind::Revision | Kind::Rule) {
+            found.set(true);
+        }
+        local
+    });
+    found.get()
+}
+
 /// Read access to one branch with global ids.
 pub struct BranchView<'a, M: Maintainer, S: StatsSink> {
     b: &'a Branch<M, S>,
@@ -335,6 +531,10 @@ pub struct BranchView<'a, M: Maintainer, S: StatsSink> {
 impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
     pub fn info(&self) -> &BranchInfo {
         &self.b.info
+    }
+    /// Objects this branch imported by dedup, with the import epoch.
+    pub fn imports(&self) -> &[(Import, Epoch)] {
+        &self.b.imports
     }
     /// The branch's single-branch database (local ids).
     pub fn db(&self) -> &Db<M, S> {
@@ -348,6 +548,19 @@ impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
     fn local(&self, k: Kind, global: u32) -> Option<u32> {
         let l = self.b.ids.local(k, global);
         (l != INVISIBLE).then_some(l)
+    }
+    /// Global ids of the branch database's local ids.
+    pub fn global_logical(&self, local: LogicalId) -> LogicalId {
+        LogicalId(self.b.ids.global(Kind::Logical, local.0))
+    }
+    pub fn global_revision(&self, local: RevisionId) -> RevisionId {
+        RevisionId(self.b.ids.global(Kind::Revision, local.0))
+    }
+    pub fn global_rule(&self, local: RuleId) -> RuleId {
+        RuleId(self.b.ids.global(Kind::Rule, local.0))
+    }
+    pub fn global_artifact(&self, local: ArtifactId) -> ArtifactId {
+        ArtifactId(self.b.ids.global(Kind::Artifact, local.0))
     }
     pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
         let l = self.b.db.logical_by_key(key)?;
@@ -366,6 +579,10 @@ impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
         let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
         self.b.db.status(RevisionId(local))
     }
+    pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
+        let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
+        self.b.db.is_base(RevisionId(local))
+    }
     pub fn is_visible_revision(&self, r: RevisionId) -> bool {
         self.local(Kind::Revision, r.0).is_some()
     }
@@ -376,8 +593,7 @@ impl<M: Maintainer, S: StatsSink> BranchView<'_, M, S> {
     }
 }
 
-fn map_batch(b: &Batch, ids: &IdMap, next: &[u32; 4]) -> Batch {
-    let local = |k: Kind, g: u32| ids.local_in_batch(k, g, next);
+fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
     let l = |l: &LogicalRef| match l {
         LogicalRef::Existing(g) => LogicalRef::Existing(LogicalId(local(Kind::Logical, g.0))),
         other => other.clone(),
@@ -563,13 +779,20 @@ fn map_result(r: CommitResult, ids: &IdMap) -> CommitResult {
 /// Errors carry ids of objects visible in the branch, or of objects the
 /// failed batch staged: map the former back, and give the latter the global
 /// id they would have received.
-fn map_error(e: TxError, ids: &IdMap, next: &[u32; 4]) -> TxError {
+fn map_error(e: TxError, ids: &IdMap, next: &[u32; 4], assigned: &Assignment) -> TxError {
     let map = |k: Kind, x: u32| {
         let len = ids.len(k) as u32;
-        if x < len {
-            ids.global(k, x)
-        } else {
-            next[k as usize] + (x - len)
+        let staged: &[u32] = match k {
+            Kind::Revision => &assigned.revisions,
+            Kind::Rule => &assigned.rules,
+            _ => &[],
+        };
+        match x.checked_sub(len) {
+            None => ids.global(k, x),
+            Some(i) => staged.get(i as usize).copied().unwrap_or_else(|| {
+                let fresh = staged.iter().filter(|g| **g >= next[k as usize]).count();
+                next[k as usize] + fresh as u32 + (i - staged.len() as u32)
+            }),
         }
     };
     let l = |x: LogicalId| LogicalId(map(Kind::Logical, x.0));
