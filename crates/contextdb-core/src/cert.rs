@@ -330,6 +330,17 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         entries: &[CertItem],
         live_pos: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Certificate, IssueFailure> {
+        self.issue_certificate_at(request, entries, live_pos, self.epoch)
+    }
+    /// [`Self::issue_certificate`] at the global epoch `now`, which a branch
+    /// database may trail (it advances only on the branch's own commits).
+    pub fn issue_certificate_at(
+        &self,
+        request: &IssueRequest,
+        entries: &[CertItem],
+        live_pos: &BTreeMap<String, Vec<u8>>,
+        now: Epoch,
+    ) -> Result<Certificate, IssueFailure> {
         let mut required: Vec<&CertItem> = entries.iter().filter(|e| e.required).collect();
         if required.is_empty() {
             return Err(IssueFailure::Empty);
@@ -368,7 +379,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             session_id: request.session_id,
             principal: request.principal,
             branch: request.branch,
-            issued_epoch: self.epoch,
+            issued_epoch: now,
             log_checksum_at_issue: request.log_checksum,
             code_commit: request.code_commit.clone(),
             watermarks: self.support_watermarks(&roots),
@@ -391,8 +402,20 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         live_pos: &BTreeMap<String, Vec<u8>>,
         log: LogLink,
     ) -> Result<Validation, HistoryUnavailable> {
+        self.validate_certificate_at(cert, live_pos, log, self.epoch)
+    }
+    /// [`Self::validate_certificate`] at the global epoch `now`; history is
+    /// read at `min(issued_epoch, epoch)`, since a branch database is
+    /// unchanged between its own commits.
+    pub fn validate_certificate_at(
+        &self,
+        cert: &Certificate,
+        live_pos: &BTreeMap<String, Vec<u8>>,
+        log: LogLink,
+        now: Epoch,
+    ) -> Result<Validation, HistoryUnavailable> {
         let log_matches = log.matches;
-        if !log_matches || cert.issued_epoch > self.epoch {
+        if !log_matches || cert.issued_epoch > now {
             return Ok(Validation::Invalid {
                 reason: InvalidReason::LogMismatch,
                 diffs: Vec::new(),
@@ -426,7 +449,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             }
             let mut scope_since: BTreeMap<String, Epoch> = BTreeMap::new();
             for e in cert.entries.iter().filter(|e| e.required) {
-                for scope in self.observation_scopes_at(e.rev, cert.issued_epoch)? {
+                let at = cert.issued_epoch.min(self.epoch);
+                for scope in self.observation_scopes_at(e.rev, at)? {
                     let since = scope_since.entry(scope).or_insert(e.since_epoch);
                     *since = (*since).min(e.since_epoch);
                 }
@@ -557,7 +581,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .collect();
         let changed: BTreeSet<LogicalId> = diffs.iter().map(|d| d.logical).collect();
         let mut new_cert = cert.clone();
-        new_cert.issued_epoch = self.epoch;
+        new_cert.issued_epoch = now;
         new_cert.log_checksum_at_issue = log.current_checksum;
         new_cert.watermarks = self.support_watermarks(&roots);
         // An entry whose own closure changed is now certified via an alternative.

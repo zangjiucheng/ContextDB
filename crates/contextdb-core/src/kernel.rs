@@ -14,6 +14,8 @@
 use crate::{CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink};
 #[path = "kernel_merge.rs"]
 mod merge;
+#[path = "kernel_view.rs"]
+mod view;
 use contextdb_model::*;
 use merge::SyncPoint;
 use std::{
@@ -21,6 +23,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
+pub use view::BranchView;
 
 /// The id kinds the kernel maps.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -215,7 +218,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     }
     /// Read access to one branch, with global ids.
     pub fn branch(&self, id: BranchId) -> Option<BranchView<'_, M, S>> {
-        self.branches.get(id.0 as usize).map(|b| BranchView { b })
+        self.branches
+            .get(id.0 as usize)
+            .map(|b| BranchView { b, k: self })
     }
     pub fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         self.commit_with(b, &AllPresent)
@@ -789,79 +794,6 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             rule_ids,
             syncs,
         })
-    }
-}
-
-/// Read access to one branch with global ids.
-pub struct BranchView<'a, M: Maintainer = Counting, S: StatsSink = NoStats> {
-    b: &'a Branch<M, S>,
-}
-impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
-    pub fn info(&self) -> &BranchInfo {
-        &self.b.info
-    }
-    /// Objects this branch imported by dedup, with the import epoch.
-    pub fn imports(&self) -> &[(Import, Epoch)] {
-        &self.b.imports
-    }
-    /// The branch's single-branch database (local ids).
-    pub fn db(&self) -> &'a Db<M, S> {
-        &self.b.db
-    }
-    /// Whether the branch still shares its state with the branch it forked
-    /// from (or a fork of it): neither has written since.
-    pub fn shares_state_with(&self, other: &BranchView<'_, M, S>) -> bool {
-        Arc::ptr_eq(&self.b.db, &other.b.db)
-    }
-    fn local(&self, k: Kind, global: u32) -> Option<u32> {
-        let l = self.b.ids.local(k, global);
-        (l != INVISIBLE).then_some(l)
-    }
-    /// Global ids of the branch database's local ids.
-    pub fn global_logical(&self, local: LogicalId) -> LogicalId {
-        LogicalId(self.b.ids.global(Kind::Logical, local.0))
-    }
-    pub fn global_revision(&self, local: RevisionId) -> RevisionId {
-        RevisionId(self.b.ids.global(Kind::Revision, local.0))
-    }
-    pub fn global_rule(&self, local: RuleId) -> RuleId {
-        RuleId(self.b.ids.global(Kind::Rule, local.0))
-    }
-    pub fn global_artifact(&self, local: ArtifactId) -> ArtifactId {
-        ArtifactId(self.b.ids.global(Kind::Artifact, local.0))
-    }
-    pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
-        let l = self.b.db.logical_by_key(key)?;
-        Some(LogicalId(self.b.ids.global(Kind::Logical, l.0)))
-    }
-    pub fn head(&self, l: LogicalId) -> Option<RevisionId> {
-        let local = self.local(Kind::Logical, l.0)?;
-        let r = self.b.db.head(LogicalId(local))?;
-        Some(RevisionId(self.b.ids.global(Kind::Revision, r.0)))
-    }
-    pub fn node(&self, r: RevisionId) -> Result<NodeState, TxError> {
-        let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
-        self.b.db.node(RevisionId(local))
-    }
-    pub fn status(&self, r: RevisionId) -> Result<Summary, TxError> {
-        let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
-        self.b.db.status(RevisionId(local))
-    }
-    pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
-        let local = self.local(Kind::Revision, r.0).ok_or(TxError::UnknownRef)?;
-        self.b.db.is_base(RevisionId(local))
-    }
-    pub fn rule_enabled(&self, j: RuleId) -> Option<bool> {
-        let local = self.local(Kind::Rule, j.0)?;
-        Some(self.b.db.rules.enabled[local as usize])
-    }
-    pub fn is_visible_revision(&self, r: RevisionId) -> bool {
-        self.local(Kind::Revision, r.0).is_some()
-    }
-    /// The branch digest: its visible inputs and derived state under its
-    /// local (canonical) ids.
-    pub fn digest(&self) -> ContentHash {
-        self.b.db.digest()
     }
 }
 

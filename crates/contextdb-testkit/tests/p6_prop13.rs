@@ -480,6 +480,17 @@ fn prop13_branches_equal_the_oracle() {
             for b in 0..o.branch_count() {
                 let b = BranchId(b as u16);
                 let (kc, oc) = (kernel_canonical(&k, b), o.canonical(b));
+                // Branch-aware reads (protocol 4) answer in global ids; only
+                // `main`'s read-time BRANCH_ONLY annotation may differ.
+                let view = k.branch(b).unwrap();
+                for (r, node) in &oc.nodes {
+                    let mut read = view.node(RevisionId(*r)).unwrap();
+                    if read.dimensions.currency == Currency::BranchOnly {
+                        assert_eq!(b, MAIN, "{at}");
+                        read.dimensions.currency = Currency::Superseded;
+                    }
+                    assert_eq!(&read, node, "{at}: view of r{r} on {b:?}");
+                }
                 if kc != oc {
                     let diff = [
                         ("logicals", kc.logicals == oc.logicals),

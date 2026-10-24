@@ -667,6 +667,29 @@ D1; otherwise on `main`. Two consequences are documented and tested:
 - A session pinned to a branch other than the worktree's sees
   `ObservationLag` until that branch is observed.
 
+**Implementation (r0.5): branch-aware reads.** `BranchView`
+(`core/src/kernel_view.rs`) answers every read the daemon makes, with
+global ids:
+
+- node, status and `summary_at`;
+- why, why-depth and why-not;
+- rules concluding a revision, and reachable impact;
+- historical reads, snapshot reads and diffs;
+- certificates.
+
+Each read maps its arguments to the branch database's local ids, runs the
+single-branch query and maps every id back: witnesses, stale reasons, head
+vectors and proof trees. Certificates are re-sorted under global ids and
+`cert_id` hashes the global form. A branch database's epoch advances only
+on its own commits, so certificates are issued and validated at the
+kernel's global epoch (`issued_epoch` is a global epoch matching the log),
+and historical reads at a later global epoch read the branch's latest
+state. A certificate presented on another branch is `Invalid` with
+`BranchMismatch`. On `main`, `node`, `status` and `summary_at` annotate
+`BRANCH_ONLY`; historical reads never do. With only `main`, every view
+read equals the single-branch database's (tested on generated traces).
+PROP13 also checks every view node against the oracle.
+
 ## 8. Persistence, wire and upgrade
 
 **op_log format 3.**

@@ -101,6 +101,8 @@ pub enum InvalidReason {
     StrictChange,
     /// The op_log frame at `issued_epoch` no longer matches (ADR 0008 §6.4 step 0).
     LogMismatch,
+    /// Presented on a branch other than the one it was issued on (ADR 0013 §7).
+    BranchMismatch,
 }
 /// Result of `validate_certificate` (SPEC §6.4), plus `Empty` (SPEC v1.5.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,6 +284,7 @@ impl Wire for InvalidReason {
             0 => Ok(Self::Changed),
             1 => Ok(Self::StrictChange),
             2 => Ok(Self::LogMismatch),
+            3 => Ok(Self::BranchMismatch),
             _ => Err(WireError::InvalidEncoding),
         }
     }

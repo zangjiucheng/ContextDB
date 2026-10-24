@@ -40,6 +40,10 @@ fn kind(v: &Validation) -> usize {
             reason: InvalidReason::LogMismatch,
             ..
         } => 3,
+        Validation::Invalid {
+            reason: InvalidReason::BranchMismatch,
+            ..
+        } => unreachable!("single-branch certificates"),
         Validation::Conflicted { .. } => 4,
         Validation::Ambiguous { .. } => 5,
         Validation::Unknown { .. } => 6,
