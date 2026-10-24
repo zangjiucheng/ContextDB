@@ -935,6 +935,29 @@ impl Wire for Op {
                 13u8.encode(o);
                 id.encode(o);
             }
+            Self::CreateBranch { name } => {
+                14u8.encode(o);
+                name.encode(o);
+            }
+            Self::ArchiveBranch { name } => {
+                15u8.encode(o);
+                name.encode(o);
+            }
+            Self::ExpectHeads { entries, source } => {
+                16u8.encode(o);
+                entries.encode(o);
+                source.encode(o);
+            }
+            Self::Merge {
+                source,
+                require_certified,
+                certify,
+            } => {
+                17u8.encode(o);
+                source.encode(o);
+                require_certified.encode(o);
+                certify.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1003,6 +1026,40 @@ impl Wire for Op {
             13 => Ok(Self::ResolveArtifact {
                 id: Wire::decode(i)?,
             }),
+            14 => Ok(Self::CreateBranch {
+                name: Wire::decode(i)?,
+            }),
+            15 => Ok(Self::ArchiveBranch {
+                name: Wire::decode(i)?,
+            }),
+            16 => Ok(Self::ExpectHeads {
+                entries: Wire::decode(i)?,
+                source: Wire::decode(i)?,
+            }),
+            17 => Ok(Self::Merge {
+                source: Wire::decode(i)?,
+                require_certified: Wire::decode(i)?,
+                certify: Wire::decode(i)?,
+            }),
+            _ => Err(WireError::InvalidEncoding),
+        }
+    }
+}
+
+impl Wire for ReadSource {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Client => 0u8.encode(o),
+            Self::Certificate(id) => {
+                1u8.encode(o);
+                id.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        match u8::decode(i)? {
+            0 => Ok(Self::Client),
+            1 => Ok(Self::Certificate(Wire::decode(i)?)),
             _ => Err(WireError::InvalidEncoding),
         }
     }

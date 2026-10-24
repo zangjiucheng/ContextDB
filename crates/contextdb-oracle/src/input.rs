@@ -36,8 +36,18 @@ impl InputModel {
         let mut ids = Allocations::default();
         let next = Epoch(self.epoch.0.saturating_add(1));
         let old_revisions = staged.revisions.len();
+        let mut read_set = std::collections::BTreeMap::new();
         for (op_index, op) in batch.ops.iter().enumerate() {
-            apply_op(&mut staged, &mut ids, batch, op, op_index, next, blobs)?;
+            apply_op(
+                &mut staged,
+                &mut ids,
+                batch,
+                op,
+                op_index,
+                next,
+                blobs,
+                &mut read_set,
+            )?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
             let logical = &staged.logicals[revision.logical.index()];
@@ -64,6 +74,13 @@ impl InputModel {
                     logical: revision.logical,
                     reason,
                 });
+            }
+        }
+        // Read set at batch end, after A5 (§6.1 contract 12): pre-batch heads.
+        for (logical, read) in read_set {
+            let now = self.inputs.heads[logical.index()];
+            if now != read {
+                return Err(TxError::ReadSetConflict { logical, read, now });
             }
         }
         let epoch = Epoch(
@@ -127,6 +144,16 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
     Ok(match op {
         Op::CreateLogical { .. } | Op::SetPolicy { .. } | Op::ObserverWatermark { .. } => {
             op.clone()
+        }
+        Op::ExpectHeads { entries, source } => Op::ExpectHeads {
+            entries: entries
+                .iter()
+                .map(|(l, r)| Ok((lr(l)?, rid(rr(RevRef::Existing(*r))?))))
+                .collect::<Result<_, TxError>>()?,
+            source: *source,
+        },
+        Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+            return Err(TxError::UnknownBranch);
         }
         Op::AddRevision {
             logical,
@@ -271,7 +298,7 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
     let violation = (matches!(op, Op::SetPolicy { .. }) && c != Channel::Admin)
         || ((matches!(op, Op::ObserverWatermark { .. }) || broken) && c != Channel::Observer)
         || (c == Channel::Observer
-            && !matches!(op, Op::ObserverWatermark { .. })
+            && !matches!(op, Op::ObserverWatermark { .. } | Op::ExpectHeads { .. })
             && !anchor_write(i, op)
             && !anchor_art);
     if violation {
@@ -426,7 +453,10 @@ fn apply_op(
     op_index: usize,
     epoch: Epoch,
     blobs: &dyn BlobPresence,
+    read_set: &mut std::collections::BTreeMap<LogicalId, RevisionId>,
 ) -> Result<(), TxError> {
+    let original = op;
+    let published = i.logicals.len() - a.new_logicals.len();
     let op = resolve(i, a, op)?;
     check_channel(i, b.channel, &op)?;
     match op {
@@ -690,6 +720,25 @@ fn apply_op(
                 return Err(TxError::ArtifactNotOpen { id });
             }
             i.artifacts[id.index()].open = false;
+        }
+        Op::ExpectHeads { entries, .. } => {
+            let Op::ExpectHeads { entries: raw, .. } = original else {
+                unreachable!()
+            };
+            for ((logical, read), (as_written, _)) in entries.iter().zip(raw) {
+                let LogicalRef::Existing(logical) = *logical else {
+                    unreachable!()
+                };
+                if matches!(as_written, LogicalRef::New(_))
+                    || logical.index() >= published
+                    || read_set.insert(logical, *read).is_some_and(|r| r != *read)
+                {
+                    return Err(TxError::InvalidReadSet { logical });
+                }
+            }
+        }
+        Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+            unreachable!("rejected by resolve")
         }
     }
     Ok(())

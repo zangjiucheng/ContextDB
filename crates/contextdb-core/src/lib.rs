@@ -481,6 +481,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 )?;
             }
             txn::final_policy(&staged)?;
+            txn::final_read_set(&staged)?;
             pk.sync(&staged, b.ops.len().saturating_sub(1), &mut stats)?;
             now.0
                 .checked_add(1)

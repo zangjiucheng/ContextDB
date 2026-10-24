@@ -42,6 +42,9 @@ pub(crate) struct Stage<'a> {
     new_revision_keys: BTreeMap<(LogicalId, ContentHash), RevisionId>,
     new_rule_keys: BTreeMap<RuleKey, RuleId>,
     pub incidences: u64,
+    /// `ExpectHeads` entries (SPEC §6.1 contract 12), checked at batch end
+    /// against the published (pre-batch) heads.
+    pub read_set: BTreeMap<LogicalId, RevisionId>,
 }
 impl<'a> Stage<'a> {
     pub fn new(
@@ -75,7 +78,12 @@ impl<'a> Stage<'a> {
             new_revision_keys: BTreeMap::new(),
             new_rule_keys: BTreeMap::new(),
             incidences: index.inc_rule.len() as u64,
+            read_set: BTreeMap::new(),
         }
+    }
+    /// The head before this batch; logicals created in the batch have none.
+    pub fn published_head(&self, l: LogicalId) -> Option<RevisionId> {
+        self.tables.heads.get(l.index()).copied()
     }
     pub fn published_logicals(&self) -> usize {
         self.logicals.len()

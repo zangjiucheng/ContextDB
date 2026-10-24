@@ -150,6 +150,20 @@ impl Resolver<'_, '_> {
                 payload_hash: *payload_hash,
             },
             Op::ResolveArtifact { id } => Op::ResolveArtifact { id: self.a(*id)? },
+            Op::ExpectHeads { entries, source } => Op::ExpectHeads {
+                entries: entries
+                    .iter()
+                    .map(|(l, r)| {
+                        let r = self.r(RevRef::Existing(*r))?;
+                        Ok((self.l(l)?, super::txn::r(r)))
+                    })
+                    .collect::<Result<_, TxError>>()?,
+                source: *source,
+            },
+            // Branch ops belong to the multi-branch kernel, never to one branch.
+            Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+                return Err(TxError::UnknownBranch);
+            }
         })
     }
 }
@@ -200,7 +214,7 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
         _ => None,
     };
     let is_broken = broken.is_some_and(|(t, _)| t == ArtifactType::AnchorBroken);
-    let observer_allowed = matches!(op, Op::ObserverWatermark { .. })
+    let observer_allowed = matches!(op, Op::ObserverWatermark { .. } | Op::ExpectHeads { .. })
         || anchor
         || broken.is_some_and(|(t, p)| {
             t == ArtifactType::AnchorBroken && kind(i, r(p)) == RecordKind::CodeAnchor
@@ -326,6 +340,7 @@ pub(crate) fn apply<S: StatsSink>(
     stats: &mut S,
     blobs: &dyn BlobPresence,
 ) -> Result<(), TxError> {
+    let original = op;
     let op = Resolver { i, a: ids }.op(op)?;
     channel(i, &op, b.channel)?;
     match op {
@@ -621,8 +636,45 @@ pub(crate) fn apply<S: StatsSink>(
             }
             i.set_artifact_open(id, false);
         }
+        Op::ExpectHeads { entries, .. } => {
+            let Op::ExpectHeads { entries: raw, .. } = original else {
+                unreachable!()
+            };
+            for ((logical, read), (as_written, _)) in entries.iter().zip(raw) {
+                let logical = l(logical);
+                // Only pre-batch heads can be read; a New logical has none.
+                if matches!(as_written, LogicalRef::New(_))
+                    || logical.index() >= i.published_logicals()
+                    || i.read_set
+                        .insert(logical, *read)
+                        .is_some_and(|r| r != *read)
+                {
+                    return Err(TxError::InvalidReadSet { logical });
+                }
+            }
+        }
+        Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+            unreachable!("rejected by the resolver")
+        }
     }
 
+    Ok(())
+}
+/// `ExpectHeads` at batch end, after A5 (SPEC §6.1 contract 12): every read
+/// head must still be the published one.
+pub(crate) fn final_read_set(i: &Stage) -> Result<(), TxError> {
+    for (logical, read) in &i.read_set {
+        let now = i
+            .published_head(*logical)
+            .expect("read logicals are published");
+        if now != *read {
+            return Err(TxError::ReadSetConflict {
+                logical: *logical,
+                read: *read,
+                now,
+            });
+        }
+    }
     Ok(())
 }
 /// A5 over the staged batch (ADR 0007 §5). Published revisions were valid at

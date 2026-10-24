@@ -174,6 +174,32 @@ pub enum Op {
     ResolveArtifact {
         id: ArtifactRef,
     },
+    /// Forks the batch's branch at this commit (SD19, P6). Sole Op of its batch.
+    CreateBranch {
+        name: String,
+    },
+    /// Makes the batch's branch read-only (SD19, P6). Sole Op of its batch.
+    ArchiveBranch {
+        name: String,
+    },
+    /// Read-set check against the pre-batch heads (SPEC §6.1 contract 12).
+    ExpectHeads {
+        entries: Vec<(LogicalRef, RevisionId)>,
+        source: ReadSource,
+    },
+    /// Merges `source` into the batch's branch (SD19 supplement, P6).
+    Merge {
+        source: BranchId,
+        require_certified: bool,
+        certify: Vec<LogicalRef>,
+    },
+}
+/// Who wrote an `ExpectHeads`: the client, or the daemon actor from a
+/// certificate's read vector (only the actor may write the latter).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadSource {
+    Client,
+    Certificate(ContentHash),
 }
 impl Op {
     pub fn name(&self) -> &'static str {
@@ -192,6 +218,10 @@ impl Op {
             Self::SetMetadata { .. } => "SetMetadata",
             Self::OpenArtifact { .. } => "OpenArtifact",
             Self::ResolveArtifact { .. } => "ResolveArtifact",
+            Self::CreateBranch { .. } => "CreateBranch",
+            Self::ArchiveBranch { .. } => "ArchiveBranch",
+            Self::ExpectHeads { .. } => "ExpectHeads",
+            Self::Merge { .. } => "Merge",
         }
     }
 }
@@ -250,6 +280,8 @@ pub enum CapacityKind {
     WatermarkPosition,
     /// A batch whose canonical encoding exceeds a u32 length field (P2 store).
     Encoding,
+    /// The branch id space (u16, P6).
+    Branch,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TxError {
@@ -326,6 +358,31 @@ pub enum TxError {
         logical: LogicalId,
         status: crate::Summary,
     },
+    BranchExists {
+        name: String,
+    },
+    InvalidBranchName {
+        name: String,
+    },
+    UnknownBranch,
+    BranchArchived {
+        name: String,
+    },
+    SoleOpRequired {
+        op: String,
+    },
+    InvalidMerge,
+    MergeConflict {
+        kind: MergeConflictKind,
+    },
+    InvalidReadSet {
+        logical: LogicalId,
+    },
+}
+/// What a merge cannot combine (SD19 supplement).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeConflictKind {
+    Policy,
 }
 impl std::fmt::Display for TxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
