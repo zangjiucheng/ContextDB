@@ -201,6 +201,8 @@ struct SimState {
     syncs_disabled: bool,
     /// Test fault: the next mutating call fails with an I/O error.
     fail_next: Option<&'static str>,
+    /// `(op, n)`: the operation named `op` fails after `n` more succeed.
+    fail_nth: Option<(&'static str, u32)>,
 }
 static SIM_INSTANCES: AtomicU64 = AtomicU64::new(0);
 
@@ -257,6 +259,11 @@ impl SimDisk {
     pub fn fail_next(&self, op: &'static str) {
         self.state().fail_next = Some(op);
     }
+    /// Fault injection: the operation named `op` fails after `n` more of
+    /// them succeed (interrupts a multi-step procedure at each step).
+    pub fn fail_nth(&self, op: &'static str, n: u32) {
+        self.state().fail_nth = Some((op, n));
+    }
     /// A full sync flushes the drive cache: every weakly synced file becomes
     /// durable with the bytes it had when it was weakly synced.
     fn barrier(s: &mut SimState) {
@@ -267,6 +274,15 @@ impl SimDisk {
         s.durable.extend(dirs);
     }
     fn check_fault(s: &mut SimState, op: &'static str) -> io::Result<()> {
+        if let Some((o, n)) = s.fail_nth
+            && o == op
+        {
+            if n == 0 {
+                s.fail_nth = None;
+                return Err(io::Error::other(format!("injected {op} failure")));
+            }
+            s.fail_nth = Some((o, n - 1));
+        }
         if s.fail_next == Some(op) {
             s.fail_next = None;
             return Err(io::Error::other(format!("injected {op} failure")));

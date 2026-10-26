@@ -37,4 +37,4 @@ CARGO_BUILD_JOBS=2 cargo mutants --package contextdb-core "${files[@]}" \
   --test p0 --test p1 --test p3 --test p3_certificates \
   --test p6_branches --test p6_visibility --test p6_what_if --test p6_merge \
   --test p6_conflict_gate --test p6_read_set --test p6_views --test p6_branch_fuzz \
-  --test p6_prop13 --test p6_g3_properties --locked
+  --test p6_prop13 --test p6_g3_properties --test p6_kernel_edges --locked
