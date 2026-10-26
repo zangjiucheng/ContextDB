@@ -626,6 +626,23 @@ fn late_invalid_read_set_in_a_merge_names_the_global_logical() {
     let expected = Err(TxError::InvalidReadSet { logical: dl });
     assert_eq!(k.what_if(&batch).map(|_| ()), expected);
     assert_eq!(k.commit(&batch).map(|_| ()), expected);
+    // Before the Merge, the same read set fails first, also with the global id.
+    let mut early = batch.clone();
+    early.ops.swap(0, 1);
+    assert_eq!(k.what_if(&early).map(|_| ()), expected);
+    // After the Merge, it comes after the merge's own Op errors (§9): an
+    // unknown `certify` key first.
+    let mut late = batch.clone();
+    if let Op::Merge {
+        require_certified,
+        certify,
+        ..
+    } = &mut late.ops[0]
+    {
+        *require_certified = true;
+        *certify = vec![LogicalRef::Key("nope".into())];
+    }
+    assert_eq!(k.what_if(&late).map(|_| ()), Err(TxError::UnknownRef));
 }
 
 /// Review (P6): a branch's digest covers its branch-table entry and the
@@ -649,6 +666,19 @@ fn branch_digests_cover_the_branch_table_and_sync_points() {
     k.commit(&on(x, vec![Op::ArchiveBranch { name: "x".into() }]))
         .unwrap();
     assert_ne!(k.branch(x).unwrap().digest(), merged, "archived");
+    // A merge into main counts in main's digest too.
+    let y = fork(&mut k, MAIN, "y");
+    let before = k.branch(MAIN).unwrap().digest();
+    merge(&mut k, MAIN, y);
+    assert_ne!(
+        k.branch(MAIN).unwrap().digest(),
+        before,
+        "a sync point on main"
+    );
+    assert_ne!(
+        k.branch(MAIN).unwrap().digest(),
+        k.branch(MAIN).unwrap().db().digest()
+    );
 }
 
 /// Review (P6): `InvalidRule::ConflictingVersions` names the global logical.

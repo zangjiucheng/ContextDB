@@ -1,3 +1,17 @@
+# P6 G4 rerun after the independent review (2026-10-26, tree 6eab9bd, macOS M1 Pro, scripts/stress-p6.sh)
+clients=1 seconds=600.0 reads=21560 cas_attempts=17970 cas_ok=17970 cas_conflicts=0 coupled_moves=14318 coupled_conflicts=0 merges=14491 merge_conflicts=25930 merge_refused=0 creates=24 create_exists=3603 branches=28 other=0 mixed_heads=0 cas_checked=17970 cas_breaks=0 replay_mismatch=0 replay_samples=2262 mixed_epochs=0 epoch=46824
+G4 PASS
+clients=8 seconds=600.1 reads=32324 cas_attempts=27002 cas_ok=23815 cas_conflicts=3187 coupled_moves=14066 coupled_conflicts=7453 merges=21605 merge_conflicts=35494 merge_refused=0 creates=24 create_exists=5419 branches=28 other=0 mixed_heads=0 cas_checked=23815 cas_breaks=0 replay_mismatch=0 replay_samples=3376 mixed_epochs=0 epoch=59531
+G4 PASS
+clients=32 seconds=600.3 reads=43807 cas_attempts=36257 cas_ok=23185 cas_conflicts=13072 coupled_moves=6795 coupled_conflicts=22299 merges=29222 merge_conflicts=27827 merge_refused=0 creates=24 create_exists=7331 branches=28 other=0 mixed_heads=0 cas_checked=23185 cas_breaks=0 replay_mismatch=0 replay_samples=4473 mixed_epochs=0 epoch=59247
+G4 PASS
+PostSyncPrePublish: 1000 fired, [fork-or-fallback, merge, branch commit] = [360, 338, 302]
+PostWalPreSync: 1000 fired, [fork-or-fallback, merge, branch commit] = [360, 338, 302]
+PreWal: 1000 fired, [fork-or-fallback, merge, branch commit] = [360, 338, 302]
+migrate 2→3: 3552 interrupted runs, 256 after the first rename
+test g4_migrate_2_to_3_interrupted_and_resumed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.91s
+
 # P6 G4 (2026-10-26, tree e37e864, macOS M1 Pro, scripts/stress-p6.sh)
 clients=1 seconds=600.0 reads=22495 cas_attempts=18709 cas_ok=18709 cas_conflicts=0 coupled_moves=14931 coupled_conflicts=0 merges=15116 merge_conflicts=27051 merge_refused=0 creates=24 create_exists=3753 branches=28 other=0 mixed_heads=0 cas_checked=18709 cas_breaks=0 replay_mismatch=0 replay_samples=2343 mixed_epochs=0 epoch=48801
 G4 PASS

@@ -132,7 +132,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P4 | Hooks and action gating | 🟡 implemented; every layer passes except the ≥ 2-week real-use dogfood (report no earlier than 2026-11-04) |
 | P5a | File-level code anchors | 🟡 implemented; every layer passes, waiting only on P4 |
 | P5b | Symbol-level code anchors | 🟡 implemented; G0 and G2–G6 pass, waiting on P5a/P4; G1, G7, G8 and the independent review remain |
-| P6 | Versioned transactions, branches and WHAT_IF | 🟡 implemented; G1–G5, G7 and G8 pass, the independent review remains |
+| P6 | Versioned transactions, branches and WHAT_IF | 🟡 implemented; G0–G5, G7, G8 and the independent review pass; the phase gate waits on P5b, P5a and P4 |
 | P7 | Semantic validation and conflicts | planned |
 | P8 | Retrieval, packing and git mirroring | planned |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |

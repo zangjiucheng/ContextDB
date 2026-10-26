@@ -12,6 +12,7 @@ runs are in [`p6-g3-properties.txt`](p6-g3-properties.txt)).
 | `shared`: the P6 functions in `arena.rs`, `layers.rs`, `txn.rs`, `lib.rs` (`--re`) | 5968472 | 82 | 7 | 3 | 3 |
 | `kernel` 2, after the new tests | 23ec037 | 339 | 24 | 1 | 90 |
 | `kernel_merge.rs` again, after ADR r0.6 (merge bases, pruning) | e37e864 | 128 | 4 | 0 | 18 |
+| `kernel` 3, after the independent review (ADR r0.7) | 6eab9bd | 352 | 27 | 1 | 90 |
 
 The ADR's mutation targets (§11) are all covered: visibility and dedup
 (`kernel.rs`), merge base and classification (`kernel_merge.rs`,
@@ -98,3 +99,18 @@ Shared files:
 
 Timeouts (`IdMap::len → 0`, three `KeyTable::remove` probe mutants) loop
 forever and count as detected.
+
+## After the independent review (6eab9bd)
+
+The kernel run on the reviewed tree left 27 survivors. 24 are the
+equivalent survivors above, at shifted line numbers. The other 3 were in
+code the review fixes added, and the tests now kill them (each mutant
+applied by hand against `p6_kernel_edges`):
+
+- `BranchView::digest` (`&&` → `||` in the `main`-without-merges shortcut):
+  a merge into `main` now must change `main`'s digest
+  (`branch_digests_cover_the_branch_table_and_sync_points`).
+- `merge`'s `early` guard for `InvalidReadSet`, made `true` or `false`: an
+  invalid read set before the Merge on a renumbered branch names the global
+  logical, and one after the Merge comes after an unknown `certify` key
+  (`late_invalid_read_set_in_a_merge_names_the_global_logical`).
