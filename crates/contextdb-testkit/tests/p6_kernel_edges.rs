@@ -393,3 +393,45 @@ fn invisible_required_entry_is_changed() {
         Validation::Valid | Validation::ValidRecertified { .. }
     ));
 }
+
+/// A dry run that creates a logical with metadata leaves nothing behind:
+/// the next logical to take its id has no metadata (WHAT_IF rollback).
+#[test]
+fn dry_run_drops_metadata_of_new_logicals() {
+    let mut k = Kernel::default();
+    k.commit(&Batch::new(vec![fact("a", 1)])).unwrap();
+    let tagged = Batch::new(vec![
+        fact("t", 2),
+        Op::SetMetadata {
+            logical: LogicalRef::New(0),
+            tags: ["x".to_owned()].into(),
+            dirs: ["src".to_owned()].into(),
+        },
+    ]);
+    let before = k.branch(MAIN).unwrap().db().clone();
+    k.what_if(&tagged).unwrap();
+    assert_eq!(k.branch(MAIN).unwrap().db().state_diff(&before), None);
+    k.commit(&Batch::new(vec![fact("u", 3)])).unwrap();
+    let inputs = k.branch(MAIN).unwrap().db().inputs();
+    assert_eq!(inputs.metadata[1], Metadata::default());
+}
+
+/// Rolling back many new keys exercises the key table's probe chains and
+/// backward shifts: afterwards every old key still resolves and the new
+/// ones are free again.
+#[test]
+fn dry_run_rolls_back_colliding_keys() {
+    let mut k = Kernel::default();
+    let old: Vec<Op> = (0..600).map(|n| fact(&format!("old{n}"), 1)).collect();
+    k.commit(&Batch::new(old)).unwrap();
+    let new: Vec<Op> = (0..900).map(|n| fact(&format!("new{n}"), 2)).collect();
+    let batch = Batch::new(new);
+    let before = k.branch(MAIN).unwrap().db().clone();
+    k.what_if(&batch).unwrap();
+    let db = k.branch(MAIN).unwrap().db();
+    assert_eq!(db.state_diff(&before), None);
+    for n in 0..600 {
+        assert_eq!(db.logical_by_key(&format!("old{n}")), Some(LogicalId(n)));
+    }
+    assert!(k.commit(&batch).is_ok(), "the new keys are free");
+}
