@@ -201,8 +201,9 @@ fn kernel_part(n: usize, samples: usize) -> bool {
 /// Merge cost against the history of merges: two branches exchange a fact
 /// and merge both ways `merges` times; the p95 of the last 100 merges
 /// against the first 100 (the merge base search must not grow with the
-/// number of sync points).
-fn merge_history(merges: usize) -> (u128, u128) {
+/// number of sync points), and the heap the kernel holds afterwards (sync
+/// points keep only states that can still be bases).
+fn merge_history(merges: usize) -> (u128, u128, isize) {
     let mut k = Kernel::default();
     k.commit(&Batch::new(vec![Op::CreateLogical {
         key: "seed".into(),
@@ -216,6 +217,7 @@ fn merge_history(merges: usize) -> (u128, u128) {
         .unwrap();
     let b = k.branch_by_name("b").unwrap();
     let mut t = Vec::with_capacity(merges);
+    let heap = live_heap();
     for n in 0..merges {
         let (into, source) = if n % 2 == 0 { (MAIN, b) } else { (b, MAIN) };
         k.commit(&on(
@@ -241,8 +243,9 @@ fn merge_history(merges: usize) -> (u128, u128) {
         .unwrap();
         t.push(start.elapsed().as_nanos());
     }
+    let retained = live_heap() - heap - (t.capacity() * 16) as isize;
     let (mut first, mut last) = (t[..100].to_vec(), t[t.len() - 100..].to_vec());
-    (pct(&mut first, 95), pct(&mut last, 95))
+    (pct(&mut first, 95), pct(&mut last, 95), retained)
 }
 
 const AGENT: Identity = Identity {
@@ -388,10 +391,10 @@ fn main() {
     for &n in &sizes {
         pass &= kernel_part(n, samples);
     }
-    let (first, last) = merge_history(2000);
+    let (first, last, heap) = merge_history(2000);
     let growth = last as f64 / first as f64;
     println!(
-        "merge_history merges=2000 first100_p95_us={:.1} last100_p95_us={:.1} growth={growth:.2}",
+        "merge_history merges=2000 first100_p95_us={:.1} last100_p95_us={:.1} growth={growth:.2} kernel_heap_B={heap}",
         first as f64 / 1e3,
         last as f64 / 1e3
     );

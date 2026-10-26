@@ -1,7 +1,7 @@
 # ADR 0013 — P6 versioned transactions, branches and WHAT_IF
 
 Status: **accepted r0.4**, 2026-10-23, with the r0.5 implementation note
-(§3.1). **P6 G0 passed.** SPEC v1.6.8
+(§3.1) and the r0.6 merge-base implementation (§6.1). **P6 G0 passed.** SPEC v1.6.8
 mirrors this ADR, and the owner confirmed the SD17 gate on 2026-10-23. r0.1 was
 reviewed independently: 4 blockers, 12 majors, 6 minors. The closure check
 of r0.2 found 6 findings partial and 4 new majors plus 5 minors. The
@@ -427,6 +427,31 @@ reached, and then only the earlier point gives the right base:
 Sync points are `Arc`-shared COW projections, so each costs only the chunks
 that diverged after it. G5 reports the retained bytes. Pruning that is
 safe under containment is deferred to P10 (GC).
+
+**Implementation (r0.6, found by G4).** Two changes keep merges cheap; the
+bases are unchanged (PROP13 against the oracle, which keeps every point and
+searches naively).
+
+- **Containment as reach.** Containment is closed under a branch's earlier
+  epochs, so the states contained in `Y` are one latest epoch per branch.
+  Sync points are created one per epoch, so a single pass in epoch order
+  gives the reach of every stored state and of every branch now, and only
+  each branch's latest common state can be a maximum. The recursive search
+  was cubic in the number of sync points: after 2,000 merges a merge took
+  60 ms instead of 0.2 ms, and the G4 stress timed out.
+- **Dropping states that can never be a base.** Every sync point stays in
+  the containment graph, but its *state* is dropped once no future merge
+  can use it. Merges and forks read a branch's current state, so every
+  future reach is a join of the branches' reaches now (plus newer states).
+  If every branch that contains `(b, e)` now also contains a later synced
+  state of `b`, `(b, e)` is never again the latest common state of `b`.
+  In the example above `T` contains `S@e1` but not `S@e3`, so `S@e1` keeps
+  its state. With the §3.1 representation each stored state is a whole
+  database, so keeping them all grew memory quadratically (488 MB after
+  1,500 merges of two branches; the G4 stress was killed). Now it is 2 MB.
+  The rule is deterministic, so replay and snapshots agree; a snapshot
+  marks a dropped state `PRUNED`. This is not the P10 GC: nothing a merge
+  can read is removed.
 
 ### 6.2 Classification (Dolt DiffOp; review M4)
 
@@ -1115,6 +1140,9 @@ SPEC v1.6.8 must land with the G0 closure:
   T19.
 - **r0.5** (2026-10-24): canonical order per branch (§3.1), A5 on merges
   (§6.3 step 4), PROP13 oracle (§11), found by PROP13.
+- **r0.6** (2026-10-26): merge bases by reach in one pass, and sync-point
+  states that can never be a base are dropped (§6.1), found by the G4
+  stress. Same bases; no semantic change.
 - **r0.5** (2026-10-23): implementation note §3.1. Each branch is a
   single-branch database with local ids behind a global id map. Fork is
   O(1); the first write copies the branch, O(N), which G5 measures. No

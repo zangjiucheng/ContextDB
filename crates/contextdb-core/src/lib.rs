@@ -14,7 +14,7 @@ mod fast;
 mod history;
 mod kernel;
 pub use kernel::{
-    BranchInfo, BranchView, Import, Kernel, KernelSnapshot, KernelState, valid_branch_name,
+    BranchInfo, BranchView, Import, Kernel, KernelSnapshot, KernelState, PRUNED, valid_branch_name,
 };
 mod memory;
 mod merge;

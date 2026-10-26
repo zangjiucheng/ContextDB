@@ -362,8 +362,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             src: parent,
             dst: BranchId(id),
             epoch,
-            db: Arc::clone(&child.db),
-            ids: Arc::clone(&child.ids),
+            state: Some((Arc::clone(&child.db), Arc::clone(&child.ids))),
         });
         self.branches.push(child);
         self.names.insert(name.into(), BranchId(id));
@@ -620,6 +619,9 @@ pub struct KernelState {
     pub to_global: [Vec<u32>; 4],
     pub unobserved: Vec<LogicalId>,
 }
+/// The state index of a sync point whose state was dropped (it can no
+/// longer be a merge base).
+pub const PRUNED: u32 = u32::MAX;
 /// A branch in a snapshot: its table entry, its state's index and its
 /// `branch_visibility` rows.
 pub type SnapshotBranch = (BranchInfo, u32, Vec<(Import, Epoch)>);
@@ -632,7 +634,8 @@ pub struct KernelSnapshot {
     pub epoch: Epoch,
     pub states: Vec<KernelState>,
     pub branches: Vec<SnapshotBranch>,
-    /// `(src, dst, epoch, state)`.
+    /// `(src, dst, epoch, state)`; a pruned sync point's state is
+    /// [`PRUNED`].
     pub syncs: Vec<(BranchId, BranchId, Epoch, u32)>,
 }
 
@@ -659,7 +662,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             .map(|b| (b.info.clone(), state_of(&b.db, &b.ids), b.imports.clone()))
             .collect();
         let syncs = (self.syncs.iter())
-            .map(|s| (s.src, s.dst, s.epoch, state_of(&s.db, &s.ids)))
+            .map(|s| {
+                let state = (s.state.as_ref()).map_or(PRUNED, |(db, ids)| state_of(db, ids));
+                (s.src, s.dst, s.epoch, state)
+            })
             .collect();
         KernelSnapshot {
             epoch: self.epoch,
@@ -720,13 +726,15 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         }
         let mut syncs = Vec::new();
         for (src, dst, epoch, state) in s.syncs {
-            let (db, ids) = pick(state)?;
+            let state = match state {
+                PRUNED => None,
+                n => Some(pick(n)?),
+            };
             syncs.push(SyncPoint {
                 src,
                 dst,
                 epoch,
-                db,
-                ids,
+                state,
             });
         }
         // Global tables from the branches.

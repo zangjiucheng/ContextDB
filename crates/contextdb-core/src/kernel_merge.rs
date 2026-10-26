@@ -11,20 +11,24 @@ use std::{
 
 /// A branch's state made available to another (ADR 0013 §6.1): at a fork,
 /// the parent's state at the fork epoch; at a merge, the source's state at
-/// the merge epoch. Every sync point is kept (retention, R1).
+/// the merge epoch. Every sync point is kept for containment; its state is
+/// dropped once it can no longer be a merge base (`prune_syncs`).
 #[derive(Clone, Debug)]
 pub(super) struct SyncPoint<M: Maintainer, S: StatsSink> {
     pub src: BranchId,
     pub dst: BranchId,
     pub epoch: Epoch,
-    pub db: Arc<Db<M, S>>,
-    pub ids: Arc<IdMap>,
+    pub state: Option<super::Shared<M, S>>,
 }
 
 /// A branch state: the branch as of an epoch.
 type State = (BranchId, Epoch);
-/// The latest contained epoch per branch of a state (`merge_bases`).
+/// The latest contained epoch per branch of a state (`Kernel::reaches`).
 type Reach = BTreeMap<BranchId, Epoch>;
+/// Whether state `x` is in a reach.
+fn within(x: State, r: &Reach) -> bool {
+    r.get(&x.0).is_some_and(|e| *e >= x.1)
+}
 
 /// One branch state read with global ids.
 struct View<'a, M: Maintainer, S: StatsSink> {
@@ -182,17 +186,15 @@ struct Found {
 }
 
 impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
-    /// The maximal stored states contained in both branches now (§6.1).
-    ///
-    /// `x` is contained in branch state `y` (N1) if it is `y`'s own earlier
-    /// state, or contained in a state synced into `y` at or before `y`'s
-    /// epoch. That is closed under earlier epochs of a branch, so the states
-    /// contained in `y` are its reach: the latest contained epoch per
-    /// branch, and `x ⊑ y` iff `reach(y)[x.0] ≥ x.1`. Sync points are
-    /// created one per epoch, so one pass in epoch order computes the reach
-    /// of every sync point's source state and of every branch now, in
-    /// O(sync points × branches).
-    fn merge_bases(&self, source: BranchId, target: BranchId) -> Vec<usize> {
+    /// The states each sync point's source state and each branch now
+    /// contain (§6.1, N1). `x` is contained in branch state `y` if it is
+    /// `y`'s own earlier state, or contained in a state synced into `y` at
+    /// or before `y`'s epoch. That is closed under earlier epochs of a
+    /// branch, so the states contained in `y` are its reach: the latest
+    /// contained epoch per branch, and `x ⊑ y` iff `reach(y)[x.0] ≥ x.1`.
+    /// Sync points are created one per epoch, so one pass in epoch order
+    /// computes every reach, in O(sync points × branches).
+    fn reaches(&self) -> (Vec<Reach>, Vec<Reach>) {
         let join = |into: &mut Reach, from: &Reach| {
             for (b, e) in from {
                 let max = into.entry(*b).or_insert(*e);
@@ -201,32 +203,31 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         };
         let mut order: Vec<usize> = (0..self.syncs.len()).collect();
         order.sort_by_key(|n| self.syncs[*n].epoch);
-        let mut now: BTreeMap<BranchId, Reach> = BTreeMap::new();
+        let mut now: Vec<Reach> = (0..self.branches.len() as u16)
+            .map(|b| Reach::from([(BranchId(b), Epoch(u64::MAX))]))
+            .collect();
         let mut at_sync: Vec<Reach> = vec![Reach::new(); self.syncs.len()];
         for n in order {
             let s = &self.syncs[n];
             // Every sync into `src` up to this epoch is already joined.
-            let mut r = now.get(&s.src).cloned().unwrap_or_default();
-            join(&mut r, &Reach::from([(s.src, s.epoch)]));
-            join(now.entry(s.dst).or_default(), &r);
+            let mut r = now[s.src.0 as usize].clone();
+            r.insert(s.src, s.epoch);
+            join(&mut now[s.dst.0 as usize], &r);
             at_sync[n] = r;
         }
-        let latest = Epoch(u64::MAX);
-        let reach_now = |b: BranchId| {
-            let mut r = now.get(&b).cloned().unwrap_or_default();
-            join(&mut r, &Reach::from([(b, latest)]));
-            r
-        };
-        let (rs, rt) = (reach_now(source), reach_now(target));
-        let within = |x: State, r: &Reach| r.get(&x.0).is_some_and(|e| *e >= x.1);
+        (at_sync, now)
+    }
+    /// The maximal stored states contained in both branches now (§6.1).
+    fn merge_bases(&self, source: BranchId, target: BranchId) -> Vec<usize> {
+        let (at_sync, now) = self.reaches();
+        let (rs, rt) = (&now[source.0 as usize], &now[target.0 as usize]);
         let state = |n: usize| (self.syncs[n].src, self.syncs[n].epoch);
         // A branch's earlier state is contained in its later one, so only
-        // the latest common state of each branch can be maximal (the first
-        // sync point holding it stands for it).
+        // the latest common state of each branch can be maximal.
         let mut latest: BTreeMap<BranchId, usize> = BTreeMap::new();
         for n in 0..self.syncs.len() {
             let x = state(n);
-            if within(x, &rs) && within(x, &rt) {
+            if within(x, rs) && within(x, rt) {
                 let best = latest.entry(x.0).or_insert(n);
                 if self.syncs[*best].epoch < x.1 {
                     *best = n;
@@ -242,6 +243,41 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     .any(|d| d != c && within(state(*c), &at_sync[*d]))
             })
             .collect()
+    }
+    /// Drops the state of every sync point that can never again be a merge
+    /// base, keeping its place in the containment graph. A source state
+    /// `(b, e)` is a base candidate only as the latest state of `b` common
+    /// to both branches. Merges and forks read a branch's current state, so
+    /// every future state's reach is a join of the branches' reaches now
+    /// (and of states newer than every sync point). If every branch that
+    /// contains `(b, e)` now also contains a later synced state of `b`, so
+    /// will every future state: `(b, e)` is never the latest again, and the
+    /// latest common state is never pruned. Deterministic, so replay agrees.
+    pub(super) fn prune_syncs(&mut self) {
+        let (_, now) = self.reaches();
+        let mut src_epochs: BTreeMap<BranchId, Vec<Epoch>> = BTreeMap::new();
+        for s in &self.syncs {
+            src_epochs.entry(s.src).or_default().push(s.epoch);
+        }
+        for epochs in src_epochs.values_mut() {
+            epochs.sort_unstable();
+        }
+        for n in 0..self.syncs.len() {
+            let (b, e) = (self.syncs[n].src, self.syncs[n].epoch);
+            if self.syncs[n].state.is_none() {
+                continue;
+            }
+            let epochs = &src_epochs[&b];
+            let Some(&later) = epochs.get(epochs.partition_point(|x| *x <= e)) else {
+                continue;
+            };
+            let dominated = (now.iter())
+                .filter(|z| within((b, e), z))
+                .all(|z| within((b, later), z));
+            if dominated {
+                self.syncs[n].state = None;
+            }
+        }
     }
 
     /// `Merge` with its `ExpectHeads` (ADR 0013 §6.3, §9 order). Returns the
@@ -297,9 +333,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             ids: &tb.ids,
         };
         let bs: Vec<_> = (bases.iter())
-            .map(|n| View {
-                db: &self.syncs[*n].db,
-                ids: &self.syncs[*n].ids,
+            .map(|n| {
+                let (db, ids) = (self.syncs[*n].state.as_ref())
+                    .expect("the latest common state of a branch is never pruned");
+                View { db, ids }
             })
             .collect();
         let mut report = MergeReport {
@@ -801,10 +838,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             src: source,
             dst: target,
             epoch,
-            db: Arc::clone(&src.db),
-            ids: Arc::clone(&src.ids),
+            state: Some((Arc::clone(&src.db), Arc::clone(&src.ids))),
         };
         self.syncs.push(point);
+        self.prune_syncs();
         Ok((result, report))
     }
 

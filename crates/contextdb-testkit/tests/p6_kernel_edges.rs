@@ -435,3 +435,39 @@ fn dry_run_rolls_back_colliding_keys() {
     }
     assert!(k.commit(&batch).is_ok(), "the new keys are free");
 }
+
+/// Sync points that can no longer be merge bases drop their state (they
+/// stay in the containment graph): merging two branches back and forth
+/// keeps a bounded number of states, survives a snapshot round trip, and
+/// later merges still find their bases.
+#[test]
+fn superseded_sync_points_are_pruned() {
+    let mut k = Kernel::default();
+    k.commit(&Batch::new(vec![fact("a", 1)])).unwrap();
+    let b = fork(&mut k, MAIN, "b");
+    for n in 0..50u8 {
+        let (into, source) = if n % 2 == 0 { (MAIN, b) } else { (b, MAIN) };
+        k.commit(&on(source, vec![fact(&format!("f{n}"), n)]))
+            .unwrap();
+        merge(&mut k, into, source);
+    }
+    let s = k.export();
+    let kept = s
+        .syncs
+        .iter()
+        .filter(|x| x.3 != contextdb_core::PRUNED)
+        .count();
+    assert_eq!(s.syncs.len(), 51);
+    assert!(kept <= 3, "{kept} sync states kept");
+    let mut copy = Kernel::<Counting>::import(s).unwrap();
+    for k in [&mut k, &mut copy] {
+        k.commit(&on(b, vec![fact("late", 9)])).unwrap();
+        let (_, report) = merge(k, MAIN, b);
+        assert_eq!(report.newly_visible, [1, 1, 0, 0]);
+        assert!(report.conflicts.is_empty());
+    }
+    assert_eq!(
+        copy.branch(MAIN).unwrap().digest(),
+        k.branch(MAIN).unwrap().digest()
+    );
+}
