@@ -572,3 +572,121 @@ fn merge_checks_policy_on_the_merged_state() {
     );
     assert_eq!(digest(&k, MAIN), before);
 }
+
+/// R1 (retention): S → C at e1, C → T at e2, S reverts, S → C again at e3.
+/// Merging S into T still needs S@e1 as its base: T takes S's revert.
+#[test]
+fn r1_every_sync_point_is_kept() {
+    let mut k = setup();
+    let s = fork(&mut k, MAIN, "s");
+    let c = fork(&mut k, MAIN, "c");
+    let t = fork(&mut k, MAIN, "t");
+    k.commit(&on(s, move_to(0, 0, 10))).unwrap(); // s1 = r2
+    merge(&mut k, s, c); // e1
+    merge(&mut k, c, t); // e2
+    k.commit(&on(s, vec![set_head(0, 2, RevisionId(0).into())]))
+        .unwrap(); // revert to s0
+    merge(&mut k, s, c); // e3
+    assert_eq!(head(&k, c, 0), Some(RevisionId(0)));
+    let (_, report) = merge(&mut k, s, t);
+    assert_eq!(head(&k, t, 0), Some(RevisionId(0)), "the revert arrives");
+    assert!(report.conflicts.is_empty());
+}
+
+/// R3: criss-cross conflicts on `enabled` and on policy. Two maximal bases
+/// disagree; the target keeps its value and a Conflict targets the rule's
+/// conclusion, while a policy conflict refuses the merge.
+#[test]
+fn r3_criss_cross_on_enabled_and_policy() {
+    let mut k = setup();
+    // C = r2 with rule J: C ← A (Pin), enabled.
+    let mut c = create("c", 2);
+    if let Op::CreateLogical { adopt_as_base, .. } = &mut c {
+        *adopt_as_base = false;
+    }
+    k.commit(&Batch::new(vec![c, rule(2, 0, EdgeKind::Pin)]))
+        .unwrap();
+    let j = RuleId(0);
+    let x = fork(&mut k, MAIN, "x");
+    let y = fork(&mut k, MAIN, "y");
+    let disable = |enabled| Op::SetRuleEnabled {
+        rule: j.into(),
+        enabled,
+    };
+    let policy = |branch, kind| {
+        let mut b = on(
+            branch,
+            vec![Op::SetPolicy {
+                policy: PolicyDoc {
+                    version: 1,
+                    require_deps: [kind].into_iter().collect(),
+                },
+            }],
+        );
+        b.channel = Channel::Admin;
+        b
+    };
+    // x disables J and narrows the policy; xs and ys capture both sides.
+    k.commit(&on(x, vec![disable(false)])).unwrap();
+    k.commit(&policy(x, RecordKind::Plan)).unwrap();
+    let xs = fork(&mut k, x, "xs");
+    let ys = fork(&mut k, y, "ys");
+    merge(&mut k, ys, x);
+    merge(&mut k, xs, y); // y takes J disabled and the policy
+    // Now x re-enables J: the bases (y's: enabled, x's: disabled) disagree.
+    k.commit(&on(x, vec![disable(true)])).unwrap();
+    let (_, report) = merge(&mut k, x, y);
+    let enabled: Vec<_> = (report.conflicts.iter())
+        .filter(|c| c.kind == ConflictKind::Enabled)
+        .collect();
+    assert_eq!(enabled.len(), 1, "{report:?}");
+    assert_eq!(
+        (enabled[0].rule, enabled[0].target),
+        (Some(j), RevisionId(2))
+    );
+    assert_eq!(
+        k.branch(y).unwrap().rule_enabled(j),
+        Some(false),
+        "target keeps its value"
+    );
+    // That merge's sync point now dominates both bases: the next one has a
+    // single base again, and x's new policy simply arrives.
+    k.commit(&policy(x, RecordKind::Decision)).unwrap();
+    k.commit(&on(y, vec![merge_op(x, false)])).unwrap();
+}
+
+/// R3 on policy: with two disagreeing maximal bases, a third policy on the
+/// source refuses the merge.
+#[test]
+fn r3_criss_cross_policy_refuses() {
+    let mut k = setup();
+    let x = fork(&mut k, MAIN, "x");
+    let y = fork(&mut k, MAIN, "y");
+    let policy = |branch, kind| {
+        let mut b = on(
+            branch,
+            vec![Op::SetPolicy {
+                policy: PolicyDoc {
+                    version: 1,
+                    require_deps: [kind].into_iter().collect(),
+                },
+            }],
+        );
+        b.channel = Channel::Admin;
+        b
+    };
+    k.commit(&policy(x, RecordKind::Plan)).unwrap();
+    let xs = fork(&mut k, x, "xs");
+    let ys = fork(&mut k, y, "ys");
+    merge(&mut k, ys, x);
+    merge(&mut k, xs, y); // y takes x's policy
+    k.commit(&policy(x, RecordKind::Decision)).unwrap();
+    let before = digest(&k, y);
+    assert_eq!(
+        k.commit(&on(y, vec![merge_op(x, false)])),
+        Err(TxError::MergeConflict {
+            kind: MergeConflictKind::Policy
+        })
+    );
+    assert_eq!(digest(&k, y), before);
+}
