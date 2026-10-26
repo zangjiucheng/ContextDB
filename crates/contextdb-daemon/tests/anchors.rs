@@ -1236,3 +1236,117 @@ fn announce_record_gates_live_evidence() {
     assert!((0..5).any(|_| certified(&s)));
     s.handle(ADMIN, Request::Shutdown);
 }
+
+/// T19 with only a watermark change in the window (ADR 0013 §11): a Git
+/// commit that leaves the anchored files' contents alone moves the scope's
+/// position and nothing else. Before the observer commits it, a plan's
+/// `expect_cert_valid` commit is refused for lag; after, a strict plan is
+/// refused (StrictChange) and a non-strict plan commits.
+#[test]
+fn t19_expect_cert_valid_with_only_a_watermark_change_in_the_window() {
+    let f = Fixture::new();
+    f.write("a.rs", "a");
+    f.write("b.rs", "b");
+    let s = f.service();
+    f.scan(&s, &["a.rs", "b.rs"]);
+    roots(&s);
+    let plan = |strict| {
+        let session = f.start(&s);
+        assert!(matches!(read(&s, session, "root-a"), Response::Read { .. }));
+        assert!(matches!(
+            check(&s, session, None, strict),
+            Validation::Valid
+        ));
+        session
+    };
+    let (strict, plain) = (plan(true), plan(false));
+    let commit = |session, key: &str| {
+        let Response::Committed { result } = s
+            .handle(
+                AGENT,
+                Request::Record {
+                    binding: Binding::root(session),
+                    kind: RecordKind::Fact,
+                    body: key.as_bytes().to_vec(),
+                    target: WriteTarget::Create {
+                        key: key.into(),
+                        scope_lane: "test".into(),
+                    },
+                    deps: Vec::new(),
+                    adopt_as_base: false,
+                    client_txn_id: None,
+                },
+            )
+            .response
+        else {
+            panic!("{key}")
+        };
+        let rev = result.allocations.new_revisions[0];
+        s.handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(session),
+                ops: vec![Op::AssertBase { rev: rev.into() }],
+                blobs: Vec::new(),
+                expect_cert_valid: true,
+                client_txn_id: None,
+            },
+        )
+        .response
+    };
+    let before = anchor_state(&f, &s);
+    for args in [
+        &["add", "a.rs", "b.rs"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "t19",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&f.root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let lagging = commit(plain, "w0");
+    assert!(
+        matches!(
+            lagging,
+            Response::Refused {
+                validation: Validation::Unknown { .. }
+            }
+        ),
+        "{lagging:?}"
+    );
+    f.scan(&s, &[]);
+    let after = anchor_state(&f, &s);
+    assert_eq!(after.1, before.1, "the anchors' contents are unchanged");
+    assert_ne!(after.0, before.0, "the watermark moved");
+    let refused = commit(strict, "w1");
+    assert!(
+        matches!(
+            refused,
+            Response::Refused {
+                validation: Validation::Invalid {
+                    reason: InvalidReason::StrictChange,
+                    ..
+                }
+            }
+        ),
+        "{refused:?}"
+    );
+    let committed = commit(plain, "w2");
+    assert!(
+        matches!(committed, Response::Committed { .. }),
+        "{committed:?}"
+    );
+    s.handle(ADMIN, Request::Shutdown);
+}
