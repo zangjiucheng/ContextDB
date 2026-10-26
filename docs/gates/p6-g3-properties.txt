@@ -1,0 +1,44 @@
+rustc 1.95.0 (59807616e 2026-04-14)
+     Running tests/p6_prop13.rs (<remote>/release/deps/p6_prop13-e667dcc6db23ebee)
+
+running 1 test
+PROP13: 10000 seeds, 206327 commits, 33673 rejections, 28484 merges, 640 conflicts, 48188 visibility rows; rejections {"ArtifactNotOpen": 773, "BranchArchived": 3753, "ChannelRestricted": 791, "CurvecMoved": 21, "CycleDetected": 2788, "DuplicateRule": 2219, "HeadConflict": 2939, "InvalidBranchName": 3569, "InvalidMerge": 1328, "InvalidMetadata": 91, "InvalidReadSet": 12, "InvalidRule(SelfPremise)": 5279, "LogicalExists": 668, "MergeConflict": 1, "MergeNotCertified": 2490, "NoSemIncidence": 4592, "PolicyViolation": 770, "ReadSetConflict": 559, "UnknownRef": 1030}
+test prop13_branches_equal_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.14s
+
+     Running tests/p6_g3_properties.rs (<remote>/release/deps/p6_g3_properties-05a3656330edd2a5)
+
+running 3 tests
+ExpectHeads/SetHead pairs distinguished: 1163 of 2500 seeds
+test prop7_expect_heads_reads_the_listed_heads ... ok
+PROP7 branch cases with both batches committed: [1213, 1397, 989, 1133, 1128]
+test prop7_branch_ops_commute_on_disjoint_resources ... ok
+PROP11 per branch: issue [ok,not-certified,ambiguous,empty]=[47391, 78175, 2395, 12119] verdicts [denied,changed,strict,log,branch,conflicted,ambiguous,unknown,pending,empty,valid,recert]=[0, 33529, 75080, 24186, 504510, 20723, 0, 10128, 955, 0, 320450, 2448]
+test prop11_certificates_per_branch_equal_the_oracle ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.00s
+
+     Running tests/p6_branch_fuzz.rs (<remote>/release/deps/p6_branch_fuzz-d5c5807680aee1a7)
+
+running 1 test
+merges 1626, conflicts 110, revision rows 3954
+test random_branch_histories ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running tests/p6_conflict_gate.rs (<remote>/release/deps/p6_conflict_gate-43e9daf1b5f90bfb)
+
+running 2 tests
+test t51_open_conflict_blocks_certified_only ... ok
+test gate_matches_the_oracles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/p6_prop10.rs (<remote>/release/deps/p6_prop10-ea4e602078d332a0)
+
+running 1 test
+test prop10_every_branch_rebuilds_from_the_op_log ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.67s
+

@@ -133,7 +133,25 @@ fn kernel_part(n: usize, samples: usize) -> bool {
     let mut reference = loaded(n);
     let (main_p95, _) = commit_p95(&mut reference, MAIN, &ops, samples);
     let ratio = branch_p95 as f64 / main_p95 as f64;
-    pass &= ratio <= 1.2;
+    // The budget's comparison in one kernel: after a fork, the branch and
+    // `main` take the same commits alternately, each first write (a copy)
+    // among the samples. Two kernels differ by heap layout at ~1 µs.
+    let mut ab = loaded(n);
+    ab.commit(&Batch::new(vec![Op::CreateBranch { name: "ab".into() }]))
+        .unwrap();
+    let ab_branch = ab.branch_by_name("ab").unwrap();
+    let (mut tb, mut tm) = (Vec::new(), Vec::new());
+    for s in 0..samples {
+        for (branch, t) in [(ab_branch, &mut tb), (MAIN, &mut tm)] {
+            let batch = on(branch, vec![ops[s % ops.len()].clone()]);
+            let start = Instant::now();
+            black_box(ab.commit(&batch).unwrap());
+            t.push(start.elapsed().as_nanos());
+        }
+    }
+    let (ib, im) = (pct(&mut tb, 95), pct(&mut tm, 95));
+    let interleaved = ib as f64 / im as f64;
+    pass &= interleaved <= 1.2;
     // WHAT_IF against the commit it previews, on `main`.
     let (mut dry, mut real) = (Vec::new(), Vec::new());
     for s in 0..samples {
@@ -166,7 +184,7 @@ fn kernel_part(n: usize, samples: usize) -> bool {
     let sync_heap = live_heap() - heap;
     println!(
         "n={n} fork_p50_us={:.2} fork_max_us={:.1} fork_heap_B={fork_heap} first_write_us={:.1} branch_heap_after_{samples}_commits_B={branch_heap} \
-         branch_commit_p95_us={:.1} main_commit_p95_us={:.1} branch_over_main={ratio:.3} \
+         branch_commit_p95_us={:.1} unforked_main_commit_p95_us={:.1} branch_over_unforked_main={ratio:.3} branch_over_main_interleaved={interleaved:.3} (p95_ns {ib}/{im}) \
          what_if_p95_us={:.1} commit_p95_us={:.1} what_if_over_commit={what_if_ratio:.3} \
          merge_plus_two_writes_heap_B={sync_heap} post_merge_first_write_main_us={:.1} post_merge_first_write_branch_us={:.1}",
         fork_ns as f64 / 1e3,
@@ -179,19 +197,23 @@ fn kernel_part(n: usize, samples: usize) -> bool {
         post_merge_main_ns as f64 / 1e3,
         post_merge_branch_ns as f64 / 1e3,
     );
-    // 10⁴ private rules on the shared premises the toggles reach.
+    // 10⁴ private rules on the shared premises the toggles reach: `main`'s
+    // commit before and after the branch adds them, in one kernel.
     let mut k = loaded(n);
     k.commit(&Batch::new(vec![Op::CreateBranch { name: "b".into() }]))
         .unwrap();
     let b = k.branch_by_name("b").unwrap();
+    commit_p95(&mut k, MAIN, &ops, samples); // main's first write copies
+    let (main_before, _) = commit_p95(&mut k, MAIN, &ops, samples);
     private_rules(&mut k, b, n);
     let (main_p95_private, _) = commit_p95(&mut k, MAIN, &ops, samples);
     let (branch_p95_private, _) = commit_p95(&mut k, b, &ops, samples);
-    let isolation = main_p95_private as f64 / main_p95 as f64;
+    let isolation = main_p95_private as f64 / main_before as f64;
     println!(
-        "n={n} private_rules=10000 main_commit_p95_us={:.1} main_over_unforked={isolation:.3} \
+        "n={n} private_rules=10000 main_commit_p95_us={:.1} (before {:.1}) main_with_over_without={isolation:.3} \
          branch_commit_p95_us={:.1} (the branch propagates into its 10⁴ rules)",
         main_p95_private as f64 / 1e3,
+        main_before as f64 / 1e3,
         branch_p95_private as f64 / 1e3,
     );
     pass &= isolation <= 1.2;

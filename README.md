@@ -131,8 +131,8 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P3 | Daemon, MCP and certified reads | ✅ passed |
 | P4 | Hooks and action gating | 🟡 implemented; every layer passes except the ≥ 2-week real-use dogfood (report no earlier than 2026-11-04) |
 | P5a | File-level code anchors | 🟡 implemented; every layer passes, waiting only on P4 |
-| P5b | Symbol-level code anchors | planned |
-| P6 | Versioned transactions, branches and WHAT_IF | planned |
+| P5b | Symbol-level code anchors | 🟡 implemented; G0 and G2–G6 pass, waiting on P5a/P4; G1, G7, G8 and the independent review remain |
+| P6 | Versioned transactions, branches and WHAT_IF | 🟡 implemented; G1, G3–G5 and G7 pass, one G2 item and the independent review remain |
 | P7 | Semantic validation and conflicts | planned |
 | P8 | Retrieval, packing and git mirroring | planned |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
@@ -263,11 +263,28 @@ ctx check <dir> --strict --range <a>..<b> [--repo <repo>]
 
 **Upgrade note**: P5a raises the IPC protocol to 3 and writes format-2 session-log segments (forcing a rollover from a format-1 segment before the first new event). P4 session logs read unchanged under P5a; P4 binaries refuse format-2 segments before any truncation, and downgrade is not supported.
 
+### Branches, transactions and WHAT_IF (P6)
+
+Context can be forked, changed in isolation and merged back, like the code it describes (SPEC SD19, ADR 0013).
+
+- **Branches**: `main` always exists; other branches are created explicitly (`ctx branch create`, `ctx_branch`). A session binds to the ContextDB branch named like its worktree's git branch, otherwise to `main`, and the observer commits a repository's anchors on that branch the same way. Reads on a branch see only what is visible there; ids are global, and `main`'s reads mark objects that exist only on other branches `BRANCH_ONLY`. A fork shares its parent's state (constant time and memory); the first write after a fork or merge copies that branch's state once.
+- **Merge**: three-way, against the last common sync point (Dolt-style classification of heads, base bits, rule enablement, ValidationRecords, artifacts, metadata and policy). Values changed on both sides keep the target's value and open a `Conflict` artifact; an open Conflict gates its target revision (`CONFLICTED`, SD17) until it is resolved. `require_certified` (the default) refuses a merge unless the moved, new and conflicted records are CERTIFIED afterwards. Agents may merge, including into `main`.
+- **Transactions**: `ctx_commit` commits several ops atomically on the session's branch. With `expect_cert_valid`, the session's certificate is validated inside the writer and its read set checked in the same step (`ExpectHeads`), so of two plans that read the same records and write conflicting changes, the first commits and the second is refused (write skew, T19).
+- **WHAT_IF**: `ctx_what_if` returns what a batch (including a merge) would do, status changes and allocations, without committing; the database is restored from an undo journal.
+
+```sh
+ctx branch create <dir> <name> [--from B] | list <dir> | archive <dir> <name>
+ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
+ctx status|why|why-not|impact <dir> ... --branch B       # read another branch
+```
+
+**Upgrade note**: P6 raises the IPC protocol to 4 and the op_log to format 3 (each frame records its branch and merge report). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps the old log as `log.v2.bak`, can be rerun after an interruption, and lists any epoch whose recorded result changes under the Conflict gate), then upgrade every binary together. Older binaries refuse a format-3 store.
+
 ## Limits and non-goals
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.
 - **The trust boundary is cooperative**: an agent that can run a shell as the same OS user can uninstall hooks or connect to the admin socket directly; hard isolation, multi-principal permissions and right-to-erasure arrive in P9.
-- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P11); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication; symbol-level anchors (P5b).
+- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P11); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication.
 - **TOCTOU**: there is still a window between the pre-action check and the actual write; Bash side effects are found only afterwards, by drift.
 
 ## Development and verification

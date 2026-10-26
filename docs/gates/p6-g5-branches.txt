@@ -1,0 +1,58 @@
+# P6 G5 branch_bench (2026-10-26, tree 7f9be3a + bench edits, MacBook Pro M1 Pro 16 GB, release)
+# three runs: sizes 1e3..1e6, 1000 samples, 300 actor samples
+== run 1
+n=1000 fork_p50_us=0.42 fork_max_us=2.9 fork_heap_B=212 first_write_us=146.0 branch_heap_after_1000_commits_B=730922 branch_commit_p95_us=1.4 unforked_main_commit_p95_us=1.1 branch_over_unforked_main=1.260 branch_over_main_interleaved=0.967 what_if_p95_us=1.7 commit_p95_us=1.2 what_if_over_commit=1.466 merge_plus_two_writes_heap_B=1408340 post_merge_first_write_main_us=2.4 post_merge_first_write_branch_us=143.3
+n=1000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=1.000 branch_commit_p95_us=877.4 (the branch propagates into its 10⁴ rules)
+n=10000 fork_p50_us=0.29 fork_max_us=4.5 fork_heap_B=212 first_write_us=316.6 branch_heap_after_1000_commits_B=5365178 branch_commit_p95_us=0.9 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=0.954 branch_over_main_interleaved=0.999 what_if_p95_us=1.3 commit_p95_us=0.9 what_if_over_commit=1.477 merge_plus_two_writes_heap_B=10676852 post_merge_first_write_main_us=2.0 post_merge_first_write_branch_us=429.7
+n=10000 private_rules=10000 main_commit_p95_us=0.9 (before 0.8) main_with_over_without=1.050 branch_commit_p95_us=864.3 (the branch propagates into its 10⁴ rules)
+n=100000 fork_p50_us=0.33 fork_max_us=14.4 fork_heap_B=212 first_write_us=5038.5 branch_heap_after_1000_commits_B=52464794 branch_commit_p95_us=1.0 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=1.045 branch_over_main_interleaved=0.957 what_if_p95_us=1.3 commit_p95_us=0.8 what_if_over_commit=1.600 merge_plus_two_writes_heap_B=104876084 post_merge_first_write_main_us=6.8 post_merge_first_write_branch_us=5996.3
+n=100000 private_rules=10000 main_commit_p95_us=1.0 (before 0.9) main_with_over_without=1.095 branch_commit_p95_us=1036.5 (the branch propagates into its 10⁴ rules)
+n=1000000 fork_p50_us=0.33 fork_max_us=142.4 fork_heap_B=212 first_write_us=111144.8 branch_heap_after_1000_commits_B=543988986 branch_commit_p95_us=1.0 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=1.136 branch_over_main_interleaved=0.963 what_if_p95_us=1.3 commit_p95_us=0.9 what_if_over_commit=1.523 merge_plus_two_writes_heap_B=1087924468 post_merge_first_write_main_us=12.0 post_merge_first_write_branch_us=181251.8
+n=1000000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=1.042 branch_commit_p95_us=1064.2 (the branch propagates into its 10⁴ rules)
+merge_history merges=2000 first100_p95_us=53.3 last100_p95_us=1085.4 growth=20.37 kernel_heap_B=3225318
+actor reads=10 expect_cert_valid=false commit_p50_ms=4.40 p95_ms=9.24 p99_ms=13.13
+actor reads=10 expect_cert_valid=true commit_p50_ms=3.47 p95_ms=6.64 p99_ms=9.33
+actor reads=100 expect_cert_valid=false commit_p50_ms=4.19 p95_ms=8.59 p99_ms=12.51
+actor reads=100 expect_cert_valid=true commit_p50_ms=4.53 p95_ms=8.49 p99_ms=11.78
+p6_g5_kernel_pass=true
+== run 2
+n=1000 fork_p50_us=0.38 fork_max_us=2.8 fork_heap_B=212 first_write_us=121.5 branch_heap_after_1000_commits_B=730922 branch_commit_p95_us=1.2 unforked_main_commit_p95_us=1.0 branch_over_unforked_main=1.120 branch_over_main_interleaved=1.041 what_if_p95_us=1.5 commit_p95_us=1.0 what_if_over_commit=1.441 merge_plus_two_writes_heap_B=1408340 post_merge_first_write_main_us=1.7 post_merge_first_write_branch_us=166.5
+n=1000 private_rules=10000 main_commit_p95_us=1.0 (before 0.9) main_with_over_without=1.046 branch_commit_p95_us=856.0 (the branch propagates into its 10⁴ rules)
+n=10000 fork_p50_us=0.33 fork_max_us=6.2 fork_heap_B=212 first_write_us=375.4 branch_heap_after_1000_commits_B=5365178 branch_commit_p95_us=0.9 unforked_main_commit_p95_us=0.8 branch_over_unforked_main=1.100 branch_over_main_interleaved=4.089 what_if_p95_us=1.2 commit_p95_us=1.0 what_if_over_commit=1.305 merge_plus_two_writes_heap_B=10676852 post_merge_first_write_main_us=5.1 post_merge_first_write_branch_us=316.4
+n=10000 private_rules=10000 main_commit_p95_us=0.9 (before 0.8) main_with_over_without=1.049 branch_commit_p95_us=882.0 (the branch propagates into its 10⁴ rules)
+n=100000 fork_p50_us=0.29 fork_max_us=16.2 fork_heap_B=212 first_write_us=5234.3 branch_heap_after_1000_commits_B=52464794 branch_commit_p95_us=1.0 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=1.092 branch_over_main_interleaved=1.046 what_if_p95_us=1.3 commit_p95_us=0.9 what_if_over_commit=1.477 merge_plus_two_writes_heap_B=104876084 post_merge_first_write_main_us=6.3 post_merge_first_write_branch_us=5553.6
+n=100000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=1.043 branch_commit_p95_us=1053.4 (the branch propagates into its 10⁴ rules)
+n=1000000 fork_p50_us=0.29 fork_max_us=102.8 fork_heap_B=212 first_write_us=50614.4 branch_heap_after_1000_commits_B=543988986 branch_commit_p95_us=0.9 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=1.001 branch_over_main_interleaved=1.000 what_if_p95_us=1.4 commit_p95_us=0.9 what_if_over_commit=1.571 merge_plus_two_writes_heap_B=1087924468 post_merge_first_write_main_us=10.5 post_merge_first_write_branch_us=212540.9
+n=1000000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=0.958 branch_commit_p95_us=1061.8 (the branch propagates into its 10⁴ rules)
+merge_history merges=2000 first100_p95_us=55.1 last100_p95_us=1041.8 growth=18.90 kernel_heap_B=3225318
+actor reads=10 expect_cert_valid=false commit_p50_ms=4.06 p95_ms=6.78 p99_ms=10.67
+actor reads=10 expect_cert_valid=true commit_p50_ms=4.09 p95_ms=7.61 p99_ms=12.48
+actor reads=100 expect_cert_valid=false commit_p50_ms=3.98 p95_ms=7.05 p99_ms=11.74
+actor reads=100 expect_cert_valid=true commit_p50_ms=4.08 p95_ms=8.28 p99_ms=11.07
+p6_g5_kernel_pass=false
+== run 3
+n=1000 fork_p50_us=0.42 fork_max_us=7.6 fork_heap_B=212 first_write_us=143.1 branch_heap_after_1000_commits_B=730922 branch_commit_p95_us=1.2 unforked_main_commit_p95_us=1.1 branch_over_unforked_main=1.154 branch_over_main_interleaved=1.000 what_if_p95_us=1.5 commit_p95_us=1.0 what_if_over_commit=1.500 merge_plus_two_writes_heap_B=1408340 post_merge_first_write_main_us=1.9 post_merge_first_write_branch_us=190.8
+n=1000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=1.087 branch_commit_p95_us=845.2 (the branch propagates into its 10⁴ rules)
+n=10000 fork_p50_us=0.33 fork_max_us=8.5 fork_heap_B=212 first_write_us=310.6 branch_heap_after_1000_commits_B=5365178 branch_commit_p95_us=0.9 unforked_main_commit_p95_us=0.8 branch_over_unforked_main=1.049 branch_over_main_interleaved=0.880 what_if_p95_us=1.3 commit_p95_us=0.9 what_if_over_commit=1.455 merge_plus_two_writes_heap_B=10676852 post_merge_first_write_main_us=3.8 post_merge_first_write_branch_us=547.4
+n=10000 private_rules=10000 main_commit_p95_us=0.9 (before 0.8) main_with_over_without=1.050 branch_commit_p95_us=871.1 (the branch propagates into its 10⁴ rules)
+n=100000 fork_p50_us=0.33 fork_max_us=15.6 fork_heap_B=212 first_write_us=4566.5 branch_heap_after_1000_commits_B=52464794 branch_commit_p95_us=0.9 unforked_main_commit_p95_us=0.9 branch_over_unforked_main=0.954 branch_over_main_interleaved=1.000 what_if_p95_us=1.3 commit_p95_us=0.9 what_if_over_commit=1.523 merge_plus_two_writes_heap_B=104876084 post_merge_first_write_main_us=5.5 post_merge_first_write_branch_us=5516.0
+n=100000 private_rules=10000 main_commit_p95_us=0.9 (before 0.9) main_with_over_without=1.000 branch_commit_p95_us=1041.0 (the branch propagates into its 10⁴ rules)
+n=1000000 fork_p50_us=0.33 fork_max_us=103.6 fork_heap_B=212 first_write_us=57775.2 branch_heap_after_1000_commits_B=543988986 branch_commit_p95_us=1.0 unforked_main_commit_p95_us=1.0 branch_over_unforked_main=1.043 branch_over_main_interleaved=0.961 what_if_p95_us=1.4 commit_p95_us=0.9 what_if_over_commit=1.499 merge_plus_two_writes_heap_B=1087924468 post_merge_first_write_main_us=24.8 post_merge_first_write_branch_us=251999.7
+n=1000000 private_rules=10000 main_commit_p95_us=1.0 (before 1.0) main_with_over_without=1.041 branch_commit_p95_us=3157.2 (the branch propagates into its 10⁴ rules)
+merge_history merges=2000 first100_p95_us=55.0 last100_p95_us=1036.7 growth=18.85 kernel_heap_B=3225318
+actor reads=10 expect_cert_valid=false commit_p50_ms=3.98 p95_ms=5.91 p99_ms=8.13
+actor reads=10 expect_cert_valid=true commit_p50_ms=3.16 p95_ms=5.58 p99_ms=8.07
+actor reads=100 expect_cert_valid=false commit_p50_ms=3.85 p95_ms=4.88 p99_ms=6.71
+actor reads=100 expect_cert_valid=true commit_p50_ms=3.95 p95_ms=5.03 p99_ms=6.61
+p6_g5_kernel_pass=true
+# ten repeats of n=10000 (interleaved branch vs main, p95 ns)
+branch_over_main_interleaved=1.000 (p95_ns 959/959)
+branch_over_main_interleaved=1.041 (p95_ns 1041/1000)
+branch_over_main_interleaved=1.039 (p95_ns 1083/1042)
+branch_over_main_interleaved=1.001 (p95_ns 959/958)
+branch_over_main_interleaved=1.046 (p95_ns 959/917)
+branch_over_main_interleaved=1.042 (p95_ns 1042/1000)
+branch_over_main_interleaved=1.001 (p95_ns 959/958)
+branch_over_main_interleaved=0.277 (p95_ns 959/3459)
+branch_over_main_interleaved=1.001 (p95_ns 1042/1041)
+branch_over_main_interleaved=0.961 (p95_ns 1000/1041)
