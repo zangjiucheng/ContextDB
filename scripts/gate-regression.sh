@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# SPEC Gate G7 (P4: ADR 0010 §11; P5a: ADR 0011 §7): earlier gates' G2/G3/G4
-# at gate counts, plus the P4 and P5a suites in release. Performance baselines (P1 G5 memory, P2/P3
+# SPEC Gate G7 (P4: ADR 0010 §11; P5a: ADR 0011 §7; P6: ADR 0013 §11): earlier
+# gates' G2/G3/G4 at gate counts, plus the P4, P5a and P5b suites in release. Performance baselines (P1 G5 memory, P2/P3
 # G5 benches) stay on the reference Mac and are not run here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,5 +18,7 @@ mkdir -p results
   cargo test --release --locked -p contextdb-proto -p contextdb-hooks -p contextdb-cli -p contextdb-mcp
   echo "== P5a suites (release; PROP12 at 10,000 fixed seeds)"
   cargo test --release --locked -p contextdb-anchors
+  echo "== P5b suites (release; PROP12 for symbols at 10,000 fixed seeds)"
+  cargo test --release --locked -p contextdb-symbols
   echo "G7 PASS"
 } 2>&1 | tee results/gate-regression.txt
