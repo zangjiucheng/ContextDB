@@ -146,6 +146,7 @@ fn main() -> ExitCode {
         let r = setup.call(&Request::BranchCreate {
             name: (*name).into(),
             from: None,
+            client_txn_id: None,
         });
         assert!(matches!(
             r.map(|e| e.response),
@@ -322,6 +323,7 @@ fn main() -> ExitCode {
                                 into: Some(BRANCHES[bi].into()),
                                 require_certified: false,
                                 certify: Vec::new(),
+                                client_txn_id: None,
                             });
                             match r.map(|e| e.response) {
                                 Ok(Response::Merged { report, .. }) => {
@@ -348,6 +350,7 @@ fn main() -> ExitCode {
                             let r = c.call(&Request::BranchCreate {
                                 name: name.clone(),
                                 from: Some(BRANCHES[bi].into()),
+                                client_txn_id: None,
                             });
                             match r.map(|e| e.response) {
                                 Ok(Response::Committed { .. }) => {

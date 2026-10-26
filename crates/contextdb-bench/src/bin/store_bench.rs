@@ -71,7 +71,7 @@ fn create(n: usize, content: ContentHash) -> Op {
 /// Production options (`ctx`): SQLite projections in a file next to the log.
 fn file_projections(dir: &Path) -> OpenOptions {
     OpenOptions {
-        projections: ProjectionFile::Path(dir.join("projections.sqlite")),
+        projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
         ..OpenOptions::default()
     }
 }

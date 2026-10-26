@@ -312,10 +312,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Ok(r) => r,
                 Err(r) => return Some(r),
             };
-            let fresh = match snap
-                .db()
-                .issue_certificate(&request, &aggregate.entries, live)
-            {
+            let fresh = match view.issue_certificate(&request, &aggregate.entries, live) {
                 Ok(c) => c,
                 Err(e) => return Some(err("NotCertified", format!("{e:?}"))),
             };

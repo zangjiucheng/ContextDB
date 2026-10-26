@@ -95,7 +95,9 @@ fn validation_records_conflict_or_converge() {
             RevisionId(1)
         )
     );
+    // The curvec (logical 0, revision 0) first, then B, S, T.
     let values = [
+        [1u32, 0, 0].iter().flat_map(|x| x.to_le_bytes()).collect(),
         enc(None),
         enc(Some((Verdict::Verified, "v1"))),
         enc(Some((Verdict::Rejected, "v2"))),
@@ -469,5 +471,214 @@ fn superseded_sync_points_are_pruned() {
     assert_eq!(
         copy.branch(MAIN).unwrap().digest(),
         k.branch(MAIN).unwrap().digest()
+    );
+}
+
+fn revise(l: u32, content: u8, base: bool) -> Op {
+    Op::AddRevision {
+        logical: LogicalRef::Existing(LogicalId(l)),
+        content: [content; 32],
+        adopt_as_base: base,
+    }
+}
+/// The kernel and the independent oracle give the same merge result.
+fn both(history: &[Batch], merge: &Batch) -> Result<(), TxError> {
+    let mut k = Kernel::default();
+    let mut o = contextdb_oracle::BranchOracle::new(|b| *blake3::hash(b).as_bytes());
+    for b in history {
+        k.commit(b).unwrap();
+        o.apply(b, true).unwrap();
+    }
+    let kernel = k.commit(merge).map(|_| ());
+    let oracle = o.apply(merge, true).map(|_| ());
+    assert_eq!(kernel, oracle);
+    kernel
+}
+fn merge_into(into: BranchId, source: BranchId, certify: Vec<LogicalRef>) -> Batch {
+    on(
+        into,
+        vec![Op::Merge {
+            source,
+            require_certified: true,
+            certify,
+        }],
+    )
+}
+const B: BranchId = BranchId(1);
+
+/// Review (P6): a default `require_certified` merge is refused when it opens
+/// a conflict on a revision other than the head (§6.3 step 6). Both shapes
+/// reach the conflict row with a single base, through cross-branch dedup:
+/// the same revision adopted as base on one side only, and the same rule
+/// enabled on one side only.
+#[test]
+fn require_certified_refuses_conflicts_off_the_head() {
+    let base = vec![
+        Batch::new(vec![fact("a", 0)]),
+        on(MAIN, vec![Op::CreateBranch { name: "b".into() }]),
+        on(B, vec![revise(0, 5, true)]),
+        on(MAIN, vec![revise(0, 5, false)]),
+    ];
+    assert_eq!(
+        both(&base, &merge_into(MAIN, B, Vec::new())),
+        Err(TxError::MergeNotCertified {
+            logical: LogicalId(0),
+            status: Summary::Conflicted,
+        })
+    );
+    let rule = |enabled| Op::AddRule {
+        conclusion: RevisionId(1).into(),
+        incidences: vec![(RevisionId(0).into(), EdgeKind::Cur)],
+        enabled,
+    };
+    let mut c = fact("c", 1);
+    if let Op::CreateLogical { adopt_as_base, .. } = &mut c {
+        *adopt_as_base = false;
+    }
+    let enabled = vec![
+        Batch::new(vec![fact("a", 0), c]),
+        on(MAIN, vec![Op::CreateBranch { name: "b".into() }]),
+        on(B, vec![rule(true)]),
+        on(MAIN, vec![rule(false)]),
+    ];
+    assert_eq!(
+        both(&enabled, &merge_into(MAIN, B, Vec::new())),
+        Err(TxError::MergeNotCertified {
+            logical: LogicalId(1),
+            status: Summary::Conflicted,
+        })
+    );
+}
+
+/// Review (P6): with an explicit `certify` list the first failing logical
+/// is the first by id, not by list position (§6.3 step 6).
+#[test]
+fn merge_not_certified_names_the_first_failing_logical_by_id() {
+    let history = vec![
+        Batch::new(vec![fact("a", 0), fact("b", 1)]),
+        on(MAIN, vec![Op::CreateBranch { name: "b".into() }]),
+        on(
+            B,
+            vec![
+                revise(0, 10, false),
+                revise(1, 11, false),
+                Op::SetHead {
+                    logical: LogicalRef::Existing(LogicalId(0)),
+                    expected: RevisionId(0).into(),
+                    new: RevRef::New(0),
+                },
+                Op::SetHead {
+                    logical: LogicalRef::Existing(LogicalId(1)),
+                    expected: RevisionId(1).into(),
+                    new: RevRef::New(1),
+                },
+            ],
+        ),
+    ];
+    let certify = vec![
+        LogicalRef::Existing(LogicalId(1)),
+        LogicalRef::Existing(LogicalId(0)),
+    ];
+    assert!(matches!(
+        both(&history, &merge_into(MAIN, B, certify)),
+        Err(TxError::MergeNotCertified {
+            logical: LogicalId(0),
+            ..
+        })
+    ));
+}
+
+/// Review (P6): an `ExpectHeads` after the `Merge` with a duplicate entry
+/// fails with `InvalidReadSet` naming the global logical, in a dry run and
+/// a commit; it was mapped to global ids twice (a wrong id, or a panic when
+/// the global id was past the target's new objects).
+#[test]
+fn late_invalid_read_set_in_a_merge_names_the_global_logical() {
+    let mut k = Kernel::default();
+    k.commit(&Batch::new(vec![fact("a", 0)])).unwrap();
+    let x = fork(&mut k, MAIN, "x");
+    let y = fork(&mut k, MAIN, "y");
+    k.commit(&on(y, vec![fact("p", 1), fact("q", 2), fact("r", 3)]))
+        .unwrap();
+    k.commit(&Batch::new(vec![fact("b", 4)])).unwrap();
+    let d = k.commit(&on(x, vec![fact("d", 5)])).unwrap();
+    let (dl, dr) = (
+        d.allocations.new_logicals[0],
+        d.allocations.new_revisions[0],
+    );
+    let batch = on(
+        x,
+        vec![
+            Op::Merge {
+                source: MAIN,
+                require_certified: false,
+                certify: Vec::new(),
+            },
+            Op::ExpectHeads {
+                entries: vec![
+                    (LogicalRef::Existing(dl), dr),
+                    (LogicalRef::Existing(dl), RevisionId(0)),
+                ],
+                source: ReadSource::Client,
+            },
+        ],
+    );
+    let expected = Err(TxError::InvalidReadSet { logical: dl });
+    assert_eq!(k.what_if(&batch).map(|_| ()), expected);
+    assert_eq!(k.commit(&batch).map(|_| ()), expected);
+}
+
+/// Review (P6): a branch's digest covers its branch-table entry and the
+/// sync points it received (ADR 0013 §3, §6.1): a merge that changes no
+/// data and an archive both change it; `main` without merges keeps its
+/// database's digest.
+#[test]
+fn branch_digests_cover_the_branch_table_and_sync_points() {
+    let mut k = Kernel::default();
+    k.commit(&Batch::new(vec![fact("a", 0)])).unwrap();
+    assert_eq!(
+        k.branch(MAIN).unwrap().digest(),
+        k.branch(MAIN).unwrap().db().digest()
+    );
+    let x = fork(&mut k, MAIN, "x");
+    let forked = k.branch(x).unwrap().digest();
+    assert_ne!(forked, k.branch(MAIN).unwrap().digest());
+    merge(&mut k, x, MAIN);
+    let merged = k.branch(x).unwrap().digest();
+    assert_ne!(merged, forked, "a sync point");
+    k.commit(&on(x, vec![Op::ArchiveBranch { name: "x".into() }]))
+        .unwrap();
+    assert_ne!(k.branch(x).unwrap().digest(), merged, "archived");
+}
+
+/// Review (P6): `InvalidRule::ConflictingVersions` names the global logical.
+#[test]
+fn conflicting_versions_names_the_global_logical() {
+    let mut k = Kernel::default();
+    k.commit(&Batch::new(vec![fact("a", 0)])).unwrap();
+    let x = fork(&mut k, MAIN, "x");
+    k.commit(&Batch::new(vec![fact("b", 1)])).unwrap();
+    let r = k.commit(&on(x, vec![fact("d", 2), fact("e", 3)])).unwrap();
+    let (d, d1, e1) = (
+        r.allocations.new_logicals[0],
+        r.allocations.new_revisions[0],
+        r.allocations.new_revisions[1],
+    );
+    let d2 = k
+        .commit(&on(x, vec![revise(d.0, 9, true)]))
+        .unwrap()
+        .allocations
+        .new_revisions[0];
+    let rule = on(
+        x,
+        vec![Op::AddRule {
+            conclusion: e1.into(),
+            incidences: vec![(d1.into(), EdgeKind::Sem), (d2.into(), EdgeKind::Sem)],
+            enabled: true,
+        }],
+    );
+    assert_eq!(
+        k.commit(&rule).map(|_| ()),
+        Err(TxError::InvalidRule(InvalidRule::ConflictingVersions(d)))
     );
 }

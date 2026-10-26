@@ -415,6 +415,7 @@ fn branch_requests() {
         Request::BranchCreate {
             name: "feature".into(),
             from: None,
+            client_txn_id: None,
         },
     );
     assert_eq!(code(&created), "ok");
@@ -470,6 +471,7 @@ fn branch_requests() {
             into: None,
             require_certified: false,
             certify: Vec::new(),
+            client_txn_id: None,
         },
     ) {
         Response::Merged { report, .. } => assert_eq!(report.newly_visible[0], 1),
@@ -485,6 +487,7 @@ fn branch_requests() {
             into: None,
             require_certified: true,
             certify: Vec::new(),
+            client_txn_id: None,
         },
     );
     assert_eq!(code(&unknown), "InvalidMerge");
@@ -493,7 +496,8 @@ fn branch_requests() {
             &s,
             AGENT,
             Request::BranchArchive {
-                name: "feature".into()
+                name: "feature".into(),
+                client_txn_id: None
             }
         )),
         "ok"

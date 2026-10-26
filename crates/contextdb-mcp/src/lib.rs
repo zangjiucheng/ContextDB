@@ -216,13 +216,15 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "ops": ops }, "required": ["ops"] } },
         { "name": "ctx_branch", "description": "Branches: create (from main or `from`), list, or archive. Sessions bind to the branch named like their git branch.",
           "inputSchema": { "type": "object", "properties": {
-              "action": { "enum": ["create", "list", "archive"] }, "name": { "type": "string" }, "from": { "type": "string" } },
+              "action": { "enum": ["create", "list", "archive"] }, "name": { "type": "string" }, "from": { "type": "string" },
+              "client_txn_id": { "type": "string" } },
             "required": ["action"] } },
         { "name": "ctx_merge", "description": "Merge branch `source` into `into` (default: this session's branch). require_certified (default true) refuses the merge unless the moved, new and conflicted records (or `certify` keys) are CERTIFIED afterwards.",
           "inputSchema": { "type": "object", "properties": {
               "source": { "type": "string" }, "into": { "type": "string" },
               "require_certified": { "type": "boolean" },
-              "certify": { "type": "array", "items": { "type": "string" } } },
+              "certify": { "type": "array", "items": { "type": "string" } },
+              "client_txn_id": { "type": "string" } },
             "required": ["source"] } },
     ])
 }
@@ -831,8 +833,12 @@ impl<B: Backend> Server<B> {
                     Some("create") => Request::BranchCreate {
                         name: name()?,
                         from: arg(args, "from").map(str::to_owned),
+                        client_txn_id: txn(args)?,
                     },
-                    Some("archive") => Request::BranchArchive { name: name()? },
+                    Some("archive") => Request::BranchArchive {
+                        name: name()?,
+                        client_txn_id: txn(args)?,
+                    },
                     Some("list") => Request::BranchList,
                     _ => return Err("action must be create, list or archive".into()),
                 };
@@ -865,6 +871,7 @@ impl<B: Backend> Server<B> {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    client_txn_id: txn(args)?,
                 })?;
                 let Response::Merged { result, report } = env.response else {
                     return Err("unexpected response".into());

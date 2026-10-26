@@ -1,7 +1,8 @@
 # ADR 0013 — P6 versioned transactions, branches and WHAT_IF
 
 Status: **accepted r0.4**, 2026-10-23, with the r0.5 implementation note
-(§3.1) and the r0.6 merge-base implementation (§6.1). **P6 G0 passed.** SPEC v1.6.8
+(§3.1), the r0.6 merge-base implementation (§6.1) and the r0.7 fixes from
+the independent implementation review (§13). **P6 G0 passed.** SPEC v1.6.8
 mirrors this ADR, and the owner confirmed the SD17 gate on 2026-10-23. r0.1 was
 reviewed independently: 4 blockers, 12 majors, 6 minors. The closure check
 of r0.2 found 6 findings partial and 4 new majors plus 5 minors. The
@@ -168,7 +169,9 @@ branch that **receives** them, and only there (review N4):
 - a merge's sync point counts in the target's digest.
 
 So a fork never changes the parent's digest, and a merge never changes the
-source's.
+source's. The entry covers the name, parent, fork epoch and archived flag; a
+sync point counts as `(source, epoch)`. `main` without merges hashes as its
+database alone, so single-branch digests are unchanged (r0.7).
 
 **Isolation (normative).** A commit on `b` changes only:
 
@@ -279,12 +282,18 @@ M1, M2):
 
 1. **Idempotency first.** A known `client_txn_id` returns its stored result
    when the stored *client hash* matches; a mismatch gives `TxnIdReuse`.
-   The client hash covers the client's ops, `expect_cert_valid` and the
-   cert id. Daemon-appended `ExpectHeads{source: Certificate}` ops are left
-   out of it. It is persisted as a format-3 `LogRow` field (§8, T68), so
-   retries after a restart also match. A client-sent
-   `ExpectHeads{source: Certificate}` fails with `ChannelRestricted`: only
-   the actor may append one (review N6).
+   The client hash covers the client's ops and `expect_cert_valid`, and
+   the branch, channel and principal the batch commits as (the batch's own
+   fields, contract 1). It does not cover the cert id: a `ctx_check` may
+   re-issue the session certificate, and a retry of a durable commit must
+   still find its result (r0.7). Daemon-appended
+   `ExpectHeads{source: Certificate}` ops are left out of it. It is
+   persisted as a format-3 `LogRow` field (§8, T68), so retries after a
+   restart also match. A client-sent `ExpectHeads{source: Certificate}`
+   fails with `ChannelRestricted`: only the actor may append one (review
+   N6). The daemon refuses it before the kernel's checks, so this one
+   error precedes the §9 order. With no session certificate,
+   `expect_cert_valid` is refused with the `Empty` verdict.
 2. **Validation in the actor.** With `expect_cert_valid=true`, the request
    carries the session's `cert_id`. The **actor** validates the
    certificate against its current state, after earlier batches in the same
@@ -473,15 +482,18 @@ entry. The comparable values are:
 | changed | changed, equal to `S` | keep (convergent) |
 | changed | changed, different from `S` | **conflict** |
 
-Booleans (`base`, `enabled`, `artifact_open`) never reach the conflict row
-with a single base. They can only conflict through the criss-cross rule of
-§6.1 (review R3).
+Booleans (`base`, `enabled`, `artifact_open`) reach the conflict row with a
+single base only when the object is absent in the base and became visible
+on both sides independently, through cross-branch dedup (a revision adopted
+as base on one side only; one canonical rule enabled on one side only).
+Otherwise they conflict only through the criss-cross rule of §6.1 (review
+R3; corrected in r0.7).
 
 **Conflicts:**
 
 - **Head conflict:** the target head stays, and the merge opens a
   `Conflict` artifact whose target is the **target's head revision**.
-- **Criss-cross conflicts on booleans** (review R3): the target value stays,
+- **Conflicts on booleans** (review R3): the target value stays,
   and a `Conflict` targets:
   - for `base`: that revision;
   - for `enabled`: the rule's conclusion revision;
@@ -505,7 +517,9 @@ with a single base. They can only conflict through the criss-cross rule of
 
 Conflict artifacts are opened in canonical order: kind, then logical id,
 then rule id. Each payload is the canonical encoding of `(merge epoch,
-source, kind, B, S, T values)`. The kernel derives that blob itself, and
+source, kind, B, S, T values)`; a ValidationRecord conflict's values start
+with the record's curvec, so conflicts on one rule at two curvecs differ
+(r0.7). The kernel derives that blob itself, and
 the store persists it with the batch, so `MissingBlob` cannot arise.
 
 A newly visible logical (absent in `T`) takes the source's head and base
@@ -549,10 +563,12 @@ occur, since visibility only grows.
    `certify` must be CERTIFIED. `certify` refs resolve in `T` after
    step 2, otherwise `UnknownRef`. When `certify` is empty, the required
    set is every logical whose head the merge moved, plus every logical on
-   which the merge opened a `Conflict`. Since a conflicted logical is
-   CONFLICTED, **a default merge with any conflict is refused**. A failure
-   gives `MergeNotCertified{logical, status}` (T20b) for the first failing
-   logical by id. With `false`, downstream goes STALE/PENDING by incidence
+   which the merge opened a `Conflict`. A logical on which the merge opened
+   a `Conflict` counts as CONFLICTED, also when the Conflict targets a
+   revision other than its head (a base, a rule's conclusion, an
+   artifact's target; r0.7), so **a default merge with any conflict is
+   refused**. A failure gives `MergeNotCertified{logical, status}` (T20b)
+   for the first failing logical by id, with or without `certify`. With `false`, downstream goes STALE/PENDING by incidence
    kind (T20a), and conflicts stay open for resolution.
 7. Set the `{S, T}` sync point (§6.1).
 8. Return the typed result in `CommitResult`'s merge trailer (§8): moved
@@ -786,7 +802,12 @@ them.
 
 A format-2 store opened by a format-3 binary gives
 `FormatMigrationRequired(2)`. Rollback goes through `log.v2.bak`, and only
-before new commits land. **Schedule (review m4):** the dogfood stores are
+before new commits land. Format 3 keeps its projections in
+`projections.v3.sqlite`, so a format-2 binary reopens its own
+`projections.sqlite` untouched (r0.7). An interrupted `ctx migrate` lists
+the changed epochs when it resumes, and a rerun lists them from the backup.
+Changed means the re-derived result differs from the result the old binary
+logged, not from an earlier migration's `acked_result`. **Schedule (review m4):** the dogfood stores are
 upgraded only after the P4 dogfood report (due ≥ 2026-11-04), unless the
 owner decides otherwise.
 
@@ -902,9 +923,12 @@ The certificate `BranchMismatch` reason belongs to §6.4 (it is not a
 - **`ctx_commit`.**
   - Branch ops and client-sent certificate read sets are refused (the
     latter also in `Raw`).
-  - The idempotency hash covers the client's ops, the flag and the cert id.
-    It is stored as the format-3 `client_hash` row field, so a retry after
-    the state moved returns the original result.
+  - The idempotency hash covers the client's ops, the flag, and the branch,
+    channel and principal (r0.7; not the cert id). It is stored as the
+    format-3 `client_hash` row field, so a retry after the state moved, or
+    after the certificate was re-issued, returns the original result.
+  - `ctx_branch` and `ctx_merge` take a `client_txn_id` like every write
+    tool (SPEC §6.5; r0.7).
   - The store calls a `prepare` hook per write, after idempotency and
     before staging, with every earlier batch of the group applied. There
     the actor validates the session certificate and appends
@@ -1143,6 +1167,15 @@ SPEC v1.6.8 must land with the G0 closure:
 - **r0.6** (2026-10-26): merge bases by reach in one pass, and sync-point
   states that can never be a base are dropped (§6.1), found by the G4
   stress. Same bases; no semantic change.
+- **r0.7** (2026-10-26): fixes from the independent implementation review
+  ([P6 gate](../gates/P6.md)). Conflicts off the head refuse a default
+  `require_certified` merge, and the first failing logical is by id with a
+  `certify` list (§6.3); R3's claim corrected (§6.2); ValidationRecord
+  payloads carry the curvec (§6.2); branch digests cover the branch entry
+  and received sync points as §3 already required; the client hash covers
+  branch, channel and principal and not the cert id (§4, §10); branch and
+  merge requests take a `client_txn_id`; format-3 projections in their own
+  file, and migration's changed-epoch listing survives interruption (§8).
 - **r0.5** (2026-10-23): implementation note §3.1. Each branch is a
   single-branch database with local ids behind a global id map. Fork is
   O(1); the first write copies the branch, O(N), which G5 measures. No

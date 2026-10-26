@@ -100,7 +100,7 @@ impl Daemon {
             full_sync: options.full_sync,
         };
         let open = OpenOptions {
-            projections: ProjectionFile::Path(dir.join("projections.sqlite")),
+            projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
             ..OpenOptions::default()
         };
         let (store, _) = Store::open(disk.clone(), &dir, &open)?;

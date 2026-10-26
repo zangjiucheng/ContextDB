@@ -948,7 +948,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 Err(r) => r,
             },
-            Request::BranchCreate { name, from } => {
+            Request::BranchCreate {
+                name,
+                from,
+                client_txn_id,
+            } => {
                 let from = match from.as_deref().map(|f| snap.kernel.branch_by_name(f)) {
                     None => MAIN,
                     Some(Some(b)) => b,
@@ -957,7 +961,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 drop(snap);
                 let mut batch = Batch::new(vec![Op::CreateBranch { name }]);
                 batch.branch = from;
-                self.commit(id, Vec::new(), batch, None)
+                self.commit(id, Vec::new(), batch, client_txn_id)
             }
             Request::BranchList => Response::Branches {
                 branches: (snap.kernel.branches())
@@ -970,14 +974,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     })
                     .collect(),
             },
-            Request::BranchArchive { name } => {
+            Request::BranchArchive {
+                name,
+                client_txn_id,
+            } => {
                 let Some(on) = snap.kernel.branch_by_name(&name) else {
                     return err("UnknownBranch", format!("no branch named {name}"));
                 };
                 drop(snap);
                 let mut batch = Batch::new(vec![Op::ArchiveBranch { name }]);
                 batch.branch = on;
-                self.commit(id, Vec::new(), batch, None)
+                self.commit(id, Vec::new(), batch, client_txn_id)
             }
             Request::Merge {
                 binding,
@@ -985,6 +992,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 into,
                 require_certified,
                 certify,
+                client_txn_id,
             } => {
                 let target = match (&into, &binding) {
                     (Some(name), _) => match snap.kernel.branch_by_name(name) {
@@ -997,8 +1005,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     },
                     (None, None) => MAIN,
                 };
-                // Branches are not secret: an unknown source is InvalidMerge.
+                // Branches are not secret: an unknown source is InvalidMerge,
+                // after the batch-level BranchArchived (§9). Branches are
+                // never deleted, so no retry of a committed merge lands here.
                 let Some(source) = snap.kernel.branch_by_name(&source) else {
+                    if snap
+                        .kernel
+                        .branch(target)
+                        .is_some_and(|b| b.info().archived)
+                    {
+                        return err("BranchArchived", "the target branch is archived");
+                    }
                     return err("InvalidMerge", format!("no branch named {source}"));
                 };
                 drop(snap);
@@ -1008,7 +1025,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     certify: certify.into_iter().map(LogicalRef::Key).collect(),
                 }]);
                 batch.branch = target;
-                match self.commit(id, Vec::new(), batch, None) {
+                match self.commit(id, Vec::new(), batch, client_txn_id) {
                     Response::Committed { result } => {
                         let report = (self.actor.snapshot().log.read_row(result.epoch).ok())
                             .and_then(|row| row.trailer().ok().flatten())
@@ -1380,7 +1397,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     fn commit_ops(
         &self,
         id: Identity,
-        (_, s, agent, _): Bound,
+        (session, s, agent, _): Bound,
         ops: Vec<Op>,
         blobs: Vec<Vec<u8>>,
         expect_cert_valid: bool,
@@ -1405,30 +1422,47 @@ impl<D: Durability + Clone + 'static> Service<D> {
         };
         let expect = match (expect_cert_valid, cert) {
             (false, _) => None,
-            (true, None) => return err("NoCertificate", "no session certificate to expect"),
+            // A session with no certificate expects nothing valid (§4 step 2).
+            (true, None) => {
+                return Response::Refused {
+                    validation: Validation::Empty,
+                };
+            }
             (true, Some(cert)) => Some(crate::actor::Expect {
                 live: self.anchor_live(&snap.view(branch)),
                 cert,
             }),
         };
         drop(snap);
-        // The idempotency hash covers what the client sent: its ops, the
-        // flag and the certificate, never the appended read set.
+        // The idempotency hash covers the request as sent: its ops and flag,
+        // and the branch, channel and principal it commits as (the batch's
+        // own fields). Not the certificate: a later ctx_check may re-issue
+        // it, and a retry of a durable commit must still find its result.
+        // Never the appended read set.
         let mut client = Vec::new();
         ops.encode(&mut client);
         expect_cert_valid.encode(&mut client);
-        expect.as_ref().map(|e| e.cert.cert_id).encode(&mut client);
+        branch.encode(&mut client);
+        id.channel.encode(&mut client);
+        id.principal.encode(&mut client);
         let client_hash = *blake3::hash(&client).as_bytes();
         let mut batch = Batch::new(ops);
         batch.branch = branch;
         batch.channel = id.channel;
         batch.principal = id.principal;
-        batch.client_txn_id = Some(client_txn_id.unwrap_or_else(random_id));
+        let txn = client_txn_id.unwrap_or_else(random_id);
+        batch.client_txn_id = Some(txn);
+        let with_deps = (batch.ops.iter()).any(|op| matches!(op, Op::AddRule { .. }));
         match self
             .actor
             .write_expecting(blobs, batch, client_hash, expect)
         {
-            Ok(Ok(result)) => Response::Committed { result },
+            Ok(Ok(result)) => {
+                // Session writes count ctx_commit like record and supersede.
+                let reason = "commit".into();
+                self.wrote(session, &s, &agent, txn, result.epoch, reason, with_deps);
+                Response::Committed { result }
+            }
             Ok(Err(StoreError::CertificateNotValid(validation))) => Response::Refused {
                 validation: *validation,
             },

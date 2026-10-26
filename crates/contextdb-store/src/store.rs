@@ -112,24 +112,24 @@ fn watermark_moves(db: &Db, batch: &Batch) -> Vec<(String, Vec<u8>)> {
         })
         .collect()
 }
-/// Projection rows for the epoch just committed to the batch's branch, read
-/// with global ids.
-fn rows<'a>(
-    kernel: &Kernel,
-    batch: &Batch,
-    result: &'a CommitResult,
-    checksum: ContentHash,
-    base: &'a mut Vec<(RevisionId, bool)>,
-) -> EpochRows<'a> {
+/// The state-dependent projection rows of the epoch just committed to the
+/// batch's branch, read with global ids. A group captures them after each
+/// batch, before the next one applies: rows read after the whole group would
+/// differ from a rebuild, which applies one epoch at a time (PROP10).
+struct Captured {
+    created: Option<(BranchId, String)>,
+    archived: bool,
+    visible: Vec<(u8, u32)>,
+    enabled: Vec<(RuleId, bool)>,
+    base: Vec<(RevisionId, bool)>,
+    watermarks: Vec<(String, Vec<u8>)>,
+    posts: Vec<(RevisionId, NodeState)>,
+}
+fn capture(kernel: &Kernel, batch: &Batch, result: &CommitResult) -> Captured {
     let db: BranchView<'_> = kernel.branch(batch.branch).expect("committed branch");
-    base.clear();
-    base.extend(
-        result
-            .net_delta
-            .base_flips
-            .iter()
-            .map(|r| (*r, db.is_base(*r).expect("committed revision"))),
-    );
+    let base = (result.net_delta.base_flips.iter())
+        .map(|r| (*r, db.is_base(*r).expect("committed revision")))
+        .collect();
     let (created, archived) = match &batch.ops[..] {
         [Op::CreateBranch { name }] => (
             Some((kernel.branch_by_name(name).expect("created"), name.clone())),
@@ -151,22 +151,38 @@ fn rows<'a>(
         .chain(&result.net_delta.new_rules)
         .filter_map(|j| Some((*j, db.rule_enabled(*j)?)))
         .collect();
-    EpochRows {
-        epoch: result.epoch,
-        branch: batch.branch,
+    Captured {
         created,
         archived,
         visible,
         enabled,
-        checksum,
-        result,
         base,
         watermarks: watermark_moves(db.db(), batch),
-        posts: result
-            .status_diff
-            .iter()
+        posts: (result.status_diff.iter())
             .map(|r| (*r, db.node(*r).expect("committed revision")))
             .collect(),
+    }
+}
+impl Captured {
+    fn rows<'a>(
+        &'a self,
+        branch: BranchId,
+        result: &'a CommitResult,
+        checksum: ContentHash,
+    ) -> EpochRows<'a> {
+        EpochRows {
+            epoch: result.epoch,
+            branch,
+            created: self.created.clone(),
+            archived: self.archived,
+            visible: self.visible.clone(),
+            enabled: self.enabled.clone(),
+            checksum,
+            result,
+            base: &self.base,
+            watermarks: self.watermarks.clone(),
+            posts: self.posts.clone(),
+        }
     }
 }
 /// One write of a group: the batch, and an idempotency hash when the batch
@@ -517,10 +533,10 @@ impl<D: Durability> Store<D> {
                     return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
                 }
                 if f.row.epoch > store.proj.watermark() {
-                    let mut base = Vec::new();
+                    let captured = capture(&store.db, &batch, &result);
                     store
                         .proj
-                        .apply(&rows(&store.db, &batch, &result, f.checksum, &mut base))
+                        .apply(&captured.rows(batch.branch, &result, f.checksum))
                         .map_err(sql)?;
                 }
                 report.replayed += 1;
@@ -731,7 +747,7 @@ impl<D: Durability> Store<D> {
         let mut slots = Vec::with_capacity(writes.len());
         let mut staged_ids: BTreeMap<[u8; 16], (usize, ContentHash)> = BTreeMap::new();
         let mut applied: Vec<(LogRow, CommitResult)> = Vec::new();
-        let mut applied_batch: Vec<Batch> = Vec::new();
+        let mut applied_rows: Vec<(BranchId, Captured)> = Vec::new();
         let prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
         self.in_flight = true;
         for (index, write) in writes.iter().enumerate() {
@@ -820,7 +836,7 @@ impl<D: Durability> Store<D> {
                         staged_ids.insert(id, (applied.len(), idempotency));
                     }
                     slots.push(Slot::Applied(applied.len()));
-                    applied_batch.push(batch);
+                    applied_rows.push((batch.branch, capture(&self.db, &batch, &result)));
                     applied.push((row, result));
                 }
             }
@@ -881,11 +897,10 @@ impl<D: Durability> Store<D> {
                     self.ids.insert(id, (result.epoch, row.idempotency_hash()));
                 }
                 // Projections after durability; a failure only makes them stale.
-                let mut base = Vec::new();
-                let batch = &applied_batch[k];
+                let (branch, captured) = &applied_rows[k];
                 if self
                     .proj
-                    .apply(&rows(&self.db, batch, result, sums[k], &mut base))
+                    .apply(&captured.rows(*branch, result, sums[k]))
                     .is_err()
                 {
                     self.proj.mark_stale();
@@ -1125,7 +1140,6 @@ impl<D: Durability> Store<D> {
         self.proj.begin_bulk().map_err(sql)?;
         let filled = (|| {
             let mut db = Kernel::default();
-            let mut base = Vec::new();
             for n in 1..=self.epoch().0 {
                 let row = self.read_row(Epoch(n))?;
                 let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
@@ -1134,8 +1148,9 @@ impl<D: Durability> Store<D> {
                     .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
                 if Epoch(n) > mark {
                     let checksum = log::checksum(&row.encode_body());
+                    let captured = capture(&db, &batch, &result);
                     self.proj
-                        .apply(&rows(&db, &batch, &result, checksum, &mut base))
+                        .apply(&captured.rows(batch.branch, &result, checksum))
                         .map_err(sql)?;
                 }
             }

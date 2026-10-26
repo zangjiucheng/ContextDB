@@ -186,7 +186,12 @@ fn fork_shares_state_until_a_write() {
             .unwrap()
             .shares_state_with(&k.branch(MAIN).unwrap())
     );
-    assert_eq!(digest(&k, b), digest(&k, MAIN));
+    // Same data; the fork counts in the child's digest (ADR 0013 §3).
+    assert_eq!(
+        k.branch(b).unwrap().db().digest(),
+        k.branch(MAIN).unwrap().db().digest()
+    );
+    assert_ne!(digest(&k, b), digest(&k, MAIN));
     k.commit(&on(b, vec![create("x", 1)])).unwrap();
     assert!(
         !k.branch(b)

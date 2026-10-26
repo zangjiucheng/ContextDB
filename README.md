@@ -278,7 +278,7 @@ ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
 ctx status|why|why-not|impact <dir> ... --branch B       # read another branch
 ```
 
-**Upgrade note**: P6 raises the IPC protocol to 4 and the op_log to format 3 (each frame records its branch and merge report). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps the old log as `log.v2.bak`, can be rerun after an interruption, and lists any epoch whose recorded result changes under the Conflict gate), then upgrade every binary together. Older binaries refuse a format-3 store.
+**Upgrade note**: P6 raises the IPC protocol to 4 and the op_log to format 3 (each frame records its branch and merge report). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps the old log as `log.v2.bak`, can be rerun after an interruption, and lists any epoch whose recorded result changes under the Conflict gate), then upgrade every binary together. Older binaries refuse a format-3 store. Format 3 keeps its projections in `projections.v3.sqlite`; the old `projections.sqlite` stays as it was, so rolling back (restore `log.v2.bak` as `log`, before new commits) needs nothing else. A store that crashed rather than shut down must be opened once by the old binary before migrating.
 
 ## Limits and non-goals
 

@@ -162,6 +162,16 @@ fn payload(
     }
     out
 }
+/// A ValidationRecord conflict's curvec, the first payload value: two
+/// conflicts on one rule at different curvecs must differ.
+fn enc_curvec(curvec: &[(u32, u32)]) -> Vec<u8> {
+    let mut out = (curvec.len() as u32).to_le_bytes().to_vec();
+    for (l, r) in curvec {
+        out.extend(l.to_le_bytes());
+        out.extend(r.to_le_bytes());
+    }
+    out
+}
 fn enc_rev(v: &Option<u32>) -> Vec<u8> {
     v.map_or(vec![0], |r| [vec![1], r.to_le_bytes().to_vec()].concat())
 }
@@ -313,8 +323,16 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         // `ExpectHeads` precedes it, else after them (§9).
         let early = (b.ops.iter().enumerate())
             .all(|(n, op)| n < op_index || !matches!(op, Op::ExpectHeads { .. }));
+        // `read_set` names the target's local ids, like every error that
+        // leaves through `map_error`; an early error maps here.
         let (reads, late) = match self.read_set(b) {
             Ok(reads) => (reads, None),
+            Err(TxError::InvalidReadSet { logical }) if early => {
+                let ids = &self.branches[target.0 as usize].ids;
+                return Err(TxError::InvalidReadSet {
+                    logical: LogicalId(ids.global(Kind::Logical, logical.0)),
+                });
+            }
             Err(e) if early => return Err(e),
             Err(e) => (Vec::new(), Some(e)),
         };
@@ -566,7 +584,8 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     let j = s.local(Kind::Rule, key.0).unwrap();
                     let conclusion = s.db.rule_record(RuleId(j)).conclusion;
                     let target = s.global(Kind::Revision, conclusion.0);
-                    let mut v: Vec<_> = values.iter().map(enc_validation).collect();
+                    let mut v = vec![enc_curvec(&key.1)];
+                    v.extend(values.iter().map(enc_validation));
                     v.extend([enc_validation(&sv), enc_validation(&tv)]);
                     found.push(Found {
                         kind: ConflictKind::Validation,
@@ -738,9 +757,18 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     .map(LogicalId)
                     .ok_or(TxError::UnknownRef)
                 })
-                .collect::<Result<Vec<_>, _>>()
-                .map(Some)
+                .collect::<Result<BTreeSet<_>, _>>()
+                // The first failing logical is the first by id.
+                .map(|v| Some(v.into_iter().collect()))
         };
+        // A conflict on any revision of a logical (a base, a rule's
+        // conclusion, an artifact's target) makes the logical CONFLICTED,
+        // even when its head is certified (§6.3 step 6).
+        let conflicted: BTreeSet<LogicalId> = found
+            .iter()
+            .filter_map(|f| f.logical)
+            .map(|g| LogicalId(local(Kind::Logical, g)))
+            .collect();
         // Read sets compare against the pre-batch heads.
         let stale = reads.iter().find_map(|(l, read)| {
             let now = t.db.head(*l).expect("visible");
@@ -778,7 +806,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 return Err(e);
             }
             for l in required.clone()?.iter().flatten() {
-                let status = db.status(db.head(*l).expect("visible"))?;
+                let status = match conflicted.contains(l) {
+                    true => Summary::Conflicted,
+                    false => db.status(db.head(*l).expect("visible"))?,
+                };
                 if status != Summary::Certified {
                     return Err(TxError::MergeNotCertified {
                         logical: *l,
@@ -871,9 +902,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     .map(RevisionId)
                     .ok_or(TxError::UnknownRef)?;
                 if out.insert(l, r).is_some_and(|old| old != r) {
-                    return Err(TxError::InvalidReadSet {
-                        logical: LogicalId(t.global(Kind::Logical, l.0)),
-                    });
+                    return Err(TxError::InvalidReadSet { logical: l });
                 }
             }
         }

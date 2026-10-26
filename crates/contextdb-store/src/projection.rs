@@ -8,6 +8,12 @@ use contextdb_core::EpochDiff;
 use contextdb_model::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// The projection file next to a format-3 log. Format 2 binaries use
+/// `projections.sqlite`; a separate name keeps that file untouched, so a
+/// rollback through `log.v2.bak` (ADR 0013 §8) opens it as before instead of
+/// failing on schema-2 tables.
+pub const PROJECTIONS_FILE: &str = "projections.v3.sqlite";
+
 /// Where projection tables live: a file next to the log, or memory (rebuilt on open).
 #[derive(Clone, Debug)]
 pub enum ProjectionFile {

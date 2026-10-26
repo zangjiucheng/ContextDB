@@ -74,7 +74,7 @@ Specification: SPEC.md; durability: docs/adr/0006-p2-durable-log.md";
 /// Operator commands never create a store: a mistyped path is an error.
 fn options(dir: &Path) -> OpenOptions {
     OpenOptions {
-        projections: ProjectionFile::Path(dir.join("projections.sqlite")),
+        projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
         create: false,
         ..OpenOptions::default()
     }

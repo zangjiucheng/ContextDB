@@ -1059,6 +1059,9 @@ fn map_error(e: TxError, map: &dyn Fn(Kind, u32) -> u32) -> TxError {
             logical: l(logical),
             status,
         },
+        TxError::InvalidRule(InvalidRule::ConflictingVersions(x)) => {
+            TxError::InvalidRule(InvalidRule::ConflictingVersions(l(x)))
+        }
         other => other,
     }
 }

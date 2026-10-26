@@ -1302,7 +1302,10 @@ fn t19_expect_cert_valid_with_only_a_watermark_change_in_the_window() {
             "user.name=t",
             "-c",
             "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
+            "--no-verify",
             "-qm",
             "t19",
         ],
@@ -1348,5 +1351,114 @@ fn t19_expect_cert_valid_with_only_a_watermark_change_in_the_window() {
         matches!(committed, Response::Committed { .. }),
         "{committed:?}"
     );
+    s.handle(ADMIN, Request::Shutdown);
+}
+
+/// Review (P6): a strict full check on a branch session issues its
+/// certificate from the branch's state (ADR 0013 §7), both while `main`'s
+/// ids are the global ids and after `main` allocates past the branch.
+#[test]
+fn strict_full_check_on_a_branch_issues_from_the_branch() {
+    let f = Fixture::new();
+    f.write("a.rs", "a");
+    f.write("b.rs", "b");
+    let s = f.service();
+    f.scan(&s, &["a.rs", "b.rs"]);
+    roots(&s);
+    let created = s
+        .handle(
+            ADMIN,
+            Request::BranchCreate {
+                name: "b".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(created, Response::Committed { .. }), "{created:?}");
+    let Response::Branches { branches } = s.handle(ADMIN, Request::BranchList).response else {
+        panic!()
+    };
+    let b = branches.iter().find(|x| x.name == "b").unwrap().id;
+    let Response::Session { session } = s
+        .handle(
+            AGENT,
+            Request::SessionStart {
+                harness: "test".into(),
+                repo: f.repo.root.to_str().unwrap().into(),
+                head_sha: String::new(),
+                parent: None,
+                branch: Some("b".into()),
+                git_branch: None,
+            },
+        )
+        .response
+    else {
+        panic!()
+    };
+    let Response::Read { item: old, .. } = read(&s, session, "root-b") else {
+        panic!()
+    };
+    // root-b moves on b only.
+    let body = b"b only".to_vec();
+    let mut batch = Batch::new(vec![
+        Op::AddRevision {
+            logical: old.logical.into(),
+            content: *blake3::hash(&body).as_bytes(),
+            adopt_as_base: true,
+        },
+        Op::SetHead {
+            logical: old.logical.into(),
+            expected: old.rev.into(),
+            new: RevRef::New(0),
+        },
+    ]);
+    batch.branch = b;
+    let moved = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![body],
+                batch,
+            },
+        )
+        .response;
+    assert!(matches!(moved, Response::Committed { .. }), "{moved:?}");
+    assert!(matches!(read(&s, session, "root-b"), Response::Read { .. }));
+    assert!(matches!(read(&s, session, "root-a"), Response::Read { .. }));
+    let strict = |s: &Service<SimDisk>| {
+        let response = s
+            .handle(
+                AGENT,
+                Request::Check {
+                    binding: Binding::root(session),
+                    cert_id: None,
+                    live_pos: vec![],
+                    action: None,
+                    mode: None,
+                    harness_version: "test".into(),
+                    strict: true,
+                },
+            )
+            .response;
+        assert!(
+            matches!(&response, Response::Check {validation: Validation::Valid, cert: Some(c), ..}
+                if c.branch == b && c.strict_no_aba),
+            "{response:?}"
+        );
+    };
+    strict(&s);
+    // main allocates after b did: its local ids are no longer global.
+    raw(
+        &s,
+        vec![Op::CreateLogical {
+            key: "main-later".into(),
+            kind: RecordKind::Decision,
+            scope_lane: "test".into(),
+            content: *blake3::hash(b"decision").as_bytes(),
+            adopt_as_base: true,
+        }],
+    );
+    strict(&s);
     s.handle(ADMIN, Request::Shutdown);
 }

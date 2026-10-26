@@ -227,10 +227,17 @@ pub fn branch(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 Request::BranchCreate {
                     name: name()?,
                     from,
+                    client_txn_id: None,
                 },
             )?
         }
-        "archive" => call(&mut c, Request::BranchArchive { name: name()? })?,
+        "archive" => call(
+            &mut c,
+            Request::BranchArchive {
+                name: name()?,
+                client_txn_id: None,
+            },
+        )?,
         "list" => call(&mut c, Request::BranchList)?,
         _ => return Err("usage: ctx branch create|list|archive <dir> [name] [--from B]".into()),
     };
@@ -275,6 +282,7 @@ pub fn merge(dir: &Path, args: &[String]) -> Result<(), String> {
             into,
             require_certified,
             certify,
+            client_txn_id: None,
         },
     )?;
     if let Response::Merged { result, report } = env.response {

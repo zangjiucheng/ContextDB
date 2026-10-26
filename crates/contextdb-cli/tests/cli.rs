@@ -18,7 +18,7 @@ fn replay_snapshot_doctor_on_a_real_store() {
     let dir = std::env::temp_dir().join(format!("contextdb-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let options = OpenOptions {
-        projections: ProjectionFile::Path(dir.join("projections.sqlite")),
+        projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
         ..OpenOptions::default()
     };
     let mut committed = 0;

@@ -14,7 +14,7 @@ pub mod session;
 pub mod snapshot;
 mod store;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
-pub use projection::ProjectionFile;
+pub use projection::{PROJECTIONS_FILE, ProjectionFile};
 pub use store::{
     LogReader, OpenOptions, OpenReport, Payload, Prepare, Store, StoreError, TruncatedTail,
     TxnStatus, Unavailable, Write,

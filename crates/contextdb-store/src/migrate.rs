@@ -82,12 +82,22 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
     }
     let from = match log_format(disk, dir)? {
         Some(f) if f == log::FORMAT_VERSION => {
+            // A migration whose last step failed after the swap still lists
+            // what it changed, from its backup (review). Best effort: a log
+            // written since (a torn tail) leaves the list empty.
+            let (backup, changed) = match newest_backup(disk, dir)? {
+                Some((v, name)) => {
+                    let changed = changed_since(disk, dir, &dir.join(&name), v).unwrap_or_default();
+                    (dir.join(name).display().to_string(), changed)
+                }
+                None => (String::new(), Vec::new()),
+            };
             return Ok(MigrationReport {
                 from: f,
                 to: f,
                 frames: 0,
-                backup: String::new(),
-                changed: Vec::new(),
+                backup,
+                changed,
             });
         }
         Some(f @ (0..=2)) => f,
@@ -118,29 +128,15 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
         if derived.epoch != old.epoch {
             return Err(StoreError::ReplayDivergence { epoch: old.epoch });
         }
-        // What the client was told: format 0 lacked `status_diff`.
-        let told = match (&old.acked_result, from) {
-            (Some(acked), _) => CommitResult::from_bytes_with(acked, DecodeLimits::DURABLE),
-            (None, 0) => legacy::decode_result(&old.result_blob),
-            (None, _) => CommitResult::from_bytes_with(&old.result_blob, DecodeLimits::DURABLE),
-        }
-        .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
-        let same = match from {
-            0 => {
-                CommitResult {
-                    status_diff: Vec::new(),
-                    ..derived.clone()
-                } == told
-            }
-            _ => derived == told,
-        };
+        let (recorded, same) = compare(from, old, &derived)?;
         if !same {
             changed.push(old.epoch);
         }
         let acked_result = match (&old.acked_result, from, same) {
+            // An earlier migration's record of what the client was told.
             (Some(acked), _, _) => Some(acked.clone()),
             // Format 0 never reported `status_diff`: keep what it did report.
-            (None, 0, _) | (None, _, false) => Some(told.canonical_bytes()),
+            (None, 0, _) | (None, _, false) => Some(recorded.canonical_bytes()),
             (None, _, true) => None,
         };
         // Format 2 groups are real; older frames become their own group.
@@ -196,20 +192,7 @@ fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreErr
     let staged = dir.join("log.migrating");
     // The interrupted migration started from the newest older format, so its
     // backup carries the highest version (review N3).
-    let backup = disk
-        .list(dir)
-        .map_err(io)?
-        .into_iter()
-        .filter_map(|n| {
-            let v: u32 = n
-                .strip_prefix("log.v")?
-                .strip_suffix(".bak")?
-                .parse()
-                .ok()?;
-            Some((v, n))
-        })
-        .max()
-        .map(|(_, n)| n)
+    let (from, backup) = newest_backup(disk, dir)?
         .ok_or_else(|| StoreError::Io("no migration backup to resume from".into()))?;
     if !disk.exists(&staged) {
         return Err(StoreError::Io(format!(
@@ -224,18 +207,80 @@ fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreErr
     }
     disk.rename_dir(&staged, &dir.join("log")).map_err(io)?;
     disk.sync_dir(dir).map_err(io)?;
-    let from = backup
-        .trim_start_matches("log.v")
-        .trim_end_matches(".bak")
-        .parse()
-        .unwrap_or(0);
+    // The interrupted run never reported its list: derive it again.
+    let changed = changed_since(disk, dir, &dir.join(&backup), from)?;
     Ok(MigrationReport {
         from,
         to: log::FORMAT_VERSION,
         frames: scan.frames.len() as u64,
         backup: dir.join(backup).display().to_string(),
-        changed: Vec::new(),
+        changed,
     })
+}
+/// The newest `log.vN.bak`: an interrupted migration started from the newest
+/// older format, so its backup carries the highest version (review N3).
+fn newest_backup(disk: &dyn Durability, dir: &Path) -> Result<Option<(u32, String)>, StoreError> {
+    Ok(disk
+        .list(dir)
+        .map_err(io)?
+        .into_iter()
+        .filter_map(|n| {
+            let v: u32 = n
+                .strip_prefix("log.v")?
+                .strip_suffix(".bak")?
+                .parse()
+                .ok()?;
+            Some((v, n))
+        })
+        .max())
+}
+/// The recorded result of a legacy row and whether the re-derived one
+/// equals it (T68). The base is the result the old binary derived and
+/// logged, not an earlier migration's `acked_result`: a format-0 store's
+/// acked results lack `status_diff`, and comparing against them would list
+/// every epoch.
+fn compare(
+    from: u32,
+    old: &LogRow,
+    derived: &CommitResult,
+) -> Result<(CommitResult, bool), StoreError> {
+    let recorded = match from {
+        0 => legacy::decode_result(&old.result_blob),
+        _ => CommitResult::from_bytes_with(&old.result_blob, DecodeLimits::DURABLE),
+    }
+    .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
+    let same = match from {
+        // Format 0 lacked `status_diff`.
+        0 => {
+            CommitResult {
+                status_diff: Vec::new(),
+                ..derived.clone()
+            } == recorded
+        }
+        _ => *derived == recorded,
+    };
+    Ok((recorded, same))
+}
+/// The epochs a finished migration changed: the backup's rows against the
+/// migrated log's results.
+fn changed_since(
+    disk: &dyn Durability,
+    dir: &Path,
+    backup: &Path,
+    from: u32,
+) -> Result<Vec<Epoch>, StoreError> {
+    let old = legacy_rows(disk, backup, from)?;
+    let new = legacy_rows(disk, &dir.join("log"), log::FORMAT_VERSION)?;
+    let mut changed = Vec::new();
+    for (o, n) in old.iter().zip(&new) {
+        let derived = n
+            .result()
+            .map_err(|_| StoreError::ReplayDivergence { epoch: n.epoch })?;
+        if !compare(from, o, &derived)?.1 {
+            changed.push(o.epoch);
+        }
+    }
+    Ok(changed)
 }
 /// Verified rows of a legacy format (formats 0 and 1 share framing and chain rules).
 fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<LogRow>, StoreError> {

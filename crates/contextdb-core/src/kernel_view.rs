@@ -526,8 +526,38 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     }
 
     /// The branch digest: its visible inputs and derived state under its
-    /// canonical (local) ids.
+    /// canonical (local) ids, then the branch-table entry and the sync
+    /// points it received (a fork in the child's, a merge in the target's;
+    /// ADR 0013 §3, §6.1). `main` without merges hashes as its database, so
+    /// single-branch digests are unchanged.
     pub fn digest(&self) -> ContentHash {
-        self.b.db.digest()
+        let info = &self.b.info;
+        let received: Vec<_> = (self.k.syncs.iter())
+            .filter(|p| p.dst == info.id)
+            .map(|p| (p.src, p.epoch))
+            .collect();
+        if info.id == MAIN && received.is_empty() {
+            return self.b.db.digest();
+        }
+        let mut h = blake3::Hasher::new();
+        h.update(&self.b.db.digest());
+        h.update(b"branch");
+        h.update(&info.id.0.to_le_bytes());
+        h.update(&(info.name.len() as u32).to_le_bytes());
+        h.update(info.name.as_bytes());
+        h.update(
+            &info
+                .parent
+                .map_or(u32::MAX, |p| u32::from(p.0))
+                .to_le_bytes(),
+        );
+        h.update(&info.fork_epoch.0.to_le_bytes());
+        h.update(&[u8::from(info.archived)]);
+        h.update(&(received.len() as u32).to_le_bytes());
+        for (src, epoch) in received {
+            h.update(&src.0.to_le_bytes());
+            h.update(&epoch.0.to_le_bytes());
+        }
+        *h.finalize().as_bytes()
     }
 }

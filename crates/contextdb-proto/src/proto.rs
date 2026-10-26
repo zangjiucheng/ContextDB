@@ -329,10 +329,12 @@ pub enum Request {
     BranchCreate {
         name: String,
         from: Option<String>,
+        client_txn_id: Option<[u8; 16]>,
     },
     BranchList,
     BranchArchive {
         name: String,
+        client_txn_id: Option<[u8; 16]>,
     },
     /// `ctx_merge` (ADR 0013 §6): `source` into `into`, else the bound
     /// session's branch, else `main`. `certify` names logical keys.
@@ -342,6 +344,7 @@ pub enum Request {
         into: Option<String>,
         require_certified: bool,
         certify: Vec<String>,
+        client_txn_id: Option<[u8; 16]>,
     },
 }
 /// A payload's content hash (SPEC §6.1 contract 4), for clients that send
@@ -1073,15 +1076,24 @@ impl Wire for Request {
                 binding.encode(o);
                 ops.encode(o);
             }
-            Self::BranchCreate { name, from } => {
+            Self::BranchCreate {
+                name,
+                from,
+                client_txn_id,
+            } => {
                 28u8.encode(o);
                 name.encode(o);
                 from.encode(o);
+                client_txn_id.encode(o);
             }
             Self::BranchList => 29u8.encode(o),
-            Self::BranchArchive { name } => {
+            Self::BranchArchive {
+                name,
+                client_txn_id,
+            } => {
                 30u8.encode(o);
                 name.encode(o);
+                client_txn_id.encode(o);
             }
             Self::Merge {
                 binding,
@@ -1089,6 +1101,7 @@ impl Wire for Request {
                 into,
                 require_certified,
                 certify,
+                client_txn_id,
             } => {
                 31u8.encode(o);
                 binding.encode(o);
@@ -1096,6 +1109,7 @@ impl Wire for Request {
                 into.encode(o);
                 require_certified.encode(o);
                 certify.encode(o);
+                client_txn_id.encode(o);
             }
         }
     }
@@ -1254,10 +1268,12 @@ impl Wire for Request {
             28 => Self::BranchCreate {
                 name: Wire::decode(i)?,
                 from: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
             },
             29 => Self::BranchList,
             30 => Self::BranchArchive {
                 name: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
             },
             31 => Self::Merge {
                 binding: Wire::decode(i)?,
@@ -1265,6 +1281,7 @@ impl Wire for Request {
                 into: Wire::decode(i)?,
                 require_certified: Wire::decode(i)?,
                 certify: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1786,15 +1803,20 @@ mod tests {
             Request::BranchCreate {
                 name: "b".into(),
                 from: Some("main".into()),
+                client_txn_id: Some([3; 16]),
             },
             Request::BranchList,
-            Request::BranchArchive { name: "b".into() },
+            Request::BranchArchive {
+                name: "b".into(),
+                client_txn_id: None,
+            },
             Request::Merge {
                 binding: None,
                 source: "b".into(),
                 into: Some("main".into()),
                 require_certified: true,
                 certify: vec!["plan".into()],
+                client_txn_id: Some([4; 16]),
             },
         ]
     }

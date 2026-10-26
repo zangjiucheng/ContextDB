@@ -283,6 +283,7 @@ fn t19_plans_on_other_branches_do_not_conflict() {
         Request::BranchCreate {
             name: "b".into(),
             from: None,
+            client_txn_id: None,
         },
     );
     let on_b = start(&s, Some("b"));
@@ -366,6 +367,7 @@ fn s13_conflicted_after_a_merge() {
         Request::BranchCreate {
             name: "b".into(),
             from: None,
+            client_txn_id: None,
         },
     );
     let on_b = start(&s, Some("b"));
@@ -388,6 +390,7 @@ fn s13_conflicted_after_a_merge() {
             into: None,
             require_certified: false,
             certify: Vec::new(),
+            client_txn_id: None,
         },
     );
     let Response::Merged { report, .. } = merged else {
@@ -409,10 +412,224 @@ fn s13_conflicted_after_a_merge() {
             into: None,
             require_certified: true,
             certify: Vec::new(),
+            client_txn_id: None,
         },
     );
     assert!(
         matches!(&refused_merge, Response::Error { code, .. } if code == "MergeNotCertified"),
         "{refused_merge:?}"
     );
+}
+
+fn create_op(key: &str) -> (Vec<Op>, Vec<Vec<u8>>) {
+    let body = format!("body-{key}").into_bytes();
+    let content = *blake3::hash(&body).as_bytes();
+    let op = Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content,
+        adopt_as_base: true,
+    };
+    (vec![op], vec![body])
+}
+fn commit_as(
+    s: &Service<SimDisk>,
+    id: Identity,
+    session: SessionId,
+    key: &str,
+    expect: bool,
+    txn: [u8; 16],
+) -> Response {
+    let (ops, blobs) = create_op(key);
+    call(
+        s,
+        id,
+        Request::Commit {
+            binding: Binding::root(session),
+            ops,
+            blobs,
+            expect_cert_valid: expect,
+            client_txn_id: Some(txn),
+        },
+    )
+}
+
+/// Review (P6): a `ctx_commit` retry is the same request only on the same
+/// branch, channel and principal; another session's identical ops under
+/// the same id get `TxnIdReuse`, never the other branch's result.
+#[test]
+fn commit_txn_ids_are_bound_to_branch_and_principal() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    call(
+        &s,
+        ADMIN,
+        Request::BranchCreate {
+            name: "b".into(),
+            from: None,
+            client_txn_id: None,
+        },
+    );
+    let (on_b, on_main) = (start(&s, Some("b")), start(&s, None));
+    let first = commit_as(&s, AGENT, on_b, "x", false, [7; 16]);
+    assert!(matches!(first, Response::Committed { .. }), "{first:?}");
+    let other = Identity {
+        channel: Channel::Agent,
+        principal: PrincipalId(9),
+    };
+    for (id, session) in [(other, on_main), (AGENT, on_main), (other, on_b)] {
+        let r = commit_as(&s, id, session, "x", false, [7; 16]);
+        assert!(
+            matches!(&r, Response::Error { code, .. } if code == "TxnIdReuse"),
+            "{r:?}"
+        );
+    }
+    assert_eq!(commit_as(&s, AGENT, on_b, "x", false, [7; 16]), first);
+}
+
+/// Review (P6): a retry of a durable `expect_cert_valid` commit finds its
+/// result after a `ctx_check` re-issued the session certificate, also after
+/// a restart (T18b, ADR 0013 §4.1).
+#[test]
+fn commit_retry_survives_a_reissued_certificate() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let seed = start(&s, None);
+    record(&s, seed, "a", true, Vec::new());
+    record(&s, seed, "b", true, Vec::new());
+    let p = plan(&s, &["a"], None);
+    let first = commit_as(&s, AGENT, p, "y", true, [8; 16]);
+    assert!(matches!(first, Response::Committed { .. }), "{first:?}");
+    let cert = |s: &Service<SimDisk>| match call(
+        s,
+        AGENT,
+        Request::Check {
+            binding: Binding::root(p),
+            cert_id: None,
+            live_pos: Vec::new(),
+            action: None,
+            mode: None,
+            harness_version: String::new(),
+            strict: false,
+        },
+    ) {
+        Response::Check { cert: Some(c), .. } => c.cert_id,
+        other => panic!("{other:?}"),
+    };
+    let before = cert(&s);
+    read(&s, p, "b", Mode::Certified);
+    assert_ne!(cert(&s), before, "the certificate is re-issued");
+    assert_eq!(commit_as(&s, AGENT, p, "y", true, [8; 16]), first);
+    call(&s, ADMIN, Request::Shutdown);
+    drop(s);
+    let s = service(&disk);
+    assert_eq!(commit_as(&s, AGENT, p, "y", true, [8; 16]), first);
+}
+
+/// Review (P6): `expect_cert_valid` without a session certificate is
+/// refused with the Empty verdict (§4 step 2); a merge into an archived
+/// branch from an unknown source is BranchArchived before InvalidMerge
+/// (§9); branch and merge requests take a client_txn_id whose retry returns
+/// the stored result (SPEC §6.5).
+#[test]
+fn branch_requests_take_txn_ids_and_errors_follow_the_order() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let none = start(&s, None);
+    let (ops, blobs) = create_op("z");
+    let r = call(
+        &s,
+        AGENT,
+        Request::Commit {
+            binding: Binding::root(none),
+            ops,
+            blobs,
+            expect_cert_valid: true,
+            client_txn_id: None,
+        },
+    );
+    assert_eq!(
+        r,
+        Response::Refused {
+            validation: Validation::Empty
+        }
+    );
+    let create = Request::BranchCreate {
+        name: "c".into(),
+        from: None,
+        client_txn_id: Some([5; 16]),
+    };
+    let created = call(&s, ADMIN, create.clone());
+    assert!(matches!(created, Response::Committed { .. }), "{created:?}");
+    assert_eq!(
+        call(&s, ADMIN, create),
+        created,
+        "a retry, not BranchExists"
+    );
+    let merge = Request::Merge {
+        binding: None,
+        source: "main".into(),
+        into: Some("c".into()),
+        require_certified: false,
+        certify: Vec::new(),
+        client_txn_id: Some([6; 16]),
+    };
+    let merged = call(&s, AGENT, merge.clone());
+    assert!(matches!(merged, Response::Merged { .. }), "{merged:?}");
+    assert_eq!(call(&s, AGENT, merge), merged);
+    let archive = Request::BranchArchive {
+        name: "c".into(),
+        client_txn_id: Some([9; 16]),
+    };
+    let archived = call(&s, ADMIN, archive.clone());
+    assert!(
+        matches!(archived, Response::Committed { .. }),
+        "{archived:?}"
+    );
+    assert_eq!(call(&s, ADMIN, archive), archived);
+    let r = call(
+        &s,
+        AGENT,
+        Request::Merge {
+            binding: None,
+            source: "nosuch".into(),
+            into: Some("c".into()),
+            require_certified: false,
+            certify: Vec::new(),
+            client_txn_id: None,
+        },
+    );
+    assert!(
+        matches!(&r, Response::Error { code, .. } if code == "BranchArchived"),
+        "{r:?}"
+    );
+}
+
+/// Review (P6): a `ctx_commit` counts as a session write like record and
+/// supersede (ADR 0010 §4.3), once per client_txn_id.
+#[test]
+fn ctx_commit_is_a_session_write() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    let session = start(&s, None);
+    let writes = |s: &Service<SimDisk>| match call(
+        s,
+        ADMIN,
+        Request::Telemetry {
+            since: 0,
+            limit: 1000,
+        },
+    ) {
+        Response::Telemetry { entries, .. } => entries
+            .into_iter()
+            .filter(|e| matches!(e, TelemetryEntry::Write { .. }))
+            .count(),
+        other => panic!("{other:?}"),
+    };
+    let r = commit_as(&s, AGENT, session, "w", false, [4; 16]);
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    assert_eq!(writes(&s), 1);
+    commit_as(&s, AGENT, session, "w", false, [4; 16]);
+    assert_eq!(writes(&s), 1, "a retry is not a second write");
 }

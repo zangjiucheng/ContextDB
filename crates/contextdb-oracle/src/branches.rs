@@ -186,6 +186,16 @@ pub fn conflict_payload(
     }
     out
 }
+/// A ValidationRecord conflict's curvec, the first payload value: two
+/// conflicts on one rule at different curvecs must differ.
+fn enc_curvec(curvec: &[(u32, u32)]) -> Vec<u8> {
+    let mut out = (curvec.len() as u32).to_le_bytes().to_vec();
+    for (l, r) in curvec {
+        out.extend(l.to_le_bytes());
+        out.extend(r.to_le_bytes());
+    }
+    out
+}
 fn enc_rev(v: Option<u32>) -> Vec<u8> {
     match v {
         None => vec![0],
@@ -976,7 +986,8 @@ impl BranchOracle {
                 }
                 Some(Err(())) => {
                     let c = self.rules[key.0 as usize].conclusion.0;
-                    let mut v: Vec<_> = bv.iter().map(|x| enc_validation(x.as_ref())).collect();
+                    let mut v = vec![enc_curvec(&key.1)];
+                    v.extend(bv.iter().map(|x| enc_validation(x.as_ref())));
                     v.extend([enc_validation(Some(record)), enc_validation(tr.as_ref())]);
                     found.push((
                         4,
@@ -1082,6 +1093,9 @@ impl BranchOracle {
                 };
                 v.push(g.ok_or(TxError::UnknownRef)?);
             }
+            // The first failing logical is the first by id.
+            v.sort_unstable();
+            v.dedup();
             v
         };
         if let Some(e) = read_error {
@@ -1130,7 +1144,14 @@ impl BranchOracle {
             for l in required {
                 let head = merged.branches[t.0 as usize].state.heads[&l];
                 let local = p.to_local[1][&head] as usize;
-                let status = summarize(&d.nodes[local].dimensions);
+                // A conflict on any revision of the logical (a base, a rule's
+                // conclusion, an artifact's target) makes it CONFLICTED, even
+                // when its head is certified (§6.3 step 6).
+                let status = if out.conflicts.iter().any(|c| c.logical == Some(l)) {
+                    Summary::Conflicted
+                } else {
+                    summarize(&d.nodes[local].dimensions)
+                };
                 if status != Summary::Certified {
                     return Err(TxError::MergeNotCertified {
                         logical: LogicalId(l),
