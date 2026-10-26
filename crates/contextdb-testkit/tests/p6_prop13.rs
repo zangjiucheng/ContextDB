@@ -388,7 +388,10 @@ fn prop13_branches_equal_the_oracle() {
             rng: ChaCha8Rng::seed_from_u64(seed ^ 0x13),
             keys: 0,
         };
-        let (mut k, mut o) = (Kernel::default(), BranchOracle::default());
+        let (mut k, mut o) = (
+            Kernel::default(),
+            BranchOracle::new(|b| *blake3::hash(b).as_bytes()),
+        );
         for step in 0..24 {
             let n = o.branch_count();
             let branch = BranchId(g.pick(n) as u16);

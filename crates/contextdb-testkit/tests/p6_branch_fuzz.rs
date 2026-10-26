@@ -6,7 +6,7 @@
 //! branch model, PROP13, is a later milestone.)
 use contextdb_core::{Import, Kernel};
 use contextdb_model::*;
-use contextdb_oracle::jacobi;
+use contextdb_oracle::{jacobi, kahn};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 
@@ -185,10 +185,18 @@ fn random_branch_histories() {
             for info in k.branches() {
                 let view = k.branch(info.id).unwrap();
                 let inputs = view.db().inputs();
+                let full = jacobi(&inputs);
                 assert_eq!(
                     contextdb_model::DerivedView::derived(view.db()),
-                    &jacobi(&inputs),
+                    &full,
                     "seed {seed} step {step}: branch {:?}",
+                    info.id
+                );
+                // PROP8 per branch: a committed branch is acyclic.
+                assert_eq!(
+                    kahn(&inputs).as_ref(),
+                    Ok(&full),
+                    "seed {seed} step {step}: PROP8 on {:?}",
                     info.id
                 );
             }

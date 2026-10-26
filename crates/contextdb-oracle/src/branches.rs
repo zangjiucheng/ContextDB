@@ -235,6 +235,9 @@ type Found = (u8, Option<u32>, Option<u32>, u32, Vec<u8>);
 /// The independent branch oracle.
 #[derive(Clone, Debug)]
 pub struct BranchOracle {
+    /// Hashes a Conflict payload into its `payload_hash`. The caller
+    /// supplies it, so the oracle keeps depending on the model only.
+    hash: fn(&[u8]) -> ContentHash,
     logicals: Vec<Logical>,
     revisions: Vec<Revision>,
     rules: Vec<Rule>,
@@ -244,9 +247,11 @@ pub struct BranchOracle {
     syncs: Vec<Sync>,
     epoch: Epoch,
 }
-impl Default for BranchOracle {
-    fn default() -> Self {
+impl BranchOracle {
+    /// A store with only `main`; `hash` is the store's content hash.
+    pub fn new(hash: fn(&[u8]) -> ContentHash) -> Self {
         Self {
+            hash,
             logicals: Vec::new(),
             revisions: Vec::new(),
             rules: Vec::new(),
@@ -1026,7 +1031,7 @@ impl BranchOracle {
             merged.artifacts.push(Artifact {
                 ty: ArtifactType::Conflict,
                 target: RevisionId(*target),
-                payload_hash: *blake3::hash(payload).as_bytes(),
+                payload_hash: (merged.hash)(payload),
                 open: true,
                 author: b.principal,
                 origin_branch: t,
