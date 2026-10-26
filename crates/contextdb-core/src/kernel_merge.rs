@@ -23,8 +23,8 @@ pub(super) struct SyncPoint<M: Maintainer, S: StatsSink> {
 
 /// A branch state: the branch as of an epoch.
 type State = (BranchId, Epoch);
-/// Containment answers already computed, `(x, y) → x ⊑ y`.
-type Memo = HashMap<(State, State), bool>;
+/// The latest contained epoch per branch of a state (`merge_bases`).
+type Reach = BTreeMap<BranchId, Epoch>;
 
 /// One branch state read with global ids.
 struct View<'a, M: Maintainer, S: StatsSink> {
@@ -182,49 +182,64 @@ struct Found {
 }
 
 impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
-    /// Whether the state `x` is contained in branch state `y` (§6.1, N1):
-    /// it is `y`'s own earlier state, or contained in a state synced into
-    /// `y` at or before `y`'s epoch.
-    fn contained(&self, x: (BranchId, Epoch), y: (BranchId, Epoch), memo: &mut Memo) -> bool {
-        if x.0 == y.0 && x.1 <= y.1 {
-            return true;
-        }
-        if let Some(known) = memo.get(&(x, y)) {
-            return *known;
-        }
-        // Sync epochs strictly decrease along the recursion: one commit per
-        // epoch, so no sync into `src` shares the epoch of one out of it.
-        let found = (self.syncs.iter())
-            .filter(|s| s.dst == y.0 && s.epoch <= y.1 && (s.src, s.epoch) != y)
-            .any(|s| self.contained(x, (s.src, s.epoch), memo));
-        memo.insert((x, y), found);
-        found
-    }
     /// The maximal stored states contained in both branches now (§6.1).
+    ///
+    /// `x` is contained in branch state `y` (N1) if it is `y`'s own earlier
+    /// state, or contained in a state synced into `y` at or before `y`'s
+    /// epoch. That is closed under earlier epochs of a branch, so the states
+    /// contained in `y` are its reach: the latest contained epoch per
+    /// branch, and `x ⊑ y` iff `reach(y)[x.0] ≥ x.1`. Sync points are
+    /// created one per epoch, so one pass in epoch order computes the reach
+    /// of every sync point's source state and of every branch now, in
+    /// O(sync points × branches).
     fn merge_bases(&self, source: BranchId, target: BranchId) -> Vec<usize> {
-        let now = Epoch(u64::MAX);
-        let mut memo = HashMap::new();
-        let mut candidates: Vec<usize> = Vec::new();
-        for (n, s) in self.syncs.iter().enumerate() {
-            let state = (s.src, s.epoch);
-            if candidates
-                .iter()
-                .any(|c| (self.syncs[*c].src, self.syncs[*c].epoch) == state)
-            {
-                continue;
+        let join = |into: &mut Reach, from: &Reach| {
+            for (b, e) in from {
+                let max = into.entry(*b).or_insert(*e);
+                *max = (*max).max(*e);
             }
-            if self.contained(state, (source, now), &mut memo)
-                && self.contained(state, (target, now), &mut memo)
-            {
-                candidates.push(n);
+        };
+        let mut order: Vec<usize> = (0..self.syncs.len()).collect();
+        order.sort_by_key(|n| self.syncs[*n].epoch);
+        let mut now: BTreeMap<BranchId, Reach> = BTreeMap::new();
+        let mut at_sync: Vec<Reach> = vec![Reach::new(); self.syncs.len()];
+        for n in order {
+            let s = &self.syncs[n];
+            // Every sync into `src` up to this epoch is already joined.
+            let mut r = now.get(&s.src).cloned().unwrap_or_default();
+            join(&mut r, &Reach::from([(s.src, s.epoch)]));
+            join(now.entry(s.dst).or_default(), &r);
+            at_sync[n] = r;
+        }
+        let latest = Epoch(u64::MAX);
+        let reach_now = |b: BranchId| {
+            let mut r = now.get(&b).cloned().unwrap_or_default();
+            join(&mut r, &Reach::from([(b, latest)]));
+            r
+        };
+        let (rs, rt) = (reach_now(source), reach_now(target));
+        let within = |x: State, r: &Reach| r.get(&x.0).is_some_and(|e| *e >= x.1);
+        let state = |n: usize| (self.syncs[n].src, self.syncs[n].epoch);
+        // A branch's earlier state is contained in its later one, so only
+        // the latest common state of each branch can be maximal (the first
+        // sync point holding it stands for it).
+        let mut latest: BTreeMap<BranchId, usize> = BTreeMap::new();
+        for n in 0..self.syncs.len() {
+            let x = state(n);
+            if within(x, &rs) && within(x, &rt) {
+                let best = latest.entry(x.0).or_insert(n);
+                if self.syncs[*best].epoch < x.1 {
+                    *best = n;
+                }
             }
         }
-        let state = |n: usize| (self.syncs[n].src, self.syncs[n].epoch);
+        let mut candidates: Vec<usize> = latest.into_values().collect();
+        candidates.sort_unstable();
         (candidates.iter().copied())
             .filter(|c| {
                 !candidates
                     .iter()
-                    .any(|d| d != c && self.contained(state(*c), state(*d), &mut memo))
+                    .any(|d| d != c && within(state(*c), &at_sync[*d]))
             })
             .collect()
     }
@@ -703,9 +718,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             .into_iter()
             .map(|f| (f.kind, f.logical, f.rule, f.target, f.payload))
             .collect();
+        // `commit_merge` takes only the epoch from the context.
         let ctx = CommitContext {
             epoch: Some(epoch),
-            kernel: true,
             ..CommitContext::default()
         };
         let branch = &mut self.branches[target.0 as usize];
