@@ -2,7 +2,21 @@
 
 **P6 branches, transactions and WHAT_IF are implemented and under gate verification** ([P6 gate](gates/P6.md), [ADR 0013](adr/0013-p6-branches-transactions.md) r0.6). G0–G5, G7 and G8 pass and G6 is none for P6. G3: PROP13 against an independent branch oracle (10,000 seeds), PROP7/8/10/11 per branch, and [mutation](gates/p6-g3-mutation.md) with every survivor closed by a test or argued equivalent. G4's branch stress found two merge defects (a cubic merge-base search and sync points retaining whole databases), fixed in ADR r0.6 without semantic change. [G5](gates/p6-g5.md): fork O(1), WHAT_IF ≤ 1.6× a commit, branch commit at parity with `main`; the first write after a fork or merge copies the branch (≈ 0.05–0.25 s at 10⁶ revisions). The independent implementation review found 8 majors (among them a `require_certified` merge passing with Conflicts off the head, an idempotency hash ignoring the branch, and group-commit projections differing from a rebuild), all fixed with regression tests (ADR r0.7, SPEC v1.6.9); G1, G3, G4 and G7 were rerun on the fixed tree. All P6 layers pass. The phase gate also waits on P5b, P5a and P4 (SPEC A11); the live dogfood stores stay on protocol 3 / op_log format 2 until after the P4 report.
 
-**P5b symbol anchors are implemented and under gate verification** ([P5b gate](gates/P5b.md), [ADR 0012](adr/0012-p5b-symbol-anchors.md) r0.5). G0, G2, G3, G4 and G5 passed; [G2](gates/p5b-g2.md) closes the formatter evidence (6,820 symbols across six corpora) and the legacy `#` key-collision regression. [G3](gates/p5b-g3.md) passed full-count Linux properties (two separately written 10,000-seed symbol suites plus the P5a carry-forward) and normaliser/extraction mutation: 230 caught, 13 compile-invalid, no survivors. The phase gate remains open and cannot pass before P5a/P4. [G4](gates/p5b-g4.md) fixed three robustness defects (deep nesting, deadline enforcement, `MISSING` names) and passed with fuzz and mutation; [G5](gates/p5b-g5.md) keeps the P4 hook budgets at 1,000 symbol anchors. G6 failed with walk 2 (symbol FI 34.2 %, missed +13.1 pp), then passed with walk 3 (same-file context) on a fresh sample under the owner's move convention: FI 18.7 % ≤ ½ × 79.7 %, missed +0.0 pp ([retest](gates/p5b-g6-r2-report.md); 70.4 % under the pre-registered reading). Remaining: G1, G7, G8 and the independent review.
+**P5b symbol anchors are implemented; every gate layer passes and the independent review is done** ([P5b gate](gates/P5b.md), [ADR 0012](adr/0012-p5b-symbol-anchors.md) r0.9, SPEC v1.6.10). G0–G5 passed on 2026-10-23. [G6](gates/p5b-g6-r2-report.md) failed with walk 2, then passed with walk 3 (same-file context) on a fresh sample under the owner's move convention. The independent implementation review (2026-10-26) found 1 blocker and 6 majors, now fixed as normaliser walk 4:
+- text no child node covers was not hashed (Python string text between escapes, Rust raw strings);
+- context errors were not the symbol's;
+- Python block statements were not separate items;
+- Go `for` clauses and grouped `var`;
+- a Missing anchor across `migrate` blocked scans for good;
+- deep `use` recursion.
+
+Rechecks on walk 4:
+- T45 is identical, and 886 of 6,820 symbols re-hash (anchors need `ctx anchors migrate`);
+- both PROP12 suites pass at 10,000 seeds;
+- [mutation](gates/p5b-g3.md) catches every non-equivalent mutant;
+- G6 was rescored on the same labels: FI 17.5 % ≤ ½ × 79.7 %, missed +0.0 pp (70.0 % under the pre-registered reading).
+
+G1 (macOS and Linux), G7 and G8 pass. The phase gate cannot pass before P5a's, which waits on P4.
 
 **P5a is implemented; its gate is open** ([P5a gate](gates/P5a.md), [ADR 0011](adr/0011-p5a-file-anchors.md) r0.6). G0–G5, G7, G8 and prior independent reviews pass. G6 uses 210 agent-labelled pairs with explicit provenance and hashed evidence; the 84 historical human reviews remain optional diagnostics and no manual top-ups are required (SPEC v1.6.4 §4.4). G6 passed under this agent-evidence criterion (`p5a_g6_evidence_complete=true`; [report](gates/p5a-g6-agent-report.md)). P5a cannot pass before P4.
 
@@ -94,8 +108,8 @@ That run does not validate the current P1 changes.
 - Open Conflict artifacts gate their target (SD17, P6); merges open them, and
   semantic conflict producers arrive in P7. Visibility is Authorized before P9; structural
   Unknown/freshness are summary-function fixtures.
-- Research DD/DBSP workspaces stay excluded. P4's real dogfood report and
-  P5b's remaining gate evidence are still required.
+- Research DD/DBSP workspaces stay excluded. P4's real dogfood report is
+  still required before P4, P5a, P5b and P6 can close.
 
 ## Dependency policy
 

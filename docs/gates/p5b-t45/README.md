@@ -47,3 +47,10 @@ symbol_corpus <clone> <commit> <out.tsv> [--edition 2024] [--prettier <bin>]
 both revisions over the same six commits: 2,226 of 6,820 symbols re-hash
 (ripgrep 681, fd 117, click 855, cobra 0, ky 63, express 510). Existing symbol
 anchors need `ctx anchors migrate`.
+
+**Walk check 3 → 4 (ADR 0012 r0.9, 2026-10-26):** 886 of 6,820 symbols
+re-hash (ripgrep 406, fd 13, click 325, cobra 11, ky 0, express 131).
+
+**Formatter corpus under walk 4:** rerun with the same tools; every count
+and every changed-symbol row is identical in all six corpora (no new
+exception).

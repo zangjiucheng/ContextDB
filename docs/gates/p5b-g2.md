@@ -57,5 +57,28 @@ cargo test --release --locked -p contextdb-cli --test symbols_cli -- \
 ```
 
 The two skipped cases belong to G4, which has its own report. CLI integration
-tests require access to their temporary Unix sockets. G1/G7/G8 and the
-independent phase review remain open; G6 has its own report and verdict.
+tests require access to their temporary Unix sockets. G6 has its own report
+and verdict.
+
+## Walk 4 (ADR 0012 r0.9, 2026-10-26)
+
+The independent implementation review showed the G2 goldens missed real
+meaning changes. Walk 4 fixes them, and `tests/walk4.rs` adds must-differ
+and must-find goldens for each counterexample:
+
+- **Uncovered text**: Python escapes, f-strings and format specifiers, bytes,
+  Rust raw strings, `macro_rules!` separators.
+- **Context errors**: broken helpers, assignments and imports; local errors
+  stay local.
+- **Python block statements**.
+- **Go**: `for` clauses, grouped `var`, versioned imports.
+- **JS/TS**: array holes, multi-declarator keywords, `export declare`, dotted
+  namespaces, `this.#p`.
+- **Rust**: `r#` identifiers.
+- **Normaliser version**: pinned to `Cargo.lock`.
+
+T42e also gained a CLI case, a Missing anchor across `migrate`. It fails
+without either half of the fix. Formatter corpus: identical under walk 4.
+Walk check 3 → 4: 886 of 6,820 symbols re-hash ([T45](p5b-t45/README.md)).
+`contextdb-symbols`, `contextdb-anchors` and `contextdb-cli --test
+symbols_cli` pass on the final tree.

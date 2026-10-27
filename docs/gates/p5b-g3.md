@@ -177,3 +177,66 @@ the goldens, the new `context` goldens, both PROP12 suites as 60-seed slices
   applied by hand.
 - **Final.** 219 caught, 26 compile-invalid, 0 missed. Rerun outcome SHA-256:
   `f379423744e0d61d…`.
+
+## Walk 4 (ADR 0012 r0.9, 2026-10-26)
+
+The independent implementation review found walk-3 defects that G3 had not
+caught. The worst was that the walk dropped text no child node covers, such
+as Python string text between escapes. The SPEC-form oracle in
+`tests/common/spec.rs` normalised the same way, so it agreed with the
+production walk. Walk 4 fixes the defects (ADR 0012 §11 r0.9).
+
+**Oracle changes.** The oracle restates every walk-4 rule independently, with
+no production code:
+- gap leaves, byte for byte inside strings;
+- Go `for` clause semicolons;
+- context-item errors;
+- names in `ERROR` regions outside every span.
+
+Both PROP12 suites now model the r0.9 position header, which lists live
+symbol anchors only:
+- in `prop12_symbols` the header lists only languages with a symbol observed
+  Present;
+- in `prop12_symbols_model`, `daemon_position` reads the post-commit live
+  descriptors, as the daemon does.
+
+**Full count.** Both suites pass at 10,000 seeds in release on macOS
+(two-oracle 239 s, model 63 s). The Linux run is part of G7 (below).
+
+**Mutation.** On the remote Linux host, over `walk.rs`, `extract.rs`,
+`context.rs` and `lib.rs`. `scripts/mutation-p5b.sh` now runs the goldens,
+`context`, `walk4`, 60-seed slices of both PROP12 suites and `robustness`,
+with a 300 s timeout:
+
+- **First run** (without `robustness`, 120 s timeout): 28 missed.
+  - Most were new code with weak tests: the error-region names, Go's
+    version-element rule, the multi-declarator wrapper keywords and
+    `Unavailable`'s `Display`.
+  - The rest were robustness-only code (deadline clock, nesting bound,
+    `ERROR`-ancestor facts) that this run did not exercise.
+- **New tests** in `tests/walk4.rs`:
+  - helpers too broken to be extracted (Python, JS);
+  - broken top-level assignments and imports (Python, Rust);
+  - `export declare` with several declarators;
+  - `a/b/vendor` imports.
+  Writing them also found that a broken module-level binder was not marked;
+  the rule became "names in `ERROR` regions outside every span" (ADR §4).
+- **Full rerun** with `robustness`: 399 mutants, 356 caught, 36
+  compile-invalid, 7 missed.
+  - The `ERROR`-ancestor rule had become redundant on the old robustness
+    input, because walk 4's error-region names also mark it.
+  - The 2,015-input `symbols_parse` fuzz corpus and 24,000 generated
+    Rust/Go inputs were run with the rule disabled. They found inputs decided
+    by the ancestor alone, in JavaScript and Rust; these are now
+    `robustness::declarations_under_an_error_ancestor_alone_are_errors`.
+  - The multi-declarator wrapper search now uses `child_with_descendant`.
+- **Iterated** (`--iterate`): 10 caught, 1 compile-invalid, 3 missed.
+  - `Facts::of`'s early return for Rust/Go is killed by the Rust case of the
+    new robustness test; the mutant was applied by hand.
+  - The last two (`walk.rs` gap guards, `<` → `<=`) are equivalent: an empty
+    gap emits nothing.
+- **Final**: every non-equivalent mutant is caught; 2 equivalent survivors.
+
+**Walk check and T45 on the final code.** 886 of 6,820 symbols re-hash 3 → 4,
+and the T45 results are identical on all six corpora
+([T45](p5b-t45/README.md)).

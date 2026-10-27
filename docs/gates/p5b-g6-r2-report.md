@@ -131,3 +131,31 @@ symbol_replay score docs/gates/p5b-g6-r2/sample.tsv docs/gates/p5b-g6-r2/labels.
 symbol_replay score docs/gates/p5b-g6-r2/sample.tsv docs/gates/p5b-g6-r2/labels.tsv                      # pre-registered
 symbol_replay predict docs/gates/p5b-g6-r2/sample.tsv <clones> pred.tsv   # span-only diagnostic (column span_fired)
 ```
+
+## Walk 4 rescore (2026-10-26, ADR 0012 r0.9)
+
+The independent implementation review changed the predictor (walk 4, ADR
+0012 r0.9). The owner chose to rescore rather than relabel:
+
+- the same 287 labels and the same strata, drawn under walk 3;
+- each pair's symbol event recomputed from the commit's blobs by the walk-4
+  normaliser (`symbol_replay rehash`, then `score --predictions`).
+
+The method was checked first. A walk-3 binary built with the same `rehash`
+reproduces the replay on 286 of 287 pairs. The exception is P5B-G6R-211,
+whose replay predates the r0.8 where-clause comma fix.
+
+Walk 4 and walk 3 then agree on all 287 pairs.
+
+| Reading | Symbol FI | File FI | FI threshold | Missed difference | Verdict |
+|---|---:|---:|---:|---:|---|
+| **Owner convention** (the gate) | **17.5 %** [10.0, 25.4] | 79.7 % | ≤ 39.8 % | **+0.0 pp** | **pass** |
+| Pre-registered | 70.0 % [61.9, 77.8] | 92.6 % | ≤ 46.3 % | +0.0 pp | fail |
+
+The 17.5 % equals r0.8's diagnostic for walk 3 with the comma fix. Output:
+[`p5b-g6-walk4-score.txt`](p5b-g6-walk4-score.txt); predictions:
+[`p5b-g6-r2/rehash-walk4.tsv`](p5b-g6-r2/rehash-walk4.tsv).
+
+**Limitation.** The 287 sampled pairs come from hosts without parse errors,
+so walk 4's error rules do not show here. Walk 4's text and context fixes
+change no sampled event.

@@ -131,7 +131,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P3 | Daemon, MCP and certified reads | ✅ passed |
 | P4 | Hooks and action gating | 🟡 implemented; every layer passes except the ≥ 2-week real-use dogfood (report no earlier than 2026-11-04) |
 | P5a | File-level code anchors | 🟡 implemented; every layer passes, waiting only on P4 |
-| P5b | Symbol-level code anchors | 🟡 implemented; G0 and G2–G6 pass, waiting on P5a/P4; G1, G7, G8 and the independent review remain |
+| P5b | Symbol-level code anchors | 🟡 implemented; every layer and the independent review pass (walk 4), waiting only on P5a/P4 |
 | P6 | Versioned transactions, branches and WHAT_IF | 🟡 implemented; G0–G5, G7, G8 and the independent review pass; the phase gate waits on P5b, P5a and P4 |
 | P7 | Semantic validation and conflicts | planned |
 | P8 | Retrieval, packing and git mirroring | planned |
@@ -262,6 +262,24 @@ ctx check <dir> --strict --range <a>..<b> [--repo <repo>]
 ```
 
 **Upgrade note**: P5a raises the IPC protocol to 3 and writes format-2 session-log segments (forcing a rollover from a format-1 segment before the first new event). P4 session logs read unchanged under P5a; P4 binaries refuse format-2 segments before any truncation, and downgrade is not supported.
+
+### Symbol-level code anchors (P5b)
+
+A decision can depend on one function, type or method instead of a whole file, so unrelated edits to the same file leave it CERTIFIED (SD18, ADR 0012).
+
+- **Languages**: by extension only. Rust (`.rs`), TypeScript / TSX / JavaScript (`.ts .mts .cts .tsx .js .mjs .cjs .jsx`), Python (`.py`) and Go (`.go`); other files keep file-level anchors. Symbols are item-level declarations (functions, types, traits, impl and class members, module-level constants and variables); nothing inside a function body is a symbol. Declarations sharing a path (overloads, getter + setter, `cfg` duplicates, interface merging) form one symbol.
+- **Keys**: `code:<repo-id>/<path>#<encoded symbol>`. Rust impl items are `Type::item` or `Type#Trait::item`, with an 8-hex key hash for generic trait arguments or a non-path self type (`src/x.rs#T#From#3fa1c2d0::from`). Keys never change with the normaliser. File paths may no longer contain `#`; a legacy file anchor with `#` is `Broken("reserved-character")`.
+- **Identity**: a symbol's revision is a hash of its normalised syntax (tree-sitter, pinned grammars): formatting, comments and formatter-equivalent forms do not change it, while a change to the same-file helpers, constants or imports it names does (walk 3), and so does any source text, such as string contents between escapes (walk 4). A symbol that disappears is `Broken`, and its `AnchorBroken` lists rebind candidates with the same body under another name or in a sibling file (suggestions only). A pure move or rename therefore invalidates, because the anchor has to be rebound.
+- **Freshness**: the observer parses; the daemon and hooks never do (`ctxd` and `ctx-hook` link no grammar). Watermarks record each host file's blob (`CTXPOS02`), so any byte change in a host file makes the scope `PENDING(ObservationLag)` until the next scan; unchanged symbols then come back fresh without a new revision. Parse failures stay local: a broken region does not break symbols elsewhere in the file, except those that use a same-file helper, constant or import that does not parse, and a scan that runs out of budget is unavailable as a whole (fail closed).
+- **Cost**: at 1,000 symbol anchors the P4 hook stays at p95 ≤ 29 ms; a full scan costs ≈ 0.38 s per MiB of host files, so the 5 s deadline binds at ≈ 13 MiB.
+
+```sh
+ctx anchors symbols <repo> <path>                    # list a file's symbols and their keys
+ctx anchors add <dir> <repo> <path>#<symbol>...      # e.g. src/store.rs#Store::open; must exist
+ctx anchors migrate <dir> <repo>                     # after a normaliser upgrade; reports changed revisions
+```
+
+**Upgrade note**: the protocol stays at 3 and file anchors are unchanged. Symbol anchors made with an earlier normaliser walk (the current one is walk 4) need `ctx anchors migrate` once; dependents of re-hashed symbols go STALE or PENDING once. An anchor that is Missing or Broken during the migrate keeps its old descriptor and no longer blocks scans.
 
 ### Branches, transactions and WHAT_IF (P6)
 

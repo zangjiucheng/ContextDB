@@ -1,0 +1,9 @@
+# P5b G7 (2026-10-26, walk 4 working tree on 9dee3a0, remote Linux host, scripts/gate-regression.sh)
+== paranoid testkit (P0 goldens, P1/P2/P3 properties at 10,000 seeds): 25 suites, 166 tests passed, 0 failed
+== exhaustive depth 6 (gate): 1 suites, 1 tests passed, 0 failed; bounded exhaustive: depth=6 alphabet=25 states=770 transitions=11275 accepted=6155 rejected=5120 violations=0
+== exhaustive depth 8 (report): 1 suites, 1 tests passed, 0 failed; bounded exhaustive: depth=8 alphabet=25 states=1711 transitions=30350 accepted=18104 rejected=12246 violations=0
+== store and daemon crash injection (1,000 per point), PROP10 (10,000 seeds): 23 suites, 167 tests passed, 0 failed
+== P4 suites (release): 25 suites, 104 tests passed, 0 failed
+== P5a suites (release; PROP12 at 10,000 fixed seeds): 4 suites, 12 tests passed, 0 failed
+== P5b suites (release; PROP12 for symbols at 10,000 fixed seeds): 8 suites, 47 tests passed, 0 failed
+G7 PASS
