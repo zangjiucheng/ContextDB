@@ -1,8 +1,11 @@
-//! The normalising walk (ADR 0012 §4, walk revision 2): an iterative
+//! The normalising walk (ADR 0012 §4, walk revision 4): an iterative
 //! pre-order traversal streaming into BLAKE3. A kept inner node emits
 //! `(` + kind and, after its kept children, `)`; a kept leaf emits `L` + kind +
-//! text; every string is length-prefixed, so the encoding is injective and
-//! carries the tree's shape (equivalent to kind + child count, but streamable).
+//! text; source text inside an inner node that no child covers (Python string
+//! literal text between escapes, a Rust raw string's `r#"`, a macro
+//! repetition's separator) emits `G` + text (walk 4); every string is
+//! length-prefixed, so the encoding is injective and carries the tree's shape
+//! (equivalent to kind + child count, but streamable).
 use crate::Unavailable;
 use contextdb_anchors::Language;
 use std::{collections::HashSet, time::Instant};
@@ -19,6 +22,9 @@ pub(crate) struct Rules {
     single_comma: &'static [&'static str],
     /// String literal kinds: quote leaves dropped, contents kept.
     strings: &'static [&'static str],
+    /// Kinds whose uncovered text is kept byte for byte, whitespace included
+    /// (string contents); elsewhere uncovered whitespace is layout (walk 4).
+    verbatim: &'static [&'static str],
     /// Extra nodes dropped outright (Python line continuations).
     dropped: &'static [&'static str],
     /// Kinds emitted under another kind's name: two grammar forms of one
@@ -168,6 +174,7 @@ pub(crate) fn rules(language: Language) -> Rules {
             transparent_parens: false,
             single_comma: &["tuple_expression", "tuple_type", "tuple_pattern"],
             strings: &[],
+            verbatim: &["string_literal", "raw_string_literal", "char_literal"],
             dropped: &[],
             renamed: &[],
             optional_parens: &[],
@@ -181,6 +188,7 @@ pub(crate) fn rules(language: Language) -> Rules {
             transparent_parens: true,
             single_comma: &[],
             strings: &["string"],
+            verbatim: &["string", "template_string", "string_fragment", "regex"],
             dropped: &[],
             renamed: &[],
             optional_parens: &[],
@@ -194,6 +202,7 @@ pub(crate) fn rules(language: Language) -> Rules {
             transparent_parens: true,
             single_comma: &[],
             strings: &["string"],
+            verbatim: &["string", "template_string", "string_fragment", "regex"],
             dropped: &[],
             renamed: &[],
             optional_parens: &[],
@@ -214,6 +223,7 @@ pub(crate) fn rules(language: Language) -> Rules {
                 "type_parameter",
             ],
             strings: &["string"],
+            verbatim: &["string", "string_content", "format_specifier"],
             dropped: &["line_continuation"],
             renamed: &[
                 ("union_type", "binary_operator"),
@@ -233,6 +243,7 @@ pub(crate) fn rules(language: Language) -> Rules {
             transparent_parens: false,
             single_comma: &[],
             strings: &[],
+            verbatim: &["interpreted_string_literal", "raw_string_literal"],
             dropped: &[],
             renamed: &[],
             optional_parens: &[],
@@ -379,7 +390,13 @@ impl Walk<'_> {
         if self.rules.dropped.contains(&kind) {
             return true;
         }
-        if kind == ";" && !child.is_named() && self.rules.drop_semicolons {
+        if kind == ";"
+            && !child.is_named()
+            && self.rules.drop_semicolons
+            // A Go `for` clause's `;`s place its init and post statements
+            // (`for g(); ; {}` is not `for ; ; g() {}`, walk 4).
+            && parent.kind() != "for_clause"
+        {
             return true;
         }
         if matches!(kind, "(" | ")")
@@ -398,6 +415,17 @@ impl Walk<'_> {
             return true; // required or not by the arm's form, never meaning
         }
         if kind == "," && !child.is_named() {
+            // A JS array hole (`[,]`, `[a,,]`): the comma follows `[` or
+            // another comma and is an element (walk 4).
+            if matches!(parent.kind(), "array" | "array_pattern")
+                && children[..index]
+                    .iter()
+                    .rev()
+                    .find(|n| !self.rules.comments.contains(&n.kind()))
+                    .is_some_and(|n| matches!(n.kind(), "," | "["))
+            {
+                return false;
+            }
             // Trailing comma: the next non-comment sibling closes the list,
             // or there is none (a Rust `where` clause, a Python bare tuple).
             let next = children[index + 1..]
@@ -470,6 +498,8 @@ impl Walk<'_> {
             Close,
             /// Leaving the name node.
             LeaveName,
+            /// Text of the node no child covers, and whether it is verbatim.
+            Gap(std::ops::Range<usize>, bool),
         }
         let parent = root.parent();
         let mut stack = vec![Step::Visit(root, parent, parent.and_then(|p| p.parent()))];
@@ -494,6 +524,21 @@ impl Walk<'_> {
                 }
                 Step::LeaveName => {
                     self.in_name = false;
+                    continue;
+                }
+                Step::Gap(range, verbatim) => {
+                    let text: Vec<u8> = if verbatim {
+                        self.src[range].to_vec()
+                    } else {
+                        self.src[range]
+                            .iter()
+                            .copied()
+                            .filter(|b| !b.is_ascii_whitespace())
+                            .collect()
+                    };
+                    if !text.is_empty() {
+                        self.bytes(b'G', &[&text]);
+                    }
                     continue;
                 }
                 Step::Visit(n, p, g) => (n, p, g),
@@ -550,12 +595,27 @@ impl Walk<'_> {
                 self.bytes(b'(', &[self.kind(node).as_bytes()]);
                 stack.push(Step::Close);
             }
-            for &i in kept.iter().rev() {
+            // Children and the gaps between them, pushed in reverse: a
+            // dropped child's own text is never a gap.
+            let verbatim = self.rules.verbatim.contains(&node.kind());
+            let mut end = node.end_byte();
+            let mut next = kept.len();
+            for i in (0..children.len()).rev() {
                 let child = children[i];
-                if transparent == Some(Unwrap::Named) && !child.is_named() {
-                    continue; // the grouping punctuation itself
+                if child.end_byte() < end {
+                    stack.push(Step::Gap(child.end_byte()..end, verbatim));
                 }
-                stack.push(Step::Visit(child, Some(node), parent));
+                end = end.min(child.start_byte());
+                if next > 0 && kept[next - 1] == i {
+                    next -= 1;
+                    if transparent == Some(Unwrap::Named) && !child.is_named() {
+                        continue; // the grouping punctuation itself
+                    }
+                    stack.push(Step::Visit(child, Some(node), parent));
+                }
+            }
+            if node.start_byte() < end {
+                stack.push(Step::Gap(node.start_byte()..end, verbatim));
             }
         }
         Ok(())

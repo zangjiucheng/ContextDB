@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# ADR 0012 §9 G3: normaliser and extraction mutation on the Linux host.
+# ADR 0012 §9 G3: normaliser, extraction and context mutation on the Linux host.
 # A deterministic 60-seed slice keeps each mutant bounded; the independent
-# complete 10,000-seed run is separate. Both oracle and G2 goldens run here.
+# complete 10,000-seed run is separate. Both oracle and G2 goldens run here,
+# with the robustness suite (deadline, nesting and error-root mutants).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
@@ -14,6 +15,9 @@ if (( jobs > 24 )); then jobs=24; fi
 CARGO_BUILD_JOBS=2 cargo mutants --package contextdb-symbols \
   --file crates/contextdb-symbols/src/walk.rs \
   --file crates/contextdb-symbols/src/extract.rs \
-  --jobs "$jobs" --timeout 120 \
+  --file crates/contextdb-symbols/src/context.rs \
+  --file crates/contextdb-symbols/src/lib.rs \
+  --jobs "$jobs" --timeout 300 \
   --output "${MUTATION_OUTPUT:-results/p5b-mutation}" "$@" -- \
-  --package contextdb-symbols --test symbols --test prop12_symbols --locked
+  --package contextdb-symbols --test symbols --test prop12_symbols --test context \
+  --test walk4 --test robustness --locked

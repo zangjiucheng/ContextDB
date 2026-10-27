@@ -275,9 +275,17 @@ impl<'a, 't> Extract<'a, 't> {
                 }
             }
             "type_declaration" | "const_declaration" | "var_declaration" => {
+                // Grouped `var ( … )` specs sit in a `var_spec_list`.
                 let mut c = n.walk();
                 let specs: Vec<Node<'t>> = n
                     .named_children(&mut c)
+                    .flat_map(|s| {
+                        if s.kind() == "var_spec_list" {
+                            s.named_children(&mut s.walk()).collect()
+                        } else {
+                            vec![s]
+                        }
+                    })
                     .filter(|s| s.kind().ends_with("_spec") || s.kind() == "type_alias")
                     .collect();
                 // Implicit iota repetition: every spec's span is the group.
@@ -347,6 +355,12 @@ impl<'a, 't> Extract<'a, 't> {
     fn declaration(&mut self, d: Node<'t>, span: Vec<Node<'t>>, prefix: &[String]) {
         let name = d.child_by_field_name("name");
         match d.kind() {
+            // `export declare …`: the declared item, with the whole span.
+            "ambient_declaration" => {
+                if let Some(inner) = d.named_child(0) {
+                    self.declaration(inner, span, prefix);
+                }
+            }
             "function_declaration"
             | "generator_function_declaration"
             | "function_signature"
@@ -367,11 +381,21 @@ impl<'a, 't> Extract<'a, 't> {
                 }
             }
             "internal_module" | "module" => {
-                if let Some(name) = name
-                    && name.kind() == "identifier"
-                {
-                    let path = Self::path(prefix, self.text(name));
-                    self.add(&path, span, Some(name));
+                // `namespace A.B {}` is `A::B` (nested namespaces).
+                let segments: Option<Vec<String>> = name.and_then(|name| match name.kind() {
+                    "identifier" => Some(vec![self.text(name).to_owned()]),
+                    "nested_identifier" => Some(
+                        self.text(name)
+                            .split('.')
+                            .map(|s| s.trim().to_owned())
+                            .collect(),
+                    ),
+                    _ => None,
+                });
+                if let Some(segments) = segments {
+                    let mut path = prefix.to_vec();
+                    path.extend(segments);
+                    self.add(&path, span, name);
                     if let Some(body) = d.child_by_field_name("body") {
                         self.container(body, &path);
                     }
@@ -384,6 +408,19 @@ impl<'a, 't> Extract<'a, 't> {
                     .filter(|x| x.kind() == "variable_declarator")
                     .collect();
                 let single = declarators.len() == 1;
+                // With several declarators each span is its own declarator,
+                // after the wrappers' tokens (`export`, `declare`) and the
+                // declaration keyword (`const`, `let`, `var`), walk 4.
+                let mut keywords: Vec<Node<'t>> = Vec::new();
+                let mut wrapper = span.last().copied();
+                while let Some(w) = wrapper.filter(|w| w.id() != d.id()) {
+                    let mut c = w.walk();
+                    keywords.extend(w.children(&mut c).filter(|k| !k.is_named()));
+                    wrapper = w.child_with_descendant(d);
+                }
+                if let Some(k) = d.child(0).filter(|k| !k.is_named()) {
+                    keywords.push(k);
+                }
                 for v in declarators {
                     if let Some(name) = v.child_by_field_name("name")
                         && name.kind() == "identifier"
@@ -392,6 +429,7 @@ impl<'a, 't> Extract<'a, 't> {
                             span.clone()
                         } else {
                             let mut s: Vec<Node<'t>> = span[..span.len() - 1].to_vec();
+                            s.extend(keywords.iter().copied());
                             s.push(v);
                             s
                         };

@@ -286,6 +286,33 @@ fn declarations_under_an_error_root_are_errors() {
     assert!(file.symbols["U"].error, "{:?}", file.symbols);
 }
 
+/// A symbol reached through an `ERROR` ancestor is an error even when
+/// nothing in a top-level error region names it (walk 4 made the Go case
+/// above erroneous twice over; this fuzz-corpus input is decided by the
+/// ancestor alone).
+#[test]
+fn declarations_under_an_error_ancestor_alone_are_errors() {
+    let src = b"=\x81{{{s;c{{{{|{{{{{{{v\xff\xff\xff\xffclass\xff{{{z;{";
+    let file = parse(
+        Language::JavaScript,
+        src,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(!file.symbols.is_empty());
+    assert!(file.symbols.values().all(|s| s.error), "{:?}", file.symbols);
+    // Rust (no transparent parentheses): an ERROR root over the whole file.
+    let src = "trait T { fn a(); }\nimpl T for X< { fn a() {} }\nconst C: u8 = 1;\n";
+    let file = parse(
+        Language::Rust,
+        src.as_bytes(),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(file.symbols.contains_key("T::a"));
+    assert!(file.symbols.values().all(|s| s.error), "{:?}", file.symbols);
+}
+
 #[test]
 fn unavailable_displays_its_reason() {
     assert_eq!(

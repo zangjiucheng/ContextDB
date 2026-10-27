@@ -110,11 +110,19 @@ fn python_imports_and_assignments() {
         &format!("import posix as os{f}"),
         &format!("import nt as os{f}"),
     );
-    same(
+    // `import a.b` binds `a` but imports `a.b` (walk 4): `import a.c`
+    // instead breaks `a.b.x`.
+    differ(
         Python,
         "f",
         &format!("import os.path{f}"),
         &format!("import os{f}"),
+    );
+    differ(
+        Python,
+        "f",
+        &format!("import os.path{f}"),
+        &format!("import os.sep{f}"),
     );
     differ(
         Python,

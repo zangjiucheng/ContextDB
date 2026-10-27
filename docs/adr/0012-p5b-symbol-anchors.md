@@ -1,7 +1,7 @@
 # ADR 0012 — P5b symbol-level code anchors
 
-Status: **accepted**, revision 0.8, 2026-10-23. G0 passed after an independent
-review, a closure check and a closure confirmation (§11). SPEC v1.6.7 mirrors it.
+Status: **accepted**, revision 0.9, 2026-10-26. G0 passed after an independent
+review, a closure check and a closure confirmation (§11). SPEC v1.6.10 mirrors it.
 r0.4 records implementation findings: walk revision 2 from the T45 formatter
 corpus, and four clarifications (§11). r0.5 records the G4 resource findings:
 a container nesting bound and the deadline over extraction and walk (§4, §11).
@@ -9,7 +9,12 @@ r0.6 fixes the G6 rate definitions before labelling (§9, §11). r0.7 (owner
 decision after the first G6 failed) adds same-file context to the symbol
 revision (walk 3, §4), relaxes the FI threshold and fixes a fresh G6 retest
 (§9, §11). r0.8 records the owner's labelling convention for pure moves,
-decided after the retest was labelled (§9, §11).
+decided after the retest was labelled (§9, §11). r0.9 records the independent
+implementation review (2026-10-26): walk revision 4 hashes source text no
+child node covers, keeps context errors and Python block statements apart,
+and fixes extraction gaps; the position header lists live symbol anchors
+only; and two documented behaviours are amended to match the released keys
+and the observer (§2, §4, §5, §6, §11).
 
 ## 0. Scope and delivery
 
@@ -76,8 +81,10 @@ through item nesting are symbols; nothing inside a function body is.
   by `#` and the **key hash** of the trait's generic arguments when it has any
   (`impl From<u8> for T` → `T#From#3fa1c2d0::from`). The self type is its last
   path segment with generics dropped (`Foo<X>` → `Foo`); a self type that is
-  not a path (`&T`, `dyn X`, tuples, a bare type parameter) is `#` plus the key
-  hash of its source text.
+  not a path (`&T`, `dyn X`, tuples) is `#` plus the key hash of its source
+  text. A bare type parameter is a path to the grammar and keeps its name
+  (`impl<T: Clone> Tr for T` → `T#Tr::m`; r0.9 amends r0.3, which listed it
+  with the non-path types: keys are frozen and 0.1.3 released this form).
 
   The **key hash** is frozen forever (SD18.1) and independent of the
   normaliser: the first 8 lowercase hex digits of BLAKE3 over the UTF-8 source
@@ -89,13 +96,17 @@ through item nesting are symbols; nothing inside a function body is.
   members (`C::m`, private `#p` as `p` with a `#private` segment before it),
   every top-level `const`/`let`/`var` declarator whatever its initialiser
   (so `const X = memo(…)` is a symbol), TS `interface`, `type`, `enum`,
-  `namespace`/`module` (adds a segment), and `export default` (segment
-  `default` when anonymous).
+  `namespace`/`module` (adds a segment; `namespace A.B` adds `A::B`), ambient
+  declarations including `export declare …`, and `export default` (segment
+  `default` when anonymous). When one declaration has several declarators,
+  each symbol's span is its declarator after the declaration's keywords
+  (`export`, `declare`, `const`/`let`/`var`; walk 4).
 - **Python**: `def`, `async def`, `class` at module level, in classes
-  (`C::m`), and inside module-level `if`/`try`/`with` blocks (the block adds no
-  segment).
+  (`C::m`), and inside `if`/`try`/`with` blocks at module or class level (the
+  block adds no segment; r0.9 documents the class level).
 - **Go**: `func`; methods `T::M` with the receiver's base type name (`*List[T]`
-  → `List`); each `type`, `const` and `var` spec name.
+  → `List`); each `type`, `const` and `var` spec name, grouped or not (walk 4
+  fixed grouped `var ( … )`, which the grammar nests one level deeper).
 
 **Same-path occurrences are grouped, never ambiguous.** All declarations in a
 file with the same symbol path form one symbol whose span is all of them in
@@ -155,6 +166,13 @@ pre-order. Each kept inner node emits an open marker with its kind name and,
 after its kept children, a close marker; each kept leaf emits its kind and
 text, all length-prefixed. This is injective and carries the same shape as
 kind plus child count, but streams without counting children first (r0.4).
+**Uncovered text (walk 4, r0.9).** Source text inside a node that none of
+its children covers is emitted, in place, as a gap leaf: the literal text of a
+Python string between its escapes and interpolations, a format specifier, a
+Rust raw string's `r#"`/`br"` delimiters, a `macro_rules!` repetition
+separator. Inside string literal kinds the gap is kept byte for byte;
+elsewhere ASCII whitespace in a gap is layout and dropped. A dropped child's
+own text is never a gap.
 Directive comments directly preceding a declaration belong to its span. The rules, per language,
 remove what formatters change and keep what changes meaning:
 
@@ -168,9 +186,11 @@ remove what formatters change and keep what changes meaning:
   bracket or at the end of their list node (a Rust `where` clause, a Python
   bare tuple; walk 3, r0.8), **except** when the list has exactly one element, where the comma
   changes meaning (Python 1-tuples and subscripts such as `a[1,]`; Rust tuple
-  expressions, tuple types and tuple patterns such as `(u8,)`); `;` leaves in
-  JS/TS and Go (automatic semicolon insertion / gofmt); Python
-  `line_continuation`.
+  expressions, tuple types and tuple patterns such as `(u8,)`), and a JS array
+  hole (a comma after `[` or another comma: `[,]`, `[a,,]`; walk 4); `;`
+  leaves in JS/TS and Go (automatic semicolon insertion / gofmt), except in a
+  Go `for` clause, where they place the init and post statements (walk 4);
+  Python `line_continuation`.
 - **Grouping parentheses are transparent** in Python, JS and TS
   (`parenthesized_expression` emits only its inner node; precedence is already
   in the tree's shape), **except** when the inner expression contains an
@@ -225,8 +245,16 @@ trees (no syntax tree to normalise), and docstring content black re-wraps (a
 real `__doc__` change).
 
 **Parse errors are local** (r0.1 review B1). A symbol's observation is Present
-if its span and the chain of enclosing declarations it is nested in contain no
-`ERROR` or `MISSING` node, wherever else the file has errors. A symbol that
+if its span contains no `ERROR` or `MISSING` node and no enclosing node is an
+`ERROR` node, wherever else the file has errors. (r0.9 clarifies "enclosing
+chain": an error in an enclosing declaration's header, outside the symbol's
+span, does not count, like any header change, §4 above.) From walk 4 a symbol
+also has an error when a same-file context item it counts (below) has one, or
+when it mentions a name that no counted item binds and that appears inside an
+`ERROR` node outside every symbol's span (broken top-level code: an
+assignment, an import, a helper too broken to be extracted). A helper or
+constant mid-edit must not re-revision its users; an error inside another
+symbol's span still affects only that symbol and the symbols that name it. A symbol that
 cannot be found, or whose span or enclosing chain has errors, while the file
 has errors, is:
 
@@ -267,7 +295,8 @@ is published and the scope lags (fail-closed).
 **Normaliser versions** (r0.1 M3, r0.2 N2). A version string is derived
 mechanically, per language, from the **exact grammar crate version and the
 tree-sitter runtime version plus a walk revision number**
-(e.g. `rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=2`). There is no
+(e.g. `rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=4`; a test
+checks the grammar versions against `Cargo.lock`, r0.9). There is no
 corpus exemption: any grammar, runtime or walk change is a new version, because
 code outside any corpus may hash differently. A binary implements exactly one
 version per language. The descriptor carries its version (below) and so does
@@ -276,8 +305,10 @@ every scope with symbol anchors of that language unavailable until
 `ctx anchors migrate` runs; `ctx anchors status` and the scan error say so
 explicitly. The reference-corpus walk check (G2) only reports how many symbols
 a version change re-revisions, to inform the upgrade decision. An ordinary `scan`/`watch`
-that finds a committed head made with a different version than its own is
-**unavailable** for that scope and says so; only `ctx anchors migrate` crosses
+that finds a **live** committed head (base asserted) made with a different
+version than its own is **unavailable** for that scope and says so (a Missing
+or Broken anchor keeps its last descriptor, which no migrate can redo, and is
+simply observed again; r0.9); only `ctx anchors migrate` crosses
 versions, re-observing every anchor (changed symbols get new revisions:
 dependents see STALE for `Cur`, PENDING for `Sem`). Two observers of different
 versions therefore cannot flip heads back and forth.
@@ -303,11 +334,17 @@ than the declared name. Items:
   hash;
 - top-level imports, as name → source path, so the formatting, order and
   grouping of imports never matter: Rust `use` (full path), Python `import`
-  and `from … import` (module path), Go (import path), TS/JS (module source
-  and imported name);
+  and `from … import` (module path; `import a.b` binds `a` to `a.b`, walk 4),
+  Go (import path; the name is the path's last element, skipping a `/vN`
+  element and a `.vN` suffix, walk 4), TS/JS (module source and imported
+  name);
 - Python module-level assignments, with the statement's normalised hash.
-  These include assignments in top-level conditional blocks, which the
-  extraction already descends.
+  These include assignments and imports in top-level conditional blocks,
+  which the extraction already descends; each such statement is its own item
+  with its own range (walk 4: not the whole `if`/`try` statement).
+
+Mentions and item names compare without Rust's `r#` and JS's private `#`
+(walk 4).
 
 Items that overlap the span never count: the symbol itself, its containers
 and its members. `context` is `BLAKE3` over the sorted set of (length-prefixed
@@ -330,11 +367,11 @@ classification table applies per symbol logical (SD18.5).
 **Rebind suggestions.** When a symbol goes missing, its `AnchorBroken` lists
 candidates whose **name-masked hash** (the normalised hash with the declared
 name leaf replaced by a placeholder) equals the missing symbol's last one,
-searched in the scope's host files (already parsed) and, best effort, in the
-supported files of the same directory under a separate small budget (4 MiB) that
-never makes the scan unavailable; when it runs out, fewer candidates are
-listed. This finds plain renames and moves to
-a sibling file; it is a suggestion only, never a rebind.
+searched in the scope's host files (already parsed). (r0.9: the best-effort
+search of same-directory files under a separate 4 MiB budget that r0.3
+described was never implemented; candidates come from host files only, and a
+move to a non-host sibling file lists none.) This finds plain renames and moves
+between host files; it is a suggestion only, never a rebind.
 
 ## 6. Positions and freshness (parse-free)
 
@@ -348,9 +385,16 @@ keep **one entry per path** (r0.1 review M2):
   tag 3 with P5a's reason bytes if broken (symlink, non-regular).
 
 A scope without symbol anchors encodes exactly as before (`CTXPOS01`), so P5a
-watermarks stay valid. A scope with symbol anchors uses `CTXPOS02`: as
+watermarks stay valid. A scope with a live symbol anchor or a host-only path
+uses `CTXPOS02` (r0.9; a scope whose symbol anchors are all Missing or Broken
+and hosted in file anchors encodes as `CTXPOS01`): as
 `CTXPOS01`, plus tag 4, plus a header listing the normaliser version of each
-language present among its symbol anchors (sorted). The daemon samples host
+language present among its **live** symbol anchors (base asserted; sorted).
+(r0.9: a Missing or Broken anchor's descriptor still carries the version it
+was last observed with; counting it made the daemon's header disagree with the
+observer's after a migrate, so the scope lagged forever. The observer lists
+the languages of the anchors it observes Present, which this batch leaves
+live; the daemon and range checks read the live descriptors.) The daemon samples host
 files exactly as it samples file anchors and never parses. Consequence,
 documented: any byte change in a host file, even outside every anchored symbol,
 makes the scope lag (`PENDING(ObservationLag)` / `Unknown`) until the
@@ -494,6 +538,14 @@ scopes Unknown (fail-closed); mixed versions are unsupported, as before.
   (`symbol_replay score --moves-invalidate`). In both samples every such
   label's rationale is a pure move or rename (76 of 76). The pre-registered
   reading (moves `n`) is reported beside it.
+  **Walk 4 rescore (r0.9, owner decision 2026-10-26).** Walk 4 changes the
+  predictor, so the retest is rescored, not relabelled: the same 287 labels
+  and the same strata (drawn under walk 3), with each pair's symbol event
+  recomputed from the commit's blobs by the walk 4 normaliser
+  (`symbol_replay rehash`, then `score --predictions`). The design weights
+  stay valid because the sample was drawn before walk 4 existed; a pair whose
+  event changed would simply be scored with its new event inside its old
+  stratum.
 - **G7**: P0–P5a regressions. **G8**: README, semantics, CHANGELOG, status.
 
 ## 10. SPEC mirror (v1.6.5)
@@ -502,7 +554,9 @@ SD18.1 (symbol key encoding and the `#` path rule), SD18.2 (descriptor v2,
 normaliser versions, migration), SD18.5 (grouping instead of ambiguity, the
 local parse-error rule), SD14b (host-file positions, `CTXPOS02`), §5 P5b G6
 (+2 pp tolerance, weighted point estimates, owner decision), and the T-matrix:
-T45 (formatter corpus), T45b, T42b, T42d, T42e, T46d, T46e.
+T45 (formatter corpus), T45b, T42b, T42d, T42e, T46d, T46e. Later revisions:
+r0.7 → v1.6.6, r0.8 → v1.6.7, r0.9 → v1.6.10 (walk 4, live-only position
+header and version check).
 
 ## 11. Review log
 
@@ -656,3 +710,46 @@ before a closing bracket, with the same one-element exception.
   (diagnostic; the gate stays at the measured 18.7 %).
 
 Walk 3 was not yet released, so this fix is part of walk 3.
+
+**r0.9 independent implementation review (2026-10-26)**: a non-implementing
+reviewer found 1 blocker, 6 majors and minors, each confirmed with a concrete
+input. All are fixed (walk revision 4, with goldens in
+`crates/contextdb-symbols/tests/walk4.rs`) or amended here:
+
+- B1 the walk emitted only kept children, so text no child node covers was
+  lost: Python string text between escapes (`"hello\n"` ≡ `"bye\n"`),
+  f-string literal text and format specifiers, bytes literals, Rust raw string
+  delimiters and leading whitespace (`r"   x"` ≡ `r"x"` ≡ `cr"x"`),
+  `macro_rules!` separators (`$(…),*` ≡ `$(…);*`) → gap leaves (§4).
+- M1 a Missing or Broken symbol anchor kept its pre-migrate descriptor, so
+  every later scan was refused and the daemon's position header (last
+  descriptor wins) disagreed with the observer's → the version check and the
+  header consider live anchors only (§4, §6); CLI test
+  `migrate_with_a_missing_anchor_leaves_scans_and_positions_working`.
+- M2 a context item's parse error did not mark the symbol, so a helper
+  mid-edit re-revisioned its callers twice → context errors are the symbol's,
+  and so are names it uses that appear in top-level `ERROR` regions (a binder
+  too broken to be an item; found while closing M2) (§4).
+- M3 Python statements in module-level conditional blocks were items with
+  the whole `if`/`try` statement's range and hash: a symbol in the same block
+  missed its constant's change, and a sibling's edit re-revisioned users →
+  one item per statement (§4).
+- M4 Go `for` clause semicolons were dropped (`for g(); ; {}` ≡
+  `for ; ; g() {}`) → kept there (§4).
+- M5 grouped Go `var ( … )` yielded no symbols → extracted (§2).
+- M6 Rust `use` trees and Python assignment targets were walked recursively
+  (a 25 KB nested `use` overflowed a 2 MiB stack) → iterative.
+- Minors fixed in walk 4: JS array holes; the keywords of multi-declarator
+  spans; `export declare` and dotted namespaces; context names spelled with
+  `r#`/`#`; Go `/vN` and `gopkg.in` import names; `import a.b` sources; a test
+  pins the grammar versions to `Cargo.lock`. Amended instead: the bare
+  type-parameter self type keeps its name in keys (owner decision, keys are
+  frozen, §2); the enclosing-chain error rule means `ERROR` ancestors (§4);
+  Python conditional blocks are descended at class level too (§2); the
+  same-directory rebind search was never implemented (§5).
+
+Walk 4 changes the normaliser version, so symbol anchors need `ctx anchors
+migrate`. Reference-corpus walk check 3 → 4: 886 of 6,820 symbols re-hash
+(ripgrep 406, fd 13, click 325, cobra 11, ky 0, express 131). T45: identical
+results on all six corpora (no new exception). G6, rescored (§9): see
+`docs/gates/p5b-g6-walk4-score.txt`.

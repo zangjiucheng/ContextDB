@@ -122,8 +122,10 @@ pub fn reconcile(
 /// key → (host path, symbol).
 pub type Targets = (BTreeSet<String>, BTreeMap<String, (String, String)>);
 
-/// The committed anchors plus `added`, refusing (in `Mode::Scan`) a committed
-/// symbol head made with another normaliser version (ADR 0012 §4).
+/// The committed anchors plus `added`, refusing (in `Mode::Scan`) a live
+/// committed symbol head made with another normaliser version (ADR 0012 §4).
+/// A Missing or Broken anchor (base retracted) keeps its last descriptor,
+/// which no migrate can redo; it is observed again like any other.
 pub fn targets(
     scope: &str,
     committed: &BTreeMap<String, (AnchorDescriptor, contextdb_anchors::AnchorState)>,
@@ -132,13 +134,16 @@ pub fn targets(
 ) -> Result<Targets, Unavailable> {
     let mut files: BTreeSet<String> = added.files.clone();
     let mut symbols: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for (key, (d, _)) in committed {
+    for (key, (d, state)) in committed {
         match d {
             AnchorDescriptor::File(f) => {
                 files.insert(f.path.clone());
             }
             AnchorDescriptor::Symbol(s) => {
-                if mode == Mode::Scan && s.normaliser != normaliser_version(s.language) {
+                if mode == Mode::Scan
+                    && state.base
+                    && s.normaliser != normaliser_version(s.language)
+                {
                     return Err(unavailable(format!(
                         "{key} was observed with normaliser {} but this binary uses {}: run ctx anchors migrate",
                         s.normaliser,
@@ -235,7 +240,6 @@ pub fn prepare_scan(
     let mut versions = BTreeMap::new();
     for (key, (host, symbol)) in symbols {
         let language = Language::of_path(host).expect("symbol hosts have a language");
-        versions.insert(language, normaliser_version(language));
         let label = format!("{host}#{symbol}");
         let obs = match (&entries[host], parsed.get(host)) {
             (Observation::Missing, _) => AnchorObservation::Missing,
@@ -266,6 +270,12 @@ pub fn prepare_scan(
             },
             (Observation::Present(_), None) => return Err(unavailable("host bytes not kept")),
         };
+        // The header lists the versions of live symbol anchors only (ADR
+        // 0012 §6): those observed Present, which this batch leaves with
+        // their base and this binary's descriptor.
+        if matches!(obs, AnchorObservation::Present(_)) {
+            versions.insert(language, normaliser_version(language));
+        }
         observations.insert(key.clone(), (label, obs));
     }
     // Rebind suggestions: every symbol of the parsed host files by its

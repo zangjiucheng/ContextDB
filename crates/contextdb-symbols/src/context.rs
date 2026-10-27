@@ -5,8 +5,10 @@
 //! segment) and its top-level non-symbol binders: imports (Rust `use`,
 //! Python, Go, TS/JS), each a name bound to its source path, and Python
 //! module-level assignments, including those in top-level conditional
-//! blocks. Items that
-//! overlap the symbol (itself, its containers, its members) never count.
+//! blocks, each as its own statement (walk 4). Items that overlap the symbol
+//! (itself, its containers, its members) never count. A counted item with a
+//! parse error makes the symbol's observation erroneous like its own span
+//! (walk 4): a helper mid-edit never re-revisions its callers.
 use crate::{Unavailable, walk::Clock};
 use contextdb_anchors::Language;
 use std::{collections::BTreeSet, ops::Range};
@@ -17,6 +19,8 @@ pub(crate) struct Item {
     pub names: Vec<String>,
     pub ranges: Vec<Range<usize>>,
     pub hash: [u8; 32],
+    /// The item's syntax has a parse error.
+    pub error: bool,
 }
 
 fn text<'a>(src: &'a [u8], n: Node) -> &'a str {
@@ -40,71 +44,140 @@ pub(crate) enum Binding {
 fn squeeze(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
-/// Names a Rust use tree binds, each with its full path.
-fn rust_use(src: &[u8], n: Node, prefix: &str, out: &mut Vec<(String, Binding)>) {
-    let join = |p: &str| {
-        if prefix.is_empty() {
-            squeeze(p)
-        } else {
-            format!("{prefix}::{}", squeeze(p))
-        }
-    };
-    match n.kind() {
-        "use_as_clause" => {
-            if let (Some(alias), Some(path)) = (field(src, n, "alias"), field(src, n, "path")) {
-                out.push((alias.to_owned(), Binding::Import(join(path))));
+/// A name as the symbol tables spell it: Rust raw identifiers without
+/// `r#`, JS private names without `#` (ADR 0012 §2).
+pub(crate) fn bare(name: &str) -> &str {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    name.strip_prefix('#').unwrap_or(name)
+}
+/// Names a Rust use tree binds, each with its full path (iteratively: a
+/// use tree nested thousands deep must not overflow the stack).
+fn rust_use(src: &[u8], root: Node, out: &mut Vec<(String, Binding)>) {
+    let mut stack = vec![(root, String::new())];
+    while let Some((n, prefix)) = stack.pop() {
+        let join = |p: &str| {
+            if prefix.is_empty() {
+                squeeze(p)
+            } else {
+                format!("{prefix}::{}", squeeze(p))
             }
-        }
-        "scoped_identifier" => {
-            if let Some(name) = field(src, n, "name") {
-                out.push((name.to_owned(), Binding::Import(join(text(src, n)))));
+        };
+        match n.kind() {
+            "use_as_clause" => {
+                if let (Some(alias), Some(path)) = (field(src, n, "alias"), field(src, n, "path")) {
+                    out.push((bare(alias).to_owned(), Binding::Import(join(path))));
+                }
             }
-        }
-        "identifier" => out.push((text(src, n).to_owned(), Binding::Import(join(text(src, n))))),
-        "scoped_use_list" => {
-            let inner = field(src, n, "path").map_or_else(|| prefix.to_owned(), &join);
-            if let Some(list) = n.child_by_field_name("list") {
-                rust_use(src, list, &inner, out);
+            "scoped_identifier" => {
+                if let Some(name) = field(src, n, "name") {
+                    out.push((bare(name).to_owned(), Binding::Import(join(text(src, n)))));
+                }
             }
-        }
-        "use_list" => {
-            for c in children(n) {
-                rust_use(src, c, prefix, out);
+            "identifier" => out.push((
+                bare(text(src, n)).to_owned(),
+                Binding::Import(join(text(src, n))),
+            )),
+            "scoped_use_list" => {
+                let inner = field(src, n, "path").map_or_else(|| prefix.clone(), &join);
+                if let Some(list) = n.child_by_field_name("list") {
+                    stack.push((list, inner));
+                }
             }
+            "use_list" => {
+                for c in children(n).into_iter().rev() {
+                    stack.push((c, prefix.clone()));
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
-/// Identifiers on the left of a Python assignment.
-fn python_targets(src: &[u8], n: Node, out: &mut Vec<(String, Binding)>) {
-    if n.kind() == "identifier" {
-        out.push((text(src, n).to_owned(), Binding::Statement));
-        return;
-    }
-    if matches!(n.kind(), "pattern_list" | "tuple_pattern" | "list_pattern") {
-        for c in children(n) {
-            python_targets(src, c, out);
+/// Identifiers on the left of a Python assignment (iteratively).
+fn python_targets(src: &[u8], root: Node, out: &mut Vec<(String, Binding)>) {
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" {
+            out.push((text(src, n).to_owned(), Binding::Statement));
+        } else if matches!(n.kind(), "pattern_list" | "tuple_pattern" | "list_pattern") {
+            stack.extend(children(n).into_iter().rev());
         }
     }
+}
+/// A Go import's package name by convention: the path's last element, past
+/// a major-version element (`…/v2`) and without a `gopkg.in` suffix
+/// (`yaml.v3` → `yaml`).
+fn go_package(path: &str) -> Option<String> {
+    let mut parts = path.rsplit('/');
+    let mut last = parts.next()?;
+    let version = |p: &str| {
+        p.strip_prefix('v')
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if version(last)
+        && let Some(previous) = parts.next()
+    {
+        last = previous;
+    }
+    if let Some((name, suffix)) = last.rsplit_once('.')
+        && version(suffix)
+    {
+        last = name;
+    }
+    Some(last.to_owned())
 }
 
-/// The names a top-level non-symbol statement binds (empty if none).
-pub(crate) fn binders(language: Language, src: &[u8], n: Node) -> Vec<(String, Binding)> {
+/// The binding statements of a top-level statement, with the names each
+/// binds: the statement itself, or (Python) the statements of module-level
+/// conditional blocks, each on its own (walk 4), as the extraction descends
+/// them for definitions. Iterative; empty if it binds nothing.
+pub(crate) fn binders<'t>(
+    language: Language,
+    src: &[u8],
+    top: Node<'t>,
+) -> Vec<(Node<'t>, Vec<(String, Binding)>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![top];
+    while let Some(n) = stack.pop() {
+        if language == Language::Python
+            && matches!(
+                n.kind(),
+                "if_statement"
+                    | "try_statement"
+                    | "with_statement"
+                    | "elif_clause"
+                    | "else_clause"
+                    | "except_clause"
+                    | "finally_clause"
+                    | "block"
+            )
+        {
+            stack.extend(children(n).into_iter().rev());
+            continue;
+        }
+        let names = statement(language, src, n);
+        if !names.is_empty() {
+            out.push((n, names));
+        }
+    }
+    out
+}
+/// The names one statement binds.
+fn statement(language: Language, src: &[u8], n: Node) -> Vec<(String, Binding)> {
     let mut out = Vec::new();
     match (language, n.kind()) {
         (Language::Rust, "use_declaration") => {
             if let Some(arg) = n.child_by_field_name("argument") {
-                rust_use(src, arg, "", &mut out);
+                rust_use(src, arg, &mut out);
             }
         }
         (Language::Python, "import_statement") => {
             for c in children(n) {
                 match c.kind() {
-                    // `import a.b` binds `a` to module `a`.
+                    // `import a.b` binds `a`, and imports `a.b`.
                     "dotted_name" => {
                         if let Some(first) = c.named_child(0) {
                             let name = text(src, first).to_owned();
-                            out.push((name.clone(), Binding::Import(name)));
+                            out.push((name, Binding::Import(squeeze(text(src, c)))));
                         }
                     }
                     "aliased_import" => {
@@ -153,17 +226,6 @@ pub(crate) fn binders(language: Language, src: &[u8], n: Node) -> Vec<(String, B
                 }
             }
         }
-        // Module-level conditional blocks (compatibility imports), as the
-        // extraction descends them for definitions.
-        (
-            Language::Python,
-            "if_statement" | "try_statement" | "with_statement" | "elif_clause" | "else_clause"
-            | "except_clause" | "finally_clause" | "block",
-        ) => {
-            for c in children(n) {
-                out.extend(binders(language, src, c));
-            }
-        }
         (Language::Go, "import_declaration") => {
             let mut specs = Vec::new();
             for c in children(n) {
@@ -184,7 +246,7 @@ pub(crate) fn binders(language: Language, src: &[u8], n: Node) -> Vec<(String, B
                 };
                 let name = field(src, s, "name")
                     .map(str::to_owned)
-                    .or_else(|| path.rsplit('/').next().map(str::to_owned));
+                    .or_else(|| go_package(&path));
                 out.extend(name.map(|n| (n, Binding::Import(path.clone()))));
             }
         }
@@ -239,7 +301,7 @@ pub(crate) fn mentions(src: &[u8], nodes: &[Node], skip: Option<usize>) -> BTree
     while let Some(n) = stack.pop() {
         if n.child_count() == 0 {
             if n.kind().contains("identifier") && Some(n.id()) != skip {
-                out.insert(text(src, n).to_owned());
+                out.insert(bare(text(src, n)).to_owned());
             }
             continue;
         }
@@ -250,34 +312,79 @@ pub(crate) fn mentions(src: &[u8], nodes: &[Node], skip: Option<usize>) -> BTree
     out
 }
 
+/// Identifier-like leaf texts inside the file's `ERROR` nodes outside every
+/// symbol's span (`spans`: sorted, disjoint): broken top-level code (an
+/// assignment, an import, a helper too broken to be extracted) that may bind
+/// a name a symbol uses. Errors inside a symbol's span stay that symbol's
+/// (the item's own error), so parse errors remain local.
+pub(crate) fn error_names(
+    src: &[u8],
+    root: Node,
+    spans: &[Range<usize>],
+    clock: &mut Clock,
+) -> Result<BTreeSet<String>, Unavailable> {
+    let mut out = BTreeSet::new();
+    if !root.has_error() {
+        return Ok(out);
+    }
+    let inside = |r: Range<usize>| {
+        let i = spans.partition_point(|s| s.end <= r.start);
+        spans
+            .get(i)
+            .is_some_and(|s| s.start <= r.start && r.end <= s.end)
+    };
+    let mut stack = vec![(root, false)];
+    let mut cursor = root.walk();
+    while let Some((n, under)) = stack.pop() {
+        clock.tick()?;
+        let under = under || n.is_error();
+        if n.child_count() == 0 {
+            if under && n.kind().contains("identifier") && !inside(n.byte_range()) {
+                out.insert(bare(text(src, n)).to_owned());
+            }
+            continue;
+        }
+        if under || n.has_error() {
+            stack.extend(n.children(&mut cursor).map(|c| (c, under)));
+        }
+    }
+    Ok(out)
+}
+
 /// The file's items by bound name.
 pub(crate) struct Index<'a> {
     by_name: std::collections::HashMap<&'a str, Vec<&'a Item>>,
+    /// See [`error_names`].
+    errors: &'a BTreeSet<String>,
 }
 impl<'a> Index<'a> {
-    pub fn new(items: &'a [Item]) -> Self {
+    pub fn new(items: &'a [Item], errors: &'a BTreeSet<String>) -> Self {
         let mut by_name: std::collections::HashMap<&str, Vec<&Item>> = Default::default();
         for item in items {
             for name in &item.names {
                 by_name.entry(name.as_str()).or_default().push(item);
             }
         }
-        Index { by_name }
+        Index { by_name, errors }
     }
     /// The context hash of a symbol whose (sorted, disjoint) `ranges` mention
-    /// `names`: linear in the mentions and their items' ranges.
+    /// `names`, and whether a counted item has a parse error or a name bound
+    /// by no counted item appears in a top-level `ERROR` region
+    /// ([`error_names`]): linear in the mentions and their items' ranges.
     pub fn hash(
         &self,
         ranges: &[Range<usize>],
         names: &BTreeSet<String>,
         clock: &mut Clock,
-    ) -> Result<[u8; 32], Unavailable> {
+    ) -> Result<([u8; 32], bool), Unavailable> {
         let overlaps = |r: &Range<usize>| {
             let i = ranges.partition_point(|s| s.end <= r.start);
             ranges.get(i).is_some_and(|s| s.start < r.end)
         };
         let mut found: BTreeSet<(&str, [u8; 32])> = BTreeSet::new();
+        let mut error = false;
         for name in names {
+            let mut counted = false;
             for item in self.by_name.get(name.as_str()).into_iter().flatten() {
                 clock.tick()?;
                 let mut clear = true;
@@ -290,8 +397,11 @@ impl<'a> Index<'a> {
                 }
                 if clear {
                     found.insert((name, item.hash));
+                    error |= item.error;
+                    counted = true;
                 }
             }
+            error |= !counted && self.errors.contains(name.as_str());
         }
         let mut h = blake3::Hasher::new();
         for (name, item) in found {
@@ -299,6 +409,6 @@ impl<'a> Index<'a> {
             h.update(name.as_bytes());
             h.update(&item);
         }
-        Ok(*h.finalize().as_bytes())
+        Ok((*h.finalize().as_bytes(), error))
     }
 }

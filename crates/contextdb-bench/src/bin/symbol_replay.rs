@@ -6,6 +6,7 @@
 //!   symbol_replay batches <sample.tsv> <clones dir> <out dir> <batches>
 //!   symbol_replay score <sample.tsv> <labels.tsv> [--predictions <p.tsv>] [--moves-invalidate]
 //!   symbol_replay predict <sample.tsv> <clones dir> <out.tsv>
+//!   symbol_replay rehash <sample.tsv> <clones dir> <out.tsv>
 //!
 //! `prepare` reads the P5a replay's header (repository, selection commit,
 //! last commit, anchor files) and replays the same 1,000 first-parent commits
@@ -29,7 +30,10 @@
 //! false invalidation share (fired pairs that do not invalidate, FP / fired)
 //! and the missed invalidation share (invalidating pairs not fired,
 //! FN / positives), each stratum weighted by population / labelled, with
-//! stratified-bootstrap 95 % intervals, and applies the gate.
+//! stratified-bootstrap 95 % intervals, and applies the gate. `rehash`
+//! recomputes every sampled pair's symbol event with this binary's
+//! normaliser (a later walk) for `score --predictions`: the labels and the
+//! strata (drawn under the replay's walk) are unchanged.
 use contextdb_anchors::{
     Language, ObjectFormat, Repo,
     capture::{OBSERVER_TIMEOUT, blob_oid, git},
@@ -796,6 +800,55 @@ fn predict(sample: &Path, clones: &Path, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Per-pair symbol events under this binary's normaliser: fires when the
+/// revision hash changes or the symbol stops being present without error.
+fn rehash(sample: &Path, clones: &Path, out: &Path) -> Result<(), String> {
+    let (_, rows) = read_rows(sample)?;
+    let mut f = std::fs::File::create(out).map_err(|e| e.to_string())?;
+    writeln!(f, "id\tsymbol_fired\treplay_fired\tnormaliser").map_err(|e| e.to_string())?;
+    let (mut fired, mut gained, mut lost, mut unparsed) = (0, 0, 0, 0);
+    for r in &rows {
+        let clone = clones.join(r.repo());
+        let symbol = r.get("symbol");
+        let at = |c: &str| -> Result<Option<contextdb_symbols::Symbol>, String> {
+            Ok(host_at(&clone, c, r.get("path"))?
+                .and_then(|file| file.symbols.get(symbol).cloned())
+                .filter(|s| !s.error))
+        };
+        let replay = r.get("symbol_fired") == "y";
+        let now = match (at(r.get("parent"))?, at(r.get("commit"))?) {
+            (Some(b), Some(a)) => b.hash != a.hash,
+            (Some(_), None) => true,
+            // Not cleanly present at the parent under this normaliser: the
+            // replay's event stands (counted).
+            (None, _) => {
+                unparsed += 1;
+                replay
+            }
+        };
+        fired += usize::from(now);
+        gained += usize::from(now && !replay);
+        lost += usize::from(!now && replay);
+        let version = Language::of_path(r.get("path"))
+            .map(contextdb_symbols::normaliser_version)
+            .unwrap_or_default();
+        writeln!(
+            f,
+            "{}\t{}\t{}\t{version}",
+            r.get("id"),
+            if now { "y" } else { "n" },
+            if replay { "y" } else { "n" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    println!(
+        "{} pairs: fires on {fired} ({gained} gained, {lost} lost against the replay; {unparsed} not present without error at the parent) -> {}",
+        rows.len(),
+        out.display()
+    );
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = "usage: symbol_replay prepare <clone> <p5a.tsv> <out.tsv> | sample <sample.tsv> <population.tsv>... | batches <sample.tsv> <clones dir> <out dir> <n> | score <sample.tsv> <labels.tsv>";
@@ -876,6 +929,12 @@ fn main() {
                 Err(usage.to_owned())
             }
         }
+        Some("rehash") if args.len() == 4 => rehash(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            Path::new(&args[3]),
+        )
+        .map(|_| true),
         Some("predict") if args.len() == 4 => predict(
             Path::new(&args[1]),
             Path::new(&args[2]),

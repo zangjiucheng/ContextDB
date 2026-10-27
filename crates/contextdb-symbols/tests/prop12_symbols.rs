@@ -303,9 +303,21 @@ fn run(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
             symbols: registered.clone(),
         };
         let targets = targets(&scope, &sut.prior(), &added, Mode::Scan).unwrap();
-        let versions = LANGS
+        // The header lists the languages of live symbol anchors only: those
+        // observed Present (ADR 0012 §6, r0.9).
+        let live_languages: BTreeSet<usize> = registered
             .iter()
-            .map(|(l, _)| (*l, contextdb_symbols::normaliser_version(*l)))
+            .filter(|(path, name)| fresh[&key(&repo, path, name)].is_some())
+            .map(|(path, _)| LANGS.iter().position(|(_, p)| p == path).unwrap())
+            .collect();
+        let versions = live_languages
+            .iter()
+            .map(|&j| {
+                (
+                    LANGS[j].0,
+                    contextdb_symbols::normaliser_version(LANGS[j].0),
+                )
+            })
             .collect();
         let hosts_only = LANGS
             .iter()
@@ -318,8 +330,11 @@ fn run(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
         pos.extend_from_slice(&1u32.to_le_bytes());
         spec::wire(&mut pos, repo.as_bytes());
         spec::wire(&mut pos, head);
-        pos.extend_from_slice(&6u32.to_le_bytes());
-        let mut normalisers: Vec<_> = LANGS.into_iter().map(|(l, _)| spec::version(l)).collect();
+        pos.extend_from_slice(&(live_languages.len() as u32).to_le_bytes());
+        let mut normalisers: Vec<_> = live_languages
+            .iter()
+            .map(|&j| spec::version(LANGS[j].0))
+            .collect();
         normalisers.sort();
         for normaliser in normalisers {
             spec::wire(&mut pos, normaliser.as_bytes());

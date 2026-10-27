@@ -15,7 +15,7 @@ pub fn version(l: Language) -> String {
         Language::Python => ("python", "tree-sitter-python=0.25.0"),
         Language::Go => ("go", "tree-sitter-go=0.25.0"),
     };
-    format!("{name}:{grammar};tree-sitter=0.27.1;walk=3")
+    format!("{name}:{grammar};tree-sitter=0.27.1;walk=4")
 }
 
 fn grammar(l: Language) -> tree_sitter::Language {
@@ -52,6 +52,26 @@ fn leaf(out: &mut Vec<u8>, kind: &str, text: &[u8]) {
     out.push(b'L');
     part(out, kind.as_bytes());
     part(out, text);
+}
+/// ADR §4 walk 4: source text inside a node that no child covers. String
+/// contents keep it byte for byte; elsewhere whitespace is layout.
+fn gap(l: Language, n: Node, src: &[u8], range: std::ops::Range<usize>, out: &mut Vec<u8>) {
+    let verbatim = match l {
+        Language::Rust => ["string_literal", "raw_string_literal", "char_literal"].as_slice(),
+        Language::Python => &["string", "string_content", "format_specifier"],
+        Language::Go => &["interpreted_string_literal", "raw_string_literal"],
+        _ => &["string", "template_string", "string_fragment", "regex"],
+    }
+    .contains(&n.kind());
+    let text: Vec<u8> = src[range]
+        .iter()
+        .copied()
+        .filter(|b| verbatim || !b.is_ascii_whitespace())
+        .collect();
+    if !text.is_empty() {
+        out.push(b'G');
+        part(out, &text);
+    }
 }
 fn normalise(l: Language, n: Node, src: &[u8], mask: Option<usize>, out: &mut Vec<u8>) {
     if mask == Some(n.id()) {
@@ -90,7 +110,11 @@ fn normalise(l: Language, n: Node, src: &[u8], mask: Option<usize>, out: &mut Ve
                 return directive(l, std::str::from_utf8(&src[child.byte_range()]).unwrap())
                     .then_some(*child);
             }
-            if child.kind() == ";" && l != Language::Rust && l != Language::Python {
+            if child.kind() == ";"
+                && l != Language::Rust
+                && l != Language::Python
+                && n.kind() != "for_clause"
+            {
                 return None;
             }
             if child.kind() == ","
@@ -107,20 +131,32 @@ fn normalise(l: Language, n: Node, src: &[u8], mask: Option<usize>, out: &mut Ve
         || (l == Language::Rust
             && n.kind() == "expression_statement"
             && kept.iter().any(|n| n.kind() == "return_expression"));
-    if transparent {
-        for child in kept {
-            if l != Language::Rust || child.is_named() {
-                normalise(l, child, src, mask, out);
+    // Kept children in order, with the uncovered text around every child.
+    let body = |out: &mut Vec<u8>| {
+        let mut at = n.start_byte();
+        for child in &children {
+            if child.start_byte() > at {
+                gap(l, n, src, at..child.start_byte(), out);
+            }
+            at = at.max(child.end_byte());
+            let shown = kept.iter().any(|k| k.id() == child.id())
+                && (!transparent || l != Language::Rust || child.is_named());
+            if shown {
+                normalise(l, *child, src, mask, out);
             }
         }
+        if n.end_byte() > at {
+            gap(l, n, src, at..n.end_byte(), out);
+        }
+    };
+    if transparent {
+        body(out);
     } else if kept.is_empty() {
         leaf(out, n.kind(), &src[n.byte_range()]);
     } else {
         out.push(b'(');
         part(out, n.kind().as_bytes());
-        for child in kept {
-            normalise(l, child, src, mask, out);
-        }
+        body(out);
         out.push(b')');
     }
 }
@@ -150,6 +186,7 @@ pub fn parse(l: Language, src: &[u8]) -> File {
     // Identifier leaves each group's spans mention, its declared names aside.
     let mut mentions: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let mut pending = Vec::new();
+    let mut span_ranges = Vec::new();
     let mut c = root.walk();
     for n in root.children(&mut c) {
         let text = std::str::from_utf8(&src[n.byte_range()]).unwrap();
@@ -198,13 +235,33 @@ pub fn parse(l: Language, src: &[u8]) -> File {
             }
         }
         for span in pending.drain(..) {
+            span_ranges.push(span.byte_range());
             *error |= span.has_error() || span.is_missing();
             normalise(l, span, src, None, plain);
             normalise(l, span, src, Some(name.id()), masked);
         }
     }
+    // Walk 4: identifiers inside ERROR nodes outside every function's span
+    // (broken top-level code that may bind a name a span uses).
+    let mut broken_names = std::collections::BTreeSet::new();
+    let mut stack = vec![(root, false)];
+    while let Some((m, under)) = stack.pop() {
+        let under = under || m.is_error();
+        if m.child_count() == 0 {
+            let r = m.byte_range();
+            let inside = span_ranges
+                .iter()
+                .any(|s: &std::ops::Range<usize>| s.start <= r.start && r.end <= s.end);
+            if under && !inside && m.kind().contains("identifier") {
+                broken_names.insert(std::str::from_utf8(&src[r]).unwrap().to_owned());
+            }
+        } else {
+            stack.extend(m.children(&mut m.walk()).map(|c| (c, under)));
+        }
+    }
     // Walk 3: the other generated functions a span names are its context
-    // (generated files have no imports or module-level assignments).
+    // (generated files have no imports or module-level assignments). Walk 4:
+    // a counted function with an error makes the span's symbol erroneous.
     let spans: BTreeMap<&String, [u8; 32]> = groups
         .iter()
         .map(|(name, (plain, _, _))| (name, *blake3::hash(plain).as_bytes()))
@@ -215,13 +272,18 @@ pub fn parse(l: Language, src: &[u8]) -> File {
             .iter()
             .map(|(name, (plain, masked, error))| {
                 let mut context = Vec::new();
+                let mut error = *error;
                 for (other, span) in &spans {
                     if *other != name && mentions[name].contains(*other) {
                         context.extend_from_slice(&(other.len() as u64).to_le_bytes());
                         context.extend_from_slice(other.as_bytes());
                         context.extend_from_slice(span);
+                        error |= groups[*other].2;
                     }
                 }
+                error |= mentions[name]
+                    .iter()
+                    .any(|m| m != name && !spans.contains_key(m) && broken_names.contains(m));
                 let mut revision = b"CTXSYM03".to_vec();
                 revision.extend_from_slice(blake3::hash(plain).as_bytes());
                 revision.extend_from_slice(blake3::hash(&context).as_bytes());
@@ -230,7 +292,7 @@ pub fn parse(l: Language, src: &[u8]) -> File {
                     Symbol {
                         hash: blake3::hash(&revision).as_bytes().to_vec(),
                         masked: blake3::hash(masked).as_bytes().to_vec(),
-                        error: *error,
+                        error,
                     },
                 )
             })

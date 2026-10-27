@@ -365,14 +365,16 @@ fn check_range(dir: &Path, repo: &Repo, base: &str, tip: &str) -> Result<u8, Str
     let mut files = BTreeSet::new();
     let mut hosts = BTreeSet::new();
     let mut versions = std::collections::BTreeMap::new();
-    for (d, _) in prior.values() {
+    for (d, state) in prior.values() {
         match d {
             AnchorDescriptor::File(f) => {
                 files.insert(f.path.clone());
             }
             AnchorDescriptor::Symbol(s) => {
                 hosts.insert(s.path.clone());
-                versions.insert(s.language, s.normaliser.clone());
+                if state.base {
+                    versions.insert(s.language, s.normaliser.clone());
+                }
             }
         }
     }

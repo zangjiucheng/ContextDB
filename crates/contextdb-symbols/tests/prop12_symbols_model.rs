@@ -30,7 +30,6 @@ use contextdb_anchors::{
 use contextdb_core::{Db, IssueRequest, LogLink};
 use contextdb_model::*;
 use contextdb_symbols::{
-    normaliser_version,
     observer::{Added, Mode, prepare_scan, targets},
     parse,
 };
@@ -819,24 +818,24 @@ fn file_descriptor(repo: &str, path: &str, format: ObjectFormat, oid: &[u8]) -> 
 /// ADR 0012 §4: language code and normaliser version, spelled out.
 fn language_of(path: &str) -> (u8, &'static str) {
     match path.rsplit_once('.').unwrap().1 {
-        "rs" => (1, "rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=3"),
+        "rs" => (1, "rust:tree-sitter-rust=0.24.2;tree-sitter=0.27.1;walk=4"),
         "ts" => (
             2,
-            "typescript:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=3",
+            "typescript:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=4",
         ),
         "tsx" => (
             3,
-            "tsx:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=3",
+            "tsx:tree-sitter-typescript=0.23.2;tree-sitter=0.27.1;walk=4",
         ),
         "js" => (
             4,
-            "javascript:tree-sitter-javascript=0.25.0;tree-sitter=0.27.1;walk=3",
+            "javascript:tree-sitter-javascript=0.25.0;tree-sitter=0.27.1;walk=4",
         ),
         "py" => (
             5,
-            "python:tree-sitter-python=0.25.0;tree-sitter=0.27.1;walk=3",
+            "python:tree-sitter-python=0.25.0;tree-sitter=0.27.1;walk=4",
         ),
-        "go" => (6, "go:tree-sitter-go=0.25.0;tree-sitter=0.27.1;walk=3"),
+        "go" => (6, "go:tree-sitter-go=0.25.0;tree-sitter=0.27.1;walk=4"),
         other => panic!("{other}"),
     }
 }
@@ -870,23 +869,26 @@ fn symbol_key(scope: &str, path: &str, symbol: &str) -> String {
 }
 /// One position entry: tag and value (ADR 0011 §4, ADR 0012 §6).
 type Entry = (u8, Vec<u8>);
-/// ADR 0011 §4 / ADR 0012 §6: `CTXPOS01` without symbol anchors, else
-/// `CTXPOS02` with the sorted normaliser versions of the languages present.
+/// ADR 0011 §4 / ADR 0012 §6: `CTXPOS01` without live symbol anchors or
+/// host-only paths, else `CTXPOS02` with the sorted normaliser versions of the
+/// languages of live symbol anchors (r0.9).
 fn spec_position(
     repo: &str,
     head: &[u8],
     entries: &BTreeMap<String, Entry>,
     versions: &BTreeSet<&str>,
+    host_only: bool,
 ) -> Vec<u8> {
-    let mut out = if versions.is_empty() {
-        b"CTXPOS01".to_vec()
-    } else {
+    let v2 = !versions.is_empty() || host_only;
+    let mut out = if v2 {
         b"CTXPOS02".to_vec()
+    } else {
+        b"CTXPOS01".to_vec()
     };
     out.extend_from_slice(&1u32.to_le_bytes());
     wire(&mut out, repo.as_bytes());
     wire(&mut out, head);
-    if !versions.is_empty() {
+    if v2 {
         out.extend_from_slice(&(versions.len() as u32).to_le_bytes());
         for v in versions {
             wire(&mut out, v.as_bytes());
@@ -923,6 +925,10 @@ struct Expected {
 struct Reading {
     anchors: BTreeMap<String, Implied>,
     position: Vec<u8>,
+    /// The position's entries and whether there are host-only paths, to
+    /// re-encode it under another header.
+    entries: BTreeMap<String, Entry>,
+    host_only: bool,
 }
 #[allow(clippy::too_many_arguments)]
 fn read(
@@ -950,9 +956,10 @@ fn read(
         entries.insert(path.clone(), entry);
     }
     let mut versions = BTreeSet::new();
+    let mut host_only = false;
     let mut parsed = BTreeMap::new();
     for (host, symbol) in symbols {
-        versions.insert(language_of(host).1);
+        host_only |= !files.contains(host);
         if !entries.contains_key(host) {
             let entry = match live.get(host) {
                 Some(oid) => (4, oid.clone()),
@@ -978,10 +985,18 @@ fn read(
                 }
             }
         };
+        if matches!(implied, Implied::Present(_)) {
+            versions.insert(language_of(host).1);
+        }
         anchors.insert(symbol_key(&scope, host, symbol), implied);
     }
-    let position = spec_position(repo, head_commit, &entries, &versions);
-    Some(Reading { anchors, position })
+    let position = spec_position(repo, head_commit, &entries, &versions, host_only);
+    Some(Reading {
+        anchors,
+        position,
+        entries,
+        host_only,
+    })
 }
 
 // ------------------------------------------------------------------- SUT --
@@ -1067,25 +1082,35 @@ fn capture(
     }
     (entries, bytes)
 }
-/// The daemon's parse-free live position for the committed targets.
+/// The daemon's parse-free live position from the committed descriptors:
+/// paths from every anchor, normaliser versions from live (base) symbol
+/// anchors only (ADR 0012 §6–§7, r0.9).
 fn daemon_position(
     repo: &str,
     format: ObjectFormat,
     commit: &[u8],
     world: &World,
-    t: &contextdb_symbols::observer::Targets,
+    committed: &BTreeMap<String, (AnchorDescriptor, AnchorState)>,
 ) -> Vec<u8> {
-    let hosts: BTreeSet<String> = t.1.values().map(|(h, _)| h.clone()).collect();
-    let paths: BTreeSet<String> = t.0.union(&hosts).cloned().collect();
+    let mut files = BTreeSet::new();
+    let mut hosts = BTreeSet::new();
+    let mut versions = BTreeMap::new();
+    for (d, state) in committed.values() {
+        match d {
+            AnchorDescriptor::File(f) => {
+                files.insert(f.path.clone());
+            }
+            AnchorDescriptor::Symbol(s) => {
+                hosts.insert(s.path.clone());
+                if state.base {
+                    versions.insert(s.language, s.normaliser.clone());
+                }
+            }
+        }
+    }
+    let paths: BTreeSet<String> = files.union(&hosts).cloned().collect();
     let (entries, _) = capture(repo, format, world, &paths, &hosts);
-    let versions =
-        t.1.values()
-            .map(|(h, _)| {
-                let l = Language::of_path(h).unwrap();
-                (l, normaliser_version(l))
-            })
-            .collect();
-    let hosts_only = hosts.difference(&t.0).cloned().collect();
+    let hosts_only = hosts.difference(&files).cloned().collect();
     live_position(repo, commit, &entries, &hosts_only, &versions)
 }
 
@@ -1223,7 +1248,6 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
                 Ok::<_, contextdb_anchors::Unavailable>(at_head.as_deref() != Some(content))
             };
             let prior = committed.into_iter().map(|(k, (_, s))| (k, s)).collect();
-            let daemon = daemon_position(&repo, format, commit, &step.live, &t);
             prepare_scan(
                 &repo,
                 &t,
@@ -1235,7 +1259,6 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
                 &mut edited,
                 Instant::now() + Duration::from_secs(30),
             )
-            .map(|p| (p, daemon))
         };
 
         if step.unavailable || reading.is_none() {
@@ -1253,11 +1276,20 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
             // Freshness against the live worktree: Unknown iff it moved.
             if let Some((_, last_position)) = &last_scan {
                 let committed = sut.committed(&scope);
-                let t = targets(&scope, &committed, &Added::default(), Mode::Scan).unwrap();
-                let live_pos = daemon_position(&repo, format, commit, &step.live, &t);
+                let live_pos = daemon_position(&repo, format, commit, &step.live, &committed);
                 if let Some(r) = read(git, &repo, format, commit, head, live, &files, &symbols) {
+                    // The daemon's header comes from the last scan's live
+                    // anchors (it cannot parse), the entries from now.
+                    let versions: BTreeSet<&str> = committed
+                        .values()
+                        .filter_map(|(d, a)| match d {
+                            AnchorDescriptor::Symbol(s) if a.base => Some(language_of(&s.path).1),
+                            _ => None,
+                        })
+                        .collect();
                     assert_eq!(
-                        live_pos, r.position,
+                        live_pos,
+                        spec_position(&repo, commit, &r.entries, &versions, r.host_only),
                         "seed {seed} step {k}: daemon vs SPEC position"
                     );
                 }
@@ -1316,12 +1348,7 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
             continue;
         }
         let reading = reading.unwrap();
-        let (mut prepared, daemon) =
-            attempt(&sut).unwrap_or_else(|e| panic!("seed {seed} step {k}: {e}"));
-        assert_eq!(
-            daemon, reading.position,
-            "seed {seed} step {k}: daemon vs SPEC position"
-        );
+        let mut prepared = attempt(&sut).unwrap_or_else(|e| panic!("seed {seed} step {k}: {e}"));
         if step.race {
             race += 1;
             sut.commit(vec![Op::ObserverWatermark {
@@ -1337,7 +1364,7 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
             );
             assert_eq!(before, sut.db.inputs(), "failed CAS is atomic");
             cov.cas_retry += 1;
-            prepared = attempt(&sut).unwrap().0;
+            prepared = attempt(&sut).unwrap();
         }
         let payloads: Vec<String> = prepared
             .blobs
@@ -1354,6 +1381,11 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
         if !prepared.ops.is_empty() {
             sut.commit(prepared.ops).unwrap();
         }
+        assert_eq!(
+            daemon_position(&repo, format, commit, &step.live, &sut.committed(&scope)),
+            reading.position,
+            "seed {seed} step {k}: daemon vs SPEC position"
+        );
         assert_eq!(
             sut.db.derived(),
             &contextdb_oracle::jacobi(sut.history.last().unwrap())

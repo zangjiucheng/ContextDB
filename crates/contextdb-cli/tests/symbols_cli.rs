@@ -395,6 +395,110 @@ fn normaliser_version_mismatch_needs_migrate() {
     let _ = std::fs::remove_dir_all(&rig.root);
 }
 
+/// T42e (review M1): an anchor that is Missing when `migrate` runs keeps its
+/// old descriptor with its base retracted. Later scans are not refused, and
+/// the position header lists live anchors only, so the daemon and the
+/// observer agree and live dependents are fresh.
+#[test]
+fn migrate_with_a_missing_anchor_leaves_scans_and_positions_working() {
+    use contextdb_anchors::{
+        AnchorDescriptor, AnchorObservation,
+        observer::{state_by_key, submit},
+        prepare_anchors,
+    };
+    let root = temp("t42e-missing");
+    git(&root, &["init", "-q"]);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), LIB).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "init"]);
+    let data = root.join(".contextdb/db");
+    std::fs::create_dir_all(&data).unwrap();
+    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let rig = Rig { root, data, daemon };
+    let (rc, out) = ctx(&[
+        "anchors",
+        "add",
+        rig.ds(),
+        rig.rs(),
+        "src/lib.rs#foo",
+        "src/lib.rs#bar",
+    ]);
+    assert_eq!(rc, 0, "{out}");
+
+    // Both were observed by an older normaliser.
+    let scope = rig.scope();
+    let mut client = rig.client(Channel::Observer);
+    let (watermark, committed) = state_by_key(&mut client, &scope).unwrap();
+    let mut observations = std::collections::BTreeMap::new();
+    let mut repo_id = String::new();
+    for (key, (descriptor, _)) in &committed {
+        let AnchorDescriptor::Symbol(mut old) = descriptor.clone() else {
+            panic!("symbol descriptor expected")
+        };
+        repo_id = descriptor.scope().trim_start_matches("code:").to_owned();
+        old.normaliser = "rust:tree-sitter-rust=0.0.0;tree-sitter=0.0.0;walk=0".into();
+        let label = format!("src/lib.rs#{}", old.symbol);
+        observations.insert(
+            key.clone(),
+            (
+                label,
+                AnchorObservation::Present(AnchorDescriptor::Symbol(old)),
+            ),
+        );
+    }
+    let prior = committed
+        .iter()
+        .map(|(k, (_, s))| (k.clone(), s.clone()))
+        .collect();
+    let prepared = prepare_anchors(
+        &repo_id,
+        &observations,
+        &prior,
+        &Default::default(),
+        watermark.clone(),
+        watermark.clone().unwrap(),
+    )
+    .unwrap();
+    submit(&mut client, prepared).unwrap().expect("committed");
+
+    // foo disappears before the upgrade's migrate: Missing, old descriptor.
+    rig.write("pub fn bar() -> u8 {\n    2\n}\n");
+    let (rc, out) = ctx(&["anchors", "migrate", rig.ds(), rig.rs()]);
+    assert_eq!(rc, 0, "{out}");
+    let foo = rig
+        .anchors()
+        .into_iter()
+        .find(|a| a.key.ends_with("#foo"))
+        .unwrap();
+    assert!(!foo.base, "Missing retracts the base");
+
+    // Scans are not refused, and bar's dependent is fresh.
+    let (rc, out) = rig.scan();
+    assert_eq!(rc, 0, "{out}");
+    rig.decision("uses-bar", rig.head_of("#bar"));
+    let session = rig.session();
+    assert!(certified(&rig.read(session, "uses-bar")));
+    let (rc, out) = rig.scan();
+    assert_eq!(rc, 0, "{out}");
+    assert!(certified(&rig.read(session, "uses-bar")));
+
+    // foo comes back: observed again with this binary's normaliser.
+    rig.write(LIB);
+    assert_eq!(rig.scan().0, 0);
+    assert!(
+        rig.anchors()
+            .into_iter()
+            .find(|a| a.key.ends_with("#foo"))
+            .unwrap()
+            .base
+    );
+    assert_eq!(rig.scan().0, 0);
+    assert!(certified(&rig.read(session, "uses-bar")));
+    drop(rig.daemon);
+    let _ = std::fs::remove_dir_all(&rig.root);
+}
+
 /// ADR 0012 §3/§7: legacy '#' paths stay literal and become Broken; a
 /// colliding symbol registration must never change their descriptor kind.
 #[test]

@@ -145,7 +145,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             if l.kind != RecordKind::CodeAnchor {
                 continue;
             }
-            let content = inputs.revisions[inputs.heads[index].index()].content;
+            let head = inputs.heads[index];
+            let content = inputs.revisions[head.index()].content;
             let layout = groups.entry(l.scope_lane.clone()).or_default();
             match self.anchor_descriptor(content) {
                 Some(AnchorDescriptor::File(d)) => {
@@ -153,7 +154,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 Some(AnchorDescriptor::Symbol(d)) => {
                     layout.hosts.insert(d.path);
-                    layout.versions.insert(d.language, d.normaliser);
+                    // Live anchors only: a Missing or Broken one keeps the
+                    // descriptor of its last observation (ADR 0012 §6).
+                    if inputs.base[head.index()] {
+                        layout.versions.insert(d.language, d.normaliser);
+                    }
                 }
                 None => {
                     unreadable.insert(l.scope_lane.clone());
