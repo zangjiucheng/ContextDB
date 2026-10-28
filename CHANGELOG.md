@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ctx ui` follows P5a–P6 and v1.6.11:
+  - It replays the op_log with the multi-branch kernel. Before, any log with a branch op failed with `replay diverged`.
+  - A branch selector shows one branch at a time, the timeline names each commit's branch, and open Conflict artifacts are listed on their target.
+  - `ref` edges are drawn and listed, including reference-only rules ("references only, never supports").
+  - Code anchors show their path or `path#symbol`, and the panel decodes the committed descriptor (path, symbol, language, normaliser).
+  - WHY and WHY-NOT are trees instead of Rust debug output.
+  - Replayed status uses the last committed watermark per anchor scope, and the panel adds the live status from `ctxd` when it differs (for example `PENDING(ObservationLag)`). Bodies of branch-only revisions are read through a viewer session on that branch.
 - **Dependency usability** (SPEC v1.6.11), from agents writing to a second repository's store: of 18 `ctx_record` calls in one session 9 were refused, and the agent ended by dropping its deps.
   - A record may carry only `ref` deps. The kernel accepts a reference-only rule and never counts it as support (SD3/SD6, T09w), so the record still needs `adopt_as_base`; `ctx_impact` lists it. `ctx_record` warns when every dep is `ref` and `adopt_as_base` is false.
   - `ref` may name a Summary (A2); `cur`/`pin` on a Summary are still refused.

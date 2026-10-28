@@ -12,6 +12,7 @@ const state = {
   graph: null, timeline: null, fingerprint: null,
   selected: null, allRevs: false, search: "", hidden: new Set(),
   view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "graph", laidOut: false,
+  branch: 0,
 };
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, parent) => {
@@ -59,7 +60,8 @@ function build(g) {
   for (const rule of g.rules) {
     const to = nodeOf(rule.conclusion);
     if (!nodes.has(to)) continue;
-    for (const p of rule.premises) {
+    const incidences = [...rule.premises, ...rule.references.map((rev) => ({ rev, kind: "ref" }))];
+    for (const p of incidences) {
       const from = nodeOf(p.rev);
       if (!nodes.has(from) || from === to) continue;
       const premise = revs.get(p.rev);
@@ -133,6 +135,11 @@ function layout(model) {
   return xy;
 }
 const keyOf = (model, id) => model.nodes.get(id)?.logical?.key || "";
+/// A code anchor shows its path (and symbol), not `code:<repo id>/…`.
+const label = (l) => l.anchor ?? l.key;
+const kindLabel = (l) => (l.kind === "CodeAnchor" ? (l.anchor?.includes("#") ? "symbol anchor" : "file anchor") : l.kind);
+const query = (extra) => `${extra}${extra.includes("?") ? "&" : "?"}branch=${state.branch}`;
+
 
 // ---- rendering ---------------------------------------------------------
 
@@ -178,10 +185,11 @@ function render() {
       width: NODE_W, height: NODE_H, rx: 7,
       fill: `var(--${n.rev.class}-bg)`, stroke: `var(--${n.rev.class})`,
     }, grp);
-    const key = n.logical.key.length > 28 ? n.logical.key.slice(0, 27) + "…" : n.logical.key;
+    const name = label(n.logical);
+    const key = name.length > 28 ? "…" + name.slice(-27) : name;
     el("text", { x: 10, y: 19 }, grp).textContent = key;
     el("text", { x: 10, y: 36, class: "sub" }, grp).textContent =
-      `${n.logical.kind} · r${n.rev.id}${n.rev.head ? "" : " (old)"} · ${n.rev.summary.split("(")[0]}`;
+      `${kindLabel(n.logical)} · r${n.rev.id}${n.rev.head ? "" : " (old)"} · ${n.rev.summary.split("(")[0]}${n.rev.branch_only ? " · branch" : ""}`;
     el("title", {}, grp).textContent = `${n.logical.key}\nr${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}`;
     grp.addEventListener("click", (ev) => { ev.stopPropagation(); select(n.rev.id); });
     grp.addEventListener("mouseenter", () => hover(model, id, true));
@@ -224,38 +232,68 @@ async function select(rev) {
   const box = $("detail");
   box.replaceChildren();
   $("panel").hidden = false;
-  box.append(html("h2", "", l.key));
+  box.append(html("h2", "", label(l)));
   const badge = html("span", `badge ${r.class}`, r.summary);
   box.append(badge);
   const kv = html("dl", "kv");
   const row = (k, v) => { kv.append(html("dt", "", k)); const dd = html("dd"); dd.append(v); kv.append(dd); };
-  row("kind", l.kind);
+  row("kind", kindLabel(l));
+  if (l.anchor) row("key", l.key);
   row("scope", l.lane);
   row("revision", `r${r.id}${r.head ? " (head)" : ` (head is r${l.head})`}`);
+  if (r.branch_only) row("branch", "only on another branch (BRANCH_ONLY on main)");
   row("base", r.base ? "yes" : "no");
   row("layers", `L0 ${r.l0 ? "✓" : "✗"} · L1 ${r.l1 ? "✓" : "✗"} · L2 ${r.l2 ? "✓" : "✗"}`);
   row("support", String(r.support));
   box.append(kv);
+  const conflicts = (g.conflicts || []).filter((c) => c.target === rev);
+  if (conflicts.length) {
+    box.append(html("h3", "", "Conflicts"));
+    for (const c of conflicts) {
+      box.append(html("div", c.open ? "conflict" : "muted",
+        `artifact ${c.id} · ${c.open ? "open: gates this revision (CONFLICTED) until resolved" : "resolved"} · from a merge at epoch ${c.origin_epoch}`));
+    }
+  }
   let d;
-  try { d = await getJSON(`/api/rev?id=${rev}`); } catch (e) { showError(e); return; }
+  try { d = await getJSON(query(`/api/rev?id=${rev}`)); } catch (e) { showError(e); return; }
   if (state.selected !== rev) return;
-  box.append(html("h3", "", "Body"), html("pre", d.body === undefined ? "muted" : "", d.body ?? `(${d.body_error || "unavailable"})`));
-  const premises = g.rules.filter((x) => x.conclusion === rev);
-  box.append(html("h3", "", `Depends on (${premises.length} rule${premises.length === 1 ? "" : "s"})`));
-  if (!premises.length) box.append(html("div", "muted", r.base ? "base (no rule needed)" : "no rules"));
-  for (const rule of premises) {
+  if (d.live && d.live.summary !== r.summary) {
+    const live = html("div", "list");
+    live.append(html("span", "muted", "now (ctxd):"), html("span", `badge ${d.live.class}`, d.live.summary));
+    box.insertBefore(live, kv);
+  }
+  if (d.anchor) {
+    const a = html("dl", "kv");
+    const arow = (k, v) => { a.append(html("dt", "", k), html("dd", "", v)); };
+    arow("anchors", d.anchor.type === "symbol" ? "a symbol" : "a file");
+    arow("path", d.anchor.path);
+    if (d.anchor.symbol) arow("symbol", d.anchor.symbol);
+    if (d.anchor.language) arow("language", d.anchor.language);
+    if (d.anchor.normaliser) arow("normaliser", d.anchor.normaliser);
+    arow(d.anchor.oid ? "blob" : "hash", d.anchor.oid ?? d.anchor.hash);
+    box.append(html("h3", "", "Observed code"), a);
+  } else {
+    box.append(html("h3", "", "Body"), html("pre", d.body === undefined ? "muted" : "", d.body ?? `(${d.body_error || "unavailable"})`));
+  }
+  const own = g.rules.filter((x) => x.conclusion === rev);
+  box.append(html("h3", "", `Depends on (${own.length} rule${own.length === 1 ? "" : "s"})`));
+  if (!own.length) box.append(html("div", "muted", r.base ? "base (no rule needed)" : "no rules"));
+  for (const rule of own) {
     const line = html("div", "list");
-    line.append(html("span", "muted", `rule ${rule.id}${rule.enabled ? "" : " (disabled)"}:`));
+    const note = rule.premises.length ? "" : " · references only, never supports";
+    line.append(html("span", "muted", `rule ${rule.id}${rule.enabled ? "" : " (disabled)"}${note}:`));
     for (const p of rule.premises) line.append(revLink(p.rev, `${p.kind} → `));
+    for (const x of rule.references) line.append(revLink(x, "ref → "));
     box.append(line);
   }
-  const dependents = g.rules.filter((x) => x.premises.some((p) => p.rev === rev));
+  const uses = (rule) => rule.premises.find((p) => p.rev === rev)?.kind ?? (rule.references.includes(rev) ? "ref" : null);
+  const dependents = g.rules.filter((x) => uses(x));
   box.append(html("h3", "", `Used by (${dependents.length})`));
   const used = html("div", "list");
-  for (const rule of dependents) used.append(revLink(rule.conclusion, `${rule.premises.find((p) => p.rev === rev).kind} ← `));
+  for (const rule of dependents) used.append(revLink(rule.conclusion, `${uses(rule)} ← `));
   box.append(used);
   const impact = [...d.impact.supported, ...d.impact.reference_only];
-  box.append(html("h3", "", `Impact (${impact.length})`));
+  box.append(html("h3", "", `Impact (${d.impact.supported.length} supported, ${d.impact.reference_only.length} reference only)`));
   const ib = html("span", "link", impact.length ? "highlight in graph" : "nothing depends on it");
   if (impact.length) ib.addEventListener("click", () => highlightRevs([rev, ...impact]));
   box.append(ib);
@@ -267,15 +305,63 @@ async function select(rev) {
     const hm = html("pre", "", d.head_moves.map((m) => `epoch ${m.epoch}: ${m.from === null ? "created" : `r${m.from}`} → r${m.to}`).join("\n"));
     box.append(hm);
   }
-  box.append(html("h3", "", "Why"), html("pre", "", d.why));
-  if (r.class !== "certified") box.append(html("h3", "", "Why not"), html("pre", "", d.why_not));
+  box.append(html("h3", "", "Why"), whyTree(d.why));
+  if (r.class !== "certified") box.append(html("h3", "", "Why not"), whyNotTree(d.why_not, own));
   box.append(html("h3", "", "Content hash"), html("pre", "", d.content));
+}
+/// The proof tree: how each revision holds (base or an active rule), its
+/// premises below it.
+function whyTree(p) {
+  const ul = html("ul", "tree");
+  const li = html("li");
+  li.append(revLink(p.rev, ""));
+  const how = p.witness === "base" ? "base" : p.witness === null ? "not supported" : `rule ${p.witness}`;
+  li.append(html("span", "muted", ` — ${how}${p.active_rules.length > 1 ? ` (${p.active_rules.length} active rules)` : ""}`));
+  if (p.references.length) {
+    const refs = html("div", "list");
+    refs.append(html("span", "muted", "references:"));
+    for (const x of p.references) refs.append(revLink(x.rev, ""));
+    li.append(refs);
+  }
+  for (const q of p.premises) li.append(whyTree(q));
+  if (p.truncated) li.append(html("div", "muted", "… deeper premises not shown"));
+  ul.append(li);
+  return ul;
+}
+const FAILURE = {
+  unsupported: (f) => ["premise ", f.premise, " is not supported"],
+  not_current: (f) => ["cur premise ", f.premise, ` is no longer its head (now r${f.head})`],
+  superseded_pinned: (f) => ["pinned ", f.premise, ` was superseded by r${f.head}`],
+  semantic_head_unsupported: (f) => ["sem: the current head ", f.head, " does not hold"],
+};
+/// Each rule that could support the revision and why it does not.
+function whyNotTree(w, own) {
+  const ul = html("ul", "tree");
+  if (!w.rules.length) ul.append(html("li", "muted", "no rules conclude it"));
+  for (const f of w.rules) {
+    const li = html("li");
+    const rule = own.find((x) => x.id === f.rule);
+    const refOnly = rule && !rule.premises.length;
+    const gate = f.gate === "NotRequired" ? "" : ` · semantic ${f.gate}`;
+    li.append(html("span", "", `rule ${f.rule}${f.disabled ? " (disabled)" : ""}${gate}`));
+    if (refOnly) li.append(html("div", "muted", "references only: never supports its conclusion"));
+    for (const i of f.incidences) {
+      const [a, rev, b] = FAILURE[i.type](i);
+      const line = html("div", "list");
+      line.append(html("span", "", a), revLink(rev, ""), html("span", "", b));
+      li.append(line);
+    }
+    if (!f.incidences.length && !f.disabled && !refOnly && f.gate === "NotRequired") li.append(html("div", "muted", "holds"));
+    for (const u of f.upstream) li.append(whyNotTree(u, state.graph.rules.filter((x) => x.conclusion === u.rev)));
+    ul.append(li);
+  }
+  return ul;
 }
 function revLink(rev, prefix) {
   const g = state.graph;
   const r = g.revisions.find((x) => x.id === rev);
   const l = r && g.logicals.find((x) => x.id === r.logical);
-  const s = html("span", "link", `${prefix}${l ? l.key : "?"}@r${rev}`);
+  const s = html("span", "link", `${prefix}${l ? label(l) : "?"}@r${rev}`);
   s.title = r ? r.summary : "";
   s.addEventListener("click", () => select(rev));
   return s;
@@ -298,11 +384,15 @@ function renderTimeline() {
   const box = $("timeline-view");
   box.replaceChildren();
   if (!t || !g) return;
-  const keyOfLogical = (id) => g.logicals.find((l) => l.id === id)?.key ?? `logical ${id}`;
+  const keyOfLogical = (id) => { const l = g.logicals.find((x) => x.id === id); return l ? label(l) : `logical ${id}`; };
+  const here = $("timeline-here").checked;
   for (const c of t.commits) {
-    const card = html("div", "commit");
-    card.append(html("div", "meta", `epoch ${c.epoch} · ${c.channel} · principal ${c.principal} · ${c.status_diff.length} status change(s)`));
-    card.append(html("div", "ops", c.ops.join(", ")));
+    if (here && c.branch !== state.branch) continue;
+    const card = html("div", `commit${c.branch === state.branch ? "" : " elsewhere"}`);
+    card.append(html("div", "meta", `epoch ${c.epoch} · ${c.branch_name} · ${c.channel} · principal ${c.principal} · ${c.status_diff.length} status change(s)`));
+    const named = c.names.length ? ` (${c.names.join(", ")})` : "";
+    card.append(html("div", "ops", c.ops.join(", ") + named));
+    if (c.branch !== state.branch) { box.append(card); continue; }
     for (const m of c.head_moves) {
       const line = html("div", "list");
       line.append(html("span", "", `${keyOfLogical(m.logical)}: ${m.from === null ? "created" : `r${m.from}`} → `));
@@ -324,7 +414,17 @@ function renderChrome() {
   const g = state.graph;
   const counts = Object.fromEntries(CLASSES.map((c) => [c, 0]));
   for (const r of g.revisions) if (r.head) counts[r.class]++;
-  $("epoch").textContent = `epoch ${g.epoch} · ${g.logicals.length} logicals · ${g.revisions.length} revisions · ${g.rules.length} rules`;
+  const open = (g.conflicts || []).filter((c) => c.open).length;
+  $("epoch").textContent = `epoch ${g.epoch} · ${g.logicals.length} logicals · ${g.revisions.length} revisions · ${g.rules.length} rules${open ? ` · ${open} open conflict${open === 1 ? "" : "s"}` : ""}`;
+  const sel = $("branch");
+  sel.replaceChildren();
+  for (const b of g.branches) {
+    const o = html("option", "", `${b.name}${b.archived ? " (archived)" : ""}`);
+    o.value = String(b.id);
+    o.selected = b.id === state.branch;
+    sel.append(o);
+  }
+  sel.hidden = g.branches.length < 2;
   const chips = $("chips");
   chips.replaceChildren();
   for (const c of CLASSES) {
@@ -347,14 +447,15 @@ function renderChrome() {
     item.append(sw, document.createTextNode(k));
     legend.append(item);
   }
-  legend.append(html("div", "muted", "thick border = base"), html("div", "muted", "dashed box = old revision"));
+  legend.append(html("div", "muted", "thick border = base"), html("div", "muted", "dashed box = old revision"),
+    html("div", "muted", "ref: never changes status"), html("div", "muted", "purple = open conflict"));
 }
 function setTab(tab) {
   state.tab = tab;
   $("tab-graph").classList.toggle("active", tab === "graph");
   $("tab-timeline").classList.toggle("active", tab === "timeline");
   $("graph-view").hidden = tab !== "graph";
-  $("timeline-view").hidden = tab !== "timeline";
+  $("timeline-pane").hidden = tab !== "timeline";
   if (tab === "timeline") renderTimeline();
 }
 
@@ -362,7 +463,7 @@ async function refresh(force) {
   try {
     const { fingerprint } = await getJSON("/api/epoch");
     if (!force && fingerprint === state.fingerprint) return;
-    const [graph, timeline] = await Promise.all([getJSON("/api/graph"), getJSON("/api/timeline?limit=300")]);
+    const [graph, timeline] = await Promise.all([getJSON(query("/api/graph")), getJSON("/api/timeline?limit=300")]);
     state.fingerprint = fingerprint;
     state.graph = graph;
     state.timeline = timeline;
@@ -403,6 +504,13 @@ function wire() {
   $("close").addEventListener("click", () => { $("panel").hidden = true; state.selected = null; render(); });
   $("tab-graph").addEventListener("click", () => setTab("graph"));
   $("tab-timeline").addEventListener("click", () => setTab("timeline"));
+  $("timeline-here").addEventListener("change", renderTimeline);
+  $("branch").addEventListener("change", (e) => {
+    state.branch = Number(e.target.value);
+    state.selected = null; state.highlight = null; state.laidOut = false;
+    $("panel").hidden = true;
+    refresh(true);
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { state.highlight = null; $("panel").hidden = true; state.selected = null; render(); }
   });

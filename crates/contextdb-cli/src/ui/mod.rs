@@ -2,9 +2,11 @@
 //! context graph in the browser (formerly the separate `tools/ctx-ui`; built
 //! into `ctx` so it ships with every release and always matches `ctxd`).
 //!
-//! - The graph comes from replaying the op_log (graph.rs): exact, and safe
-//!   next to a running `ctxd`.
-//! - Payload bodies come from `ctxd` as advisory reads, when it runs.
+//! - The graph comes from replaying the op_log (graph.rs): exact, per branch,
+//!   and safe next to a running `ctxd`.
+//! - Payload bodies and the live status (with the read-time observation
+//!   dimension) come from `ctxd` as advisory reads, when it runs; code anchor
+//!   payloads are decoded descriptors.
 //! - The server binds 127.0.0.1 only, answers GET only, and rejects any
 //!   `Host` other than its own (DNS rebinding); it never writes anything.
 mod graph;
@@ -44,10 +46,17 @@ impl State {
         Ok(snap)
     }
 }
-/// A payload body through `ctxd` (advisory read, its own harness key). Bodies
-/// live in blob packs only the daemon indexes; the reason is returned when
-/// it cannot answer (not running, another protocol version, missing payload).
-fn body(dir: &Path, logical: u32, rev: u32) -> Result<String, String> {
+/// A revision's payload and its live item through `ctxd` (advisory read,
+/// its own harness key). Bodies live in blob packs only the daemon indexes;
+/// the reason is returned when it cannot answer (not running, another
+/// protocol version, missing payload). Off `main`, the read runs in a viewer
+/// session bound to that branch, where the revision is visible.
+fn live_read(
+    dir: &Path,
+    branch: Option<&str>,
+    logical: u32,
+    rev: u32,
+) -> Result<(Option<Vec<u8>>, Item), String> {
     let l = lease::read_lease(&dir.join("ctxd.lease")).ok_or("ctxd is not running")?;
     if l.protocol != PROTOCOL_VERSION {
         return Err(format!(
@@ -61,28 +70,59 @@ fn body(dir: &Path, logical: u32, rev: u32) -> Result<String, String> {
         .find(|s| s.ends_with("agent.sock"))
         .ok_or("lease names no agent socket")?;
     let mut c = Client::connect_timeout(sock, Duration::from_secs(2)).map_err(|e| e.to_string())?;
-    let env = c
-        .call(&Request::Read {
-            binding: Binding::Key {
-                harness: "ctx-ui".into(),
-                harness_session: "viewer".into(),
+    let mut call = |r: Request| -> Result<Response, String> {
+        match c.call(&r).map_err(|e| format!("{e:?}"))?.response {
+            Response::Error { code, detail } => Err(format!("{code}: {detail}")),
+            other => Ok(other),
+        }
+    };
+    let binding = match branch {
+        None => Binding::Key {
+            harness: "ctx-ui".into(),
+            harness_session: "viewer".into(),
+            agent: None,
+        },
+        Some(name) => match call(Request::SessionAttach {
+            harness: "ctx-ui".into(),
+            harness_session: format!("viewer@{name}"),
+            repo: dir.to_string_lossy().into_owned(),
+            head_sha: String::new(),
+            branch: Some(name.into()),
+            git_branch: None,
+        })? {
+            Response::Attached { session, .. } => Binding::Session {
+                session,
                 agent: None,
             },
-            target: Target::Pinned {
-                logical: LogicalId(logical),
-                rev: RevisionId(rev),
-            },
-            mode: Mode::Advisory,
-        })
-        .map_err(|e| format!("{e:?}"))?;
-    match env.response {
-        Response::Read {
-            payload: Some(p), ..
-        } => Ok(String::from_utf8_lossy(&p).into_owned()),
-        Response::Read { payload: None, .. } => Err("payload unavailable".into()),
-        Response::Error { code, detail } => Err(format!("{code}: {detail}")),
+            other => return Err(format!("unexpected {other:?}")),
+        },
+    };
+    match call(Request::Read {
+        binding,
+        target: Target::Pinned {
+            logical: LogicalId(logical),
+            rev: RevisionId(rev),
+        },
+        mode: Mode::Advisory,
+    })? {
+        Response::Read { item, payload } => Ok((payload, item)),
         other => Err(format!("unexpected {other:?}")),
     }
+}
+/// A code anchor's committed descriptor (ADR 0011 §2, ADR 0012 §3).
+fn descriptor(bytes: &[u8]) -> Option<Value> {
+    Some(
+        match contextdb_anchors::AnchorDescriptor::from_bytes(bytes).ok()? {
+            contextdb_anchors::AnchorDescriptor::File(d) => json!({
+                "type": "file", "path": d.path, "oid": graph::hex(&d.oid),
+            }),
+            contextdb_anchors::AnchorDescriptor::Symbol(d) => json!({
+                "type": "symbol", "path": d.path, "symbol": d.symbol,
+                "language": format!("{:?}", d.language), "normaliser": d.normaliser,
+                "hash": graph::hex(&d.hash),
+            }),
+        },
+    )
 }
 fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let head = format!(
@@ -117,6 +157,12 @@ fn param<'a>(target: &'a str, key: &str) -> Option<&'a str> {
         .1
         .split('&')
         .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+}
+/// `?branch=N`, `main` when absent.
+fn branch_param(target: &str) -> BranchId {
+    param(target, "branch")
+        .and_then(|v| v.parse().ok())
+        .map_or(MAIN, BranchId)
 }
 fn handle(state: &State, mut stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -189,7 +235,10 @@ fn handle(state: &State, mut stream: TcpStream) {
             &mut stream,
             Ok(json!({ "fingerprint": format!("{:?}", graph::fingerprint(&state.dir)) })),
         ),
-        "/api/graph" => json_response(&mut stream, state.snapshot().map(|s| s.graph())),
+        "/api/graph" => json_response(
+            &mut stream,
+            state.snapshot().and_then(|s| s.graph(branch_param(target))),
+        ),
         "/api/timeline" => {
             let limit = param(target, "limit")
                 .and_then(|v| v.parse().ok())
@@ -198,15 +247,28 @@ fn handle(state: &State, mut stream: TcpStream) {
         }
         "/api/rev" => {
             let rev: Option<u32> = param(target, "id").and_then(|v| v.parse().ok());
+            let branch = branch_param(target);
             let result = match rev {
                 None => Err("id required".into()),
                 Some(r) => state.snapshot().and_then(|s| {
-                    let mut v = s.explain(RevisionId(r))?;
-                    let l = s.db.revision_logical(RevisionId(r)).map(|l| l.0);
-                    match l.map(|l| body(&state.dir, l, r)) {
-                        Some(Ok(b)) => v["body"] = json!(b),
-                        Some(Err(e)) => v["body_error"] = json!(e),
-                        None => {}
+                    let mut v = s.explain(branch, RevisionId(r))?;
+                    let name = (branch != MAIN)
+                        .then(|| s.view(branch).map(|b| b.info().name.clone()))
+                        .transpose()?;
+                    let logical = v["logical"].as_u64().unwrap_or_default() as u32;
+                    match live_read(&state.dir, name.as_deref(), logical, r) {
+                        Ok((payload, item)) => {
+                            let (label, class) = graph::summary(&item.summary);
+                            v["live"] = json!({ "summary": label, "class": class });
+                            match payload {
+                                Some(p) if item.kind == RecordKind::CodeAnchor => {
+                                    v["anchor"] = descriptor(&p).unwrap_or(Value::Null);
+                                }
+                                Some(p) => v["body"] = json!(String::from_utf8_lossy(&p)),
+                                None => v["body_error"] = json!("payload unavailable"),
+                            }
+                        }
+                        Err(e) => v["body_error"] = json!(e),
                     }
                     Ok(v)
                 }),

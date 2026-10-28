@@ -76,7 +76,7 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 | `contextdb-cli` | `ctx`: operations, checks, anchors, gating, setup and hook installation |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | Goldens, property tests, replay, workload generation and benchmarks |
 
-Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph) and `fuzz/`. `ctx ui` serves a local, read-only context graph viewer.
+Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph) and `fuzz/`. `ctx ui` serves a local, read-only context graph viewer: one branch at a time (selector when there are several), `ref` edges, open Conflict artifacts, code anchors by path and symbol with their decoded descriptors, structured WHY / WHY-NOT, and the live status from `ctxd` next to the replayed one.
 
 ![ctx ui: this repository's own dogfood context graph, with one plan selected](docs/images/ctx-ui-detail.png)
 

@@ -9,6 +9,7 @@
 <body>
 <header>
   <h1>ContextDB</h1>
+  <select id="branch" aria-label="Branch" hidden></select>
   <span id="epoch" class="muted"></span>
   <nav>
     <button id="tab-graph" class="tab active" type="button">Graph</button>
@@ -31,7 +32,10 @@
     <div id="legend"></div>
     <div id="empty" hidden>No records yet. Agents add them with <code>ctx_record</code>.</div>
   </section>
-  <section id="timeline-view" hidden></section>
+  <section id="timeline-pane" hidden>
+    <label class="toggle"><input id="timeline-here" type="checkbox"> this branch only</label>
+    <div id="timeline-view"></div>
+  </section>
   <aside id="panel" hidden>
     <button id="close" type="button" aria-label="Close">×</button>
     <div id="detail"></div>

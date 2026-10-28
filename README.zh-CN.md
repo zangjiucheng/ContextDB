@@ -76,7 +76,7 @@
 | `contextdb-cli` | `ctx`：运维、检查、锚点、门控与 hook 安装 |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | golden、属性测试、回放、负载生成与基准 |
 
-另有独立 workspace：`crates/contextdb-dd`（研究基线，不进入产品依赖图）与 `fuzz/`。`ctx ui` 提供本地只读的上下文图浏览器。
+另有独立 workspace：`crates/contextdb-dd`（研究基线，不进入产品依赖图）与 `fuzz/`。`ctx ui` 提供本地只读的上下文图浏览器：按分支查看（有多个分支时可切换），显示 `ref` 依赖、未解决的 Conflict artifact、按路径与 symbol 标注的代码锚点及其描述符、结构化的 WHY / WHY-NOT，并在重放状态旁给出 `ctxd` 的实时状态。
 
 ![ctx ui：本仓库自身 dogfood 的上下文图，选中一条计划](docs/images/ctx-ui-detail.png)
 
