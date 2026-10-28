@@ -323,19 +323,55 @@ fn t09j_summary_sem_only() {
         create("f", RecordKind::Fact, false, 1),
         create("root", RecordKind::Fact, true, 2),
     ]);
-    for kind in [EdgeKind::Pin, EdgeKind::Cur, EdgeKind::Ref] {
-        let ps = if kind == EdgeKind::Ref {
-            vec![(0, kind), (2, EdgeKind::Pin)]
-        } else {
-            vec![(0, kind)]
-        };
+    for kind in [EdgeKind::Pin, EdgeKind::Cur] {
         x.err(
-            vec![add(1, &ps)],
+            vec![add(1, &[(0, kind)])],
             TxError::InvalidRule(InvalidRule::ForbiddenPremise),
         );
     }
+    // A reference carries no status, so it may name a Summary (A2 r1.6.11).
+    x.ok(vec![add(1, &[(0, EdgeKind::Ref), (2, EdgeKind::Pin)])]);
     x.ok(vec![add(1, &[(0, EdgeKind::Sem)])]);
     assert_eq!(x.s(1), Summary::Certified);
+}
+#[test]
+fn t09w_reference_only_rules_never_support() {
+    let mut x = Rig::default();
+    x.ok(vec![
+        create("s", RecordKind::Summary, true, 0),
+        create("f", RecordKind::Fact, false, 1),
+        create("g", RecordKind::Fact, true, 2),
+    ]);
+    x.ok(vec![add(1, &[(0, EdgeKind::Ref)])]);
+    assert_eq!(x.db.derived().unsat, vec![0]);
+    assert_eq!(x.db.derived().active, vec![false]);
+    assert_eq!(x.s(1), Summary::Stale(StaleReason::Unsupported));
+    x.ok(vec![Op::AssertBase { rev: r(1) }]);
+    assert_eq!(x.s(1), Summary::Certified);
+    // Its references never move the conclusion, whatever their status.
+    x.ok(vec![Op::RetractBase { rev: r(0) }]);
+    assert_eq!(x.s(1), Summary::Certified);
+    x.ok(vec![Op::SetRuleEnabled {
+        rule: RuleId(0).into(),
+        enabled: false,
+    }]);
+    x.ok(vec![Op::SetRuleEnabled {
+        rule: RuleId(0).into(),
+        enabled: true,
+    }]);
+    assert_eq!(x.db.derived().active, vec![false]);
+    x.ok(vec![Op::RetractBase { rev: r(1) }]);
+    assert_eq!(x.s(1), Summary::Stale(StaleReason::Unsupported));
+    // A rule with one premise and references still fires on the premise alone.
+    x.ok(vec![add(1, &[(0, EdgeKind::Ref), (2, EdgeKind::Pin)])]);
+    assert_eq!(x.s(1), Summary::Certified);
+    x.err(
+        vec![add(1, &[(0, EdgeKind::Ref)])],
+        TxError::DuplicateRule {
+            existing: RuleId(0),
+            enabled: true,
+        },
+    );
 }
 #[test]
 fn t09kl_metadata_and_import_artifact_do_not_change_derivation() {

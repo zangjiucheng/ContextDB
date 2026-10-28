@@ -17,6 +17,11 @@ pub trait InputView {
     fn premise_at(&self, id: RuleId, k: usize) -> Incidence;
     fn references(&self, id: RuleId) -> &[RevisionId];
     fn validation(&self, id: RuleId, vector: &HeadVector) -> Option<&ValidationRecord>;
+    /// SD3: an enabled rule can be active only with a premise. A
+    /// reference-only rule (SD6) records references and never supports.
+    fn fires(&self, id: RuleId) -> bool {
+        self.enabled(id) && self.premises(id).next().is_some()
+    }
 }
 impl InputView for Inputs {
     fn revision_count(&self) -> usize {

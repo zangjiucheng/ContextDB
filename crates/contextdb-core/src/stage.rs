@@ -286,7 +286,7 @@ impl<'a> Stage<'a> {
         debug_assert!(r.index() >= self.published_revisions());
         self.new_rules
             .iter()
-            .any(|j| j.conclusion == r && j.enabled)
+            .any(|j| j.conclusion == r && j.enabled && !j.premises.is_empty())
     }
 }
 impl InputView for Stage<'_> {

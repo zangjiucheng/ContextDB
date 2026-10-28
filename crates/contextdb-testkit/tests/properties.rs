@@ -6,6 +6,7 @@ use contextdb_testkit::{Coverage, generate};
 #[test]
 fn prop8_i1_error_equivalence_1000_chacha8_seeds() {
     let mut coverage = Coverage::default();
+    let mut reference_only = 0;
     for seed in 0..1000 {
         let trace = generate(seed);
         assert_eq!(trace, generate(seed));
@@ -83,13 +84,14 @@ fn prop8_i1_error_equivalence_1000_chacha8_seeds() {
                 assert_eq!(db.derived(), &before);
             }
             let i = db.inputs();
+            reference_only += i.rules.iter().filter(|j| j.premises.is_empty()).count();
             assert!(i.logicals.len() <= 6);
             assert!(i.revisions.len() <= 14);
             assert!(i.rules.len() <= 10);
             assert!(
                 i.rules
                     .iter()
-                    .all(|j| !j.premises.is_empty() && j.premises.len() <= 3)
+                    .all(|j| j.premises.len() + j.references.len() > 0 && j.premises.len() <= 3)
             );
         }
     }
@@ -118,5 +120,6 @@ fn prop8_i1_error_equivalence_1000_chacha8_seeds() {
     ] {
         assert!(coverage.errors.contains_key(name), "missing {name}");
     }
-    eprintln!("P0 coverage: {coverage:?}");
+    assert!(reference_only > 0, "no reference-only rule was generated");
+    eprintln!("P0 coverage: {coverage:?}, reference-only rule states {reference_only}");
 }

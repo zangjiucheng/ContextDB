@@ -333,7 +333,10 @@ fn t39_unavailable_daemon_fails_open_or_closed() {
     let o = repo
         .hook("claude", "pre-tool-use", &edit(&repo, "s"))
         .unwrap();
-    assert!(o["systemMessage"].as_str().unwrap().contains("unavailable"));
+    assert_eq!(
+        o["systemMessage"],
+        "ContextDB unavailable (ctxd did not answer within 100 ms): action not checked"
+    );
     hold.join().unwrap();
     let _ = std::fs::remove_dir_all(&short);
     // Unavailable checks were kept for the report.

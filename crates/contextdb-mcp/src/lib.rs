@@ -181,13 +181,14 @@ fn tools() -> Value {
             "required": ["query"] } },
         { "name": "ctx_read", "description": "Read one record. certified mode fails closed unless the current head is CERTIFIED.",
           "inputSchema": { "type": "object", "properties": { "target": target, "mode": { "enum": ["certified", "advisory"] } }, "required": ["target"] } },
-        { "name": "ctx_record", "description": "Write a record. Exactly one of create_only (with key) or expected_head (key@rev) is required; deps are handles or key@rev.",
+        { "name": "ctx_record", "description": "Write a record. Exactly one of create_only (with key) or expected_head (key@rev) is required. Each dep names one revision (a handle from ctx_recall, or key@rev; a bare key is refused). Dep kinds: cur = this record holds only while that revision is its record's current head; pin = that exact revision; sem = re-validated whenever that record's head changes (the only premise kind a Summary accepts); ref = a reference that never changes status (any kind, Summary included). Deps that are all ref support nothing: such a record holds only with adopt_as_base=true.",
           "inputSchema": { "type": "object", "properties": {
               "kind": { "enum": ["decision", "plan", "fact", "evidence", "summary"] },
               "body": { "type": "string" }, "key": { "type": "string" }, "scope": { "type": "string" },
               "create_only": { "type": "boolean" }, "expected_head": { "type": "string" },
               "deps": { "type": "array", "items": { "type": "object", "properties": {
-                  "target": { "type": "string" }, "kind": { "enum": ["cur", "pin", "sem", "ref"] } }, "required": ["target", "kind"] } },
+                  "target": { "type": "string", "description": "handle or key@rev" },
+                  "kind": { "enum": ["cur", "pin", "sem", "ref"], "description": "Summary targets: sem or ref only" } }, "required": ["target", "kind"] } },
               "adopt_as_base": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
             "required": ["kind", "body", "adopt_as_base"] } },
         { "name": "ctx_supersede", "description": "Replace a record's head. carry_rules=copy copies the old head's own justification only; dependents are never rebound.",
@@ -649,6 +650,9 @@ impl<B: Backend> Server<B> {
                     })
                     .transpose()?
                     .unwrap_or_default();
+                let unsupported = !adopt_as_base
+                    && !deps.is_empty()
+                    && deps.iter().all(|d| d.kind == EdgeKind::Ref);
                 let env = self.call(Request::Record {
                     binding: binding.clone(),
                     kind,
@@ -658,7 +662,15 @@ impl<B: Backend> Server<B> {
                     adopt_as_base,
                     client_txn_id: txn(args)?,
                 })?;
-                committed(env)
+                let mut out = committed(env)?;
+                if unsupported {
+                    out["warning"] = json!(
+                        "every dep is ref, which supports nothing, and adopt_as_base is false: \
+                         the record is STALE (Unsupported); add a cur/pin/sem dep or revise it \
+                         with adopt_as_base=true"
+                    );
+                }
+                Ok(out)
             }
             "ctx_supersede" => {
                 let head = arg(args, "expected_head").ok_or("expected_head required")?;

@@ -191,6 +191,10 @@ impl Maintainer for Counting {
             self.state.unsat[j.index()] =
                 u32::try_from(index.rule_incidences(*j).len()).expect("canonical premise bound");
             self.rule(*j, i);
+            if index.rule_incidences(*j).is_empty() {
+                // A reference-only rule has no incidence to queue its conclusion.
+                self.queue(i.conclusion(*j), topo, &mut heap, stats, true);
+            }
             for id in index.rule_incidences(*j) {
                 self.incidence(IncId(id as u32), index, i, topo, &mut heap, stats, true);
             }
@@ -239,7 +243,7 @@ impl Maintainer for Counting {
             for j in self.pending_rule.remove(&r).unwrap_or_default() {
                 self.dirty_rule[j.index()] = false;
                 stats.record(Work::Rule);
-                let now = i.enabled(j) && self.state.unsat[j.index()] == 0;
+                let now = i.fires(j) && self.state.unsat[j.index()] == 0;
                 if now != self.state.counted[j.index()] {
                     self.state.counted[j.index()] = now;
                     self.state.support[r.index()] = if now {

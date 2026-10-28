@@ -447,40 +447,40 @@ fn daemon_errors_are_reported_with_code_and_detail() {
     );
 }
 
-/// The Empty warning is rendered at most every 600 s per stream and agent;
-/// one agent's warning does not silence or reset another's.
+/// The Empty warning is rendered once per stream and agent; one agent's
+/// warning does not silence another's.
 #[test]
-fn empty_warnings_are_rate_limited_per_agent() {
+fn empty_warnings_are_rendered_once_per_agent() {
     let repo = Repo::new("empty");
     let fake = Fake::start(&repo.data());
     fake.set(|s| s.check = check(Validation::Empty, Decision::Warn, Vec::new()));
-    let warned = |agent: Option<&str>| {
-        repo.hook("claude", "pre-tool-use", &repo.edit_lib("s", agent))
+    let warned_in = |session: &str, agent: Option<&str>| {
+        repo.hook("claude", "pre-tool-use", &repo.edit_lib(session, agent))
             .map(|o| {
                 assert_eq!(system(&o), "ContextDB: no certified reads back this edit");
                 assert!(context(&o).contains("(Empty)"), "{o}");
             })
             .is_some()
     };
+    let warned = |agent: Option<&str>| warned_in("s", agent);
     assert!(warned(None), "first Empty warns");
     assert!(!warned(None), "then it is rate-limited");
     assert!(warned(Some("a1")), "another agent's first warning");
     assert!(!warned(Some("a1")));
     assert!(!warned(None), "a1's warning kept the main agent's");
-    // Exactly 600 s after the last warning it warns again.
+    // However long ago, a stream and agent is warned once.
     let ob = Outbox::new(&repo.data());
     let stream = outbox::stream_id("claude", "s");
     ob.update_state(&stream, |st| {
         st.empty_warned.retain(|(a, _)| a.is_some());
-        st.empty_warned.push((None, now() - 600));
+        st.empty_warned.push((None, now() - 86_400));
     })
     .unwrap();
-    assert!(warned(None), "the limit has passed");
-    assert!(!warned(None));
+    assert!(!warned(None), "a day later it is still not repeated");
     let st = ob.state(&stream);
     assert_eq!(st.empty_warned.len(), 2, "{:?}", st.empty_warned);
-    let main = st.empty_warned.iter().find(|(a, _)| a.is_none()).unwrap().1;
-    assert!(main + 5 >= now(), "{main}");
+    // Another session's stream warns again.
+    assert!(warned_in("s2", None), "a new session's first warning");
 }
 
 /// The harness version goes with each check (ADR 0010 §10).

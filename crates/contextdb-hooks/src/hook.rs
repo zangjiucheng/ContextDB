@@ -13,10 +13,10 @@ use contextdb_proto::{
     Client,
     gate::{self, GateConfig},
     lease,
-    proto::{Binding, Envelope, Request, Response, UpdateItem},
+    proto::{Binding, Envelope, FrameError, Request, Response, UpdateItem},
 };
 use std::{
-    io::Read,
+    io::{ErrorKind, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -38,8 +38,6 @@ pub const CLAIMED_TOOLS: [&str; 11] = [
     "ctx_what_if",
     "ctx_merge",
 ];
-/// An Empty warning is rendered at most this often per stream and agent.
-const EMPTY_EVERY: u64 = 600;
 const GIT_LIMIT: Duration = Duration::from_millis(300);
 
 /// Runs `git` in `dir`, bounded by `limit`; None on error or timeout.
@@ -245,11 +243,13 @@ struct Daemon {
     /// Every call shares this deadline (review minor 6: `timeout_ms` bounds
     /// the whole check, not each read).
     deadline: Instant,
+    budget: Duration,
 }
 impl Daemon {
     /// Connects within `timeout`; every call shares the `budget` deadline.
     fn connect(data: &Path, timeout: Duration, budget: Duration) -> Result<Self, String> {
-        let deadline = Instant::now() + budget.max(timeout);
+        let budget = budget.max(timeout);
+        let deadline = Instant::now() + budget;
         let l = lease::read_lease(&data.join("ctxd.lease")).ok_or("no ctxd lease")?;
         let sock = l
             .sockets
@@ -257,7 +257,11 @@ impl Daemon {
             .find(|s| s.ends_with("agent.sock"))
             .ok_or("lease has no agent socket")?;
         let client = Client::connect_timeout(sock, timeout).map_err(|e| e.to_string())?;
-        Ok(Self { client, deadline })
+        Ok(Self {
+            client,
+            deadline,
+            budget,
+        })
     }
     fn call(&mut self, r: Request) -> Result<Envelope, String> {
         let left = self.deadline.saturating_duration_since(Instant::now());
@@ -265,7 +269,15 @@ impl Daemon {
             return Err("deadline passed".into());
         }
         self.client.set_timeout(left).map_err(|e| e.to_string())?;
-        let env = self.client.call(&r).map_err(|e| format!("{e:?}"))?;
+        let env = self.client.call(&r).map_err(|e| match e {
+            // A read timeout is EAGAIN on macOS, ETIMEDOUT elsewhere.
+            FrameError::Io(e)
+                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                format!("ctxd did not answer within {} ms", self.budget.as_millis())
+            }
+            e => format!("{e:?}"),
+        })?;
         match &env.response {
             Response::Error { code, detail } => Err(format!("{code}: {detail}")),
             _ => Ok(env),
@@ -743,7 +755,8 @@ impl Hook {
             return Output::default();
         }
         if validation == Validation::Empty {
-            // The decision is logged every time; the warning is rate-limited.
+            // The decision is logged every time; the warning is rendered once
+            // per stream and agent.
             let agent = self.agent();
             let last = self
                 .outbox
@@ -752,7 +765,7 @@ impl Hook {
                 .iter()
                 .find(|(a, _)| *a == agent)
                 .map_or(0, |(_, t)| *t);
-            if now().saturating_sub(last) < EMPTY_EVERY {
+            if last != 0 {
                 return Output::default();
             }
             let _ = self.outbox.update_state(&self.stream, |st| {

@@ -1115,7 +1115,8 @@ impl BranchOracle {
             let reason = if p.inputs.base[n] {
                 Some(PolicyReason::BaseNotAllowed)
             } else if new[1].contains(&g)
-                && !(p.inputs.rules.iter()).any(|j| j.conclusion.index() == n && j.enabled)
+                && !(p.inputs.rules.iter())
+                    .any(|j| j.conclusion.index() == n && j.enabled && !j.premises.is_empty())
             {
                 Some(PolicyReason::NoEnabledRule)
             } else {

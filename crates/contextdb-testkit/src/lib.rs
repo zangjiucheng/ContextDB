@@ -221,7 +221,13 @@ fn generate_inner(seed: u64, p1: bool) -> EventLog {
                 },
                 86..=91 if !i.rules.is_empty() && i.rules.len() < 10 => {
                     let id = RuleId(rng.next_u32() % i.rules.len() as u32);
-                    let from = i.rules[id.index()].premises[0].premise;
+                    // A reference-only rule has no premise: Rebind its first
+                    // reference (rejected as NotPremise).
+                    let rule = &i.rules[id.index()];
+                    let from = rule
+                        .premises
+                        .first()
+                        .map_or_else(|| rule.references[0], |p| p.premise);
                     let to = i
                         .revisions
                         .iter()

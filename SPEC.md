@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.10 · Date: 2026-10-26 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.11 · Date: 2026-10-28 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -113,7 +113,7 @@ role × currency 两个轴；**API 不提供默认边类型**。
 ```
 sat0(j,i)        = S(p_i) ∧ (kind_i ≠ Cur ∨ head(l(p_i)) = p_i)
 unsat(j)         = |{i : ¬sat0(j,i)}|
-active(j)        = enabled(j) ∧ unsat(j) = 0
+active(j)        = enabled(j) ∧ P(j) ≠ ∅ ∧ unsat(j) = 0     -- P(j): premise incidences；只有 Ref 的规则永不 active
 support_count(r) = |{j : concl(j)=r ∧ active(j)}|      -- 计 RuleId，不计 base，不计 derivation tree
 S(r)             = base(r) ∨ support_count(r) > 0
 ```
@@ -129,7 +129,7 @@ S(r)             = base(r) ∨ support_count(r) > 0
 图只增不减，故 enable / head 切换不可能制造环，批内逐条检查等价于检查最终图。self-loop 拒绝。经过不同 revision 的 logical 级环（`A@v1→B@v1→A@v2`）对 Pin/Cur 允许；若环上有 Sem incidence（`A@v1 -Sem→ B@1 → A@v2`），则经 `V_A` 成环而被拒绝。检测到环时整个事务拒绝，返回 `CycleDetected{op_index, path}`。递归支持见 SD17（P11）。
 
 **SD6 规范化。** premise 按 RevisionId 排序去重，保留最强类型（`Cur > Sem > Pin`）；同一 revision 若同时是 premise，其 `Ref` 丢弃。拒绝（错误名见 §6.2）：
-- 空 premise（应改用 AssertBase）→ `InvalidRule(EmptyPremises)`
+- 既无 premise 也无 `Ref`（应改用 AssertBase）→ `InvalidRule(EmptyPremises)`。只有 `Ref` 的规则（reference-only）被接受：它只记录引用（进 `refs_by_target`，可经 impact / why 查询），按 SD3 永不 active，不提供支持，结论仍需 base 或其他规则
 - self premise → `InvalidRule(SelfPremise)`
 - 同一 logical 出现两个不同 revision 作为 premise（任意 kind；`Cur`/`Cur` 不可满足，`Pin`/`Pin` 在 Pin-strict 下 L1 不可达）→ `InvalidRule(ConflictingVersions(l))`
 - premise > 1024 → `InvalidRule(TooManyPremises)`
@@ -270,10 +270,10 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 | 规则 | 内容 | 测试 |
 |---|---|---|
 | A1 结论 kind | 禁止 Evidence、CodeAnchor 作为规则结论 | T09h |
-| A2 premise kind | Summary 只能以 `Sem` incidence 被引用：摘要可以提供结构支持（SD2/SD3），但对它的任何使用都必须经过语义复核，摘要的 head 变化总是使下游 PENDING 而不是静默沿用；其余 kind 可作任意 premise | T09j |
+| A2 premise kind | Summary 作为 premise 只能用 `Sem` incidence：摘要可以提供结构支持（SD2/SD3），但对它的任何使用都必须经过语义复核，摘要的 head 变化总是使下游 PENDING 而不是静默沿用；`Ref` 不是 premise、不传递状态，可指向任何 kind（含 Summary）；其余 kind 可作任意 premise | T09j |
 | A3 body 变化 | payload 只能经 `AddRevision` 改变；**不存在**修改 revision payload 的 Op。metadata（标签、scope 收窄）经 `SetMetadata` 原地修改，不参与任何派生状态 | T09k |
 | A4 导入断链 | importer（客户端组件，如外部导入工具）对前提全部无法解析的规则提交 `OpenArtifact{ImportBroken}`，不提交 `AddRule`；内核不级联 | T09l |
-| A5 policy 锚定 | P0 policy 模型：`Policy{require_deps: Set<Kind>}`（内联于 `SetPolicy`，规范 JSON 与 hash 见 §6.1 输入契约 8）。对 `require_deps` 中 kind 的 logical，在 batch 末尾检查：(a) 本 batch 新分配的每个 revision 必须是至少一条**本 branch 可见且 enabled** 规则的结论；(b) 这些 kind 的任何 revision 在本 batch 结束时都不得为 base（新建时 `adopt_as_base=true` 或本 batch 中 `AssertBase` 都违规）。因此这类条目只能经由依赖获得支持，依赖失效时必然失去支持，A5 是强制约束而不只是声明。违反时整个事务拒绝，返回 `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}`，不产生 artifact。之后禁用唯一规则是允许的，结果是该条目 STALE。`require_deps` 中的 kind 不能用作无依赖的根事实 | T09m、T09v |
+| A5 policy 锚定 | P0 policy 模型：`Policy{require_deps: Set<Kind>}`（内联于 `SetPolicy`，规范 JSON 与 hash 见 §6.1 输入契约 8）。对 `require_deps` 中 kind 的 logical，在 batch 末尾检查：(a) 本 batch 新分配的每个 revision 必须是至少一条**本 branch 可见、enabled 且有 premise** 的规则的结论（只有 `Ref` 的规则不算）；(b) 这些 kind 的任何 revision 在本 batch 结束时都不得为 base（新建时 `adopt_as_base=true` 或本 batch 中 `AssertBase` 都违规）。因此这类条目只能经由依赖获得支持，依赖失效时必然失去支持，A5 是强制约束而不只是声明。违反时整个事务拒绝，返回 `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}`，不产生 artifact。之后禁用唯一规则是允许的，结果是该条目 STALE。`require_deps` 中的 kind 不能用作无依赖的根事实 | T09m、T09v |
 | A6 不可变 kind | Evidence 只有一个 revision（SD12） | T09i |
 | A7 受限 kind | CodeAnchor 的写操作与 `ObserverWatermark` 只接受 observer 通道（SD18.3）；oracle 自 P0 起按 `Batch.channel` 执行 | T09h、T46a |
 
@@ -485,7 +485,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - `contextdb-core` front-end：arena、canon、index、heads、undo、NaiveTopo、txn（Phase 1 + rollback + NetDelta）、`DerivedView`；查询**直接由 oracle 回答**（oracle-backed store）。
 
 **Gate P0**
-- G2：T01–T04、T06a/b/c、T07a、T07c、T09a–v、T10、T11（含 Motik et al. 2019 Ex.5 oracle golden）、T12（顺序）、T15/T15b/T15c、T15d、T15e、T16b-sem、T24、T25、T26、T28、T29、T62（oracle 版）、T63、T64、S13-rows-fn（SD13 每一行对汇总函数做纯函数 golden，维度输入为合成值）。
+- G2：T01–T04、T06a/b/c、T07a、T07c、T09a–w、T10、T11（含 Motik et al. 2019 Ex.5 oracle golden）、T12（顺序）、T15/T15b/T15c、T15d、T15e、T16b-sem、T24、T25、T26、T28、T29、T62（oracle 版）、T63、T64、S13-rows-fn（SD13 每一行对汇总函数做纯函数 golden，维度输入为合成值）。
 - G3（随机输入使用 PROP1 的生成参数）：PROP8（jacobi == kahn）1,000 seed；I1 在 1,000 seed 上成立；错误等价 1,000 seed（front-end 与 InputModel 对同一 Op 返回相同 TxError 变体及字段，检查顺序见 §6.2）。
 - G0：SEMANTICS.md 完成；SD→T 表无空行；ADR 0001 存在；未引入 §3.5 禁止机制。
 - G1：另检查 oracle 在依赖图上不可达 core。
@@ -979,12 +979,12 @@ handoffs(id, owner, state, cert_id, summary)
 | T08 | P1/P3 | 一个事务替换多个相关 head：只发布 net flip；P3 中 reader 看不到混合 epoch |
 | T08b | P1 | `J1:A→C, J2:B→C, J3:C→D` 同一 tx 撤销 A、assert B：C、D 不在 `l0_flips` 中；C 的 canonical witness 改变，故在 `status_diff` 中，D 不在；计数器 == oracle（SD8.4） |
 | T09a–d | P0 | 重复 premise 规范化；Pin+Cur 保留 Cur；同 logical 两个不同 revision（Cur/Cur、Pin/Pin、Pin/Cur）被拒 `ConflictingVersions`；重复规则 `DuplicateRule` |
-| T09e | P0 | 空 premise → `EmptyPremises` |
+| T09e | P0 | 既无 premise 也无 Ref → `EmptyPremises` |
 | T09f | P0 | self premise → `SelfPremise` |
 | T09g | P0 | 1025 个 premise → `TooManyPremises` |
 | T09h | P0 | 结论为 Evidence / CodeAnchor → `ForbiddenConclusion`；premise 已出现时其 Ref 被丢弃 |
 | T09i | P0 | 对 Evidence 的 AddRevision / SetHead → `ImmutableKind` |
-| T09j | P0 | Summary 作为 Pin/Cur premise → `ForbiddenPremise`；作为 Sem premise 被接受 |
+| T09j | P0 | Summary 作为 Pin/Cur premise → `ForbiddenPremise`；作为 Sem premise 或 Ref 被接受 |
 | T09k | P0 | 不存在修改 payload 的 Op（compile-fail doc test）；`SetMetadata` 前后 DerivedSnapshot 部分的 digest 相等 |
 | T09l | P0 | 提交只含 `OpenArtifact{ImportBroken}` 的 batch：无新规则、无派生状态变化、artifact 为 open |
 | T09m | P0 | `Policy{require_deps:{Plan}}` 生效后：新 Plan revision 只是 disabled 规则的结论 → `PolicyViolation(NoEnabledRule)`，事务无痕迹；是 enabled 规则的结论 → 接受；之后禁用该规则 → 接受，Plan 变为 STALE |
@@ -997,6 +997,7 @@ handoffs(id, owner, state, cert_id, summary)
 | T09t | P0 | Observer batch `RetractBase(anchor) + OpenArtifact(AnchorBroken, anchor) + ObserverWatermark` 原子提交成功；Observer 执行 `OpenArtifact(Conflict)` 或针对非 CodeAnchor 目标 → `ChannelRestricted`；Agent 执行 `OpenArtifact(AnchorBroken)` → `ChannelRestricted` |
 | T09u | P0 | 同一 batch `OpenArtifact` 后 `ResolveArtifact{New(0)}` 成功，`new_artifacts[0]` 绑定正确；重复 Resolve → `ArtifactNotOpen` |
 | T09v | P0 | `require_deps` 中 kind 的 revision 以 `adopt_as_base=true` 创建，或在 batch 中被 `AssertBase` → `PolicyViolation(BaseNotAllowed)` |
+| T09w | P0 | 只有 Ref 的规则被接受：unsat = 0、永不 active，结论只靠 base 成立；被引用者的状态变化不影响结论；enable 翻转后仍不 active；与已有规则相同 → `DuplicateRule` |
 | T10 | P0 | A→B 后 B→A：`CycleDetected{path}`；self-loop 被拒 |
 | T11 | P0 | 含环 batch 整体拒绝，digest/epoch 不变；oracle 对强制有环输入给出 lfp（无 base 时全 false）。Motik et al. 2019 Example 5 的 ground 形式作为 oracle golden：规则 `R(a,b)→R(b,a)`、`R(b,a)→R(a,b)`，base={R(a,b)}；撤销 base 后两者 lfp 均为 false（naive counting 会自支持）；oracle 通过 `jacobi(raw_rules)` 绕过 InputModel 的环检查 |
 | T12 | P0/P3 | 两个 writer 都期望 v1：恰好一个提交，另一个 `HeadConflict{actual}` |
@@ -1085,7 +1086,7 @@ handoffs(id, owner, state, cert_id, summary)
 
 ### 8.2 Properties（PROP）
 
-- **PROP1** randomized oracle：ChaCha8，固定 seed；≤6 logicals、≤14 revisions、≤10 rules（1–3 premise）；边类型权重 Pin 40% / Cur 25% / Sem 20% / Ref 15%；kind 混合含 Evidence、Summary；每 case ≤12 tx，每 tx 1–5 Op（含故意错误的 CAS、成环尝试、重复规则、enable 翻转、Rebind、RecordValidation）。每次 commit / reject 后检查 I1、I2（s / support / unsat / active / sat / witness / sem / l1 / l2 精确）、I3、错误等价。
+- **PROP1** randomized oracle：ChaCha8，固定 seed；≤6 logicals、≤14 revisions、≤10 rules（1–3 incidence，只有 Ref 的规则也会生成）；边类型权重 Pin 40% / Cur 25% / Sem 20% / Ref 15%；kind 混合含 Evidence、Summary；每 case ≤12 tx，每 tx 1–5 Op（含故意错误的 CAS、成环尝试、重复规则、enable 翻转、Rebind、RecordValidation）。每次 commit / reject 后检查 I1、I2（s / support / unsat / active / sat / witness / sem / l1 / l2 精确）、I3、错误等价。
 - **PROP2** `l0_flips == {r | s_prev[r] ≠ s_now[r]}`（作用域：仅 L0 结构翻转）。
 - **PROP2b** `status_diff ==` 由 oracle 前后两个快照逐维度比较得到的集合（SD8.4），包括 S 不变而 L2 / sem / currency 变化的节点（例：对新 head 的 Verified 记录使 D 从 PENDING 变 CERTIFIED）。
 - **PROP3** 每个被 pop 的节点可从某 seed 前向到达（locality soundness）。
@@ -1121,7 +1122,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | SD3 | T01–T04、T02 |
 | SD4 | T27、T25 |
 | SD5 | T10、T11、T15e、T25、T26、T72 |
-| SD6 | T09a–h、T09j、T09o |
+| SD6 | T09a–h、T09j、T09o、T09w |
 | SD7 | T28、PROP10 |
 | SD8 | T08、T08b、T22、T23、T29、PROP2、PROP2b |
 | SD9 | T06d-cur、T09n |
@@ -1302,6 +1303,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |
 | 1.6.7 | 2026-10-23 | P5b G6 标注口径（ADR 0012 r0.8，owner 决定，于重测标注之后作出并披露）：纯移动或改名计为失效（锚点须重新绑定）。walk 3 重测按此口径通过：symbol FI 18.7%（≤ 文件级 79.7% 的一半），missed +0.0 pp；原口径下 FI 70.4% 未过，一并报告 |
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
+| 1.6.11 | 2026-10-28 | 外部仓库 dogfood 的可用性修订：只有 `Ref` 的规则被接受且永不 active（SD3、SD6，T09w），agent 可以只记录引用；`Ref` 可指向 Summary（A2）；A5 只认有 premise 的规则。旧 op_log 不含此类规则，重放结果不变；含此类规则的 op_log 不能被旧二进制打开 |
 | 1.6.10 | 2026-10-26 | P5b 实现独立复核（ADR 0012 r0.9）：normaliser walk 4——任何子节点都未覆盖的源文本计入哈希（Python 字符串转义之间的文字、f-string 格式说明、Rust raw string 定界符、macro 重复分隔符），同文件上下文项的解析错误视为 symbol 的错误，Python 条件块中的语句各自成项，Go `for` 子句保留分号，分组 `var` 可提取；`CTXPOS02` 头部与版本检查只看生效锚点（Missing/Broken 锚点不再使 migrate 后的扫描永久 unavailable）；裸类型参数 self 类型保留名字（key 冻结，修订 ADR 而非代码）；同目录 rebind 搜索从未实现，ADR 据实修订。symbol 锚点需 `ctx anchors migrate`；G6 以 walk 4 重新评分 |
 | 1.6.8 | 2026-10-23 | P6 G0（ADR 0013 r0.4，独立复核 + 三轮闭环）：SD19 补充（递归可见性、branch 表与 Op、按 branch 状态与 digest、currency 按 branch 与 BRANCH_ONLY 读时标注、sync point 与 merge base、三方分类与冲突、observer 域与 anchor_unobserved、跨 branch 规则去重、session/git 绑定 D1、agent 合并 D2）；SD17 Conflict gate 提前到 P6（owner 决定），不单列 PENDING(Conflict)；§6.1 契约 12（read set）与 13（branch Op）；§6.2 新错误与 P6 检查顺序；§6.3、§6.4、§6.6、§7；T51 与 CONFLICTED 行移至 P6；T19 变体 |
 | 1.6.4 | 2026-10-22 | owner 决定取消项目人工参与门槛：标注、独立复核、dogfood 维护和验收由 agent 执行（§4.4）；P5a G6 改为 ≥200 条有来源/理由/证据的 agent 标签，人工抽查和一致率仅作可选诊断（ADR 0011 r0.6 §11）；P4/P7 评测允许 agent 参考标签，保留真实使用时长、确定性 oracle、失败状态及通道/CAS/LLM 不自证边界 |

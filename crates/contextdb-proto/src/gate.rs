@@ -33,7 +33,7 @@ impl Default for GateConfig {
             mode: GateMode::Warn,
             shell_mode: GateMode::Warn,
             fail_closed: false,
-            timeout_ms: 150,
+            timeout_ms: 500,
             rules: Vec::new(),
             source_hash: [0; 32],
         }

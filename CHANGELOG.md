@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Dependency usability** (SPEC v1.6.11), from agents writing to a second repository's store: of 18 `ctx_record` calls in one session 9 were refused, and the agent ended by dropping its deps.
+  - A record may carry only `ref` deps. The kernel accepts a reference-only rule and never counts it as support (SD3/SD6, T09w), so the record still needs `adopt_as_base`; `ctx_impact` lists it. `ctx_record` warns when every dep is `ref` and `adopt_as_base` is false.
+  - `ref` may name a Summary (A2); `cur`/`pin` on a Summary are still refused.
+  - Refused deps say which dep and what to send: a Summary named with `cur`/`pin` asks for `sem` or `ref`, and a bare key gives its current `key@rev`. The `ctx_record` tool description documents the four dep kinds.
+  - `ctx_supersede carry_rules=copy` keeps references. Writes whose deps are all `ref` count as writes without deps in the P4 telemetry.
+  - An op_log with a reference-only rule cannot be opened by an earlier binary.
+- Hooks: the default check budget is 500 ms (was 150 ms; a busy daemon took up to ~340 ms on a real repository). A timed-out check says `ctxd did not answer within N ms` instead of `Io(Os { code: 35, kind: WouldBlock … })`. The "no certified reads" warning is shown once per session and agent instead of every 10 minutes.
+
 - **P5b normaliser walk 4** (ADR 0012 r0.9, SPEC v1.6.10), from the independent implementation review. Fixed:
   - Text no child node covers is now hashed. Before, `"hello\n"` and `"bye\n"` hashed alike in Python, as did f-string text and format specifiers, Rust raw strings and `macro_rules!` separators.
   - A same-file helper, constant or import that does not parse marks the symbols that use it as erroneous instead of giving them a new revision.

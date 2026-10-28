@@ -65,7 +65,7 @@ impl Maintainer for FullRecompute {
                     next.sat[n] = yes;
                     next.unsat[j.index()] += u32::from(!yes);
                 }
-                let active = i.enabled(*j) && next.unsat[j.index()] == 0;
+                let active = i.fires(*j) && next.unsat[j.index()] == 0;
                 next.counted[j.index()] = active;
                 next.support[r.index()] += u32::from(active);
                 if active && next.witness[r.index()].is_none() {

@@ -307,7 +307,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(*r);
             }
             let holds = |j: RuleId| {
-                view.enabled(j)
+                view.fires(j)
                     && view.premises(j).all(|p| {
                         c.s[p.premise.index()]
                             && (p.kind != EdgeKind::Cur

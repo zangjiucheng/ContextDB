@@ -85,7 +85,7 @@ impl InputModel {
                 && !staged
                     .rules
                     .iter()
-                    .any(|j| j.conclusion.index() == r && j.enabled)
+                    .any(|j| j.conclusion.index() == r && j.enabled && !j.premises.is_empty())
             {
                 Some(PolicyReason::NoEnabledRule)
             } else {
@@ -382,7 +382,7 @@ fn canonical(
             .and_modify(|old| *old = (*old).max(*k))
             .or_insert(*k);
     }
-    if !map.values().any(|k| *k != EdgeKind::Ref) {
+    if map.is_empty() {
         return Err(TxError::InvalidRule(InvalidRule::EmptyPremises));
     }
     if map
@@ -409,10 +409,9 @@ fn canonical(
     ) {
         return Err(TxError::InvalidRule(InvalidRule::ForbiddenConclusion));
     }
-    if map
-        .iter()
-        .any(|(r, k)| kind(i, *r) == RecordKind::Summary && *k != EdgeKind::Sem)
-    {
+    if map.iter().any(|(r, k)| {
+        kind(i, *r) == RecordKind::Summary && !matches!(k, EdgeKind::Sem | EdgeKind::Ref)
+    }) {
         return Err(TxError::InvalidRule(InvalidRule::ForbiddenPremise));
     }
     let (mut premises, mut references) = (Vec::new(), Vec::new());

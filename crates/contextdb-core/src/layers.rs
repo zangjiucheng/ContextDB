@@ -291,7 +291,7 @@ impl LayerColumns {
             self.sem[j.index()] = sem;
             for level in 0..2 {
                 self.active[j.index()][level] =
-                    i.enabled(j) && gate(sem, level) && self.unsat[j.index()][level] == 0;
+                    i.fires(j) && gate(sem, level) && self.unsat[j.index()][level] == 0;
             }
         }
         self.node(i, c, index, r);
@@ -464,7 +464,7 @@ impl LayerColumns {
                 }
                 out.unsat[j.index()] = unsat;
                 for (level, u) in unsat.iter().enumerate() {
-                    out.active[j.index()][level] = i.enabled(*j) && gate(sem, level) && *u == 0;
+                    out.active[j.index()][level] = i.fires(*j) && gate(sem, level) && *u == 0;
                 }
             }
             out.node(i, c, index, *r);

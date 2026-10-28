@@ -366,14 +366,14 @@ gate(mode: GateMode, verdict: &Validation) -> Decision     // daemon (Check), CL
 | Ambiguous, Conflicted, Invalid (any), Denied | warn | deny |
 
 - **`Off`:** allow, with no daemon call.
-- **Empty never allows (I6).** The hook *renders* an Empty warning at most once every 10 minutes per stream and agent, but logs the decision every time.
+- **Empty never allows (I6).** The hook *renders* an Empty warning once per stream and agent (every 10 minutes before SPEC v1.6.11, which repeated it for hours in long sessions), but logs the decision every time.
 - **Reasons** name the stale items, the agent whose read put each into the view (so reviewers can label child-read false denies), and how to clear the decision, in at most 480 bytes.
 
 ### 6.2 Configuration
 
 - **Source.** `.contextdb/gating.toml`, committed to the repository.
 - **Compiled form.** `ctx gating apply` validates the file and writes `<data dir>/gating.wire`: a `GateConfig` plus the source hash. The hook reads only this file.
-- **Defaults** when no compiled file exists: `mode = "warn"`, `on_unavailable = "open"`, `timeout_ms = 150`.
+- **Defaults** when no compiled file exists: `mode = "warn"`, `on_unavailable = "open"`, `timeout_ms = 500` (150 before SPEC v1.6.11: a busy daemon answered PreToolUse in up to ~340 ms on a real repository, and every such check went unchecked). A timed-out check says `ctxd did not answer within N ms` instead of the raw I/O error (EAGAIN on macOS).
 - **Data directory lookup.** In order:
   1. `CTX_DIR`;
   2. `<root>/.contextdb/dir.wire`, written by `ctx hooks install` from `.contextdb/config.toml`;

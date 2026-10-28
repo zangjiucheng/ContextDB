@@ -233,6 +233,49 @@ fn store_code(e: &StoreError) -> (String, String) {
         }
     }
 }
+/// `key@rev` and kind of each resolved dep, for rule error messages.
+fn dep_names(
+    db: &BranchView<'_>,
+    deps: &[(RevRef, EdgeKind)],
+) -> Vec<(String, RecordKind, EdgeKind)> {
+    (deps.iter())
+        .filter_map(|(r, k)| {
+            let RevRef::Existing(r) = r else { return None };
+            let (key, kind, _) = db.logical_info(db.revision_logical(*r)?)?;
+            Some((format!("{key}@{}", r.0), kind, *k))
+        })
+        .collect()
+}
+/// Says which dep a rejected `ctx_record` rule names and what to send instead
+/// (the kernel's error carries no dep).
+fn explain_rule_error(response: Response, deps: &[(String, RecordKind, EdgeKind)]) -> Response {
+    let Response::Error { code, detail } = &response else {
+        return response;
+    };
+    if code != "InvalidRule" {
+        return response;
+    }
+    let hint = if detail.contains("ForbiddenPremise") {
+        let names: Vec<_> = (deps.iter())
+            .filter(|(_, kind, k)| {
+                *kind == RecordKind::Summary && matches!(k, EdgeKind::Cur | EdgeKind::Pin)
+            })
+            .map(|(n, _, _)| n.as_str())
+            .collect();
+        format!(
+            "{} is a Summary: depend on a Summary with kind \"sem\" (re-validated when it \
+             changes) or \"ref\" (a reference that never changes status), not cur or pin",
+            names.join(", ")
+        )
+    } else if detail.contains("ConflictingVersions") {
+        "two deps name different revisions of one record; keep one".into()
+    } else if detail.contains("ForbiddenConclusion") {
+        "an Evidence record cannot have deps; record it without deps".into()
+    } else {
+        return response;
+    };
+    err(code, format!("{detail}: {hint}"))
+}
 fn err(code: &str, detail: impl Into<String>) -> Response {
     Response::Error {
         code: code.into(),
@@ -1802,9 +1845,21 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         _ => return Err(err("InvalidDep", "explicit key@rev does not exist")),
                     },
                     Target::Logical(_) | Target::Key(_) => {
+                        let (logical, name) = match &d.target {
+                            Target::Key(k) => (db.logical_by_key(k), k.clone()),
+                            Target::Logical(l) => (Some(*l), format!("logical {}", l.0)),
+                            _ => unreachable!(),
+                        };
+                        let hint = match logical.and_then(|l| db.head(l)) {
+                            Some(h) => format!("; its current head is {name}@{}", h.0),
+                            None => format!("; {name} does not exist"),
+                        };
                         return Err(err(
                             "InvalidDep",
-                            "deps must be handles or explicit logical@rev",
+                            format!(
+                                "a dep names one revision: give a handle from ctx_recall or \
+                                 key@rev{hint}"
+                            ),
                         ));
                     }
                 };
@@ -1835,6 +1890,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(v) => v,
             Err(r) => return r,
         };
+        let named = dep_names(&snap.view(branch), &incidences);
         drop(snap);
         let content = *blake3::hash(&body).as_bytes();
         let mut ops = match target {
@@ -1861,8 +1917,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 },
             ],
         };
-        let with_deps = !incidences.is_empty();
-        if with_deps {
+        // A reference-only rule records references but supports nothing.
+        let with_deps = incidences.iter().any(|(_, k)| *k != EdgeKind::Ref);
+        if !incidences.is_empty() {
             ops.push(Op::AddRule {
                 conclusion: RevRef::New(0),
                 incidences,
@@ -1872,7 +1929,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let txn = txn.unwrap_or_else(random_id);
         let mut batch = Batch::new(ops);
         batch.branch = branch;
-        let response = self.commit(id, vec![body], batch, Some(txn));
+        let response = explain_rule_error(self.commit(id, vec![body], batch, Some(txn)), &named);
         if let Response::Committed { result } = &response {
             self.wrote(
                 session,
@@ -1952,13 +2009,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if carry_rules {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
-            for (_, enabled, premises, _) in snap.view(branch).rules_concluding(expected_head) {
+            for (_, enabled, premises, refs) in snap.view(branch).rules_concluding(expected_head) {
                 if enabled {
                     ops.push(Op::AddRule {
                         conclusion: RevRef::New(0),
-                        incidences: premises
-                            .iter()
+                        incidences: (premises.iter())
                             .map(|p| (RevRef::Existing(p.premise), p.kind))
+                            .chain(refs.iter().map(|r| (RevRef::Existing(*r), EdgeKind::Ref)))
                             .collect(),
                         enabled: true,
                     });
@@ -1966,9 +2023,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
         drop(snap);
-        let with_deps = ops
-            .iter()
-            .any(|op| matches!(op, Op::AddRule { incidences, .. } if !incidences.is_empty()));
+        let with_deps = ops.iter().any(|op| {
+            matches!(op, Op::AddRule { incidences, .. }
+                if incidences.iter().any(|(_, k)| *k != EdgeKind::Ref))
+        });
         let txn = txn.unwrap_or_else(random_id);
         let mut batch = Batch::new(ops);
         batch.branch = branch;

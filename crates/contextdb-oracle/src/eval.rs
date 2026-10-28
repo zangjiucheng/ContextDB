@@ -20,7 +20,8 @@ pub fn jacobi(i: &Inputs) -> DerivedSnapshot {
     loop {
         let mut next: Vec<_> = i.base.iter().map(|b| [*b; 3]).collect();
         for (n, j) in i.rules.iter().enumerate() {
-            if !j.enabled {
+            // SD3: a reference-only rule never fires.
+            if !j.enabled || j.premises.is_empty() {
                 continue;
             }
             let sem = semantic(i, RuleId(n as u32));
@@ -80,7 +81,7 @@ pub fn kahn(i: &Inputs) -> Result<DerivedSnapshot, Vec<CycleNode>> {
                 .rules
                 .iter()
                 .enumerate()
-                .filter(|(_, j)| j.conclusion == r && j.enabled)
+                .filter(|(_, j)| j.conclusion == r && j.enabled && !j.premises.is_empty())
             {
                 let gate = semantic(i, RuleId(id as u32));
                 let mut succeeds = [true; 3];
@@ -154,18 +155,19 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
         .rules
         .iter()
         .enumerate()
-        .map(|(n, j)| j.enabled && unsat[n] == 0)
+        .map(|(n, j)| j.enabled && !j.premises.is_empty() && unsat[n] == 0)
         .collect();
     let layer_active: Vec<_> = i
         .rules
         .iter()
         .enumerate()
         .map(|(n, j)| {
+            let fires = j.enabled && !j.premises.is_empty();
             [
-                j.enabled
+                fires
                     && sem[n] != SemState::Rejected
                     && j.premises.iter().all(|p| literal(i, &t, p, 1)),
-                j.enabled
+                fires
                     && matches!(sem[n], SemState::Verified | SemState::NotRequired)
                     && j.premises.iter().all(|p| literal(i, &t, p, 2)),
             ]
