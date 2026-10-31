@@ -71,7 +71,7 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 | `contextdb-daemon` | `ctxd`: single-writer daemon, snapshot publication, local IPC, sessions and gating |
 | `contextdb-proto` | IPC protocol, lease discovery, blocking client, gate predicate, hook outbox |
 | `contextdb-mcp` | `ctx-mcp`: MCP stdio client |
-| `contextdb-hooks` | `ctx-hook`: Claude Code / Codex hook adapters |
+| `contextdb-hooks` | `ctx-hook`: Claude Code / Codex / OpenCode hook adapters |
 | `contextdb-anchors` | File-anchor observer: Git OID capture, classification, commit |
 | `contextdb-cli` | `ctx`: operations, checks, anchors, gating, setup and hook installation |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | Goldens, property tests, replay, workload generation and benchmarks |
@@ -94,15 +94,15 @@ curl -fsSL https://raw.githubusercontent.com/zangjiucheng/ContextDB/main/install
 
 # 2. Connect a repository in one step
 cd /path/to/repo
-ctx setup                          # Claude Code and Codex by default; --harness claude|codex for one
+ctx setup                          # Claude Code and Codex by default; --harness claude|codex|opencode for one, all for the three
 ```
 
 `ctx setup`:
 
 - creates the data directory (default `<repo>/.contextdb/db`) and adds it to `.git/info/exclude`;
 - starts `ctxd` through a per-repository user service (launchd on macOS, systemd `--user` on Linux), so it starts at login and restarts after a crash. A `ctxd` that is already running is left alone. If it was started by hand, `ctx shutdown <dir>` followed by `ctx setup` hands it to the service. Without a usable service manager (an SSH session, CI), `ctxd` is started detached and setup says so. `--no-service` starts it detached on purpose; `--no-start` starts nothing. If a `ctxd` speaking another protocol version already serves the directory, setup reports an error and changes nothing;
-- registers the `contextdb` MCP server per project: `.mcp.json` for Claude Code, `.codex/config.toml` for Codex, keeping all other configuration;
-- installs the hooks for each harness (`.claude/settings.local.json`, `.codex/hooks.json`) with the default gating mode `warn`;
+- registers the `contextdb` MCP server per project: `.mcp.json` for Claude Code, `.codex/config.toml` for Codex, `opencode.json` for OpenCode, keeping all other configuration;
+- installs the hooks for each harness (`.claude/settings.local.json`, `.codex/hooks.json`, the OpenCode plugin `.opencode/plugins/contextdb/`) with the default gating mode `warn`;
 - keeps the files it writes out of Git, since they hold machine-specific paths: untracked ones are added to `.git/info/exclude`, and a tracked one (e.g. a team `.mcp.json`) gets a warning. Commit `.contextdb/gating.toml` and `.contextdb/policy.toml` to share gating and policy.
 
 Then follow the prompts: approve the project MCP server the next time Claude Code starts, and open `/hooks` in Codex to trust the new hooks. Re-running `ctx setup` is idempotent. `ctx service status <dir>` shows the service and `ctxd`; `ctx service uninstall <dir>` removes the service (after a deliberate `ctx shutdown`, the service does not restart `ctxd`).
@@ -216,7 +216,7 @@ ctx shutdown <dir>
 
 ### Hooks and action gating (P4)
 
-`ctx-hook <claude|codex> <event>` is the hook command for Claude Code (2.1.306) and Codex CLI (0.163.0): it reads one hook event from stdin, prints at most one JSON object, and always exits 0 (ADR 0010).
+`ctx-hook <claude|codex|opencode> <event>` is the hook command for Claude Code (2.1.306) and Codex CLI (0.163.0): it reads one hook event from stdin, prints at most one JSON object, and always exits 0 (ADR 0010). OpenCode 2.0 has plugins instead of hook commands: `ctx hooks install --harness opencode` writes a plugin that calls `ctx-hook opencode <event>` with the same stdin and maps its answer back. A deny fails the tool call, a warning follows the tool's output, and the briefing and per-turn context go into the system prompt. OpenCode's MCP calls carry their session id, so no claim is needed, and a subagent's child session is its own ContextDB session (ADR 0014).
 
 - **Install**: `ctx hooks install --harness claude|codex --project <repo> --dir <data dir>` merges the hooks into `.claude/settings.json` or `.codex/hooks.json`, keeping any other hooks; reinstalling changes nothing, and `uninstall` removes only ContextDB's entries. **Codex runs new hooks only after you trust them** (open `/hooks` in Codex, or accept the startup review), and again after every change. `ctx setup` does this for you.
 - **Session binding**: each hook event binds to a ctxd session by the harness's `session_id`. MCP calls bind by the tool-call id the harness puts in `_meta`: Codex sends `sessionId` / `threadId` directly; for Claude Code, the PreToolUse hook claims the `tool_use_id` first. A call without an id uses `ctx-mcp`'s own session and is marked `unclaimed`; nothing is guessed from content.

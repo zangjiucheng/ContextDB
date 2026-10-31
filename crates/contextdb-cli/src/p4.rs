@@ -573,9 +573,9 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
         let dir = Path::new(args.get(1).ok_or("usage: ctx hooks flush <dir>")?);
         return flush(dir);
     }
-    let harness = flag(args, "--harness").ok_or("--harness claude|codex is required")?;
-    if !matches!(harness, "claude" | "codex") {
-        return Err("--harness must be claude or codex".into());
+    let harness = flag(args, "--harness").ok_or("--harness claude|codex|opencode is required")?;
+    if !matches!(harness, "claude" | "codex" | "opencode") {
+        return Err("--harness must be claude, codex or opencode".into());
     }
     let exe = match flag(args, "--ctx-hook") {
         Some(p) => PathBuf::from(p),
@@ -588,6 +588,9 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
         .map_err(|e| format!("{}: {e}", exe.display()))?;
     let exe = exe.to_string_lossy().into_owned();
     let project = flag(args, "--project").map(PathBuf::from);
+    if harness == "opencode" {
+        return opencode_hooks(sub, &exe, project, flag(args, "--dir").map(PathBuf::from));
+    }
     let base = match &project {
         Some(p) => p.clone(),
         None => home()?,
@@ -672,7 +675,7 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
                 strip(h, &exe);
             }
         }
-        _ => return Err("usage: ctx hooks install|uninstall --harness claude|codex [--project ROOT] [--dir DATA] [--ctx-hook PATH] [--mcp-name NAME]; ctx hooks flush <dir>".into()),
+        _ => return Err("usage: ctx hooks install|uninstall --harness claude|codex|opencode [--project ROOT] [--dir DATA] [--ctx-hook PATH] [--mcp-name NAME]; ctx hooks flush <dir>".into()),
     }
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -689,6 +692,77 @@ pub fn hooks(args: &[String]) -> Result<u8, String> {
         println!(
             "Codex runs new or edited hooks only after you trust them: open /hooks in Codex (or accept the startup review)."
         );
+    }
+    Ok(0)
+}
+/// The OpenCode 2.0 plugin (ADR 0014 §3): `ctx-hook` path filled in.
+const OPENCODE_PLUGIN: &str = include_str!("../assets/opencode/plugin.js");
+/// Marks a plugin directory as ContextDB's, so uninstall removes only it.
+const OPENCODE_MARKER: &str = "// contextdb-hook-plugin:";
+/// Where `ctx hooks install --harness opencode` writes its plugin: OpenCode
+/// loads `.opencode/plugins/<name>/index.js` of the project, or of the
+/// user's config directory, by itself.
+pub fn opencode_plugin_dir(project: Option<&Path>) -> Result<PathBuf, String> {
+    Ok(match project {
+        Some(p) => p.join(".opencode/plugins/contextdb"),
+        None => home()?.join(".config/opencode/plugins/contextdb"),
+    })
+}
+fn opencode_hooks(
+    sub: &str,
+    exe: &str,
+    project: Option<PathBuf>,
+    data: Option<PathBuf>,
+) -> Result<u8, String> {
+    let dir = opencode_plugin_dir(project.as_deref())?;
+    let file = dir.join("index.js");
+    let ours = |f: &Path| std::fs::read_to_string(f).is_ok_and(|t| t.starts_with(OPENCODE_MARKER));
+    match sub {
+        "install" => {
+            if file.exists() && !ours(&file) {
+                return Err(format!(
+                    "{} exists and is not ContextDB's plugin: not overwritten",
+                    file.display()
+                ));
+            }
+            let quoted = serde_json::to_string(exe).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let tmp = file.with_extension("js.ctx-tmp");
+            std::fs::write(&tmp, OPENCODE_PLUGIN.replace("__CTX_HOOK__", &quoted))
+                .map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
+            if let (Some(root), Some(d)) = (&project, &data) {
+                let dot = root.join(".contextdb");
+                std::fs::create_dir_all(&dot).map_err(|e| e.to_string())?;
+                std::fs::write(dot.join("dir.wire"), d.to_string_lossy().into_owned().canonical_bytes())
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(d) = &data {
+                Outbox::new(d)
+                    .mark_appenders()
+                    .map_err(|e| format!("outbox marker: {e}"))?;
+                println!(
+                    "Reinstall the hooks of every harness that uses {} (earlier hook binaries do not announce edits).",
+                    d.display()
+                );
+                if let Ok(out) = std::process::Command::new("opencode").arg("--version").output() {
+                    let v = String::from_utf8_lossy(&out.stdout);
+                    let v = v.split_whitespace().last().unwrap_or("").trim_start_matches('v');
+                    let _ = std::fs::write(d.join("opencode.version"), v);
+                }
+            }
+            println!("installed ContextDB hooks for opencode in {}", file.display());
+            println!("OpenCode loads the plugin when it next opens this project (restart a running OpenCode).");
+        }
+        "uninstall" => {
+            if ours(&file) {
+                std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+                println!("uninstalled ContextDB hooks for opencode from {}", dir.display());
+            } else {
+                println!("no ContextDB plugin in {}", dir.display());
+            }
+        }
+        _ => return Err("usage: ctx hooks install|uninstall --harness claude|codex|opencode [--project ROOT] [--dir DATA] [--ctx-hook PATH] [--mcp-name NAME]; ctx hooks flush <dir>".into()),
     }
     Ok(0)
 }

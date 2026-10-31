@@ -1,4 +1,4 @@
-//! `ctx-hook <claude|codex> <event>`: one hook event from stdin, at most one
+//! `ctx-hook <claude|codex|opencode> <event>`: one hook event from stdin, at most one
 //! JSON object on stdout, always exit 0 (ADR 0010 §3.4). A hook must never
 //! break the harness: bad arguments and failures print nothing.
 use contextdb_hooks::{
@@ -17,7 +17,7 @@ fn main() {
         args.first().and_then(|h| Harness::parse(h)),
         args.get(1).and_then(|e| EventName::from_arg(e)),
     ) else {
-        eprintln!("usage: ctx-hook <claude|codex> <event>");
+        eprintln!("usage: ctx-hook <claude|codex|opencode> <event>");
         return;
     };
     let mut stdin = String::new();

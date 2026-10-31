@@ -231,8 +231,9 @@ fn tools() -> Value {
 }
 /// The session a `tools/call` acts for, from the harness's `_meta` (ADR 0010
 /// §2): Codex sends its thread ids, Claude Code the tool-use id its
-/// PreToolUse hook claimed. None: no harness binding (use this server's own
-/// session, as in P3).
+/// PreToolUse hook claimed, OpenCode 2.0 its session id (ADR 0014 §2; a
+/// subagent runs in its own child session). None: no harness binding (use
+/// this server's own session, as in P3).
 pub fn meta_binding(meta: &Value) -> Option<Binding> {
     let s = |k: &str| {
         meta.get(k)
@@ -245,6 +246,13 @@ pub fn meta_binding(meta: &Value) -> Option<Binding> {
             harness: "codex".into(),
             harness_session: session.into(),
             agent: (thread != session).then(|| thread.into()),
+        });
+    }
+    if let Some(session) = s("ai.opencode/sessionID") {
+        return Some(Binding::Key {
+            harness: "opencode".into(),
+            harness_session: session.into(),
+            agent: None,
         });
     }
     s("claudecode/toolUseId").map(|id| Binding::Call { id: id.into() })

@@ -188,6 +188,48 @@ fn claude_mcp(project: &Path, mcp: &Path, dir: &Path) -> Result<&'static str, St
     Ok(verb)
 }
 
+/// OpenCode project config (ADR 0014 §4): `mcp.contextdb` as a local server
+/// in `opencode.json`. A JSONC config is not rewritten (comments would be
+/// lost); the entry to add is printed instead.
+fn opencode_mcp(project: &Path, mcp: &Path, dir: &Path) -> Result<&'static str, String> {
+    let entry = json!({ "type": "local", "command": [utf8(mcp)?, utf8(dir)?], "enabled": true });
+    let file = project.join("opencode.json");
+    if !file.exists() && project.join("opencode.jsonc").exists() {
+        return Err(format!(
+            "{} is JSONC and is not rewritten: add \"mcp\": {{\"contextdb\": {entry}}} to it, then run ctx setup --harness opencode again",
+            project.join("opencode.jsonc").display()
+        ));
+    }
+    let mut config: Value = match std::fs::read_to_string(&file) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", file.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            json!({ "$schema": "https://opencode.ai/config.json" })
+        }
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let servers = config
+        .as_object_mut()
+        .ok_or("opencode.json is not an object")?
+        .entry("mcp")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("opencode.json mcp is not an object")?;
+    if servers.get("contextdb") == Some(&entry) {
+        return Ok("unchanged");
+    }
+    let verb = if servers.contains_key("contextdb") {
+        "updated"
+    } else {
+        "added"
+    };
+    servers.insert("contextdb".into(), entry);
+    replace(
+        &file,
+        &(serde_json::to_string_pretty(&config).map_err(|e| e.to_string())? + "\n"),
+    )?;
+    Ok(verb)
+}
+
 /// Codex project MCP config: the `[mcp_servers.contextdb]` table is added or
 /// rewritten in place; every other line (comments included) is kept.
 fn codex_mcp(project: &Path, mcp: &Path, dir: &Path) -> Result<&'static str, String> {
@@ -244,7 +286,7 @@ fn codex_mcp(project: &Path, mcp: &Path, dir: &Path) -> Result<&'static str, Str
     Ok(if start.is_some() { "updated" } else { "added" })
 }
 
-const SETUP_USAGE: &str = "usage: ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-service] [--no-start]";
+const SETUP_USAGE: &str = "usage: ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|opencode|both|all] [--no-service] [--no-start]\n  both = claude and codex; all = claude, codex and opencode";
 
 /// `ctx setup`: data dir, daemon, MCP registration and hooks in one step.
 pub fn setup(args: &[String]) -> Result<u8, String> {
@@ -261,7 +303,9 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
     let harnesses: &[&str] = match flag(args, "--harness").unwrap_or("both") {
         "claude" => &["claude"],
         "codex" => &["codex"],
+        "opencode" => &["opencode"],
         "both" => &["claude", "codex"],
+        "all" => &["claude", "codex", "opencode"],
         _ => return Err(SETUP_USAGE.into()),
     };
     let dir = flag(args, "--dir")
@@ -294,14 +338,10 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
         }
     }
     for h in harnesses {
-        let verb = match *h {
-            "claude" => claude_mcp(&project, &mcp, &dir)?,
-            _ => codex_mcp(&project, &mcp, &dir)?,
-        };
-        let file = if *h == "claude" {
-            ".mcp.json"
-        } else {
-            ".codex/config.toml"
+        let (verb, file) = match *h {
+            "claude" => (claude_mcp(&project, &mcp, &dir)?, ".mcp.json"),
+            "opencode" => (opencode_mcp(&project, &mcp, &dir)?, "opencode.json"),
+            _ => (codex_mcp(&project, &mcp, &dir)?, ".codex/config.toml"),
         };
         println!("  {h:10} MCP server contextdb {verb} in {file}");
         let install: Vec<String> = [
@@ -327,6 +367,9 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
     if harnesses.contains(&"codex") {
         generated.extend([".codex/config.toml", ".codex/hooks.json"]);
     }
+    if harnesses.contains(&"opencode") {
+        generated.extend(["opencode.json", ".opencode/plugins/contextdb/"]);
+    }
     let (added, tracked) = exclude_generated(&project, &generated)?;
     if !added.is_empty() {
         println!(
@@ -347,6 +390,11 @@ pub fn setup(args: &[String]) -> Result<u8, String> {
     }
     if harnesses.contains(&"codex") {
         println!("  - Codex: open /hooks (or accept the startup review) to trust the new hooks.");
+    }
+    if harnesses.contains(&"opencode") {
+        println!(
+            "  - OpenCode: restart it in this project so it loads the plugin and the MCP server."
+        );
     }
     if unmanaged {
         println!(
@@ -675,6 +723,50 @@ mod tests {
         std::fs::write(p.join(".mcp.json"), "[1]").unwrap();
         assert!(claude_mcp(&p, mcp, dir).is_err(), "not an object: refused");
         let _ = std::fs::remove_dir_all(p);
+    }
+    #[test]
+    fn opencode_mcp_adds_a_local_server_and_leaves_jsonc_alone() {
+        let p = temp("opencode");
+        let (mcp, dir) = (Path::new("/bin/ctx-mcp"), Path::new("/data"));
+        assert_eq!(opencode_mcp(&p, mcp, dir).unwrap(), "added");
+        let read = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(p.join("opencode.json")).unwrap())
+                .unwrap()
+        };
+        let v = read();
+        assert_eq!(v["$schema"], "https://opencode.ai/config.json");
+        assert_eq!(
+            v["mcp"]["contextdb"],
+            json!({ "type": "local", "command": ["/bin/ctx-mcp", "/data"], "enabled": true })
+        );
+        assert_eq!(opencode_mcp(&p, mcp, dir).unwrap(), "unchanged");
+        std::fs::write(
+            p.join("opencode.json"),
+            r#"{"mcp":{"other":{"type":"local","command":["x"]}},"theme":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(opencode_mcp(&p, mcp, dir).unwrap(), "added");
+        let v = read();
+        assert_eq!(
+            (v["theme"].clone(), v["mcp"]["other"]["command"][0].clone()),
+            (json!("t"), json!("x"))
+        );
+        assert_eq!(
+            opencode_mcp(&p, mcp, Path::new("/data2")).unwrap(),
+            "updated"
+        );
+        // A JSONC config (and no opencode.json) is never rewritten.
+        let q = temp("opencode-jsonc");
+        std::fs::write(q.join("opencode.jsonc"), "// mine\n{}\n").unwrap();
+        let e = opencode_mcp(&q, mcp, dir).unwrap_err();
+        assert!(e.contains("JSONC") && e.contains("contextdb"), "{e}");
+        assert_eq!(
+            std::fs::read_to_string(q.join("opencode.jsonc")).unwrap(),
+            "// mine\n{}\n"
+        );
+        assert!(!q.join("opencode.json").exists());
+        let _ = std::fs::remove_dir_all(p);
+        let _ = std::fs::remove_dir_all(q);
     }
     #[test]
     fn codex_mcp_rewrites_only_its_table_and_keeps_comments() {

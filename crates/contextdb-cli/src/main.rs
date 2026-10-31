@@ -52,14 +52,14 @@ Hooks and gating (P4, ADR 0010):
                                        commit a policy (admin; kernel-enforced)
   ctx gating apply <dir> [--file .contextdb/gating.toml]
                                        compile gating for the hooks
-  ctx hooks install|uninstall --harness claude|codex [--project ROOT]
+  ctx hooks install|uninstall --harness claude|codex|opencode [--project ROOT]
             [--dir DATA] [--ctx-hook PATH] [--mcp-name NAME]
   ctx hooks flush <dir>                deliver every pending outbox fact now
   ctx gate-report P4 <dir> [--out FILE]
                                        dogfood numbers (false-deny, coverage, ...)
   ctx dogfood review <dir>             label warn/deny decisions and sampled allows
 Setup (one repository; binaries installed together, scripts/install.sh):
-  ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|both] [--no-start]
+  ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|opencode|both|all] [--no-start]
                                        data dir, ctxd, project MCP config, hooks
   ctx service install|uninstall|restart|status <dir> [--no-load]
                                        launchd (macOS) / systemd --user service

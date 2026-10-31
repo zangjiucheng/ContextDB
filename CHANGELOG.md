@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **OpenCode 2.0 as a third harness** (ADR 0014).
+  - `ctx setup --harness opencode` (or `all`) registers the MCP server in `opencode.json` and installs a plugin in `.opencode/plugins/contextdb/`.
+  - The plugin sends every event to `ctx-hook opencode <event>`. The same certificate check warns or denies `edit`, `write`, `patch` and `shell`; the briefing and per-turn context reach the system prompt; edits are recorded and drift is reported.
+  - MCP calls bind by OpenCode's `_meta["ai.opencode/sessionID"]`.
+  - Verified on OpenCode 2.0.32: the model reads the briefing, and `ctxd` holds the session's stream. A gated edit was tested with a fake OpenCode context and through `ctx-hook`, not yet live.
 - `ctx ui` follows P5a–P6 and v1.6.11:
   - It replays the op_log with the multi-branch kernel. Before, any log with a branch op failed with `replay diverged`.
   - A branch selector shows one branch at a time, the timeline names each commit's branch, and open Conflict artifacts are listed on their target.

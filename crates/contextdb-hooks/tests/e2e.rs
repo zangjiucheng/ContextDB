@@ -125,6 +125,17 @@ fn patch(repo: &Repo, session: &str) -> Value {
             "tool_input": { "command": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-a\n+b\n*** End Patch\n" } }),
     )
 }
+/// The Claude-shaped stdin the OpenCode 2.0 plugin sends for its `edit`
+/// tool (ADR 0014 §3); `ai.opencode/sessionID` names the same session.
+fn opencode_edit(repo: &Repo, session: &str) -> Value {
+    input(
+        "PreToolUse",
+        session,
+        &repo.root,
+        json!({ "tool_name": "edit", "tool_use_id": "call_o",
+            "tool_input": { "path": "src/lib.rs", "oldString": "a", "newString": "b" } }),
+    )
+}
 fn agent(d: &Daemon) -> Client {
     Client::connect(d.socket(Channel::Agent)).unwrap()
 }
@@ -202,7 +213,7 @@ fn enforce() -> GateConfig {
 }
 
 /// T38: a stale read makes PreToolUse warn (warn mode) or deny (enforce),
-/// for both harnesses, with a reason of at most 480 bytes naming the read.
+/// for every harness, with a reason of at most 480 bytes naming the read.
 #[test]
 fn t38_stale_plan_warns_or_denies_with_a_short_reason() {
     let repo = Repo::new("t38");
@@ -213,6 +224,7 @@ fn t38_stale_plan_warns_or_denies_with_a_short_reason() {
     for (harness, session, stdin) in [
         ("claude", "s-claude", edit(&repo, "s-claude")),
         ("codex", "s-codex", patch(&repo, "s-codex")),
+        ("opencode", "ses_o", opencode_edit(&repo, "ses_o")),
     ] {
         repo.gating(GateConfig {
             timeout_ms: 5_000,

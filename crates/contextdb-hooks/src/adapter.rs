@@ -1,5 +1,6 @@
-//! Harness adapters (ADR 0010 §3): hook stdin of Claude Code 2.1.306 and
-//! Codex CLI 0.163.0 → one normalised event. Parsing is lenient (unknown
+//! Harness adapters (ADR 0010 §3, ADR 0014): hook stdin of Claude Code
+//! 2.1.306, Codex CLI 0.163.0 and the OpenCode 2.0 plugin (which sends
+//! Claude-shaped stdin) → one normalised event. Parsing is lenient (unknown
 //! fields are ignored, only what an event needs is required); a missing
 //! required field is `Unparsed`, which the binary treats like an unavailable
 //! daemon and always reports (§3.1).
@@ -11,12 +12,14 @@ use serde_json::Value;
 pub enum Harness {
     Claude,
     Codex,
+    OpenCode,
 }
 impl Harness {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -24,6 +27,7 @@ impl Harness {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -165,6 +169,22 @@ pub fn classify(harness: Harness, tool: &str, input: &Value) -> Kind {
             let text = s("command").unwrap_or_default();
             action(ToolClass::Patch, patch::paths(&text), None)
         }
+        // OpenCode 2.0 built-in tools (ADR 0014 §3); 1.x plugins said filePath.
+        (Harness::OpenCode, "edit") => action(
+            ToolClass::Edit,
+            s("path").or_else(|| s("filePath")).into_iter().collect(),
+            None,
+        ),
+        (Harness::OpenCode, "write") => action(
+            ToolClass::Write,
+            s("path").or_else(|| s("filePath")).into_iter().collect(),
+            None,
+        ),
+        (Harness::OpenCode, "patch" | "apply_patch") => {
+            let text = s("patchText").unwrap_or_default();
+            action(ToolClass::Patch, patch::paths(&text), None)
+        }
+        (Harness::OpenCode, "shell" | "bash") => action(ToolClass::Shell, Vec::new(), s("command")),
         (Harness::Claude, "Bash" | "PowerShell" | "Monitor") | (Harness::Codex, "Bash") => {
             let command = s("command");
             // Codex intercepts `apply_patch` heredocs run through the shell.
@@ -299,6 +319,40 @@ mod tests {
             pre(Harness::Claude, "Read", json!({})),
             Kind::OtherTool { .. }
         ));
+    }
+    #[test]
+    fn opencode_tools() {
+        let h = Harness::OpenCode;
+        assert!(matches!(
+            pre(h, "edit", json!({ "path": "src/a.rs", "oldString": "x", "newString": "y" })),
+            Kind::PreTool { action } if action.tool == ToolClass::Edit && action.paths == ["src/a.rs"]
+        ));
+        assert!(matches!(
+            pre(h, "write", json!({ "filePath": "/r/b.rs", "content": "" })),
+            Kind::PreTool { action } if action.tool == ToolClass::Write && action.paths == ["/r/b.rs"]
+        ));
+        let patch = "*** Begin Patch\n*** Add File: src/c.rs\n+x\n*** End Patch\n";
+        assert!(matches!(
+            pre(h, "patch", json!({ "patchText": patch })),
+            Kind::PreTool { action } if action.tool == ToolClass::Patch && action.paths == ["src/c.rs"]
+        ));
+        assert!(matches!(
+            pre(h, "shell", json!({ "command": "cargo test", "workdir": "." })),
+            Kind::PreTool { action } if action.tool == ToolClass::Shell && action.command.as_deref() == Some("cargo test")
+        ));
+        // Code mode and reads are neither gated nor recorded; MCP calls bind
+        // through `_meta`, not through the hook.
+        for tool in ["execute", "read", "grep", "subagent"] {
+            assert!(
+                matches!(pre(h, tool, json!({})), Kind::OtherTool { .. }),
+                "{tool}"
+            );
+        }
+        assert!(matches!(
+            pre(Harness::Claude, "edit", json!({ "path": "a" })),
+            Kind::OtherTool { .. }
+        ));
+        assert_eq!(Harness::parse("opencode"), Some(h));
     }
     #[test]
     fn unparsed_inputs() {

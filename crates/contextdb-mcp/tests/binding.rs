@@ -102,6 +102,16 @@ fn meta_keys_of_both_harnesses_map_to_bindings() {
             id: "toolu_1".into()
         })
     );
+    // OpenCode 2.0 sends its session id (a subagent's is its child session).
+    assert_eq!(
+        meta_binding(&json!({ "ai.opencode/sessionID": "ses_1" })),
+        Some(Binding::Key {
+            harness: "opencode".into(),
+            harness_session: "ses_1".into(),
+            agent: None
+        })
+    );
+    assert_eq!(meta_binding(&json!({ "ai.opencode/sessionID": "" })), None);
     assert_eq!(meta_binding(&json!({})), None);
     assert_eq!(meta_binding(&Value::Null), None);
 }

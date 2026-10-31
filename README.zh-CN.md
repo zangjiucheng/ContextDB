@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/zangjiucheng/ContextDB/main/install
 
 # 2. 在要使用的仓库里一键接入
 cd /path/to/repo
-ctx setup                          # 默认同时接入 Claude Code 和 Codex；--harness claude|codex 只接一个
+ctx setup                          # 默认同时接入 Claude Code 和 Codex；--harness claude|codex|opencode 只接一个，all 接入三个
 
 # 3. 可选：让 ctxd 开机自启、崩溃后自动重启
 ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --user
@@ -104,7 +104,7 @@ ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --use
 - 创建数据目录（默认 `<repo>/.contextdb/db`），并加入 `.git/info/exclude`；
 - 启动 `ctxd`（若已有一个协议版本不同的 `ctxd` 在服务该目录，则报错并且不做任何改动）；
 - 在项目级注册 MCP 服务器 `contextdb`：Claude Code 写 `.mcp.json`，Codex 写 `.codex/config.toml`，其他配置原样保留；
-- 为每个 harness 安装 hooks（`.claude/settings.local.json`、`.codex/hooks.json`），默认门控模式为 `warn`；
+- 为每个 harness 安装 hooks（`.claude/settings.local.json`、`.codex/hooks.json`、OpenCode 插件 `.opencode/plugins/contextdb/`），默认门控模式为 `warn`；OpenCode 的 MCP 服务写入 `opencode.json`；
 - 它写入的文件含本机绝对路径，因此不进 Git：未跟踪的加入 `.git/info/exclude`，已被跟踪的（如团队共享的 `.mcp.json`）给出警告。要共享门控与 policy，提交 `.contextdb/gating.toml` 和 `.contextdb/policy.toml`。
 
 之后按提示操作：Claude Code 下次启动时批准项目 MCP 服务器；Codex 中打开 `/hooks` 信任新 hook。重复运行 `ctx setup` 是幂等的；`ctx service status <dir>` 查看服务与 `ctxd` 状态，`ctx service uninstall <dir>` 移除服务（`ctx shutdown` 主动停止后服务不会再拉起）。
@@ -220,6 +220,7 @@ ctx shutdown <dir>
 `ctx-hook <claude|codex> <event>` 是 Claude Code（2.1.306）与 Codex CLI（0.163.0）的 hook 命令：从 stdin 读一个 hook 事件，最多输出一个 JSON 对象，总是以 0 退出（ADR 0010）。
 
 - **安装**：`ctx hooks install --harness claude|codex --project <repo> --dir <data dir>` 把 hook 合并进 `.claude/settings.json` 或 `.codex/hooks.json`，保留已有的其他 hook；重复安装不变，`uninstall` 只删除 ContextDB 的条目。**Codex 只在你信任新 hook 后才运行它们**（Codex 中打开 `/hooks`，或在启动审查时确认），之后每次修改都要重新信任。
+- **OpenCode 2.0**：没有 hook 命令，只有插件。`ctx hooks install --harness opencode` 生成一个插件，它把每个事件以同样的 stdin 交给 `ctx-hook opencode <event>`，再把结果映射回去：deny 让工具调用失败，警告附在工具输出之后，briefing 与本轮上下文进入 system prompt。OpenCode 的 MCP 调用自带会话 id，不需要 claim；子 agent 的子会话是独立的 ContextDB 会话（ADR 0014）。
 - **会话绑定**：每个 hook 事件按 harness 的 `session_id` 绑定到一个 ctxd 会话。MCP 调用按 harness 在 `_meta` 中给出的 tool-call id 绑定：Codex 直接带 `sessionId` / `threadId`；Claude Code 由 PreToolUse hook 先 claim `tool_use_id`。没有 id 的调用使用 `ctx-mcp` 自己的会话并标记 `unclaimed`，从不按内容猜测。
 - **Subagent**：子 agent 与根共用会话，按 agent 分视图：子 agent 继承根的读取；子 agent 的读取进入根的视图；根自己读过的 logical 以根的条目为准。
 - **PreToolUse**：Edit / Write / MultiEdit / NotebookEdit / Bash（Claude）与 `apply_patch` / Bash（Codex）在执行前校验本会话证书。`warn` 模式加一段上下文说明哪些读取变了；`enforce` 模式对 Invalid / Conflicted / Denied / Ambiguous 拒绝，理由不超过 480 字节；放行时不输出（不会绕过 harness 自己的权限提示）。没有任何 certified 读取（`Empty`）永远不算通过，只警告（每 10 分钟最多提示一次，但每次都记录）。

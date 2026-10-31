@@ -403,9 +403,12 @@ impl Hook {
                         .map(|n| n.to_string_lossy().into_owned())
                 })
                 .unwrap_or_default(),
-            Harness::Codex => std::fs::read_to_string(self.data.join("codex.version"))
-                .map(|s| s.trim().to_owned())
-                .unwrap_or_default(),
+            // Written by `ctx hooks install` (neither passes a version).
+            Harness::Codex | Harness::OpenCode => {
+                std::fs::read_to_string(self.data.join(format!("{}.version", self.harness.name())))
+                    .map(|s| s.trim().to_owned())
+                    .unwrap_or_default()
+            }
         }
     }
     /// Repository-relative paths. git reports canonical paths, the harness
