@@ -4,10 +4,12 @@
 
 **A context database with invalidation proofs, shared by multiple AI coding agents.**
 
-When several agents (Claude Code, Codex and their subagents) work in the same repository at once, the decisions, conventions and plans they rely on keep changing. ContextDB stores that context, and the dependencies between items, as an AND/OR justification DAG. When an upstream item is superseded, retracted, or the code it refers to changes, everything downstream is marked **precisely** STALE or PENDING, while conclusions that still have other support are left alone. Before an agent writes a file or runs a command, it checks a certificate that the context it read is still valid.
+When several agents (Claude Code, Codex, OpenCode and their subagents) work in the same repository at once, the decisions, conventions and plans they rely on keep changing. ContextDB stores that context, and the dependencies between items, as an AND/OR justification DAG. When an upstream item is superseded, retracted, or the code it refers to changes, everything downstream is marked **precisely** STALE or PENDING, while conclusions that still have other support are left alone. Before an agent writes a file or runs a command, it checks a certificate that the context it read is still valid.
 
-- **Specification**: [`SPEC.md`](SPEC.md) (v1.6.4, the only normative document; written mainly in Chinese with English systems terminology)
-- **Status**: P0–P3 have passed their gates; P4 and P5a are implemented and going through their gates (see [Phases and status](#phases-and-status))
+- **Specification**: [`SPEC.md`](SPEC.md) (v1.6.11, the only normative document; written mainly in Chinese with English systems terminology)
+- **Architecture**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (diagrams)
+- **Status**: P0–P3 have passed their gates; P4–P6 are implemented and pass every layer, and their phase gates wait on P4's real-use dogfood report (no earlier than 2026-11-04; see [Phases and status](#phases-and-status))
+- **Harnesses**: Claude Code, Codex CLI and OpenCode 2.0, through MCP tools and hooks
 - **Stack and license**: Rust 1.95.0, Apache-2.0
 
 ## Why
@@ -41,23 +43,19 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has diagrams of the processes and channels, the crates, a write inside `ctxd`, the data directory, the kernel, hook gating across the three harnesses, and code anchors.
 
-```
- Claude Code / Codex (+ subagents)
-   │  MCP (ctx-mcp, stdio)          │  hooks (ctx-hook): SessionStart, PreToolUse,
-   │  ctx_recall / ctx_read /       │  PostToolUse, Stop ... → local outbox
-   │  ctx_record / ctx_check ...    │
-   ▼                                ▼
- ┌──────────────────── ctxd (one per data directory) ────────────────────┐
- │  agent.sock / observer.sock / admin.sock (the socket decides the channel) │
- │  group-commit actor → incremental counting kernel (contextdb-core)        │
- │  sessions, read ledgers, certificates (session log)                       │
- │  live sampling of code anchors (contextdb-anchors)                        │
- └──────────────────────────────────┬────────────────────────────────────────┘
-                                    ▼
-   <data dir>/log/      own append-only op_log, blake3 hash chain: the only source of truth
-   <data dir>/blobs/    self-verifying payload packs
-   SQLite               rebuildable projections and FTS search
- git hooks / ctx anchors watch ──observer.sock──▶ anchor changes + watermark (CAS)
+```mermaid
+flowchart LR
+  H["Claude Code · Codex · OpenCode<br/>(+ subagents)"]
+  M["ctx-mcp<br/>MCP tools: recall, read, record, check, commit, merge ..."]
+  K["ctx-hook<br/>SessionStart, PreToolUse, PostToolUse, Stop ...<br/>(OpenCode through its plugin)"]
+  OBS["observer<br/>git hooks, ctx anchors scan / watch"]
+  CTXD[("ctxd, one per data dir<br/>agent / observer / admin sockets<br/>group-commit actor, counting kernel,<br/>sessions and certificates")]
+  LOG[("op_log: hash-chained, the only source of truth<br/>blobs · session log · rebuildable SQLite")]
+  H -- "MCP tools" --> M --> CTXD
+  H -- hooks --> K --> CTXD
+  K -. "outbox when ctxd is down" .-> LOG
+  OBS -- "anchors + watermark (CAS)" --> CTXD
+  CTXD --> LOG
 ```
 
 - **The op_log is the only source of truth**: all kernel state is replayed from it; SQLite holds only rebuildable projections. A commit is published and acknowledged only after its frame is written and synced.
@@ -75,6 +73,7 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 | `contextdb-mcp` | `ctx-mcp`: MCP stdio client |
 | `contextdb-hooks` | `ctx-hook`: Claude Code / Codex / OpenCode hook adapters |
 | `contextdb-anchors` | File-anchor observer: Git OID capture, classification, commit |
+| `contextdb-symbols` | Symbol anchors: tree-sitter extraction and the normaliser (observer side only; `ctxd` never links it) |
 | `contextdb-cli` | `ctx`: operations, checks, anchors, gating, setup and hook installation |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | Goldens, property tests, replay, workload generation and benchmarks |
 
@@ -107,9 +106,9 @@ ctx setup                          # Claude Code and Codex by default; --harness
 - installs the hooks for each harness (`.claude/settings.local.json`, `.codex/hooks.json`, the OpenCode plugin `.opencode/plugins/contextdb/`) with the default gating mode `warn`;
 - keeps the files it writes out of Git, since they hold machine-specific paths: untracked ones are added to `.git/info/exclude`, and a tracked one (e.g. a team `.mcp.json`) gets a warning. Commit `.contextdb/gating.toml` and `.contextdb/policy.toml` to share gating and policy.
 
-Then follow the prompts: approve the project MCP server the next time Claude Code starts, and open `/hooks` in Codex to trust the new hooks. Re-running `ctx setup` is idempotent. `ctx service status <dir>` shows the service and `ctxd`; `ctx service uninstall <dir>` removes the service (after a deliberate `ctx shutdown`, the service does not restart `ctxd`).
+Then follow the prompts: approve the project MCP server the next time Claude Code starts, open `/hooks` in Codex to trust the new hooks, and restart OpenCode in the project so it loads the plugin. Re-running `ctx setup` is idempotent. `ctx service status <dir>` shows the service and `ctxd`; `ctx service uninstall <dir>` removes the service (after a deliberate `ctx shutdown`, the service does not restart `ctxd`).
 
-Once connected, agents read the decisions they rely on with `ctx_recall` / `ctx_read` (certified mode) and record decisions and plans with `ctx_record` (with `deps`). When PreToolUse finds that context the agent read is out of date, it adds an explanation without blocking; switch to `enforce` once the false-alarm rate is low enough (see the P4 section below). Other common commands:
+Once connected, agents read the decisions they rely on with `ctx_recall` / `ctx_read` (certified mode) and record decisions and plans with `ctx_record` (with `deps`; a refused dep says which one and what to send instead). When PreToolUse finds that context the agent read is out of date, it adds an explanation without blocking; switch to `enforce` once the false-alarm rate is low enough (see the P4 section below). Other common commands:
 
 ```sh
 ctx anchors add .contextdb/db . src/main.rs docs/design.md   # register key files as code anchors
@@ -195,11 +194,13 @@ ctx export <dir>        # export as EventLog v0 JSONL
 |---|---|
 | `ctx_recall` | Search by key / body (FTS5); certified mode returns only CERTIFIED items, with handles usable as deps (`<12 hex>.<idx>`) |
 | `ctx_read` | Read one record; certified mode fails unless the current head is CERTIFIED |
-| `ctx_record` | Create (`create_only` + `key`) or revise by CAS (`expected_head = key@rev`); deps are handles or `key@rev` |
+| `ctx_record` | Create (`create_only` + `key`) or revise by CAS (`expected_head = key@rev`). Each dep is a handle or `key@rev` with a kind: `cur`, `pin`, `sem` (the only premise kind a Summary accepts) or `ref` (a reference that never changes status). Deps that are all `ref` support nothing, so such a record holds only with `adopt_as_base` |
 | `ctx_supersede` | Replace a head; `carry_rules=copy` copies only the old head's own justifications, and downstream rules are never rebound automatically |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | Explain why something holds or not, and list what depends on it |
 | `ctx_check` | Check this session's certificate (this agent's view): verdict, diffs, and the reads that changed since the last acknowledgement (`context_update`, peeked not consumed); optionally with `action{tool, paths, command}` |
 | `ctx_txn_status` | Look up `Committed{epoch}` or `NotCommitted` by `client_txn_id` |
+| `ctx_commit` / `ctx_what_if` | Several ops atomically on the session's branch (optionally only while the session certificate is valid), or a dry run of them (P6) |
+| `ctx_branch` / `ctx_merge` | Create, list or archive branches; merge one into another (P6) |
 
 P3 does not offer `ctx_validate` to agents.
 
@@ -218,12 +219,12 @@ ctx shutdown <dir>
 
 ### Hooks and action gating (P4)
 
-`ctx-hook <claude|codex|opencode> <event>` is the hook command for Claude Code (2.1.306) and Codex CLI (0.163.0): it reads one hook event from stdin, prints at most one JSON object, and always exits 0 (ADR 0010). OpenCode 2.0 has plugins instead of hook commands: `ctx hooks install --harness opencode` writes a plugin that calls `ctx-hook opencode <event>` with the same stdin and maps its answer back. A deny fails the tool call, a warning follows the tool's output, and the briefing and per-turn context go into the system prompt. OpenCode's MCP calls carry their session id, so no claim is needed, and a subagent's child session is its own ContextDB session (ADR 0014).
+`ctx-hook <claude|codex|opencode> <event>` is the hook command for Claude Code (2.1.306), Codex CLI (0.163.0) and OpenCode (2.0.32, through its plugin): it reads one hook event from stdin, prints at most one JSON object, and always exits 0 (ADR 0010). OpenCode 2.0 has plugins instead of hook commands: `ctx hooks install --harness opencode` writes a plugin that calls `ctx-hook opencode <event>` with the same stdin and maps its answer back. A deny fails the tool call, a warning follows the tool's output, and the briefing and per-turn context go into the system prompt. OpenCode's MCP calls carry their session id, so no claim is needed, and a subagent's child session is its own ContextDB session (ADR 0014).
 
-- **Install**: `ctx hooks install --harness claude|codex --project <repo> --dir <data dir>` merges the hooks into `.claude/settings.json` or `.codex/hooks.json`, keeping any other hooks; reinstalling changes nothing, and `uninstall` removes only ContextDB's entries. **Codex runs new hooks only after you trust them** (open `/hooks` in Codex, or accept the startup review), and again after every change. `ctx setup` does this for you.
-- **Session binding**: each hook event binds to a ctxd session by the harness's `session_id`. MCP calls bind by the tool-call id the harness puts in `_meta`: Codex sends `sessionId` / `threadId` directly; for Claude Code, the PreToolUse hook claims the `tool_use_id` first. A call without an id uses `ctx-mcp`'s own session and is marked `unclaimed`; nothing is guessed from content.
-- **Subagents**: a subagent shares its root's session with a per-agent view: it inherits the root's reads, its reads enter the root's view, and the root's own reads of a logical take precedence.
-- **PreToolUse**: Edit / Write / MultiEdit / NotebookEdit / Bash (Claude) and `apply_patch` / Bash (Codex) check the session certificate before running. `warn` mode adds context explaining which reads changed; `enforce` mode denies on Invalid / Conflicted / Denied / Ambiguous with a reason of at most 480 bytes; an allow prints nothing (it never bypasses the harness's own permission prompts). A session with no certified reads (`Empty`) never counts as passing; it only warns (at most once every 10 minutes, but every occurrence is recorded).
+- **Install**: `ctx hooks install --harness claude|codex|opencode --project <repo> --dir <data dir>` merges the hooks into `.claude/settings.local.json` (personal and untracked) or `.codex/hooks.json`, keeping any other hooks, or writes the OpenCode plugin to `.opencode/plugins/contextdb/`. Reinstalling changes nothing, and `uninstall` removes only ContextDB's entries. **Codex runs new hooks only after you trust them** (open `/hooks` in Codex, or accept the startup review), and again after every change. `ctx setup` does this for you.
+- **Session binding**: each hook event binds to a ctxd session by the harness's `session_id`. MCP calls bind by the tool-call id the harness puts in `_meta`: Codex sends `sessionId` / `threadId` directly, OpenCode sends `ai.opencode/sessionID`; for Claude Code, the PreToolUse hook claims the `tool_use_id` first. A call without an id uses `ctx-mcp`'s own session and is marked `unclaimed`; nothing is guessed from content.
+- **Subagents**: a Claude Code or Codex subagent shares its root's session with a per-agent view: it inherits the root's reads, its reads enter the root's view, and the root's own reads of a logical take precedence. An OpenCode subagent runs in its own child session, which is a separate ContextDB session (more warnings, never a false allow).
+- **PreToolUse**: Edit / Write / MultiEdit / NotebookEdit / Bash (Claude), `apply_patch` / Bash (Codex) and `edit` / `write` / `patch` / `shell` (OpenCode) check the session certificate before running. `warn` mode adds context explaining which reads changed; `enforce` mode denies on Invalid / Conflicted / Denied / Ambiguous with a reason of at most 480 bytes; an allow prints nothing (it never bypasses the harness's own permission prompts). A session with no certified reads (`Empty`) never counts as passing; it warns once per session and agent, and every occurrence is recorded. A check that does not get an answer in time says `ctxd did not answer within N ms`.
 - **Gating configuration**: `.contextdb/gating.toml` (`mode = off|warn|enforce`, `shell_mode`, `on_unavailable = open|closed`, `timeout_ms`, `[[rule]]` per tool / path glob) takes effect after `ctx gating apply <dir>`. Defaults: `warn`, fail-open, 500 ms. If the daemon is unreachable, times out or the input cannot be parsed, `open` only notes it and `closed` denies; outside a ContextDB repository nothing happens.
 - **context_update**: UserPromptSubmit appends the reads that changed since the last acknowledgement to the new prompt as `<context_update epoch=…>`, without rewriting the existing prefix (keeps the prompt cache); they are acknowledged with the next prompt, and lost output is sent again.
 - **Outbox and drift**: PostToolUse writes facts to a local outbox first (`<data dir>/outbox/`, self-verifying records, a monotonic seq per stream), then delivers them; the daemon applies them idempotently by `(stream, seq)`, and `ctxd` delivers leftover streams at start and every 30 s. Stop / SubagentStop / PreCompact compare Git's actual changes with the recorded edits and report "files changed without a record" (such as Bash side effects) as a `systemMessage`. Drift is reported, never gated, and is an upper bound: changes by people or by agents without hooks also appear.
@@ -326,7 +327,7 @@ Heavier verification:
 ```sh
 cargo test --release --locked -p contextdb-testkit --test exhaustive -- --ignored --nocapture   # finite-state exhaustive exploration
 bash scripts/gate-regression.sh     # earlier phases' G2/G3/G4 at gate counts
-bash scripts/mutation.sh            # cargo-mutants (also mutation-p4.sh, mutation-p5a.sh)
+bash scripts/mutation.sh            # cargo-mutants (also mutation-p4.sh, -p5a, -p5b, -p6)
 bash scripts/fuzz.sh                # cargo-fuzz targets
 bash scripts/remote.sh run <name> <cmd...>   # long jobs on the remote Linux host
 ```
@@ -338,7 +339,8 @@ bash scripts/remote.sh run <name> <cmd...>   # long jobs on the remote Linux hos
 | Path | Contents |
 |---|---|
 | [`SPEC.md`](SPEC.md) | Normative specification: semantics, architecture, verification, phase plan, interfaces, test catalogue, threat model (mainly Chinese) |
-| [`docs/adr/`](docs/adr/) | Design decision records for each phase (ADR 0001–0011) |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Architecture diagrams: processes, crates, writes, data directory, kernel, hooks, anchors |
+| [`docs/adr/`](docs/adr/) | Design decision records (ADR 0001–0014) |
 | [`docs/gates/`](docs/gates/) | Gate evidence, review records and benchmark results per phase |
 | [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) | Current implementation and gate status |
 | [`docs/SEMANTICS.md`](docs/SEMANTICS.md) | Mapping from semantic clauses to tests |

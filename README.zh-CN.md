@@ -4,10 +4,12 @@
 
 **多个 AI coding agent 共用的、带失效证明的上下文数据库。**
 
-当几个 agent（Claude Code、Codex、它们的 subagent）在同一个仓库里并行工作时，它们依赖的决策、约定和计划会不断变化。ContextDB 把这些上下文和它们之间的依赖存成一张 AND/OR justification DAG：上游被替换、撤回，或者被引用的代码变了，下游会被**精确**标记为 STALE 或 PENDING，而仍有其他支持的结论不受影响。agent 在写文件、执行命令之前，用一张 certificate 校验自己读过的上下文是否仍然有效。
+当几个 agent（Claude Code、Codex、OpenCode 以及它们的 subagent）在同一个仓库里并行工作时，它们依赖的决策、约定和计划会不断变化。ContextDB 把这些上下文和它们之间的依赖存成一张 AND/OR justification DAG：上游被替换、撤回，或者被引用的代码变了，下游会被**精确**标记为 STALE 或 PENDING，而仍有其他支持的结论不受影响。agent 在写文件、执行命令之前，用一张 certificate 校验自己读过的上下文是否仍然有效。
 
-- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.4，唯一具规范性的文档，中文为主）
-- **当前状态**：P0–P3 已通过；P4 与 P5a 已实现，正在走 Gate（见 [阶段与状态](#阶段与状态)）
+- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.11，唯一具规范性的文档，中文为主）
+- **架构**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（图）
+- **当前状态**：P0–P3 已通过；P4–P6 已实现，各层验证均已通过，阶段 Gate 等待 P4 真实使用的 dogfood 报告（最早 2026-11-04；见 [阶段与状态](#阶段与状态)）
+- **支持的 harness**：Claude Code、Codex CLI、OpenCode 2.0，经由 MCP 工具与 hook 接入
 - **语言与许可**：Rust 1.95.0，Apache-2.0
 
 ## 为什么需要它
@@ -41,23 +43,19 @@
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 用图说明进程与通道、crate、`ctxd` 内的一次写入、数据目录、内核、三种 harness 的 hook 门控，以及代码锚点。
 
-```
- Claude Code / Codex (+ subagents)
-   │  MCP (ctx-mcp, stdio)          │  hooks (ctx-hook): SessionStart, PreToolUse,
-   │  ctx_recall / ctx_read /       │  PostToolUse, Stop ... → 本地 outbox
-   │  ctx_record / ctx_check ...    │
-   ▼                                ▼
- ┌──────────────────── ctxd（每个数据目录一个）────────────────────┐
- │  agent.sock / observer.sock / admin.sock（channel 由 socket 决定） │
- │  group commit actor → 增量 counting 内核（contextdb-core）         │
- │  会话、读取账本、certificate（session log）                       │
- │  代码锚点的实时采样（contextdb-anchors）                          │
- └───────────────────────────────┬──────────────────────────────────┘
-                                 ▼
-   <data dir>/log/      自有 append-only op_log，blake3 hash 链：唯一真相源
-   <data dir>/blobs/    自校验的 payload pack
-   SQLite               可重建的投影与 FTS 检索
- git hooks / ctx anchors watch ──observer.sock──▶ 锚点变化 + watermark（CAS）
+```mermaid
+flowchart LR
+  H["Claude Code · Codex · OpenCode<br/>(+ subagents)"]
+  M["ctx-mcp<br/>MCP 工具：recall、read、record、check、commit、merge ..."]
+  K["ctx-hook<br/>SessionStart、PreToolUse、PostToolUse、Stop ...<br/>（OpenCode 经由插件）"]
+  OBS["observer<br/>git hooks、ctx anchors scan / watch"]
+  CTXD[("ctxd，每个数据目录一个<br/>agent / observer / admin socket<br/>group commit actor、counting 内核、<br/>会话与 certificate")]
+  LOG[("op_log：hash 链，唯一真相源<br/>blobs · session log · 可重建的 SQLite")]
+  H -- "MCP 工具" --> M --> CTXD
+  H -- hooks --> K --> CTXD
+  K -. "ctxd 不可用时写 outbox" .-> LOG
+  OBS -- "锚点 + watermark（CAS）" --> CTXD
+  CTXD --> LOG
 ```
 
 - **op_log 是唯一真相源**：内核状态全部由日志重放得到；SQLite 只是可重建的投影。帧落盘并 sync 之后才发布和返回。
@@ -75,6 +73,7 @@
 | `contextdb-mcp` | `ctx-mcp`：MCP stdio 客户端 |
 | `contextdb-hooks` | `ctx-hook`：Claude Code / Codex hook 适配 |
 | `contextdb-anchors` | 文件锚点 observer：Git OID 捕获、分类、提交 |
+| `contextdb-symbols` | symbol 锚点：tree-sitter 提取与 normaliser（只在 observer 一侧；`ctxd` 从不链接它） |
 | `contextdb-cli` | `ctx`：运维、检查、锚点、门控与 hook 安装 |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | golden、属性测试、回放、负载生成与基准 |
 
@@ -109,9 +108,9 @@ ctx service install .contextdb/db  # macOS 用 launchd，Linux 用 systemd --use
 - 为每个 harness 安装 hooks（`.claude/settings.local.json`、`.codex/hooks.json`、OpenCode 插件 `.opencode/plugins/contextdb/`），默认门控模式为 `warn`；OpenCode 的 MCP 服务写入 `opencode.json`；
 - 它写入的文件含本机绝对路径，因此不进 Git：未跟踪的加入 `.git/info/exclude`，已被跟踪的（如团队共享的 `.mcp.json`）给出警告。要共享门控与 policy，提交 `.contextdb/gating.toml` 和 `.contextdb/policy.toml`。
 
-之后按提示操作：Claude Code 下次启动时批准项目 MCP 服务器；Codex 中打开 `/hooks` 信任新 hook。重复运行 `ctx setup` 是幂等的；`ctx service status <dir>` 查看服务与 `ctxd` 状态，`ctx service uninstall <dir>` 移除服务（`ctx shutdown` 主动停止后服务不会再拉起）。
+之后按提示操作：Claude Code 下次启动时批准项目 MCP 服务器；Codex 中打开 `/hooks` 信任新 hook；OpenCode 在该项目中重启一次以加载插件。重复运行 `ctx setup` 是幂等的；`ctx service status <dir>` 查看服务与 `ctxd` 状态，`ctx service uninstall <dir>` 移除服务（`ctx shutdown` 主动停止后服务不会再拉起）。
 
-接入后，agent 用 `ctx_recall` / `ctx_read`（certified 模式）读取它依赖的决策，用 `ctx_record`（带 `deps`）记录决策与计划。PreToolUse 发现读过的上下文已过时会附上说明而不拦截；确认误报率足够低后再改为 `enforce`（见下文 P4 一节）。其他常用操作：
+接入后，agent 用 `ctx_recall` / `ctx_read`（certified 模式）读取它依赖的决策，用 `ctx_record`（带 `deps`；被拒的依赖会说明是哪一条、应改成什么）记录决策与计划。PreToolUse 发现读过的上下文已过时会附上说明而不拦截；确认误报率足够低后再改为 `enforce`（见下文 P4 一节）。其他常用操作：
 
 ```sh
 ctx anchors add .contextdb/db . src/main.rs docs/design.md   # 把关键文件注册为代码锚点
@@ -135,8 +134,8 @@ ctx ui .contextdb/db                                          # 只读上下文�
 | P3 | 守护进程、MCP 与 certified read | ✅ 通过 |
 | P4 | Hooks 与 action gating | 🟡 已实现；除 ≥ 2 周真实使用的 dogfood 外全部通过（报告最早 2026-11-04） |
 | P5a | 文件级 code anchors | 🟡 已实现；除依赖 P4 外全部通过 |
-| P5b | symbol 级 code anchors | 计划中 |
-| P6 | 版本化事务、branch 与 WHAT_IF | 计划中 |
+| P5b | symbol 级 code anchors | 🟡 已实现；各层与独立复核均通过（walk 4），只等 P5a / P4 |
+| P6 | 版本化事务、branch 与 WHAT_IF | 🟡 已实现；G0–G5、G7、G8 与独立复核通过；阶段 Gate 等待 P5b、P5a 与 P4 |
 | P7 | 语义验证与冲突 | 计划中 |
 | P8 | 检索、打包与 git 镜像 | 计划中 |
 | P9 | 主体、权限与安全（硬隔离、crypto-shred） | 计划中 |
@@ -197,11 +196,13 @@ ctx export <dir>        # 导出为 EventLog v0 JSONL
 |---|---|
 | `ctx_recall` | 按 key / 正文检索（FTS5）；certified 模式只返回 CERTIFIED 条目，并给出可作 dep 的 handle（`<12 hex>.<idx>`） |
 | `ctx_read` | 读一条记录；certified 模式下当前 head 不是 CERTIFIED 就失败 |
-| `ctx_record` | 新建（`create_only` + `key`）或按 CAS 修订（`expected_head = key@rev`），deps 用 handle 或 `key@rev` |
+| `ctx_record` | 新建（`create_only` + `key`）或按 CAS 修订（`expected_head = key@rev`）。每条依赖是 handle 或 `key@rev`，并带类型：`cur`、`pin`、`sem`（Summary 作为前提只接受这一种）或 `ref`（只是引用，从不改变状态）。依赖全部是 `ref` 时不提供支持，记录只能靠 `adopt_as_base` 成立 |
 | `ctx_supersede` | 替换 head；`carry_rules=copy` 只复制旧 head 自己的 justification，下游规则从不自动改绑 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | 解释成立 / 不成立的原因，列出依赖它的记录 |
 | `ctx_check` | 校验本会话（本 agent 视图）的证书，给出判定、diff 和自上次确认以来变化的读取（`context_update`，只 peek 不消费）；可带 `action{tool, paths, command}` |
 | `ctx_txn_status` | 按 `client_txn_id` 查询 `Committed{epoch}` 或 `NotCommitted` |
+| `ctx_commit` / `ctx_what_if` | 在本会话的 branch 上原子提交多个 op（可要求会话证书此刻仍有效），或只演练不提交（P6） |
+| `ctx_branch` / `ctx_merge` | 创建、列出、归档 branch；把一个 branch 合并进另一个（P6） |
 
 P3 不向 agent 提供 `ctx_validate`。
 
@@ -219,14 +220,14 @@ ctx shutdown <dir>
 
 ### Hooks 与 action gating（P4）
 
-`ctx-hook <claude|codex> <event>` 是 Claude Code（2.1.306）与 Codex CLI（0.163.0）的 hook 命令：从 stdin 读一个 hook 事件，最多输出一个 JSON 对象，总是以 0 退出（ADR 0010）。
+`ctx-hook <claude|codex|opencode> <event>` 是 Claude Code（2.1.306）、Codex CLI（0.163.0）与 OpenCode（2.0.32，经由插件）的 hook 命令：从 stdin 读一个 hook 事件，最多输出一个 JSON 对象，总是以 0 退出（ADR 0010）。
 
-- **安装**：`ctx hooks install --harness claude|codex --project <repo> --dir <data dir>` 把 hook 合并进 `.claude/settings.json` 或 `.codex/hooks.json`，保留已有的其他 hook；重复安装不变，`uninstall` 只删除 ContextDB 的条目。**Codex 只在你信任新 hook 后才运行它们**（Codex 中打开 `/hooks`，或在启动审查时确认），之后每次修改都要重新信任。
+- **安装**：`ctx hooks install --harness claude|codex|opencode --project <repo> --dir <data dir>` 把 hook 合并进 `.claude/settings.local.json`（个人、不进 Git）或 `.codex/hooks.json`，保留已有的其他 hook；OpenCode 则写入插件 `.opencode/plugins/contextdb/`。重复安装不变，`uninstall` 只删除 ContextDB 的条目。**Codex 只在你信任新 hook 后才运行它们**（Codex 中打开 `/hooks`，或在启动审查时确认），之后每次修改都要重新信任。
 - **OpenCode 2.0**：没有 hook 命令，只有插件。`ctx hooks install --harness opencode` 生成一个插件，它把每个事件以同样的 stdin 交给 `ctx-hook opencode <event>`，再把结果映射回去：deny 让工具调用失败，警告附在工具输出之后，briefing 与本轮上下文进入 system prompt。OpenCode 的 MCP 调用自带会话 id，不需要 claim；子 agent 的子会话是独立的 ContextDB 会话（ADR 0014）。
-- **会话绑定**：每个 hook 事件按 harness 的 `session_id` 绑定到一个 ctxd 会话。MCP 调用按 harness 在 `_meta` 中给出的 tool-call id 绑定：Codex 直接带 `sessionId` / `threadId`；Claude Code 由 PreToolUse hook 先 claim `tool_use_id`。没有 id 的调用使用 `ctx-mcp` 自己的会话并标记 `unclaimed`，从不按内容猜测。
-- **Subagent**：子 agent 与根共用会话，按 agent 分视图：子 agent 继承根的读取；子 agent 的读取进入根的视图；根自己读过的 logical 以根的条目为准。
-- **PreToolUse**：Edit / Write / MultiEdit / NotebookEdit / Bash（Claude）与 `apply_patch` / Bash（Codex）在执行前校验本会话证书。`warn` 模式加一段上下文说明哪些读取变了；`enforce` 模式对 Invalid / Conflicted / Denied / Ambiguous 拒绝，理由不超过 480 字节；放行时不输出（不会绕过 harness 自己的权限提示）。没有任何 certified 读取（`Empty`）永远不算通过，只警告（每 10 分钟最多提示一次，但每次都记录）。
-- **门控配置**：`.contextdb/gating.toml`（`mode = off|warn|enforce`、`shell_mode`、`on_unavailable = open|closed`、`timeout_ms`、按 tool / 路径 glob 的 `[[rule]]`），用 `ctx gating apply <dir>` 编译后生效。默认 `warn`、fail-open、150 ms。daemon 不可达、超时或输入无法解析时，open 只提示、closed 则拒绝；不是 ContextDB 仓库时什么都不做。
+- **会话绑定**：每个 hook 事件按 harness 的 `session_id` 绑定到一个 ctxd 会话。MCP 调用按 harness 在 `_meta` 中给出的 tool-call id 绑定：Codex 直接带 `sessionId` / `threadId`，OpenCode 带 `ai.opencode/sessionID`；Claude Code 由 PreToolUse hook 先 claim `tool_use_id`。没有 id 的调用使用 `ctx-mcp` 自己的会话并标记 `unclaimed`，从不按内容猜测。
+- **Subagent**：Claude Code 与 Codex 的子 agent 与根共用会话，按 agent 分视图：子 agent 继承根的读取；子 agent 的读取进入根的视图；根自己读过的 logical 以根的条目为准。OpenCode 的子 agent 运行在独立的子会话中，是单独的 ContextDB 会话（警告更多，但不会误放行）。
+- **PreToolUse**：Edit / Write / MultiEdit / NotebookEdit / Bash（Claude）、`apply_patch` / Bash（Codex）与 `edit` / `write` / `patch` / `shell`（OpenCode）在执行前校验本会话证书。`warn` 模式加一段上下文说明哪些读取变了；`enforce` 模式对 Invalid / Conflicted / Denied / Ambiguous 拒绝，理由不超过 480 字节；放行时不输出（不会绕过 harness 自己的权限提示）。没有任何 certified 读取（`Empty`）永远不算通过，每个会话、每个 agent 只警告一次，但每次都记录。检查超时时提示 `ctxd did not answer within N ms`。
+- **门控配置**：`.contextdb/gating.toml`（`mode = off|warn|enforce`、`shell_mode`、`on_unavailable = open|closed`、`timeout_ms`、按 tool / 路径 glob 的 `[[rule]]`），用 `ctx gating apply <dir>` 编译后生效。默认 `warn`、fail-open、500 ms。daemon 不可达、超时或输入无法解析时，open 只提示、closed 则拒绝；不是 ContextDB 仓库时什么都不做。
 - **context_update**：UserPromptSubmit 把自上次确认以来变化的读取以 `<context_update epoch=…>` 追加到新 prompt，不改写已有前缀（保 prompt cache）；下一次 prompt 才确认，输出丢失会重发。
 - **Outbox 与 drift**：PostToolUse 把写入事实先写入本地 outbox（`<data dir>/outbox/`，自校验记录、每流单调 seq），再投递；daemon 按 `(stream, seq)` 幂等应用，ctxd 启动时及每 30 s 补投遗留的流。Stop / SubagentStop / PreCompact 对比 git 的实际变化与记录的编辑，用 `systemMessage` 报告“没有记录就被改的文件”（如经 Bash 的副作用）。drift 只报告不门控，且是上界：人或没装 hook 的 agent 的修改也会出现在里面。
 - **Policy**：`.contextdb/policy.toml`（如 `version = 1`、`require_deps = ["Decision", "Plan"]`）由 `ctx policy apply <dir>` 经 admin 提交；它在内核事务中执行，任何通道都绕不过，与 hook 是否安装、git `--no-verify` 无关。
@@ -265,6 +266,41 @@ ctx check <dir> --strict --range <a>..<b> [--repo <repo>]
 
 **升级说明**：P5a 把 IPC 协议升到 3，并写 format-2 的 session log 段（写第一个新事件前强制从 format-1 段切换）。P4 的 session log 在 P5a 下照常读取；P4 二进制会在截断前拒绝 format-2 段，不支持降级。P4 dogfood 期间不要用 P5a 构建覆盖 `.contextdb/bin`。
 
+### symbol 级代码锚点（P5b）
+
+决策可以只依赖一个函数、类型或方法，而不是整个文件：同一文件里无关的修改不会让它失效（SD18，ADR 0012）。
+
+- **语言**：只按扩展名识别。Rust（`.rs`）、TypeScript / TSX / JavaScript（`.ts .mts .cts .tsx .js .mjs .cjs .jsx`）、Python（`.py`）与 Go（`.go`）；其他文件继续用文件级锚点。symbol 是条目级声明（函数、类型、trait、impl 与 class 成员、模块级常量和变量），函数体内部的东西都不是 symbol。共用同一路径的声明（重载、getter + setter、`cfg` 重复、interface 合并）构成同一个 symbol。
+- **key**：`code:<repo-id>/<path>#<编码后的 symbol>`。Rust impl 条目写作 `Type::item` 或 `Type#Trait::item`；trait 带泛型参数或 self 类型不是路径时，附 8 位十六进制的 key hash（`src/x.rs#T#From#3fa1c2d0::from`）。key 不随 normaliser 改变。文件路径中不再允许 `#`；含 `#` 的旧文件锚点为 `Broken("reserved-character")`。
+- **身份**：symbol 的 revision 是其规范化语法的哈希（tree-sitter，固定 grammar 版本）。格式、注释与格式化工具等价的写法不改变它；它引用的同文件 helper、常量或 import 变了会改变它（walk 3）；任何源文本的变化也会改变它，例如转义之间的字符串内容（walk 4）。symbol 消失即 `Broken`，其 `AnchorBroken` 列出同一函数体换了名字或挪到相邻文件的候选（仅作建议）。因此纯粹的移动或改名会失效，需要重新绑定锚点。
+- **新鲜度**：解析只在 observer 一侧进行，daemon 与 hook 从不解析（`ctxd` 与 `ctx-hook` 不链接任何 grammar）。watermark 记录每个宿主文件的 blob（`CTXPOS02`），宿主文件任何字节变化都会让该 scope 进入 `PENDING(ObservationLag)`，直到下一次扫描；未变化的 symbol 随后恢复为 fresh，不产生新 revision。解析失败只影响局部：坏掉的区域不会连累文件中其他 symbol，除非它们引用了无法解析的同文件 helper、常量或 import；扫描超出预算则整体不可用（fail closed）。
+- **开销**：1,000 个 symbol 锚点时 P4 hook 的 p95 ≤ 29 ms；一次完整扫描约每 MiB 宿主文件 0.38 s，因此 5 s 期限约在 13 MiB 处生效。
+
+```sh
+ctx anchors symbols <repo> <path>                    # 列出文件中的 symbol 及其 key
+ctx anchors add <dir> <repo> <path>#<symbol>...      # 例如 src/store.rs#Store::open；必须存在
+ctx anchors migrate <dir> <repo>                     # normaliser 升级后执行；报告变化的 revision
+```
+
+**升级说明**：协议仍为 3，文件锚点不变。用早期 normaliser walk（当前为 walk 4）创建的 symbol 锚点需要执行一次 `ctx anchors migrate`；重新哈希的 symbol 的下游会各 STALE 或 PENDING 一次。migrate 时处于 Missing 或 Broken 的锚点保留旧描述符，不再阻塞扫描。
+
+### Branch、事务与 WHAT_IF（P6）
+
+上下文可以像它描述的代码一样分叉、隔离修改、再合并回来（SPEC SD19，ADR 0013）。
+
+- **Branch**：`main` 始终存在；其他 branch 需显式创建（`ctx branch create`、`ctx_branch`）。会话绑定到与其 worktree 的 git branch 同名的 ContextDB branch，否则绑定到 `main`；observer 也用同样的方式把一个仓库的锚点提交到对应 branch。在某个 branch 上读取只看得到该 branch 可见的对象；id 是全局的，`main` 上读取会把只存在于其他 branch 的对象标为 `BRANCH_ONLY`。分叉时共享父 branch 的状态（常数时间与内存）；分叉或合并后的第一次写入才复制该 branch 的状态一次。
+- **合并**：三方合并，以最近的公共同步点为基（按 Dolt 的方式分类 head、base 位、规则启用、ValidationRecord、artifact、metadata 与 policy）。两边都改了的值保留目标一侧，并打开一个 `Conflict` artifact；未解决的 Conflict 会门控其目标 revision（`CONFLICTED`，SD17），直到被解决。`require_certified`（默认开启）要求合并后被移动、新增与冲突的记录均为 CERTIFIED，否则拒绝合并。agent 可以合并，包括合并进 `main`。
+- **事务**：`ctx_commit` 在会话的 branch 上原子提交多个 op。带 `expect_cert_valid` 时，会话证书在写入者内部校验，并在同一步检查其读集（`ExpectHeads`）；于是读了相同记录、又写出相互冲突修改的两个计划，先到者提交、后到者被拒（write skew，T19）。
+- **WHAT_IF**：`ctx_what_if` 返回一个 batch（包括合并）会产生的状态变化与 id 分配，但不提交；数据库由 undo journal 还原。
+
+```sh
+ctx branch create <dir> <name> [--from B] | list <dir> | archive <dir> <name>
+ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
+ctx status|why|why-not|impact <dir> ... --branch B       # 读取另一个 branch
+```
+
+**升级说明**：P6 把 IPC 协议升到 4，op_log 升到 format 3（每帧记录其 branch 与合并报告）。先停 `ctxd`，执行一次 `ctx migrate <dir>`（旧日志保留为 `log.v2.bak`；中断后可重跑；会列出在 Conflict 门控下记录结果会改变的 epoch），再一起升级所有二进制。旧二进制会拒绝 format-3 的 store。format 3 的投影放在 `projections.v3.sqlite`，旧的 `projections.sqlite` 原样保留，因此回滚（在产生新提交之前把 `log.v2.bak` 恢复为 `log`）不需要其他操作。崩溃而非正常关闭的 store，迁移前需先用旧二进制打开一次。
+
 ## 边界与非目标
 
 - **版本一致不等于语义正确**：ContextDB 证明"在声明的依赖版本与验证规则下可以使用"，不判断自然语言内容是否正确。
@@ -291,7 +327,7 @@ bash scripts/check.sh
 ```sh
 cargo test --release --locked -p contextdb-testkit --test exhaustive -- --ignored --nocapture   # 有限状态穷举
 bash scripts/gate-regression.sh     # 前序阶段的 G2/G3/G4 按 gate 计数回归
-bash scripts/mutation.sh            # cargo-mutants（另有 mutation-p4.sh、mutation-p5a.sh）
+bash scripts/mutation.sh            # cargo-mutants（另有 mutation-p4.sh、-p5a、-p5b、-p6）
 bash scripts/fuzz.sh                # cargo-fuzz 目标
 bash scripts/remote.sh run <name> <cmd...>   # 在远程 Linux 主机上运行长任务
 ```
@@ -303,7 +339,8 @@ bash scripts/remote.sh run <name> <cmd...>   # 在远程 Linux 主机上运行�
 | 路径 | 内容 |
 |---|---|
 | [`SPEC.md`](SPEC.md) | 权威规范：语义、架构、验证体系、阶段计划、接口、测试目录、威胁模型 |
-| [`docs/adr/`](docs/adr/) | 每个阶段的设计决策记录（ADR 0001–0011） |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 架构图：进程、crate、写入、数据目录、内核、hook、锚点 |
+| [`docs/adr/`](docs/adr/) | 设计决策记录（ADR 0001–0014） |
 | [`docs/gates/`](docs/gates/) | 各阶段的 Gate 证据、复核记录与基准结果 |
 | [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) | 当前实现与 Gate 状态 |
 | [`docs/SEMANTICS.md`](docs/SEMANTICS.md) | 语义条款到测试的映射 |
