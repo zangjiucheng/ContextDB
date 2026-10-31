@@ -7,6 +7,7 @@
 When several agents (Claude Code, Codex, OpenCode and their subagents) work in the same repository at once, the decisions, conventions and plans they rely on keep changing. ContextDB stores that context, and the dependencies between items, as an AND/OR justification DAG. When an upstream item is superseded, retracted, or the code it refers to changes, everything downstream is marked **precisely** STALE or PENDING, while conclusions that still have other support are left alone. Before an agent writes a file or runs a command, it checks a certificate that the context it read is still valid.
 
 - **Specification**: [`SPEC.md`](SPEC.md) (v1.6.11, the only normative document; written mainly in Chinese with English systems terminology)
+- **Documentation site**: <https://zangjiucheng.github.io/ContextDB/> (README, architecture, SPEC, ADRs and gates, rebuilt on every push)
 - **Architecture**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (diagrams)
 - **Status**: P0–P3 have passed their gates; P4–P6 are implemented and pass every layer, and their phase gates wait on P4's real-use dogfood report (no earlier than 2026-11-04; see [Phases and status](#phases-and-status))
 - **Harnesses**: Claude Code, Codex CLI and OpenCode 2.0, through MCP tools and hooks

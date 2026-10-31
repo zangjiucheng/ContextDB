@@ -7,6 +7,7 @@
 当几个 agent（Claude Code、Codex、OpenCode 以及它们的 subagent）在同一个仓库里并行工作时，它们依赖的决策、约定和计划会不断变化。ContextDB 把这些上下文和它们之间的依赖存成一张 AND/OR justification DAG：上游被替换、撤回，或者被引用的代码变了，下游会被**精确**标记为 STALE 或 PENDING，而仍有其他支持的结论不受影响。agent 在写文件、执行命令之前，用一张 certificate 校验自己读过的上下文是否仍然有效。
 
 - **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.11，唯一具规范性的文档，中文为主）
+- **文档站点**：<https://zangjiucheng.github.io/ContextDB/>（README、架构、SPEC、ADR 与 gate，每次推送自动重建）
 - **架构**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（图）
 - **当前状态**：P0–P3 已通过；P4–P6 已实现，各层验证均已通过，阶段 Gate 等待 P4 真实使用的 dogfood 报告（最早 2026-11-04；见 [阶段与状态](#阶段与状态)）
 - **支持的 harness**：Claude Code、Codex CLI、OpenCode 2.0，经由 MCP 工具与 hook 接入
