@@ -39,6 +39,8 @@ The full semantics (SD1–SD19, the kind admission matrix, STALE reason preceden
 
 ## Architecture
 
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has diagrams of the processes and channels, the crates, a write inside `ctxd`, the data directory, the kernel, hook gating across the three harnesses, and code anchors.
+
 ```
  Claude Code / Codex (+ subagents)
    │  MCP (ctx-mcp, stdio)          │  hooks (ctx-hook): SessionStart, PreToolUse,

@@ -39,6 +39,8 @@
 
 ## 架构
 
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 用图说明进程与通道、crate、`ctxd` 内的一次写入、数据目录、内核、三种 harness 的 hook 门控，以及代码锚点。
+
 ```
  Claude Code / Codex (+ subagents)
    │  MCP (ctx-mcp, stdio)          │  hooks (ctx-hook): SessionStart, PreToolUse,
