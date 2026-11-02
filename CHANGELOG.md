@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-02
+
+P4, P5a, P5b and P6 pass their gates; OpenCode is a third harness.
+
+**Upgrade notes.** IPC protocol 4 and op_log format 3 (P6).
+- Stop `ctxd` and run `ctx migrate <dir>` once. It keeps the old log as `log.v2.bak`.
+- Clients from 0.1.x cannot talk to a 0.2.0 daemon. Install all four binaries together (`scripts/install.sh` or the release archive).
+- Then restart agent sessions. A session that spans the upgrade is reported `Invalid(LogMismatch)`.
+- Symbol anchors made before walk 4 need `ctx anchors migrate`.
+
 - **P4, P5a, P5b and P6 gates passed** (2026-11-02; SPEC v1.6.12).
   - The P4 G6 dogfood closed by owner decision at 11.8 days instead of ≥ 2 weeks: real use had stopped on 10-24 ([audit](docs/gates/p4-g6-audit.md), [report](docs/gates/p4-g6-dogfood-report.md)).
   - Dependency coverage 69.6 % passes. False-deny is 30.6 % with shell commands enforced, and 0.11 % with `mode = "enforce"`, `shell_mode = "warn"`; that is the recommended stricter setting, and the default stays `warn`.
@@ -45,6 +55,9 @@
 - P6 gate runs: G1 caught the branch oracle depending on blake3 (now injected by the caller). G3 adds PROP7 for branch Ops, PROP11, PROP8 and PROP10 per branch and closes the kernel/shared mutation survivors (ValidationRecord merge conflicts were untested). G4's branch stress found two merge defects, both fixed without semantic change (ADR r0.6): the merge-base search was cubic in the number of sync points (60 ms per merge after 2,000 merges, now ~1 ms), and every sync point kept a whole branch database (488 MB after 1,500 merges, now 2 MB), so states that can never be a base are dropped. G2 closes with a service test of T19 where only the watermark moves in the window.
 
 - `ctx setup` now runs `ctxd` through the per-repository login service (launchd / systemd --user) by default, so it starts at login and restarts after a crash. A running `ctxd` is never stopped; without a usable service manager setup starts it detached and says so; `--no-service` keeps the old behaviour.
+
+## 0.1.3 and earlier
+
 - 0.1.3: crate versions follow the release tag. Includes P5b walk 3 (same-file context and the trailing-comma fix). **Symbol anchors made with an earlier walk need `ctx anchors migrate`.** File anchors and the protocol (3) are unchanged.
 - P5b G6 passes (walk 3 retest, [report](docs/gates/p5b-g6-r2-report.md)) under the owner's convention that a pure move invalidates (SPEC v1.6.7, ADR 0012 r0.8, decided after the labels and disclosed): symbol FI 18.7 % ≤ ½ × file level 79.7 %, missed +0.0 pp; under the pre-registered reading FI is 70.4 % (fail). `symbol_replay score --moves-invalidate`.
 - P5b normaliser walk 3 (ADR 0012 r0.7, SPEC v1.6.6): a symbol's revision also covers the same-file items it names (other symbols, imports by source path, Python module-level assignments), so a changed helper, constant or import re-revisions it; span hashes (T45) are unchanged. **Symbol anchors need `ctx anchors migrate`.** The first G6 failed (symbol FI 34.2 %, missed +13.1 pp, [report](docs/gates/p5b-g6-report.md)); the owner set FI ≤ ½ × file level, and a retest on disjoint symbols is fixed before labelling.
