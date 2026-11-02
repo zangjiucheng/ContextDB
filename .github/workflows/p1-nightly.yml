@@ -33,8 +33,27 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - name: Kernel mutations (shard ${{ matrix.shard }}/4)
-        run: bash scripts/mutation.sh --shard ${{ matrix.shard }}/4
+      # A runner tests about 15 mutants an hour, so each night covers 4 of 48
+      # rotating shards (about 20 mutants each): all of them every 12 nights.
+      # The full audit runs on the remote Linux host at gate time.
+      - name: Kernel mutations (rotating shard)
+        env:
+          MUTATION_JOBS: '2'
+          CARGO_BUILD_JOBS: '2'
+          # Above the debug baseline with the P5a/P6 suites on a runner.
+          MUTATION_TIMEOUT: '600'
+        run: |
+          k=$(( ($(date -u +%s) / 86400 * 4 + ${{ matrix.shard }}) % 48 ))
+          echo "shard $k/48"
+          rc=0; bash scripts/mutation.sh --shard "$k/48" || rc=$?
+          # 0 all caught, 2 missed, 3 timeouts: missed mutants fail only when
+          # no waiver in scripts/mutation-waivers.txt covers them.
+          case $rc in
+            0|2|3)
+              cat results/p1-mutation/mutants.out/timeout.txt 2>/dev/null || true
+              python3 scripts/mutation_missed.py results/p1-mutation ;;
+            *) exit "$rc" ;;
+          esac
   durability:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -100,5 +119,21 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - name: P4 mutations (shard ${{ matrix.shard }}/4)
-        run: bash scripts/mutation-p4.sh --shard ${{ matrix.shard }}/4
+      # Rotating shards as for the kernel. A mutant that hangs the tests
+      # (timeout) is caught; a missed one fails the job unless waived.
+      - name: P4 mutations (rotating shard)
+        env:
+          MUTATION_JOBS: '2'
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          k=$(( ($(date -u +%s) / 86400 * 4 + ${{ matrix.shard }}) % 32 ))
+          echo "shard $k/32"
+          rc=0; bash scripts/mutation-p4.sh --shard "$k/32" || rc=$?
+          # 0 all caught, 2 missed, 3 timeouts: missed mutants fail only when
+          # no waiver in scripts/mutation-waivers.txt covers them.
+          case $rc in
+            0|2|3)
+              cat results/p4-mutation/mutants.out/timeout.txt 2>/dev/null || true
+              python3 scripts/mutation_missed.py results/p4-mutation ;;
+            *) exit "$rc" ;;
+          esac

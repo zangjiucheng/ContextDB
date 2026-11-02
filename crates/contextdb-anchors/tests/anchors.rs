@@ -715,6 +715,155 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
         )
     );
 }
+/// The rebind case alone, with no head move in the certificate's vector: the
+/// scope reached through the rule as it was at issue still counts (a rebind
+/// disables that rule and adds a new one).
+#[test]
+fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
+    let mut db = Db::default();
+    let mut history = vec![db.inputs()];
+    let commit = |db: &mut Db, history: &mut Vec<Inputs>, ops: Vec<Op>, observer: bool| {
+        let mut b = Batch::new(ops);
+        if observer {
+            b.channel = Channel::Observer;
+        }
+        db.commit(&b).unwrap();
+        history.push(db.inputs());
+    };
+    commit(
+        &mut db,
+        &mut history,
+        vec![
+            Op::CreateLogical {
+                key: "code:a/x".into(),
+                kind: RecordKind::CodeAnchor,
+                scope_lane: "a".into(),
+                content: [1; 32],
+                adopt_as_base: true,
+            },
+            Op::ObserverWatermark {
+                scope: "a".into(),
+                expected: None,
+                position: vec![1],
+            },
+        ],
+        true,
+    );
+    let create = |key: &str, n| Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Decision,
+        scope_lane: "test".into(),
+        content: [n; 32],
+        adopt_as_base: false,
+    };
+    commit(
+        &mut db,
+        &mut history,
+        vec![
+            create("y", 2),
+            Op::AddRule {
+                conclusion: RevRef::New(0),
+                incidences: vec![(RevisionId(0).into(), EdgeKind::Cur)],
+                enabled: true,
+            },
+            create("x", 3),
+            Op::AddRule {
+                conclusion: RevRef::New(1),
+                incidences: vec![(RevisionId(1).into(), EdgeKind::Pin)],
+                enabled: true,
+            },
+            create("root", 4),
+            Op::AddRule {
+                conclusion: RevRef::New(2),
+                incidences: vec![(RevisionId(2).into(), EdgeKind::Sem)],
+                enabled: true,
+            },
+        ],
+        false,
+    );
+    commit(
+        &mut db,
+        &mut history,
+        vec![
+            Op::AddRevision {
+                logical: LogicalId(2).into(),
+                content: [5; 32],
+                adopt_as_base: true,
+            },
+            Op::SetHead {
+                logical: LogicalId(2).into(),
+                expected: RevisionId(2).into(),
+                new: RevRef::New(0),
+            },
+            Op::RecordValidation {
+                rule: RuleId(2).into(),
+                curvec_seen: vec![(LogicalId(2), RevisionId(4))],
+                verdict: Verdict::Verified,
+                validator: "human".into(),
+            },
+        ],
+        false,
+    );
+    let cert = issue(&db, 3, true);
+    assert_eq!(cert.watermarks, vec![("a".into(), vec![1])]);
+    assert!(!cert.vector.iter().any(|v| v.logical == LogicalId(0)));
+    commit(
+        &mut db,
+        &mut history,
+        vec![
+            // y gains a revision but keeps its head, so no vector item moves:
+            // only the rebind hides the anchor's scope from current premises.
+            Op::AddRevision {
+                logical: LogicalId(1).into(),
+                content: [6; 32],
+                adopt_as_base: true,
+            },
+            Op::Rebind {
+                rule: RuleId(1).into(),
+                from: RevisionId(1).into(),
+                to: RevRef::New(0),
+            },
+        ],
+        false,
+    );
+    commit(
+        &mut db,
+        &mut history,
+        vec![Op::ObserverWatermark {
+            scope: "a".into(),
+            expected: Some(vec![1]),
+            position: vec![2],
+        }],
+        true,
+    );
+    let actual = db
+        .validate_certificate(
+            &cert,
+            &db.inputs().watermarks,
+            LogLink {
+                matches: true,
+                current_checksum: [0; 32],
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        actual,
+        Validation::Invalid {
+            reason: InvalidReason::StrictChange,
+            ..
+        }
+    ));
+    assert_eq!(
+        actual,
+        contextdb_oracle::cert_validate_oracle(
+            &history,
+            &cert,
+            &db.inputs().watermarks,
+            true,
+            [0; 32]
+        )
+    );
+}
 #[test]
 fn gitlinks_and_corrupt_head_are_not_certified_as_regular_or_unborn() {
     let f = Fixture::new("sha1");

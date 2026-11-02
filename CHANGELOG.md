@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Nightly mutation testing runs again.** It had failed every night since P6.
+  - Kernel mutants now run against the anchor and P6 suites as well, so code covered only there is no longer reported missed.
+  - Shards rotate through 48 (kernel) and 32 (P4) slices with 2 jobs each, so a shard fits its time limit; timeouts (exit 3) count as caught.
+  - Missed mutants are checked against `scripts/mutation-waivers.txt` by `scripts/mutation_missed.py`; each waiver states why the mutant is equivalent.
+  - A full run (927 kernel mutants, 759 P4) left 15 kernel survivors: 11 are argued equivalent and waived, and 4 in `ChangeLog::retained_bytes` are now killed by a rebind workload in `memory_accounting`. A new anchors test covers a rebind with no head move.
+
 ## 0.2.0 — 2026-11-02
 
 P4, P5a, P5b and P6 pass their gates; OpenCode is a third harness.

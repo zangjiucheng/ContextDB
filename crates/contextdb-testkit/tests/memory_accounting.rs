@@ -199,4 +199,64 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
         &lanes,
         [496898, 100624, 147408, 196672, 187127, 238236, 4549],
     );
+
+    // Rebind history (P5a): one retained row of old premises per rebound
+    // rule, large enough that a miscount of it exceeds the slack.
+    let n = 2_000u32;
+    let content = |k: u32, tag: u8| {
+        let mut c = [0; 32];
+        c[..4].copy_from_slice(&k.to_le_bytes());
+        c[4] = tag;
+        c
+    };
+    let create = |key: String, content, adopt_as_base| Op::CreateLogical {
+        key,
+        kind: RecordKind::Decision,
+        scope_lane: "rebind".into(),
+        content,
+        adopt_as_base,
+    };
+    let mut batches = vec![Batch::new(
+        (0..n)
+            .flat_map(|k| {
+                [
+                    create(format!("base-{k}"), content(k, 1), true),
+                    create(format!("uses-{k}"), content(k, 2), false),
+                ]
+            })
+            .collect(),
+    )];
+    batches.push(Batch::new(
+        (0..n)
+            .map(|k| Op::AddRule {
+                conclusion: RevisionId(2 * k + 1).into(),
+                // Four premises, so each retained row holds a real Vec.
+                incidences: std::iter::once((RevisionId(2 * k).into(), EdgeKind::Pin))
+                    .chain((1..4).map(|d| (RevisionId(2 * ((k + d) % n)).into(), EdgeKind::Cur)))
+                    .collect(),
+                enabled: true,
+            })
+            .collect(),
+    ));
+    batches.push(Batch::new(
+        (0..n)
+            .flat_map(|k| {
+                [
+                    Op::AddRevision {
+                        logical: LogicalId(2 * k).into(),
+                        content: content(k, 3),
+                        adopt_as_base: true,
+                    },
+                    Op::Rebind {
+                        rule: RuleId(k).into(),
+                        from: RevisionId(2 * k).into(),
+                        to: RevRef::New(k as u16),
+                    },
+                ]
+            })
+            .collect(),
+    ));
+    // The rows sit in a B-tree whose node overhead is not counted (1.7 %
+    // here); 3 % still catches a miscount of the rows themselves.
+    check("rebinds", load(&batches), 0.03);
 }
