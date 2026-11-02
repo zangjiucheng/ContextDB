@@ -178,6 +178,15 @@ fn certified(r: &Response) -> bool {
     matches!(r, Response::Read { .. })
 }
 
+/// Semantic assertions use a 2 s live sample, as the daemon tests do: a
+/// cold sample on a loaded machine must not read as lag (ADR 0011 §12).
+fn options() -> Options {
+    Options {
+        anchor_live_timeout: Some(std::time::Duration::from_secs(2)),
+        ..Options::default()
+    }
+}
+
 #[test]
 fn symbol_anchors_end_to_end() {
     let root = temp("repo");
@@ -189,7 +198,7 @@ fn symbol_anchors_end_to_end() {
     git(&root, &["commit", "-qm", "init"]);
     let data = root.join(".contextdb/db");
     std::fs::create_dir_all(&data).unwrap();
-    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let daemon = Daemon::start(&data, &options()).unwrap();
     let rig = Rig { root, data, daemon };
 
     // Registration: symbols must exist; a miss lists the file's symbols.
@@ -214,7 +223,10 @@ fn symbol_anchors_end_to_end() {
     let foo = rig.head_of("#foo");
     rig.decision("uses-foo", foo);
     let session = rig.session();
-    assert!(certified(&rig.read(session, "uses-foo")));
+    {
+        let r = rig.read(session, "uses-foo");
+        assert!(certified(&r), "{r:?}");
+    }
 
     // T42b: an edit outside foo lags until the scan, then foo is fresh with
     // no new revision.
@@ -225,7 +237,10 @@ fn symbol_anchors_end_to_end() {
     );
     assert_eq!(rig.scan().0, 0);
     assert_eq!(rig.head_of("#foo"), foo);
-    assert!(certified(&rig.read(session, "uses-foo")));
+    {
+        let r = rig.read(session, "uses-foo");
+        assert!(certified(&r), "{r:?}");
+    }
 
     // T45 (minimal): reformatting and comments are no-ops.
     rig.write(&LIB.replace("    2\n", "    3\n").replace(
@@ -234,7 +249,10 @@ fn symbol_anchors_end_to_end() {
     ));
     assert_eq!(rig.scan().0, 0);
     assert_eq!(rig.head_of("#foo"), foo);
-    assert!(certified(&rig.read(session, "uses-foo")));
+    {
+        let r = rig.read(session, "uses-foo");
+        assert!(certified(&r), "{r:?}");
+    }
 
     // T46d: with foo fresh, an Edit to its host file selects the root.
     assert!(matches!(
@@ -246,7 +264,10 @@ fn symbol_anchors_end_to_end() {
     rig.write(&LIB.replace("x + 1", "x + 2"));
     assert_eq!(rig.scan().0, 0);
     assert_ne!(rig.head_of("#foo"), foo);
-    assert!(!certified(&rig.read(session, "uses-foo")));
+    {
+        let r = rig.read(session, "uses-foo");
+        assert!(!certified(&r), "{r:?}");
+    }
     // T46d: an Edit to the host selects the stale root (no false allow);
     // an Edit to an unrelated anchored file does not.
     assert!(
@@ -336,7 +357,7 @@ fn normaliser_version_mismatch_needs_migrate() {
     git(&root, &["commit", "-qm", "init"]);
     let data = root.join(".contextdb/db");
     std::fs::create_dir_all(&data).unwrap();
-    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let daemon = Daemon::start(&data, &options()).unwrap();
     let rig = Rig { root, data, daemon };
     let (rc, out) = ctx(&["anchors", "add", rig.ds(), rig.rs(), "src/lib.rs#foo"]);
     assert_eq!(rc, 0, "{out}");
@@ -414,7 +435,7 @@ fn migrate_with_a_missing_anchor_leaves_scans_and_positions_working() {
     git(&root, &["commit", "-qm", "init"]);
     let data = root.join(".contextdb/db");
     std::fs::create_dir_all(&data).unwrap();
-    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let daemon = Daemon::start(&data, &options()).unwrap();
     let rig = Rig { root, data, daemon };
     let (rc, out) = ctx(&[
         "anchors",
@@ -478,10 +499,16 @@ fn migrate_with_a_missing_anchor_leaves_scans_and_positions_working() {
     assert_eq!(rc, 0, "{out}");
     rig.decision("uses-bar", rig.head_of("#bar"));
     let session = rig.session();
-    assert!(certified(&rig.read(session, "uses-bar")));
+    {
+        let r = rig.read(session, "uses-bar");
+        assert!(certified(&r), "{r:?}");
+    }
     let (rc, out) = rig.scan();
     assert_eq!(rc, 0, "{out}");
-    assert!(certified(&rig.read(session, "uses-bar")));
+    {
+        let r = rig.read(session, "uses-bar");
+        assert!(certified(&r), "{r:?}");
+    }
 
     // foo comes back: observed again with this binary's normaliser.
     rig.write(LIB);
@@ -494,7 +521,10 @@ fn migrate_with_a_missing_anchor_leaves_scans_and_positions_working() {
             .base
     );
     assert_eq!(rig.scan().0, 0);
-    assert!(certified(&rig.read(session, "uses-bar")));
+    {
+        let r = rig.read(session, "uses-bar");
+        assert!(certified(&r), "{r:?}");
+    }
     drop(rig.daemon);
     let _ = std::fs::remove_dir_all(&rig.root);
 }
@@ -589,7 +619,7 @@ fn rig(name: &str, files: &[(&str, &str)]) -> Rig {
     git(&root, &["commit", "-qm", "init"]);
     let data = root.join(".contextdb/db");
     std::fs::create_dir_all(&data).unwrap();
-    let daemon = Daemon::start(&data, &Options::default()).unwrap();
+    let daemon = Daemon::start(&data, &options()).unwrap();
     Rig { root, data, daemon }
 }
 impl Rig {

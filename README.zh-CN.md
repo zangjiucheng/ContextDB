@@ -6,7 +6,7 @@
 
 当几个 agent（Claude Code、Codex、OpenCode 以及它们的 subagent）在同一个仓库里并行工作时，它们依赖的决策、约定和计划会不断变化。ContextDB 把这些上下文和它们之间的依赖存成一张 AND/OR justification DAG：上游被替换、撤回，或者被引用的代码变了，下游会被**精确**标记为 STALE 或 PENDING，而仍有其他支持的结论不受影响。agent 在写文件、执行命令之前，用一张 certificate 校验自己读过的上下文是否仍然有效。
 
-- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.12，唯一具规范性的文档，中文为主）
+- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.13，唯一具规范性的文档，中文为主）
 - **文档站点**：<https://zangjiucheng.github.io/ContextDB/>（README、架构、SPEC、ADR 与 gate，每次推送自动重建）
 - **架构**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（图）
 - **当前状态**：P0–P6 均已通过（P4–P6 于 2026-11-02 随 P4 dogfood 结束而通过，见 [审计](docs/gates/p4-g6-audit.md)）；见 [阶段与状态](#阶段与状态)
@@ -252,7 +252,7 @@ ctx dogfood review <dir>         # agent 复核 warn/deny 与抽样放行，供 
 
 - **身份**：锚点 revision 是工作树**原始字节**的 Git blob OID（等同 `git hash-object --no-filters`，支持 SHA-1 / SHA-256 仓库），不经过 clean / EOL filter。内容相同就复用同一 RevisionId，所以删除后原样恢复，下游也会恢复。key 为 `code:<repo-id>/<相对路径>`，只接受小写 ASCII 路径；`..`、`.git`、symlink（包括父目录）、子模块、运行时数据目录都拒绝或判为 Broken。
 - **observer**：`ctx anchors scan|watch` 两次完整采样 HEAD 与所有注册文件，结果一致才在一个 batch 里提交内容变化与 `ObserverWatermark`（CAS，冲突时重新采样）。文件删除 → `RetractBase` + `AnchorBroken`；恢复 → 重新断言 base。
-- **freshness**：每次 certified 读取、recall 和 check，daemon 都按可信路由（`<data dir>/anchors.routes`，由 `ctx anchors add` 写入）实时采样一次；实时位置与 watermark 不一致、采样失败、超出上限（1,000 锚点 / scope、16 MiB / 文件、40 ms）、路由缺失或描述符损坏、采样期间有新的编辑通知（hook 追加编辑事实前先更新 `outbox/announce`，daemon 在采样前后各读一次）、该记录缺失或损坏、通告失败（`ctx anchors repair-announce <dir>` 修复）或数据目录没有 `announce-v1` 标记（`ctx hooks install --dir` 写入；同一数据目录的所有 harness 都要用 P5a 的 hook 重装），一律是 `PENDING(ObservationLag)` / 证书 `Unknown`，从不当作新鲜。
+- **freshness**：每次 certified 读取、recall 和 check，daemon 都按可信路由（`<data dir>/anchors.routes`，由 `ctx anchors add` 写入）实时采样一次；实时位置与 watermark 不一致、采样失败、超出上限（1,000 锚点 / scope、16 MiB / 文件、单次采样 200 ms）、路由缺失或描述符损坏、采样期间有新的编辑通知（hook 追加编辑事实前先更新 `outbox/announce`，daemon 在采样前后各读一次）、该记录缺失或损坏、通告失败（`ctx anchors repair-announce <dir>` 修复）或数据目录没有 `announce-v1` 标记（`ctx hooks install --dir` 写入；同一数据目录的所有 harness 都要用 P5a 的 hook 重装），一律是 `PENDING(ObservationLag)` / 证书 `Unknown`，从不当作新鲜。
 - **按路径过滤**：Edit / Write / apply_patch 的 PreToolUse 只检查 support 闭包涉及目标路径的 required 读取（Sem 同时看断言的 premise 与当前 head，不跟 Ref）；未锚定的读取、Bash、未知或别名不确定的路径（大小写别名、硬链接、symlink）都回退为全量检查。每个 root 首次认证时的证明会持久化，过滤检查沿用原来的 strict 窗口。
 - **Git hooks 与 pre-push**：`hooks install` 为 post-commit / post-checkout / post-merge 加上一次扫描，保留并先运行原有 hook（备份为 `<hook>.contextdb-original`）；`--pre-push` 才安装硬门控。pre-push 处理所有 ref pair：被推送的提交必须就是当前 HEAD，且所有注册文件的原始字节与该提交一致，否则为 Unknown 并拒绝。
 

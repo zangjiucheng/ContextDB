@@ -12,6 +12,8 @@ P4, P5a, P5b and P6 pass their gates; OpenCode is a third harness.
 - Then restart agent sessions. A session that spans the upgrade is reported `Invalid(LogMismatch)`.
 - Symbol anchors made before walk 4 need `ctx anchors migrate`.
 
+- **Spurious `PENDING(ObservationLag)` on a loaded machine** (ADR 0011 r0.7, SPEC v1.6.13). The daemon's live anchor sample had a 40 ms deadline. Past it there is no evidence, which reads as lag, even with nothing changed. It is now 200 ms, inside the 500 ms hook budget. `ctxd`'s `Options` gains `anchor_live_timeout`, and the CLI anchor tests use 2 s like the daemon tests. This was the macOS CI failure in `symbols_cli`.
+- CI: per-push checks run the symbol PROP12 suites at 1,000 seeds (10,000 stay in the gate run) and allow 45 minutes. Every push since P6 had hit the 30-minute limit, so no run had reported since.
 - **P4, P5a, P5b and P6 gates passed** (2026-11-02; SPEC v1.6.12).
   - The P4 G6 dogfood closed by owner decision at 11.8 days instead of ≥ 2 weeks: real use had stopped on 10-24 ([audit](docs/gates/p4-g6-audit.md), [report](docs/gates/p4-g6-dogfood-report.md)).
   - Dependency coverage 69.6 % passes. False-deny is 30.6 % with shell commands enforced, and 0.11 % with `mode = "enforce"`, `shell_mode = "warn"`; that is the recommended stricter setting, and the default stays `warn`.

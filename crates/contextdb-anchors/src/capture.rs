@@ -25,7 +25,10 @@ pub const MAX_ANCHORS: usize = 1000;
 pub const MAX_FILE: usize = 16 << 20;
 pub const MAX_SCAN: usize = 256 << 20;
 pub const OBSERVER_TIMEOUT: Duration = Duration::from_secs(5);
-pub const LIVE_TIMEOUT: Duration = Duration::from_millis(40);
+/// One live sample's deadline (ADR 0011 §12). A sample that misses it gives
+/// no evidence, which reads as `PENDING(ObservationLag)`; 40 ms did that on a
+/// loaded machine with nothing changed. It stays inside the 500 ms hook budget.
+pub const LIVE_TIMEOUT: Duration = Duration::from_millis(200);
 /// Capture worker pool: at most this many threads, each given at least this
 /// many paths, so small scopes stay on one thread.
 const MAX_WORKERS: usize = 8;

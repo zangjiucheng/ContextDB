@@ -55,6 +55,15 @@ fn anchors(d: &Daemon, scope: &str, branch: Option<&str>) -> (BranchId, Vec<Stri
     }
 }
 
+/// Semantic assertions use a 2 s live sample, as the daemon tests do: a
+/// cold sample on a loaded machine must not read as lag (ADR 0011 §12).
+fn options() -> Options {
+    Options {
+        anchor_live_timeout: Some(std::time::Duration::from_secs(2)),
+        ..Options::default()
+    }
+}
+
 #[test]
 fn observer_follows_the_worktree_branch() {
     let root = temp("repo");
@@ -62,7 +71,7 @@ fn observer_follows_the_worktree_branch() {
     git(&root, &["init", "-q"]);
     git(&root, &["checkout", "-q", "-b", "feature"]);
     std::fs::write(root.join("a.rs"), "a").unwrap();
-    let d = Daemon::start(&data, &Options::default()).unwrap();
+    let d = Daemon::start(&data, &options()).unwrap();
     let (ds, rs) = (data.to_str().unwrap(), root.to_str().unwrap());
     let (rc, out) = ctx(&["branch", "create", ds, "feature"]);
     assert_eq!(rc, 0, "{out}");

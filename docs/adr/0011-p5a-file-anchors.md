@@ -4,6 +4,7 @@ Status: accepted, revision 0.3, 2026-10-21. G0 independent review passed.
 Revision 0.4 (2026-10-22, accepted after G0 review and closure check): §9 replaces the per-stream hint cutoff (review M2).
 Revision 0.5 (2026-10-22, owner decision): §10 redefines the G6 ground truth as AI-assisted labelling with an owner audit.
 Revision 0.6 (2026-10-22, owner decision): §11 replaces mandatory owner audit with agent-labelled evidence; SPEC v1.6.4 §4.4 makes project execution autonomous.
+Revision 0.7 (2026-11-02): §12 raises the live sample deadline from 40 ms to 200 ms (SPEC v1.6.13).
 
 ## 0. Scope and delivery
 
@@ -502,3 +503,21 @@ observer's own classification or passing tests as a semantic oracle. The frozen
 The nine manual top-ups are cancelled. G6 completion does not pass P4 or waive
 its actual duration/concurrency criteria; live dogfood data and binaries remain
 untouched. Independent agent review and the ordinary verification gates remain.
+
+## 12. Revision 0.7 — live sample deadline 200 ms
+
+**Problem.** §1 set the daemon's live capture to at most 40 ms so that it fit the P4 hook budget of the time (150 ms). A sample that misses the deadline gives no live evidence, and missing evidence is lagging (§4): the read is `PENDING(ObservationLag)` although nothing changed. On a loaded machine, cold Git captures took longer than 40 ms.
+- The CLI tests `symbols_cli`, run 4× in parallel on the development Mac, failed 4/4 with `NotCertified: Pending(ObservationLag)` on a fresh anchor.
+- macOS CI failed the same way.
+- Agents in another repository saw a read report PENDING and then CERTIFIED on a retry.
+
+The daemon tests already used a 2 s deadline for this reason (P5a gate G4).
+
+**Decision.** `LIVE_TIMEOUT` is 200 ms.
+- The P4 hook budget has been 500 ms since SPEC v1.6.11, so a check that samples still fits.
+- The deadline only matters when a sample is slow: the measured fast path (G5) is unchanged.
+- Semantics are unchanged: missing evidence is still lagging, and a sample past the deadline still gives none.
+- `ctxd`'s `Options` gains `anchor_live_timeout`. The CLI end-to-end tests set 2 s, like the daemon tests.
+
+**Check.** The same 4× parallel run passes 4/4 both with the tests' 2 s deadline and with the 200 ms production default.
+

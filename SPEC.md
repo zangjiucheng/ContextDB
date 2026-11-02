@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.12 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.13 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -1303,6 +1303,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |
 | 1.6.7 | 2026-10-23 | P5b G6 标注口径（ADR 0012 r0.8，owner 决定，于重测标注之后作出并披露）：纯移动或改名计为失效（锚点须重新绑定）。walk 3 重测按此口径通过：symbol FI 18.7%（≤ 文件级 79.7% 的一半），missed +0.0 pp；原口径下 FI 70.4% 未过，一并报告 |
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
+| 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.12 | 2026-11-02 | P4 G6 dogfood 结束（owner 决定）：以 11.8 天代替 ≥ 2 周结束——10-24 之后再无 certified 读与写入，延长只增加 Empty 警告（[审计](docs/gates/p4-g6-audit.md)）。依赖覆盖率 69.6% 通过（样本小）；false-deny 30.6%（shell 也 enforce）；`shell_mode = "warn"` 只对文件编辑 enforce 时为 0.11%，可推荐。默认仍为 warn。标注由规则完成，经两轮盲审核对（独立样本 95.2% 一致，分歧方向只会低估 false-deny）。P4 通过；按 A11 等待它的 P5a、P5b、P6 Gate 随之可以结束。语义不变 |
 | 1.6.11 | 2026-10-28 | 外部仓库 dogfood 的可用性修订：只有 `Ref` 的规则被接受且永不 active（SD3、SD6，T09w），agent 可以只记录引用；`Ref` 可指向 Summary（A2）；A5 只认有 premise 的规则。旧 op_log 不含此类规则，重放结果不变；含此类规则的 op_log 不能被旧二进制打开 |
 | 1.6.10 | 2026-10-26 | P5b 实现独立复核（ADR 0012 r0.9）：normaliser walk 4——任何子节点都未覆盖的源文本计入哈希（Python 字符串转义之间的文字、f-string 格式说明、Rust raw string 定界符、macro 重复分隔符），同文件上下文项的解析错误视为 symbol 的错误，Python 条件块中的语句各自成项，Go `for` 子句保留分号，分组 `var` 可提取；`CTXPOS02` 头部与版本检查只看生效锚点（Missing/Broken 锚点不再使 migrate 后的扫描永久 unavailable）；裸类型参数 self 类型保留名字（key 冻结，修订 ADR 而非代码）；同目录 rebind 搜索从未实现，ADR 据实修订。symbol 锚点需 `ctx anchors migrate`；G6 以 walk 4 重新评分 |

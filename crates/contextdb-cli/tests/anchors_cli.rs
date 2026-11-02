@@ -48,6 +48,15 @@ fn watermark(d: &Daemon, scope: &str) -> Option<Vec<u8>> {
         r => panic!("{r:?}"),
     }
 }
+/// Semantic assertions use a 2 s live sample, as the daemon tests do: a
+/// cold sample on a loaded machine must not read as lag (ADR 0011 §12).
+fn options() -> Options {
+    Options {
+        anchor_live_timeout: Some(std::time::Duration::from_secs(2)),
+        ..Options::default()
+    }
+}
+
 #[test]
 fn concurrent_routes_watch_restart_unavailable_and_preserved_hooks() {
     let root = temp("main");
@@ -58,7 +67,7 @@ fn concurrent_routes_watch_restart_unavailable_and_preserved_hooks() {
     git(&other, &["init", "-q"]);
     std::fs::write(root.join("a.rs"), "a").unwrap();
     std::fs::write(other.join("b.rs"), "b").unwrap();
-    let d = Daemon::start(&data, &Options::default()).unwrap();
+    let d = Daemon::start(&data, &options()).unwrap();
     let ds = data.to_str().unwrap();
     let rs = root.to_str().unwrap();
     let os = other.to_str().unwrap();
@@ -103,7 +112,7 @@ fn concurrent_routes_watch_restart_unavailable_and_preserved_hooks() {
     // An interrupted observer misses a wakeup; a full scan after restart recovers.
     std::fs::write(root.join("a.rs"), "v3").unwrap();
     drop(d);
-    let d = Daemon::start(&data, &Options::default()).unwrap();
+    let d = Daemon::start(&data, &options()).unwrap();
     assert_eq!(ctx(&["anchors", "scan", ds, rs]).0, 0);
     assert_ne!(watermark(&d, &repo.scope()), changed);
     let good = watermark(&d, &repo.scope());

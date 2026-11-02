@@ -32,6 +32,10 @@ pub struct Options {
     pub principals: [PrincipalId; 3],
     /// F_FULLFSYNC on macOS (default); `false` is for G5 measurement only.
     pub full_sync: bool,
+    /// Deadline of one live anchor sample; `None` is the production budget
+    /// (`contextdb_anchors::capture::LIVE_TIMEOUT`). Tests that assert
+    /// certified reads on a loaded machine set a longer one.
+    pub anchor_live_timeout: Option<std::time::Duration>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -39,6 +43,7 @@ impl Default for Options {
             allow_fs: Vec::new(),
             principals: [PrincipalId(1), PrincipalId(2), PrincipalId(0)],
             full_sync: true,
+            anchor_live_timeout: None,
         }
     }
 }
@@ -113,6 +118,9 @@ impl Daemon {
                 .map_err(|e| io::Error::other(format!("session log: {e:?}")))?,
         );
         service.set_anchor_routes(dir.join("anchors.routes"));
+        if let Some(timeout) = options.anchor_live_timeout {
+            service.set_anchor_live_timeout(timeout);
+        }
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;
