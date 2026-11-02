@@ -200,8 +200,8 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
         [496898, 100624, 147408, 196672, 187127, 238236, 4549],
     );
 
-    // Rebind history (P5a): one retained row of old premises per rebound
-    // rule, large enough that a miscount of it exceeds the slack.
+    // Rebinds: each adds a rule (Rebind disables the old one and adds a new
+    // one, SD9), so the rule arena and adjacency grow with no other history.
     let n = 2_000u32;
     let content = |k: u32, tag: u8| {
         let mut c = [0; 32];
@@ -230,7 +230,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
         (0..n)
             .map(|k| Op::AddRule {
                 conclusion: RevisionId(2 * k + 1).into(),
-                // Four premises, so each retained row holds a real Vec.
+                // Four premises, so each new rule's rows are not trivial.
                 incidences: std::iter::once((RevisionId(2 * k).into(), EdgeKind::Pin))
                     .chain((1..4).map(|d| (RevisionId(2 * ((k + d) % n)).into(), EdgeKind::Cur)))
                     .collect(),
@@ -256,7 +256,5 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
             })
             .collect(),
     ));
-    // The rows sit in a B-tree whose node overhead is not counted (1.7 %
-    // here); 3 % still catches a miscount of the rows themselves.
-    check("rebinds", load(&batches), 0.03);
+    check("rebinds", load(&batches), 0.01);
 }

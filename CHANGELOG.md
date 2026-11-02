@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The kernel no longer keeps a per-rule history of premises before a rebind (`ChangeLog.rebindings`). A rule's premises never change: Rebind disables the rule and adds a new one (SD9), so the history always equalled the current rows. Historical observation closures read the rule directly; one mutation waiver goes with it.
 - **Nightly mutation testing runs again.** It had failed every night since P6.
   - Kernel mutants now run against the anchor and P6 suites as well, so code covered only there is no longer reported missed.
   - Shards rotate through 48 (kernel) and 32 (P4) slices with 2 jobs each, so a shard fits its time limit; timeouts (exit 3) count as caught.

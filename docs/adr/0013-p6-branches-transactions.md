@@ -331,7 +331,7 @@ The journal restores everything a commit touches:
 | Counting rows | `Maintenance.before`. |
 | Layer columns | First-touch log. |
 | Pearce–Kelly graph including `V_l` creation | Its journal. |
-| `ChangeLog` including `rebindings` | Entry log. |
+| `ChangeLog` | Entry log. |
 | `history` | Truncate. |
 | `DerivedSnapshot` `OnceLock` and digest cache | Saved and restored. |
 | `stats`, timing | Saved and restored (PROP5). |

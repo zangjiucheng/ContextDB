@@ -13,7 +13,6 @@ pub(crate) struct ChangeLog {
     heads: BTreeMap<LogicalId, Vec<Epoch>>,
     base: BTreeMap<RevisionId, Vec<Epoch>>,
     watermarks: BTreeMap<String, Vec<Epoch>>,
-    pub(crate) rebindings: BTreeMap<RuleId, Vec<(Epoch, Vec<Incidence>)>>,
 }
 impl ChangeLog {
     /// `old_revisions`: revisions that existed before `epoch`. Creating a
@@ -76,20 +75,7 @@ impl ChangeLog {
     }
     pub(crate) fn retained_bytes(&self) -> usize {
         use crate::memory::{btree_slots, vec_bytes as b};
-        btree_slots(self.rebindings.len())
-            * std::mem::size_of::<(RuleId, Vec<(Epoch, Vec<Incidence>)>)>()
-            + self
-                .rebindings
-                .values()
-                .map(|rows| {
-                    b(rows)
-                        + rows
-                            .iter()
-                            .map(|(_, incidences)| b(incidences))
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + btree_slots(self.heads.len()) * std::mem::size_of::<(LogicalId, Vec<Epoch>)>()
+        btree_slots(self.heads.len()) * std::mem::size_of::<(LogicalId, Vec<Epoch>)>()
             + self.heads.values().map(b).sum::<usize>()
             + btree_slots(self.base.len()) * std::mem::size_of::<(RevisionId, Vec<Epoch>)>()
             + self.base.values().map(b).sum::<usize>()
@@ -201,14 +187,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 scopes.insert(self.logicals.scope_lane(logical).to_owned());
             }
             if let Some(Witness::Rule(rule)) = node.witness[2] {
-                for p in self
-                    .changes
-                    .rebindings
-                    .get(&rule)
-                    .and_then(|rows| rows.iter().find(|(changed, _)| *changed > epoch))
-                    .map(|(_, old)| old.clone())
-                    .unwrap_or_else(|| view.premises(rule).collect())
-                {
+                // A RuleId's premises never change (Rebind disables the rule
+                // and adds a new one, SD9), so today's rows are the rows at
+                // `epoch`.
+                for p in view.premises(rule) {
                     if p.kind != EdgeKind::Ref {
                         stack.push(p.premise);
                     }

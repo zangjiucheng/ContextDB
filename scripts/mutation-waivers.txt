@@ -8,6 +8,5 @@ crates/contextdb-core/src/arena\.rs: replace < with <= in LogicalArena::truncate
 crates/contextdb-core/src/arena\.rs: replace -= with (\+=|/=) in Adjacency<T>::pop  # extra_len only drives the compaction threshold; compaction preserves content (2026-11-02)
 crates/contextdb-core/src/layers\.rs: replace < with <= in LayerColumns::footprint  # a saved row at the old length is dropped by the restore's truncation (P6 G3)
 crates/contextdb-core/src/engine/counting\.rs: replace < with <= in Counting::save  # the extra saved rule is one the rollback truncates, as for footprint (2026-11-02)
-crates/contextdb-core/src/cert\.rs: replace > with (==|<) in Db<M, S>::observation_scopes_at  # Rebind disables the rule and adds a new one, so a RuleId's premises never change and the history rows equal the current ones (2026-11-02)
 crates/contextdb-core/src/cert\.rs: replace == with != in Db<M, S>::observation_scopes_at  # a certified Cur/Pin premise is its logical's head, and a Sem head's support is in the vector, caught in step 1 (2026-11-02)
 crates/contextdb-core/src/cert\.rs: replace && with \|\| in Db<M, S>::summary_at  # with no unobserved anchors the any() over an empty set is false either way (2026-11-02)
