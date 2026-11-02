@@ -6,10 +6,10 @@
 
 当几个 agent（Claude Code、Codex、OpenCode 以及它们的 subagent）在同一个仓库里并行工作时，它们依赖的决策、约定和计划会不断变化。ContextDB 把这些上下文和它们之间的依赖存成一张 AND/OR justification DAG：上游被替换、撤回，或者被引用的代码变了，下游会被**精确**标记为 STALE 或 PENDING，而仍有其他支持的结论不受影响。agent 在写文件、执行命令之前，用一张 certificate 校验自己读过的上下文是否仍然有效。
 
-- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.11，唯一具规范性的文档，中文为主）
+- **权威规范**：[`SPEC.md`](SPEC.md)（v1.6.12，唯一具规范性的文档，中文为主）
 - **文档站点**：<https://zangjiucheng.github.io/ContextDB/>（README、架构、SPEC、ADR 与 gate，每次推送自动重建）
 - **架构**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（图）
-- **当前状态**：P0–P3 已通过；P4–P6 已实现，各层验证均已通过，阶段 Gate 等待 P4 真实使用的 dogfood 报告（最早 2026-11-04；见 [阶段与状态](#阶段与状态)）
+- **当前状态**：P0–P6 均已通过（P4–P6 于 2026-11-02 随 P4 dogfood 结束而通过，见 [审计](docs/gates/p4-g6-audit.md)）；见 [阶段与状态](#阶段与状态)
 - **支持的 harness**：Claude Code、Codex CLI、OpenCode 2.0，经由 MCP 工具与 hook 接入
 - **语言与许可**：Rust 1.95.0，Apache-2.0
 
@@ -133,10 +133,10 @@ ctx ui .contextdb/db                                          # 只读上下文�
 | P1 | 增量 counting 内核 | ✅ 通过 |
 | P2 | 持久化与恢复 | ✅ 通过 |
 | P3 | 守护进程、MCP 与 certified read | ✅ 通过 |
-| P4 | Hooks 与 action gating | 🟡 已实现；除 ≥ 2 周真实使用的 dogfood 外全部通过（报告最早 2026-11-04） |
-| P5a | 文件级 code anchors | 🟡 已实现；除依赖 P4 外全部通过 |
-| P5b | symbol 级 code anchors | 🟡 已实现；各层与独立复核均通过（walk 4），只等 P5a / P4 |
-| P6 | 版本化事务、branch 与 WHAT_IF | 🟡 已实现；G0–G5、G7、G8 与独立复核通过；阶段 Gate 等待 P5b、P5a 与 P4 |
+| P4 | Hooks 与 action gating | ✅ 已通过（dogfood 由 owner 决定在 11.8 天结束；只推荐对文件编辑 enforce） |
+| P5a | 文件级 code anchors | ✅ 已通过 |
+| P5b | symbol 级 code anchors | ✅ 已通过 |
+| P6 | 版本化事务、branch 与 WHAT_IF | ✅ 已通过 |
 | P7 | 语义验证与冲突 | 计划中 |
 | P8 | 检索、打包与 git 镜像 | 计划中 |
 | P9 | 主体、权限与安全（硬隔离、crypto-shred） | 计划中 |
@@ -228,7 +228,7 @@ ctx shutdown <dir>
 - **会话绑定**：每个 hook 事件按 harness 的 `session_id` 绑定到一个 ctxd 会话。MCP 调用按 harness 在 `_meta` 中给出的 tool-call id 绑定：Codex 直接带 `sessionId` / `threadId`，OpenCode 带 `ai.opencode/sessionID`；Claude Code 由 PreToolUse hook 先 claim `tool_use_id`。没有 id 的调用使用 `ctx-mcp` 自己的会话并标记 `unclaimed`，从不按内容猜测。
 - **Subagent**：Claude Code 与 Codex 的子 agent 与根共用会话，按 agent 分视图：子 agent 继承根的读取；子 agent 的读取进入根的视图；根自己读过的 logical 以根的条目为准。OpenCode 的子 agent 运行在独立的子会话中，是单独的 ContextDB 会话（警告更多，但不会误放行）。
 - **PreToolUse**：Edit / Write / MultiEdit / NotebookEdit / Bash（Claude）、`apply_patch` / Bash（Codex）与 `edit` / `write` / `patch` / `shell`（OpenCode）在执行前校验本会话证书。`warn` 模式加一段上下文说明哪些读取变了；`enforce` 模式对 Invalid / Conflicted / Denied / Ambiguous 拒绝，理由不超过 480 字节；放行时不输出（不会绕过 harness 自己的权限提示）。没有任何 certified 读取（`Empty`）永远不算通过，每个会话、每个 agent 只警告一次，但每次都记录。检查超时时提示 `ctxd did not answer within N ms`。
-- **门控配置**：`.contextdb/gating.toml`（`mode = off|warn|enforce`、`shell_mode`、`on_unavailable = open|closed`、`timeout_ms`、按 tool / 路径 glob 的 `[[rule]]`），用 `ctx gating apply <dir>` 编译后生效。默认 `warn`、fail-open、500 ms。daemon 不可达、超时或输入无法解析时，open 只提示、closed 则拒绝；不是 ContextDB 仓库时什么都不做。
+- **门控配置**：`.contextdb/gating.toml`（`mode = off|warn|enforce`、`shell_mode`、`on_unavailable = open|closed`、`timeout_ms`、按 tool / 路径 glob 的 `[[rule]]`），用 `ctx gating apply <dir>` 编译后生效。默认 `warn`、fail-open、500 ms。P4 dogfood 支持把 `mode = "enforce"` 配合 `shell_mode = "warn"` 作为更严格的设置（误拒 0.11%）；若 shell 命令也 enforce，会误拒 30.6% 的动作，主要是只读命令。daemon 不可达、超时或输入无法解析时，open 只提示、closed 则拒绝；不是 ContextDB 仓库时什么都不做。
 - **context_update**：UserPromptSubmit 把自上次确认以来变化的读取以 `<context_update epoch=…>` 追加到新 prompt，不改写已有前缀（保 prompt cache）；下一次 prompt 才确认，输出丢失会重发。
 - **Outbox 与 drift**：PostToolUse 把写入事实先写入本地 outbox（`<data dir>/outbox/`，自校验记录、每流单调 seq），再投递；daemon 按 `(stream, seq)` 幂等应用，ctxd 启动时及每 30 s 补投遗留的流。Stop / SubagentStop / PreCompact 对比 git 的实际变化与记录的编辑，用 `systemMessage` 报告“没有记录就被改的文件”（如经 Bash 的副作用）。drift 只报告不门控，且是上界：人或没装 hook 的 agent 的修改也会出现在里面。
 - **Policy**：`.contextdb/policy.toml`（如 `version = 1`、`require_deps = ["Decision", "Plan"]`）由 `ctx policy apply <dir>` 经 admin 提交；它在内核事务中执行，任何通道都绕不过，与 hook 是否安装、git `--no-verify` 无关。
@@ -240,7 +240,7 @@ ctx check <dir> --harness claude --key <session_id> [--strict] [--dry-run --acti
                                  # 退出码：0 放行（warn 也是 0，除非 --fail-on-warn）、1 拒绝、2 错误、3 daemon 不可达
 ctx check <dir> --all            # 任何 head 为 STALE / CONFLICTED 时退出 1（可选，默认不安装）
 ctx hooks flush <dir>            # 立即投递所有遗留 outbox 事实
-ctx gate-report P4 <dir> [--out docs/gates/p4-dogfood.md]
+ctx gate-report P4 <dir> [--out docs/gates/p4-g6-dogfood-report.md]
 ctx dogfood review <dir>         # agent 复核 warn/deny 与抽样放行，供 false-deny 率使用
 ```
 

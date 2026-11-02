@@ -84,10 +84,10 @@ The false-deny rate needs every warn and deny labelled; unanswered entries remai
 ## 6. Report
 
 ```sh
-ctx gate-report P4 "$DATA" --out docs/gates/p4-dogfood.md
+ctx gate-report P4 "$DATA" --out docs/gates/p4-g6-dogfood-report.md
 ```
 
-This writes the Markdown report and `p4-dogfood.json`:
+This writes the Markdown report and `p4-g6-dogfood-report.json`:
 - period, parallel sessions, false-deny rate and coverage, each with PASS/FAIL;
 - intercepts, drift, unclaimed MCP calls and outbox skips;
 - verdict and harness-version breakdowns.

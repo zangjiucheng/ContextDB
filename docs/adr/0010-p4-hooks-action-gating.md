@@ -522,7 +522,7 @@ The unavailable outcome is recorded in the outbox as a `Gate` fact.
 - daemon-side check latency, per harness version;
 - `Unparsed` events, `Unclaimed` MCP calls, and outbox drops and skips.
 
-**Output.** `docs/gates/p4-dogfood.md`, plus a JSON file of raw counts.
+**Output.** `docs/gates/p4-dogfood.md`, plus a JSON file of raw counts. (Written as `p4-g6-dogfood-report.md`: the planned name collides with the kit `P4-dogfood.md` on case-insensitive file systems.)
 
 ## 11. Verification plan
 

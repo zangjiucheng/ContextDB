@@ -6,10 +6,10 @@
 
 When several agents (Claude Code, Codex, OpenCode and their subagents) work in the same repository at once, the decisions, conventions and plans they rely on keep changing. ContextDB stores that context, and the dependencies between items, as an AND/OR justification DAG. When an upstream item is superseded, retracted, or the code it refers to changes, everything downstream is marked **precisely** STALE or PENDING, while conclusions that still have other support are left alone. Before an agent writes a file or runs a command, it checks a certificate that the context it read is still valid.
 
-- **Specification**: [`SPEC.md`](SPEC.md) (v1.6.11, the only normative document; written mainly in Chinese with English systems terminology)
+- **Specification**: [`SPEC.md`](SPEC.md) (v1.6.12, the only normative document; written mainly in Chinese with English systems terminology)
 - **Documentation site**: <https://zangjiucheng.github.io/ContextDB/> (README, architecture, SPEC, ADRs and gates, rebuilt on every push)
 - **Architecture**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (diagrams)
-- **Status**: P0–P3 have passed their gates; P4–P6 are implemented and pass every layer, and their phase gates wait on P4's real-use dogfood report (no earlier than 2026-11-04; see [Phases and status](#phases-and-status))
+- **Status**: P0–P6 have passed their gates (P4–P6 on 2026-11-02, after the P4 dogfood: [audit](docs/gates/p4-g6-audit.md)); see [Phases and status](#phases-and-status)
 - **Harnesses**: Claude Code, Codex CLI and OpenCode 2.0, through MCP tools and hooks
 - **Stack and license**: Rust 1.95.0, Apache-2.0
 
@@ -131,10 +131,10 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P1 | Incremental counting kernel | ✅ passed |
 | P2 | Durability and recovery | ✅ passed |
 | P3 | Daemon, MCP and certified reads | ✅ passed |
-| P4 | Hooks and action gating | 🟡 implemented; every layer passes except the ≥ 2-week real-use dogfood (report no earlier than 2026-11-04) |
-| P5a | File-level code anchors | 🟡 implemented; every layer passes, waiting only on P4 |
-| P5b | Symbol-level code anchors | 🟡 implemented; every layer and the independent review pass (walk 4), waiting only on P5a/P4 |
-| P6 | Versioned transactions, branches and WHAT_IF | 🟡 implemented; G0–G5, G7, G8 and the independent review pass; the phase gate waits on P5b, P5a and P4 |
+| P4 | Hooks and action gating | ✅ passed (dogfood closed at 11.8 days by owner decision; enforce recommended for file edits only) |
+| P5a | File-level code anchors | ✅ passed |
+| P5b | Symbol-level code anchors | ✅ passed |
+| P6 | Versioned transactions, branches and WHAT_IF | ✅ passed |
 | P7 | Semantic validation and conflicts | planned |
 | P8 | Retrieval, packing and git mirroring | planned |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
@@ -226,7 +226,7 @@ ctx shutdown <dir>
 - **Session binding**: each hook event binds to a ctxd session by the harness's `session_id`. MCP calls bind by the tool-call id the harness puts in `_meta`: Codex sends `sessionId` / `threadId` directly, OpenCode sends `ai.opencode/sessionID`; for Claude Code, the PreToolUse hook claims the `tool_use_id` first. A call without an id uses `ctx-mcp`'s own session and is marked `unclaimed`; nothing is guessed from content.
 - **Subagents**: a Claude Code or Codex subagent shares its root's session with a per-agent view: it inherits the root's reads, its reads enter the root's view, and the root's own reads of a logical take precedence. An OpenCode subagent runs in its own child session, which is a separate ContextDB session (more warnings, never a false allow).
 - **PreToolUse**: Edit / Write / MultiEdit / NotebookEdit / Bash (Claude), `apply_patch` / Bash (Codex) and `edit` / `write` / `patch` / `shell` (OpenCode) check the session certificate before running. `warn` mode adds context explaining which reads changed; `enforce` mode denies on Invalid / Conflicted / Denied / Ambiguous with a reason of at most 480 bytes; an allow prints nothing (it never bypasses the harness's own permission prompts). A session with no certified reads (`Empty`) never counts as passing; it warns once per session and agent, and every occurrence is recorded. A check that does not get an answer in time says `ctxd did not answer within N ms`.
-- **Gating configuration**: `.contextdb/gating.toml` (`mode = off|warn|enforce`, `shell_mode`, `on_unavailable = open|closed`, `timeout_ms`, `[[rule]]` per tool / path glob) takes effect after `ctx gating apply <dir>`. Defaults: `warn`, fail-open, 500 ms. If the daemon is unreachable, times out or the input cannot be parsed, `open` only notes it and `closed` denies; outside a ContextDB repository nothing happens.
+- **Gating configuration**: `.contextdb/gating.toml` (`mode = off|warn|enforce`, `shell_mode`, `on_unavailable = open|closed`, `timeout_ms`, `[[rule]]` per tool / path glob) takes effect after `ctx gating apply <dir>`. Defaults: `warn`, fail-open, 500 ms. The P4 dogfood supports `mode = "enforce"` with `shell_mode = "warn"` as the stricter setting (0.11 % false denies); enforcing shell commands too would have wrongly denied 30.6 % of actions, mostly read-only commands. If the daemon is unreachable, times out or the input cannot be parsed, `open` only notes it and `closed` denies; outside a ContextDB repository nothing happens.
 - **context_update**: UserPromptSubmit appends the reads that changed since the last acknowledgement to the new prompt as `<context_update epoch=…>`, without rewriting the existing prefix (keeps the prompt cache); they are acknowledged with the next prompt, and lost output is sent again.
 - **Outbox and drift**: PostToolUse writes facts to a local outbox first (`<data dir>/outbox/`, self-verifying records, a monotonic seq per stream), then delivers them; the daemon applies them idempotently by `(stream, seq)`, and `ctxd` delivers leftover streams at start and every 30 s. Stop / SubagentStop / PreCompact compare Git's actual changes with the recorded edits and report "files changed without a record" (such as Bash side effects) as a `systemMessage`. Drift is reported, never gated, and is an upper bound: changes by people or by agents without hooks also appear.
 - **Policy**: `.contextdb/policy.toml` (e.g. `version = 1`, `require_deps = ["Decision", "Plan"]`) is committed with `ctx policy apply <dir>` through the admin socket; it is enforced inside kernel transactions, so no channel can bypass it, regardless of hooks or `git --no-verify`.
@@ -238,7 +238,7 @@ ctx check <dir> --harness claude --key <session_id> [--strict] [--dry-run --acti
                                  # exit codes: 0 allow (warn is 0 too unless --fail-on-warn), 1 deny, 2 error, 3 daemon unreachable
 ctx check <dir> --all            # exit 1 if any head is STALE / CONFLICTED (optional, not installed by default)
 ctx hooks flush <dir>            # deliver all pending outbox facts now
-ctx gate-report P4 <dir> [--out docs/gates/p4-dogfood.md]
+ctx gate-report P4 <dir> [--out docs/gates/p4-g6-dogfood-report.md]
 ctx dogfood review <dir>         # agents review warn/deny decisions and sampled allows for the false-deny rate
 ```
 

@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.11 · Date: 2026-10-28 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.6.12 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -578,7 +578,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - G2：T38、T39、T40、T41、T41b（hook schema 契约测试：针对固定版本的 Claude Code / Codex hook schema，schema 变化时 CI 失败）、T66（subagent 继承：子会话读到的条目进入父证书，父证书校验覆盖子会话读集）。
 - G4：hook 进程被 kill / 超时 / daemon 重启期间的事件不丢失（outbox 恢复）。
 - G5（initial）：PreToolUse 端到端 p95 ≤ 50 ms，p99 ≤ 100 ms。
-- G6 **Dogfood（首次真实使用门槛）**：在本仓库上用 ≥ 2 个并行 agent 工作 ≥ 2 周，记录并报告：
+- G6 **Dogfood（首次真实使用门槛）**：在本仓库上用 ≥ 2 个并行 agent 工作 ≥ 2 周，记录并报告（2026-11-02 owner 决定以 11.8 天结束，见附录 C 1.6.12）：
   - **false-deny 率** = agent 根据行动与依赖证据复核判为不应 warn/deny 的 gated 行动数 ÷ 全部 gated 行动数；enforce 作为推荐配置的门槛 ≤ 2%（initial）。
   - **依赖覆盖率** = 至少带一条声明依赖或锚点的写入 ÷ 全部写入；门槛 ≥ 60%（initial）。低于门槛时下一步优先改进自动依赖推断（O8），而不是继续加功能。
   - stale-action 拦截数与真阳性比例（只报告，不设门槛）、legitimate-action allow rate。
@@ -1303,6 +1303,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |
 | 1.6.7 | 2026-10-23 | P5b G6 标注口径（ADR 0012 r0.8，owner 决定，于重测标注之后作出并披露）：纯移动或改名计为失效（锚点须重新绑定）。walk 3 重测按此口径通过：symbol FI 18.7%（≤ 文件级 79.7% 的一半），missed +0.0 pp；原口径下 FI 70.4% 未过，一并报告 |
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
+| 1.6.12 | 2026-11-02 | P4 G6 dogfood 结束（owner 决定）：以 11.8 天代替 ≥ 2 周结束——10-24 之后再无 certified 读与写入，延长只增加 Empty 警告（[审计](docs/gates/p4-g6-audit.md)）。依赖覆盖率 69.6% 通过（样本小）；false-deny 30.6%（shell 也 enforce）；`shell_mode = "warn"` 只对文件编辑 enforce 时为 0.11%，可推荐。默认仍为 warn。标注由规则完成，经两轮盲审核对（独立样本 95.2% 一致，分歧方向只会低估 false-deny）。P4 通过；按 A11 等待它的 P5a、P5b、P6 Gate 随之可以结束。语义不变 |
 | 1.6.11 | 2026-10-28 | 外部仓库 dogfood 的可用性修订：只有 `Ref` 的规则被接受且永不 active（SD3、SD6，T09w），agent 可以只记录引用；`Ref` 可指向 Summary（A2）；A5 只认有 premise 的规则。旧 op_log 不含此类规则，重放结果不变；含此类规则的 op_log 不能被旧二进制打开 |
 | 1.6.10 | 2026-10-26 | P5b 实现独立复核（ADR 0012 r0.9）：normaliser walk 4——任何子节点都未覆盖的源文本计入哈希（Python 字符串转义之间的文字、f-string 格式说明、Rust raw string 定界符、macro 重复分隔符），同文件上下文项的解析错误视为 symbol 的错误，Python 条件块中的语句各自成项，Go `for` 子句保留分号，分组 `var` 可提取；`CTXPOS02` 头部与版本检查只看生效锚点（Missing/Broken 锚点不再使 migrate 后的扫描永久 unavailable）；裸类型参数 self 类型保留名字（key 冻结，修订 ADR 而非代码）；同目录 rebind 搜索从未实现，ADR 据实修订。symbol 锚点需 `ctx anchors migrate`；G6 以 walk 4 重新评分 |
 | 1.6.8 | 2026-10-23 | P6 G0（ADR 0013 r0.4，独立复核 + 三轮闭环）：SD19 补充（递归可见性、branch 表与 Op、按 branch 状态与 digest、currency 按 branch 与 BRANCH_ONLY 读时标注、sync point 与 merge base、三方分类与冲突、observer 域与 anchor_unobserved、跨 branch 规则去重、session/git 绑定 D1、agent 合并 D2）；SD17 Conflict gate 提前到 P6（owner 决定），不单列 PENDING(Conflict)；§6.1 契约 12（read set）与 13（branch Op）；§6.2 新错误与 P6 检查顺序；§6.3、§6.4、§6.6、§7；T51 与 CONFLICTED 行移至 P6；T19 变体 |

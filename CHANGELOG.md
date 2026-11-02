@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P4, P5a, P5b and P6 gates passed** (2026-11-02; SPEC v1.6.12).
+  - The P4 G6 dogfood closed by owner decision at 11.8 days instead of ≥ 2 weeks: real use had stopped on 10-24 ([audit](docs/gates/p4-g6-audit.md), [report](docs/gates/p4-g6-dogfood-report.md)).
+  - Dependency coverage 69.6 % passes. False-deny is 30.6 % with shell commands enforced, and 0.11 % with `mode = "enforce"`, `shell_mode = "warn"`; that is the recommended stricter setting, and the default stays `warn`.
+  - All 1,783 warns and 126 sampled allows were labelled by disclosed rules ([`label.py`](docs/gates/p4-g6/label.py)), checked blind against two independent reviewers (95.2 % agreement on a fresh sample).
+  - The audit's follow-ups: agents stopped reading certified context after a few days, Invalid warnings repeat on every action, drift re-reports the whole dirty tree, and Claude Code's version is not recorded.
+  - The suggested report path is now `docs/gates/p4-g6-dogfood-report.md`: `p4-dogfood.md` collided with `P4-dogfood.md` on case-insensitive file systems.
 - **OpenCode 2.0 as a third harness** (ADR 0014).
   - `ctx setup --harness opencode` (or `all`) registers the MCP server in `opencode.json` and installs a plugin in `.opencode/plugins/contextdb/`.
   - The plugin sends every event to `ctx-hook opencode <event>`. The same certificate check warns or denies `edit`, `write`, `patch` and `shell`; the briefing and per-turn context reach the system prompt; edits are recorded and drift is reported.

@@ -1,0 +1,14 @@
+{
+  "false_alarms": 1370,
+  "first": 1792627538,
+  "flagged": 1783,
+  "flagged_labeled": 1783,
+  "gated": 4475,
+  "last": 1793643191,
+  "max_parallel": 2,
+  "sessions": 12,
+  "unavailable": 20,
+  "unclaimed": 0,
+  "writes": 23,
+  "writes_with_deps": 16
+}

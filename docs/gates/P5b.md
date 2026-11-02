@@ -1,6 +1,6 @@
 # Gate P5b — Symbol-level code anchors
 
-Status: **every layer passes and the independent implementation review is done (2026-10-26).** The review found 1 blocker and 6 majors; they are fixed as normaliser walk 4 and a live-only position header ([ADR 0012](../adr/0012-p5b-symbol-anchors.md) r0.9, SPEC v1.6.10), and G2, G3, G4 and G6 were rechecked on walk 4. The phase gate cannot pass before P5a's, which waits on P4 (SPEC A11). Live `.contextdb/bin` and `.contextdb/db` are untouched; symbol anchors made with walk 3 need `ctx anchors migrate`.
+Status: **Passed (2026-11-02).** Every layer passes and the independent implementation review is done (2026-10-26).** The review found 1 blocker and 6 majors; they are fixed as normaliser walk 4 and a live-only position header ([ADR 0012](../adr/0012-p5b-symbol-anchors.md) r0.9, SPEC v1.6.10), and G2, G3, G4 and G6 were rechecked on walk 4. **The phase gate passed on 2026-11-02**, after P4 and P5a (SPEC A11, v1.6.12). Live `.contextdb/bin` and `.contextdb/db` are untouched; symbol anchors made with walk 3 need `ctx anchors migrate`.
 
 ## Scope
 

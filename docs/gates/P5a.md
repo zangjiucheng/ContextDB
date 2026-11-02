@@ -1,6 +1,6 @@
 # Gate P5a — File-level code anchors
 
-Status: **Implemented; gate open.** G0 passed 2026-10-21 ([ADR 0011](../adr/0011-p5a-file-anchors.md) r0.3, independent G0 review; r0.4 §9, r0.5 §10 and owner policy r0.6 §11 amendments). The implementation passed an independent counterexample review; its findings are fixed or listed below. Open: P4 itself: this gate cannot pass before P4 (SPEC A11). Live `.contextdb/bin` and `.contextdb/db` are untouched.
+Status: **Passed (2026-11-02).** G0 passed 2026-10-21 ([ADR 0011](../adr/0011-p5a-file-anchors.md) r0.3, independent G0 review; r0.4 §9, r0.5 §10 and owner policy r0.6 §11 amendments). The implementation passed an independent counterexample review; its findings are fixed or listed below. **Passed 2026-11-02**, when P4 passed (SPEC A11, v1.6.12). Live `.contextdb/bin` and `.contextdb/db` are untouched.
 
 ## Scope
 
