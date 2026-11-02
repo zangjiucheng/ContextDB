@@ -34,7 +34,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -47,6 +47,11 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Build, lint, test, and check dependency policy
+        # The two symbol PROP12 suites take ~20 min in a debug build at their
+        # gate count; per-push checks run 1,000 seeds. The 10,000-seed gate
+        # count runs in release in scripts/gate-regression.sh.
+        env:
+          CONTEXTDB_SYMBOL_SEEDS: '1000'
         run: bash scripts/check.sh
       - name: CLI smoke check
         run: |
