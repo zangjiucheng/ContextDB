@@ -202,6 +202,7 @@ ctx export <dir>        # export as EventLog v0 JSONL
 | `ctx_txn_status` | Look up `Committed{epoch}` or `NotCommitted` by `client_txn_id` |
 | `ctx_commit` / `ctx_what_if` | Several ops atomically on the session's branch (optionally only while the session certificate is valid), or a dry run of them (P6) |
 | `ctx_branch` / `ctx_merge` | Create, list or archive branches; merge one into another (P6) |
+| `ctx_changes` | What changed status on the session's branch since an epoch, page by page, optionally waiting up to 30 s for the next epoch (P7) |
 | `ctx_handoff_begin` / `ctx_handoff_accept` | Hand a certified session state (reads plus a summary) to another session; accepted once, and the acceptor's checks then cover the handed-over reads (P7) |
 | `ctx_conflicts` / `ctx_resolve` | List contradictions, validator reviews and lexical candidate pairs on the session's branch; assert that two records cannot both hold (both read CONFLICTED until resolved or superseded); resolve with a note (P7) |
 
@@ -220,6 +221,8 @@ ctx validate <dir> <key@rev> verified|rejected [--yes]
 ctx conflicts list|open|resolve <dir> ...
                                  # contradictions, validator reviews and lexical candidate pairs
                                  # (SD20), as admin; open --from-candidate ID opens a listed pair
+ctx changes <dir> [--since E] [--branch B] [--scope S] [--follow]
+                                 # status changes per epoch; --follow keeps waiting for new ones
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 validator jobs; none run until <dir>/validators.toml lists a

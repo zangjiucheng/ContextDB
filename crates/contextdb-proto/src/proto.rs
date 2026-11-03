@@ -402,6 +402,29 @@ pub enum Request {
         binding: Binding,
         id: Option<[u8; 16]>,
     },
+    /// `ctx_changes` (ADR 0015 §8): a branch's per-epoch status diffs after
+    /// `since_epoch`, from the durable `diff_log`. The branch is the bound
+    /// session's unless named (an unbound admin call: named or `main`).
+    /// With `wait_ms` (at most 30 s), waits for a later epoch when nothing
+    /// is there yet.
+    Changes {
+        binding: Option<Binding>,
+        branch: Option<String>,
+        since_epoch: Epoch,
+        scope: Option<String>,
+        max_items: u32,
+        wait_ms: u32,
+    },
+}
+/// One `ctx_changes` item: revision `rev` of `key` changed status at
+/// `epoch`, to `summary`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeItem {
+    pub epoch: Epoch,
+    pub logical: LogicalId,
+    pub rev: RevisionId,
+    pub key: String,
+    pub summary: Summary,
 }
 /// One open handoff, as `ctx_handoff_accept` without an id lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -810,6 +833,19 @@ pub enum Response {
     Handoffs {
         items: Vec<HandoffInfo>,
     },
+    /// A `ctx_changes` page: items in epoch order, the epoch reached (pass
+    /// it as the next `since_epoch`) and whether more items follow.
+    Changes {
+        items: Vec<ChangeItem>,
+        reached: Epoch,
+        more: bool,
+    },
+    /// `ctx_changes` cannot serve the epochs after `since_epoch` (the
+    /// history was cut or the projection rebuilt): re-read with
+    /// `ctx_check`, then follow from `earliest`.
+    Truncated {
+        earliest: Epoch,
+    },
     Conflicts {
         items: Vec<ConflictItem>,
         /// More items than `limit` matched.
@@ -840,6 +876,13 @@ wire_struct!(JobInfo {
 });
 wire_struct!(Counter { name, value });
 wire_struct!(ConflictSide { rev, key, current });
+wire_struct!(ChangeItem {
+    epoch,
+    logical,
+    rev,
+    key,
+    summary
+});
 wire_struct!(HandoffInfo {
     id,
     owner,
@@ -1491,6 +1534,22 @@ impl Wire for Request {
                 binding.encode(o);
                 id.encode(o);
             }
+            Self::Changes {
+                binding,
+                branch,
+                since_epoch,
+                scope,
+                max_items,
+                wait_ms,
+            } => {
+                38u8.encode(o);
+                binding.encode(o);
+                branch.encode(o);
+                since_epoch.encode(o);
+                scope.encode(o);
+                max_items.encode(o);
+                wait_ms.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1705,6 +1764,14 @@ impl Wire for Request {
                 binding: Wire::decode(i)?,
                 id: Wire::decode(i)?,
             },
+            38 => Self::Changes {
+                binding: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                since_epoch: Wire::decode(i)?,
+                scope: Wire::decode(i)?,
+                max_items: Wire::decode(i)?,
+                wait_ms: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -1897,6 +1964,20 @@ impl Wire for Response {
                 29u8.encode(o);
                 items.encode(o);
             }
+            Self::Changes {
+                items,
+                reached,
+                more,
+            } => {
+                30u8.encode(o);
+                items.encode(o);
+                reached.encode(o);
+                more.encode(o);
+            }
+            Self::Truncated { earliest } => {
+                31u8.encode(o);
+                earliest.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2020,6 +2101,14 @@ impl Wire for Response {
             },
             29 => Self::Handoffs {
                 items: Wire::decode(i)?,
+            },
+            30 => Self::Changes {
+                items: Wire::decode(i)?,
+                reached: Wire::decode(i)?,
+                more: Wire::decode(i)?,
+            },
+            31 => Self::Truncated {
+                earliest: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2275,6 +2364,14 @@ mod tests {
                 binding: Binding::root([2; 16]),
                 id: None,
             },
+            Request::Changes {
+                binding: None,
+                branch: Some("dev".into()),
+                since_epoch: Epoch(4),
+                scope: Some("repo".into()),
+                max_items: 50,
+                wait_ms: 30_000,
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -2499,6 +2596,18 @@ mod tests {
                 copied: 3,
                 skipped: 1,
             },
+            Response::Changes {
+                items: vec![ChangeItem {
+                    epoch: Epoch(5),
+                    logical: LogicalId(1),
+                    rev: RevisionId(2),
+                    key: "k".into(),
+                    summary: Summary::Certified,
+                }],
+                reached: Epoch(7),
+                more: true,
+            },
+            Response::Truncated { earliest: Epoch(9) },
             Response::Handoffs {
                 items: vec![HandoffInfo {
                     id: [5; 16],

@@ -151,6 +151,8 @@ pub struct Service<D: Durability> {
     indexer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Handoffs (P7, ADR 0015 §7), a projection of the session log.
     handoffs: Mutex<Handoffs>,
+    /// `ctx_changes` requests waiting for an epoch (ADR 0015 §8).
+    pub(crate) change_waiters: std::sync::atomic::AtomicUsize,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -425,6 +427,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             stop,
             indexer_thread: Mutex::new(Some(indexer_thread)),
             handoffs: Mutex::new(Handoffs::default()),
+            change_waiters: std::sync::atomic::AtomicUsize::new(0),
             validators: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
@@ -734,6 +737,30 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// Handles one request on the given snapshot-consistent view.
     pub fn handle(&self, id: Identity, req: Request) -> Envelope {
+        // A long-poll must not hold a snapshot while it waits (the actor
+        // would have to clone a replica per group, ADR 0008 §3.3).
+        if let Request::Changes {
+            binding,
+            branch,
+            since_epoch,
+            scope,
+            max_items,
+            wait_ms,
+        } = req
+        {
+            let response = self.changes(
+                id,
+                binding,
+                branch,
+                since_epoch,
+                scope,
+                max_items,
+                wait_ms,
+                self.actor.snapshot(),
+            );
+            let epoch = self.actor.snapshot().epoch;
+            return Envelope { epoch, response };
+        }
         let snap = self.actor.snapshot();
         let epoch = snap.epoch;
         let response = self.dispatch(id, req, snap);
@@ -953,6 +980,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Ok(b) => self.handoff_accept(b, h, &snap),
                 Err(r) => r,
             },
+            // Handled by `handle`, which pins no snapshot while it waits.
+            Request::Changes { .. } => err("InvalidArgument", "ctx_changes cannot be nested"),
             Request::Diff { from, to } => {
                 let result = if from.min(to) >= db.initial_epoch() {
                     db.diff(from, to)

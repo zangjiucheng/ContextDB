@@ -13,7 +13,7 @@ use contextdb_model::*;
 use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus, Write};
 use std::{
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -87,6 +87,13 @@ pub enum Message {
         epoch: Epoch,
         reply: mpsc::Sender<Result<ContentHash, StoreError>>,
     },
+    /// One `ctx_changes` page from the durable `diff_log` (ADR 0015 §8).
+    Changes {
+        branch: BranchId,
+        since: Epoch,
+        max: usize,
+        reply: mpsc::Sender<Result<contextdb_store::ChangePage, StoreError>>,
+    },
     Shutdown {
         reply: mpsc::Sender<()>,
     },
@@ -105,6 +112,9 @@ pub struct ActorStats {
 pub struct ActorHandle<D: Durability> {
     tx: mpsc::SyncSender<Message>,
     published: Arc<Published<Snapshot<D>>>,
+    /// The last published epoch, signalled on every publication (the
+    /// `ctx_changes` long-poll, ADR 0015 §8).
+    epochs: Arc<(Mutex<Epoch>, Condvar)>,
     pub stats: Arc<ActorStats>,
     /// How long a caller waits for its reply ([`REQUEST_TIMEOUT`]).
     pub timeout: Duration,
@@ -123,6 +133,21 @@ impl<D: Durability> ActorHandle<D> {
     /// The current snapshot; readers hold it for the whole request (I4).
     pub fn snapshot(&self) -> Arc<Snapshot<D>> {
         self.published.load()
+    }
+    /// Waits until an epoch after `after` is published, or `timeout`
+    /// passes; returns the last published epoch.
+    pub fn wait_epoch(&self, after: Epoch, timeout: Duration) -> Epoch {
+        let (m, c) = &*self.epochs;
+        let deadline = Instant::now() + timeout;
+        let mut e = m.lock().expect("epochs");
+        while *e <= after {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            e = c.wait_timeout(e, left).expect("epochs").0;
+        }
+        *e
     }
     pub fn submit(&self, m: Message) -> Result<(), SubmitError> {
         self.tx.try_send(m).map_err(|e| match e {
@@ -188,6 +213,7 @@ struct Actor<D: Durability> {
     /// spare is two groups behind the store and must replay them too.
     previous: Vec<(Batch, CommitResult)>,
     stats: Arc<ActorStats>,
+    epochs: Arc<(Mutex<Epoch>, Condvar)>,
 }
 /// Starts the actor thread over an opened store.
 pub fn spawn<D: Durability + Clone + 'static>(
@@ -199,6 +225,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         kernel,
         log: store.log_reader(),
     };
+    let epochs = Arc::new((Mutex::new(snapshot.epoch), Condvar::new()));
     let published = Arc::new(Published::new(snapshot));
     let stats = Arc::new(ActorStats::default());
     let (tx, rx) = mpsc::sync_channel(QUEUE);
@@ -208,6 +235,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         spare: None,
         previous: Vec::new(),
         stats: stats.clone(),
+        epochs: epochs.clone(),
     };
     std::thread::Builder::new()
         .name("ctxd-actor".into())
@@ -223,6 +251,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
     Ok(ActorHandle {
         tx,
         published,
+        epochs,
         stats,
         timeout: REQUEST_TIMEOUT,
     })
@@ -290,6 +319,14 @@ impl<D: Durability + Clone> Actor<D> {
             }
             Message::Checksum { epoch, reply } => {
                 let _ = reply.send(self.store.checksum_at(epoch));
+            }
+            Message::Changes {
+                branch,
+                since,
+                max,
+                reply,
+            } => {
+                let _ = reply.send(self.store.changes(branch, since, max));
             }
         }
     }
@@ -403,7 +440,11 @@ impl<D: Durability + Clone> Actor<D> {
             kernel: newest,
             log: self.store.log_reader(),
         });
+        let epoch = snapshot.epoch;
         self.spare = Some(self.published.swap(snapshot));
+        let (m, c) = &*self.epochs;
+        *m.lock().expect("epochs") = epoch;
+        c.notify_all();
     }
     /// The replica published two groups ago, once no reader holds it.
     fn reclaim(&mut self) -> Option<Kernel> {

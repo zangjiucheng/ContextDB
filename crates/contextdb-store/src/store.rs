@@ -185,6 +185,20 @@ impl Captured {
         }
     }
 }
+/// A page of [`Store::changes`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChangePage {
+    /// `(epoch, revision, post-state)` rows, the epoch the page reaches (the
+    /// next page starts after it) and whether rows remain.
+    Rows {
+        rows: Vec<(Epoch, RevisionId, NodeState)>,
+        reached: Epoch,
+        more: bool,
+    },
+    /// The rows after `since` cannot be served: re-read, then follow from
+    /// `earliest`.
+    Truncated { earliest: Epoch },
+}
 /// One write of a group: the batch, and an idempotency hash when the batch
 /// will be extended before it commits (ADR 0013 §4).
 #[derive(Clone, Debug)]
@@ -1181,6 +1195,55 @@ impl<D: Durability> Store<D> {
     }
     pub fn projection_watermark(&self) -> Epoch {
         self.proj.watermark()
+    }
+    /// One page of `branch`'s per-epoch status diffs after `since` (P7
+    /// `ctx_changes`, ADR 0015 §8), from the durable `diff_log`. A page ends
+    /// on an epoch boundary: when more than `max` rows follow, the last,
+    /// possibly partial epoch is left for the next page, unless it is the
+    /// only one (then it is returned whole, so every page makes progress).
+    pub fn changes(
+        &self,
+        branch: BranchId,
+        since: Epoch,
+        max: usize,
+    ) -> Result<ChangePage, StoreError> {
+        self.readable()?;
+        let tail = self.epoch();
+        // A reader ahead of the log saw a history that was cut since; a
+        // projection that does not cover the tail cannot serve it. Both
+        // re-read (`ctx_check`) and follow from the tail.
+        if since > tail || !self.proj.covers(tail) {
+            return Ok(ChangePage::Truncated { earliest: tail });
+        }
+        let max = max.max(1);
+        let mut rows = self
+            .proj
+            .changes(branch, since, tail, max + 1)
+            .map_err(sql)?;
+        if rows.len() <= max {
+            return Ok(ChangePage::Rows {
+                rows,
+                reached: tail,
+                more: false,
+            });
+        }
+        let last = rows.last().expect("over max").0;
+        let first = rows[0].0;
+        if first == last {
+            // One epoch larger than a page: return it whole.
+            rows = self
+                .proj
+                .changes(branch, since, last, usize::MAX >> 1)
+                .map_err(sql)?;
+        } else {
+            rows.retain(|(e, _, _)| *e < last);
+        }
+        let reached = rows.last().expect("non-empty").0;
+        Ok(ChangePage::Rows {
+            rows,
+            reached,
+            more: reached < tail,
+        })
     }
     /// Replaces the live kernel with `replica`, which must be at the same
     /// epoch and state (ADR 0008 §3.3 two-replica publication); returns the

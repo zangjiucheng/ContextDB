@@ -16,6 +16,6 @@ mod store;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::{PROJECTIONS_FILE, ProjectionFile};
 pub use store::{
-    LogReader, OpenOptions, OpenReport, Payload, Prepare, Store, StoreError, TruncatedTail,
-    TxnStatus, Unavailable, Write,
+    ChangePage, LogReader, OpenOptions, OpenReport, Payload, Prepare, Store, StoreError,
+    TruncatedTail, TxnStatus, Unavailable, Write,
 };

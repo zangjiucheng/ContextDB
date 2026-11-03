@@ -356,6 +356,35 @@ impl Projections {
             .optional()
             .map(|r| r.map(RevisionId))
     }
+    /// `diff_log` rows of `branch` in `(since, until]`, in (epoch, revision)
+    /// order, at most `limit` (P7 `ctx_changes`, ADR 0015 §8).
+    pub fn changes(
+        &self,
+        branch: BranchId,
+        since: Epoch,
+        until: Epoch,
+        limit: usize,
+    ) -> Sql<Vec<(Epoch, RevisionId, NodeState)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT epoch, revision, post FROM diff_log
+             WHERE branch = ?1 AND epoch > ?2 AND epoch <= ?3
+             ORDER BY epoch, revision LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![branch.0, since.0 as i64, until.0 as i64, limit as i64],
+                |row| {
+                    Ok((
+                        Epoch(row.get::<_, i64>(0)? as u64),
+                        RevisionId(row.get(1)?),
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )?
+            .map(|r| r.and_then(|(e, rev, b)| Ok((e, rev, Self::decode(b)?))))
+            .collect::<Sql<Vec<_>>>()?;
+        Ok(rows)
+    }
     /// DIFF(a, b) from diff_log through the shared endpoint comparison.
     pub fn diff(&self, branch: BranchId, a: Epoch, b: Epoch) -> Sql<EpochDiff> {
         let high = a.max(b).0 as i64;

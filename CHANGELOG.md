@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P7 milestone 8: `ctx_changes`** (ADR 0015 §8).
+  - New MCP tool `ctx_changes{since_epoch, scope?, branch?, max_items?, wait_ms?}` and admin command `ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N] [--follow]`.
+  - It returns what changed status on a branch after `since_epoch`, epoch by epoch: one item per revision in that epoch's status diff, with its new summary. It reads the durable `diff_log` projection, so nothing is lost across restarts and nothing is held in memory.
+  - Pages end on epoch boundaries. Pass `reached` as the next `since_epoch`, and continue while `more` is true. An epoch with more rows than a page is returned whole. A scope filter drops items, never epochs. The concatenated pages equal the replay's per-epoch status diffs (T76).
+  - With `wait_ms` (at most 30 s) and nothing new, the call waits for the next published epoch and wakes on it. The waiting request holds no snapshot. At most 64 requests wait at once; more get `Busy`. `ctx changes --follow` loops on it.
+  - `Truncated{earliest}` is returned only when the epochs after `since_epoch` cannot be served: a reader ahead of the log (the history was cut), or a projection that does not cover the tail. The client re-reads with `ctx_check` and follows from `earliest`.
+  - **Claude Code:** the PreToolUse claim matches `ctx_changes`. Run `ctx hooks install --harness claude` again.
 - **P7 milestone 7: handoff between sessions** (ADR 0015 §7).
   - New MCP tools `ctx_handoff_begin{summary, to_agent?}` and `ctx_handoff_accept{id?}`.
   - **Begin** issues the caller's session certificate as `ctx_check` would and refuses unless it is Valid or ValidRecertified (an empty read set is refused too). It replies with the handoff id once the `HandoffBegin` event is durable. The summary is at most 8 KiB.

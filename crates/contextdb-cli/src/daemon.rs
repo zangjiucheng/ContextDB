@@ -246,6 +246,62 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
 }
 /// `ctx branch create|list|archive <dir> …` (ADR 0013 §10).
 /// `ctx conflicts list|open|resolve <dir> …` (ADR 0015 §6), as admin.
+/// `ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N]
+/// [--follow]` (ADR 0015 §8): the branch's per-epoch status changes after
+/// `--since` (default 0). `--follow` long-polls and keeps printing.
+pub fn changes(dir: &Path, args: &[String]) -> Result<(), String> {
+    use contextdb_proto::proto::Response as R;
+    let (branch, args) = take_branch(args)?;
+    let flag = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+    let follow = args.iter().any(|a| a == "--follow");
+    let mut since = Epoch(
+        flag("--since")
+            .map(|e| e.parse().map_err(|_| "--since takes an epoch"))
+            .transpose()?
+            .unwrap_or(0),
+    );
+    let max_items = flag("--max").and_then(|n| n.parse().ok()).unwrap_or(0);
+    let mut c = connect(dir)?;
+    loop {
+        let env = call(
+            &mut c,
+            Request::Changes {
+                binding: None,
+                branch: branch.clone(),
+                since_epoch: since,
+                scope: flag("--scope"),
+                max_items,
+                wait_ms: if follow { 30_000 } else { 0 },
+            },
+        )?;
+        match env.response {
+            R::Changes {
+                items,
+                reached,
+                more,
+            } => {
+                for i in &items {
+                    println!("{} {}@{} {:?}", i.epoch.0, i.key, i.rev.0, i.summary);
+                }
+                since = reached;
+                if !more && !follow {
+                    return Ok(());
+                }
+            }
+            R::Truncated { earliest } => {
+                println!(
+                    "truncated: epochs after {} cannot be served; re-check, then follow from {}",
+                    since.0, earliest.0
+                );
+                if !follow {
+                    return Ok(());
+                }
+                since = earliest;
+            }
+            other => return Err(format!("unexpected response {other:?}")),
+        }
+    }
+}
 pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
     use contextdb_proto::proto::{ConflictState, Response as R};
     let (branch, args) = take_branch(args)?;

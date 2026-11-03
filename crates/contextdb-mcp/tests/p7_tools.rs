@@ -151,3 +151,48 @@ fn handoff_through_mcp() {
     let taken = tool(&mut third, "ctx_handoff_accept", json!({ "id": id })).unwrap_err();
     assert!(taken.to_string().contains("HandoffTaken"), "{taken}");
 }
+
+/// Milestone 8: `ctx_changes` pages through MCP on the session's branch.
+#[test]
+fn changes_through_mcp() {
+    let s = service();
+    let mut server = Server::new(InProcess(s.clone()), "claude", "repo", "h");
+    for key in ["a", "b", "c"] {
+        tool(
+            &mut server,
+            "ctx_record",
+            json!({ "kind": "fact", "body": key, "key": key, "create_only": true, "adopt_as_base": true }),
+        )
+        .unwrap();
+    }
+    let first = tool(
+        &mut server,
+        "ctx_changes",
+        json!({ "since_epoch": 0, "max_items": 2 }),
+    )
+    .unwrap();
+    assert_eq!(first["more"], true);
+    let mut refs: Vec<String> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["ref"].as_str().unwrap().to_owned())
+        .collect();
+    let rest = tool(
+        &mut server,
+        "ctx_changes",
+        json!({ "since_epoch": first["reached"], "wait_ms": 10 }),
+    )
+    .unwrap();
+    assert_eq!(rest["more"], false);
+    refs.extend(
+        rest["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["ref"].as_str().unwrap().to_owned()),
+    );
+    assert_eq!(refs, vec!["a@0", "b@1", "c@2"]);
+    let ahead = tool(&mut server, "ctx_changes", json!({ "since_epoch": 99 })).unwrap();
+    assert_eq!(ahead["truncated"], true);
+}

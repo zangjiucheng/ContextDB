@@ -46,6 +46,9 @@ Usage (via a running ctxd, admin socket):
                [--from-candidate ID | --from-review ID]
   ctx conflicts resolve <dir> <artifact>... [--note T] [--branch B]
                                        contradictions and validator reviews (SD20)
+  ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N] [--follow]
+                                       status changes per epoch (P7); --follow waits
+                                       for new epochs and keeps printing
   ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed
                                        P7 validator jobs (<dir>/validators.toml;
                                        check runs each validator on a probe task)
@@ -230,6 +233,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             let sub = args.get(1).cloned().unwrap_or_default();
             daemon::conflicts(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
         }
+        Some("changes") => daemon::changes(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
         Some("validators") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             daemon::validators(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)

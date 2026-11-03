@@ -25,4 +25,6 @@ pub mod validators;
 #[cfg(not(loom))]
 mod anchors;
 #[cfg(not(loom))]
+mod changes;
+#[cfg(not(loom))]
 mod conflicts;

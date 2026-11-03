@@ -19,6 +19,10 @@ pub use kernel::{
 mod memory;
 mod merge;
 pub use history::{EpochDiff, Impact, NodeChange, diff_rows};
+/// A node state's summary (SPEC §2.3 precedence), as reads report it.
+pub fn summarize(d: &Dimensions) -> Summary {
+    contextdb_oracle::summarize(d)
+}
 pub use memory::MemoryFootprint;
 pub mod engine;
 mod layers;

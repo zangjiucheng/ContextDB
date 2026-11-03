@@ -660,6 +660,25 @@ modelled.
 - **T76:** the concatenated pages equal the replay's per-epoch
   `status_diff`s for the branch between the two epochs.
 
+**Implementation notes (milestone 8).**
+- **On the actor.** The store owns the projection, so a page is one actor
+  request (one indexed SQLite range read). The projection is current after
+  every group; a stale one (after a projection write failure) is not caught
+  up inside a request, because that replays the whole log on the writer: it
+  reads `Truncated` until restart.
+- **Pages** end on epoch boundaries. More rows than `max_items` in one epoch
+  come back whole, so every page makes progress.
+- **`Truncated{earliest}`**: `since_epoch` beyond the tail (the history was
+  cut beneath the reader) or a projection not covering the tail; `earliest`
+  is the tail. A cut that kept the reader's epoch is caught by `ctx_check`
+  (`LogMismatch`), not here.
+- **Long-poll.** The actor signals each published epoch on a condition
+  variable. The request holds no snapshot while waiting, and returns when
+  an item arrives or the wait ends; an epoch on another branch only
+  re-reads.
+- **Branch.** A bound caller may name another branch (read-only); agents
+  need a binding.
+
 ## 9. Protocol, formats and migration (M7)
 
 **op_log format 4.**

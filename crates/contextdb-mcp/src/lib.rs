@@ -245,6 +245,12 @@ fn tools() -> Value {
               "note": { "type": "string" },
               "expect_cert_valid": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
             "required": ["artifacts", "note"] } },
+        { "name": "ctx_changes", "description": "What changed status on this session's branch (or `branch`) after since_epoch, epoch by epoch: one item per revision whose status changed, with its new summary. Pass the returned `reached` as the next since_epoch; `wait_ms` (at most 30000) waits for new epochs when nothing changed yet. `truncated` means re-read with ctx_check, then follow from `earliest`.",
+          "inputSchema": { "type": "object", "properties": {
+              "since_epoch": { "type": "integer" }, "scope": { "type": "string" },
+              "branch": { "type": "string" }, "max_items": { "type": "integer" },
+              "wait_ms": { "type": "integer" } },
+            "required": ["since_epoch"] } },
         { "name": "ctx_handoff_begin", "description": "Hand this session's certified state to another session: its certificate must be Valid (run ctx_check first if unsure) and is passed with the summary. Returns the handoff id to give the next agent. Not a lock: you may keep working.",
           "inputSchema": { "type": "object", "properties": {
               "summary": { "type": "string", "description": "what was done and what is left, at most 8 KiB" },
@@ -957,6 +963,37 @@ impl<B: Backend> Server<B> {
                     client_txn_id: txn(args)?,
                 })?;
                 committed(env)
+            }
+            "ctx_changes" => {
+                let num = |k: &str| args.get(k).and_then(Value::as_u64);
+                let env = self.call(Request::Changes {
+                    binding: Some(binding.clone()),
+                    branch: arg(args, "branch").map(str::to_owned),
+                    since_epoch: Epoch(num("since_epoch").ok_or("since_epoch required")?),
+                    scope: arg(args, "scope").map(str::to_owned),
+                    max_items: num("max_items").unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+                    wait_ms: num("wait_ms").unwrap_or(0).min(30_000) as u32,
+                })?;
+                match env.response {
+                    Response::Changes {
+                        items,
+                        reached,
+                        more,
+                    } => Ok(json!({
+                        "reached": reached.0,
+                        "more": more,
+                        "items": items.iter().map(|i| json!({
+                            "epoch": i.epoch.0,
+                            "ref": format!("{}@{}", i.key, i.rev.0),
+                            "summary": summary_text(&i.summary),
+                        })).collect::<Vec<_>>(),
+                    })),
+                    Response::Truncated { earliest } => Ok(json!({
+                        "truncated": true, "earliest": earliest.0,
+                        "hint": "re-read with ctx_check, then follow from earliest",
+                    })),
+                    _ => Err("unexpected response".into()),
+                }
             }
             "ctx_handoff_begin" => {
                 let env = self.call(Request::HandoffBegin {

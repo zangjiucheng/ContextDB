@@ -204,6 +204,7 @@ ctx export <dir>        # 导出为 EventLog v0 JSONL
 | `ctx_txn_status` | 按 `client_txn_id` 查询 `Committed{epoch}` 或 `NotCommitted` |
 | `ctx_commit` / `ctx_what_if` | 在本会话的 branch 上原子提交多个 op（可要求会话证书此刻仍有效），或只演练不提交（P6） |
 | `ctx_branch` / `ctx_merge` | 创建、列出、归档 branch；把一个 branch 合并进另一个（P6） |
+| `ctx_changes` | 会话所在 branch 自某个 epoch 之后的状态变化，分页返回，可最多等待 30 秒直到下一个 epoch（P7） |
 | `ctx_handoff_begin` / `ctx_handoff_accept` | 把已认证的会话状态（读集与摘要）交给另一个会话；只能被接受一次，之后接受方的检查覆盖交来的读集（P7） |
 | `ctx_conflicts` / `ctx_resolve` | 列出会话所在 branch 上的矛盾、验证器的待审项与词法候选对；声明两条记录不能同时成立（解决或 supersede 前两侧都是 CONFLICTED）；附说明解决（P7） |
 
@@ -221,6 +222,8 @@ ctx validate <dir> <key@rev> verified|rejected [--yes]
 ctx conflicts list|open|resolve <dir> ...
                                  # 矛盾、验证器待审项与词法候选对（SD20），以 admin 身份；
                                  # open --from-candidate ID 从列出的候选对开启
+ctx changes <dir> [--since E] [--branch B] [--scope S] [--follow]
+                                 # 逐 epoch 的状态变化；--follow 持续等待新的 epoch
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 验证任务；<dir>/validators.toml 未配置验证器时什么都不调用；
