@@ -518,6 +518,24 @@ configuration and never enters derived state (M2: r0.1's
   and `per_head` (5); reloaded with `ctx validators reload`.
 - **Not yet.** LLM judging of candidate pairs is milestone 6b.
 
+**Implementation notes (milestone 6b).**
+- **Who judges.** A validator configured `pairs = true` (off by default),
+  whatever its kind; its filters match the newer side `a`. Workers take a
+  pair only when no rule job is claimable.
+- **Task.** A pair task shows `a` and `b`; only `conflict` and `none` are
+  accepted (§4.1's other checks apply). `claude -p` has a separate pair
+  template; `prompt_sha256` names the template used.
+- **Outcome.** `conflict`: a PendingReview on `a`, `suggestion: Reject`,
+  `rule: None`, `sides: [a, b]`, by the worker's principal for the
+  validator's kind. `none`: nothing is committed; the label and metadata
+  stay in the candidate row. Neither opens a Conflict (D3), whatever the
+  validator's kind.
+- **Queue.** The judging state is in `candidates.sqlite` (pending, running
+  under a lease, done, failed after the attempts, skipped when stale), not
+  in `jobs.sqlite`, whose key is a rule's. `client_txn_id = H(branch,
+  unordered pair)`: a review committed before a crash is found through
+  `TxnStatus` and not judged again.
+
 ## 6. `ctx_conflicts` and `ctx_resolve`
 
 All three operations act on the caller's branch.

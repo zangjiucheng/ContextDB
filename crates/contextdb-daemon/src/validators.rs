@@ -30,6 +30,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+#[path = "judge.rs"]
+mod judge;
+pub use judge::pair_txn;
+
 /// The worker's identity for trusted (Deterministic) validators ("VA").
 pub const TRUSTED_PRINCIPAL: PrincipalId = PrincipalId(0x5641_0001);
 /// The worker's identity for LLM validators: PendingReview batches only.
@@ -47,6 +51,8 @@ pub struct Configured {
     /// How it runs, for `status` and `check` (isolated or user config,
     /// trusted or not).
     pub note: String,
+    /// Also judges contradiction candidates (`pairs = true`).
+    pub pairs: bool,
 }
 /// The loaded configuration (replaced whole on reload).
 #[derive(Clone, Default)]
@@ -100,7 +106,12 @@ impl Loaded {
                 Configured {
                     filter: e.filter.clone(),
                     validator: e.build(&contextdb_validate::program_version(program)),
-                    note,
+                    note: if e.pairs {
+                        format!("{note}; judges candidate pairs")
+                    } else {
+                        note
+                    },
+                    pairs: e.pairs,
                 }
             })
             .collect();
@@ -125,6 +136,10 @@ pub struct Stats {
     pub tokens_out: AtomicU64,
     pub discovery_scans: AtomicU64,
     pub discovery_rows: AtomicU64,
+    /// Candidate pairs judged (calls), and how many gave a review or `none`.
+    pub pair_calls: AtomicU64,
+    pub pair_reviews: AtomicU64,
+    pub pair_none: AtomicU64,
 }
 pub struct Scheduler<D: Durability> {
     actor: ActorHandle<D>,
@@ -296,7 +311,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     .spawn(move || {
                         while !me.stop.load(Ordering::Acquire) {
                             let seen = me.wake_count();
-                            match me.work_once() {
+                            // Rule jobs first; candidate pairs when none waits.
+                            match me.work_once().and_then(|r| match r {
+                                Some(r) => Ok(Some(r)),
+                                None => me.judge_once(),
+                            }) {
                                 Ok(Some(_)) => {}
                                 Ok(None) => me.wait(seen, IDLE),
                                 Err(e) => {
@@ -403,6 +422,9 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             counter("tokens_out", v(&st.tokens_out)),
             counter("discovery_scans", v(&st.discovery_scans)),
             counter("discovery_rows", v(&st.discovery_rows)),
+            counter("pair_calls", v(&st.pair_calls)),
+            counter("pair_reviews", v(&st.pair_reviews)),
+            counter("pair_none", v(&st.pair_none)),
         ];
         if let Some(c) = self.candidates.get() {
             let cs = &c.stats;
@@ -413,6 +435,17 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 counter("candidate_us_total", v(&cs.micros)),
                 counter("candidate_us_max", v(&cs.micros_max)),
             ]);
+            if let Ok(n) = c.judge_counts() {
+                for (name, i) in [
+                    ("pairs_pending", 0),
+                    ("pairs_running", 1),
+                    ("pairs_judged", 2),
+                    ("pairs_failed", 3),
+                    ("pairs_skipped", 4),
+                ] {
+                    report.stats.push(counter(name, n[i]));
+                }
+            }
         }
         report.error = loaded.error.clone();
         Ok(report)
@@ -434,16 +467,29 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 {
                     return format!("{head}: skipped, over the hourly LLM call cap");
                 }
-                let start = Instant::now();
                 let lease = Duration::from_secs(loaded.limits.lease_secs);
-                match contextdb_validate::run(v, &task, start + lease) {
-                    Ok(o) => format!(
-                        "{head}: ok, {} in {:.1}s (probe expects conflict)",
-                        o.label.name(),
-                        start.elapsed().as_secs_f64()
-                    ),
-                    Err(e) => format!("{head}: FAILED: {e}"),
+                let probe = |task: &Task| {
+                    let start = Instant::now();
+                    match contextdb_validate::run(v, task, start + lease) {
+                        Ok(o) => format!(
+                            "ok, {} in {:.1}s (probe expects conflict)",
+                            o.label.name(),
+                            start.elapsed().as_secs_f64()
+                        ),
+                        Err(e) => format!("FAILED: {e}"),
+                    }
+                };
+                let mut line = format!("{head}: {}", probe(&task));
+                if c.pairs {
+                    if v.kind() == ValidatorKind::Llm
+                        && !self.llm_permit(loaded.limits.llm_calls_per_hour)
+                    {
+                        line.push_str("; pair probe skipped, over the hourly LLM call cap");
+                    } else {
+                        line.push_str(&format!("; pair probe: {}", probe(&probe_pair_task())));
+                    }
                 }
+                line
             })
             .collect()
     }
@@ -801,7 +847,32 @@ pub fn probe_task() -> Task {
                 "The orders service moved to MongoDB; PostgreSQL was decommissioned.",
             ),
         }],
+        pair: None,
     }
+}
+/// The fixed pair probe: two records that cannot both hold, which a
+/// working validator labels `conflict`.
+pub fn probe_pair_task() -> Task {
+    let item = |handle: &str, key: &str, body: &str| Item {
+        handle: handle.into(),
+        key: key.into(),
+        kind: RecordKind::Decision,
+        body: body.into(),
+    };
+    Task::pair(
+        [0; 16],
+        MAIN,
+        item(
+            "probe/session-store@3",
+            "probe/session-store",
+            "User sessions are kept only in process memory; no external store is used.",
+        ),
+        item(
+            "probe/session-redis@1",
+            "probe/session-redis",
+            "All user sessions are persisted in the shared Redis cluster.",
+        ),
+    )
 }
 /// T50's guard: a batch from the LLM principal never carries a
 /// `RecordValidation`; it is refused before it is submitted.
@@ -1018,5 +1089,6 @@ pub fn build_task<D: Durability>(
         curvec: job.curvec.clone(),
         conclusion,
         premises,
+        pair: None,
     })
 }

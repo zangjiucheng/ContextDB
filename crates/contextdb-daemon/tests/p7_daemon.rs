@@ -257,3 +257,75 @@ fn ctxd_candidates_backfill_persist_and_obey_the_config() {
     d.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Milestone 6b end to end: a `pairs = true` command validator (untrusted,
+/// so counted as an LLM) judges the daemon's candidate pairs in the
+/// background; `conflict` opens a non-gating PendingReview naming both.
+#[test]
+fn ctxd_judges_candidate_pairs_with_a_pairs_validator() {
+    let dir = tmp("judge");
+    std::fs::write(
+        dir.join("validators.toml"),
+        r#"
+[limits]
+workers = 1
+[[validator]]
+name = "pair-judge"
+type = "command"
+command = ["/bin/sh", "-c", "cat > /dev/null; echo '{\"label\": \"conflict\", \"rationale\": \"they disagree\", \"evidence\": []}'"]
+pairs = true
+"#,
+    )
+    .unwrap();
+    let d = Daemon::start(&dir, &Options::default()).unwrap();
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    for (i, w) in ["alpha", "bravo", "charlie", "delta", "echo", "golf"]
+        .iter()
+        .enumerate()
+    {
+        create(
+            &mut admin,
+            &format!("f{i}"),
+            RecordKind::Fact,
+            &format!("{w} {w} note on {w}"),
+        );
+    }
+    create(
+        &mut admin,
+        "logs",
+        RecordKind::Decision,
+        "service logs are shipped to elasticsearch daily",
+    );
+    create(
+        &mut admin,
+        "logs-fact",
+        RecordKind::Fact,
+        "service logs never leave the host; elasticsearch was removed",
+    );
+    let start = Instant::now();
+    let review = loop {
+        let snap = d.service.actor.snapshot();
+        let found = (snap.view(MAIN).artifacts())
+            .find(|(_, a)| a.open && a.ty == ArtifactType::PendingReview)
+            .map(|(_, a)| a);
+        if let Some(a) = found {
+            break a;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "no pair review");
+        drop(snap);
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(review.author, contextdb_daemon::validators::LLM_PRINCIPAL);
+    let snap = d.service.actor.snapshot();
+    assert_eq!(
+        snap.view(MAIN).status(review.target).unwrap(),
+        Summary::Certified
+    );
+    drop(snap);
+    let r = report(&mut admin, ValidatorsAction::Status);
+    assert!(count(&r.stats, "pair_reviews") >= 1);
+    assert!(count(&r.stats, "pairs_judged") >= 1);
+    assert_eq!(count(&r.stats, "records"), 0);
+    d.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

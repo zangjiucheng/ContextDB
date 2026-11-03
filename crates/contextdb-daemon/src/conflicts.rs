@@ -221,7 +221,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// which is no longer the head is marked `gone`; one already open as a
     /// Conflict is marked `opened`. Neither is listed.
     fn candidate_items(&self, view: &BranchView<'_>, scope: Option<&str>) -> Vec<ConflictItem> {
-        use crate::candidates::{CandState, current};
+        use crate::candidates::{CandState, Judge, current};
         let mut out = Vec::new();
         let listed = self
             .candidates
@@ -239,6 +239,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
             if !in_scope(view, &[c.a, c.b], scope) {
                 continue;
             }
+            // A validator's judgement, when one judged the pair (§5).
+            let mut marks = Vec::new();
+            if let (Judge::Done, Some(label)) = (c.judge, &c.label) {
+                let by = c.validator.as_deref().unwrap_or("validator");
+                marks.push(match c.review {
+                    Some(r) => format!("judged {label} by {by} (review {})", r.0),
+                    None => format!("judged {label} by {by}"),
+                });
+            }
             out.push(ConflictItem {
                 kind: "candidate".into(),
                 artifacts: Vec::new(),
@@ -246,7 +255,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 reason: format!("lexical similarity, bm25 {:.2}", c.score),
                 origin: format!("candidate {}", c.id),
                 rule: None,
-                marks: Vec::new(),
+                marks,
                 evidence: Vec::new(),
                 candidate: Some(c.id),
             });

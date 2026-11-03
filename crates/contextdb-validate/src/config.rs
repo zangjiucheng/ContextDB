@@ -23,6 +23,8 @@
 //! branches = ["main"]           # optional filters on the job
 //! kinds = ["Decision", "Plan"]  # the conclusion's kind
 //! scopes = ["repo"]             # the conclusion's scope lane
+//! pairs = true                  # also judge contradiction candidates
+//!                               # (filters match the newer side)
 //!
 //! [[validator]]
 //! name = "lint"
@@ -31,7 +33,8 @@
 //! trusted = true                # Deterministic; otherwise counted as Llm
 //! ```
 //!
-//! A job goes to the first validator whose filters all match.
+//! A job goes to the first validator whose filters all match; a candidate
+//! pair to the first with `pairs = true` whose filters match its newer side.
 use crate::{Validator, claude::ClaudeCli, command::CommandValidator};
 use contextdb_model::RecordKind;
 use std::path::{Path, PathBuf};
@@ -107,6 +110,8 @@ pub struct Entry {
     pub name: String,
     pub adapter: Adapter,
     pub filter: Filter,
+    /// Also judges contradiction candidates (ADR 0015 §5); off by default.
+    pub pairs: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
@@ -237,9 +242,10 @@ impl Config {
                     "branches",
                     "kinds",
                     "scopes",
+                    "pairs",
                 ],
                 Some("command") => &[
-                    "name", "type", "command", "trusted", "branches", "kinds", "scopes",
+                    "name", "type", "command", "trusted", "branches", "kinds", "scopes", "pairs",
                 ],
                 _ => {
                     return Err(format!(
@@ -278,6 +284,12 @@ impl Config {
                     trusted,
                 }
             };
+            let pairs = match t.get("pairs") {
+                None => false,
+                Some(b) => b
+                    .as_bool()
+                    .ok_or(format!("validator `{name}`: pairs is a bool"))?,
+            };
             let kinds = (strings("kinds")?.iter())
                 .map(|k| kind_of(k).ok_or(format!("validator `{name}`: unknown kind `{k}`")))
                 .collect::<Result<_, _>>()?;
@@ -289,6 +301,7 @@ impl Config {
                     kinds,
                     scopes: strings("scopes")?,
                 },
+                pairs,
             });
         }
         Ok(config)
@@ -371,6 +384,7 @@ mod tests {
             model = "claude-haiku-5-5"
             token_file = "~/.config/contextdb/claude-token"
             kinds = ["Decision"]
+            pairs = true
             [[validator]]
             name = "lint"
             type = "command"
@@ -395,6 +409,7 @@ mod tests {
                 .filter
                 .matches("x", RecordKind::Decision, "repo")
         );
+        assert!(c.validators[0].pairs && !c.validators[1].pairs);
         assert!(
             !c.validators[0]
                 .filter
@@ -426,6 +441,7 @@ mod tests {
             "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = []",
             "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\nmodel = \"m\"",
             "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\nkinds = [\"Note\"]",
+            "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\npairs = 1",
             "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\n[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"y\"]",
         ] {
             assert!(Config::parse(bad, None).is_err(), "{bad}");

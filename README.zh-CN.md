@@ -223,7 +223,8 @@ ctx conflicts list|open|resolve <dir> ...
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 验证任务；<dir>/validators.toml 未配置验证器时什么都不调用；
-                                 # LLM 验证器只开 PendingReview
+                                 # LLM 验证器只开 PendingReview；配置 `pairs = true` 的验证器
+                                 # 也判定词法候选对
 ctx shutdown <dir>
 ```
 

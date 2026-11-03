@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P7 milestone 6b: validators judge candidate pairs** (ADR 0015 §5).
+  - A validator with `pairs = true` in `validators.toml` also judges contradiction candidates; it is off by default. Its filters match the pair's newer side, and workers take pairs only when no rule job waits.
+  - A pair task shows both records and accepts only `conflict` or `none`. `claude -p` gets its own pair prompt, with its own `prompt_sha256`, under the same sandbox (T82). The command protocol receives `{"task": "pair", "a", "b"}`.
+  - `conflict` opens a non-gating PendingReview on the newer side, `suggestion: Reject`, naming both sides. `none` commits nothing. Neither opens a Conflict: an agent or the admin confirms a pair with `ctx_conflicts open`.
+  - Judging state lives in `candidates.sqlite`: lease, attempts with backoff, label and validator. A pair whose side moved is skipped without a call, and the hourly LLM cap defers without counting an attempt. One `client_txn_id` per pair means a review committed before a crash is not judged again.
+  - `ctx_conflicts list` marks a judged pair (`judged conflict by <validator> (review N)`). `ctx validators status` adds pair counters, and `check` also runs a fixed pair probe for `pairs` validators.
 - **P7 milestone 6: lexical contradiction candidates** (ADR 0015 §5).
   - The recall index now has one row per `(branch, logical)`: `main`'s head, plus another branch's head where it differs from `main`'s. Each row names the revision it indexes. A session on a branch finds text only that branch's head has, and no longer gets hits from `main` text the branch has replaced. An older `recall.sqlite` is dropped and rebuilt on first start.
   - When an epoch moves a head of kind Decision, Plan or Fact, `ctxd` takes the head's rarest shared terms (at most 12) and runs a bm25-ranked OR query over the rows visible on that branch, in the same scope lane. It drops the head's own logical, its direct premises and dependents, other kinds, and rows that are not the branch's head, and keeps at most 5 pairs scoring at least `min_score`. This runs on the indexer thread, never the writer.
@@ -9,7 +15,7 @@
   - `ctx_conflicts list` shows candidate pairs not yet acted on, each with its id and score. `open{from_candidate}` (CLI `--from-candidate ID`) opens the gating pair from one, filling in the other side, and marks it opened. A candidate never gates by itself. Candidates never pair a revision invisible on the branch (T84).
   - `validators.toml` gains `[candidates] min_score` (default 1.0, an initial value calibrated in G6) and `per_head` (default 5, 0 turns new pairs off). `ctx validators status` reports the candidate counters.
   - A stopped daemon now also stops its indexer thread.
-  - An LLM judging candidate pairs (§5, a non-gating PendingReview on the new head) is not in this milestone.
+  - Validators judging candidate pairs came with milestone 6b.
 - **P7 milestone 5: `ctx_conflicts` and `ctx_resolve`** (ADR 0015 §2, §6; SD20).
   - `ctx_conflicts open` lets an agent (through its session) or the admin assert that two records cannot both hold. Both sides get an open Conflict sharing one `ConflictDoc`, and both read CONFLICTED until the pair is resolved or a side is superseded; the new head of a superseded side is not gated. With `from_review`, the same commit resolves that review.
   - `open` refuses a pair of one revision, a side not visible on the branch, a pair already open, and an empty reason.

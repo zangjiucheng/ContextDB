@@ -1,7 +1,8 @@
 //! P7 validator adapters (ADR 0015 §4.1), outside the kernel and the writer.
 //!
 //! A [`Validator`] judges one [`Task`]: the change in a Sem rule's premises
-//! since the rule was asserted. Its [`Outcome`] is a label with a rationale
+//! since the rule was asserted, or (a pair task, ADR 0015 §5) whether two
+//! records found by the lexical candidates contradict each other. Its [`Outcome`] is a label with a rationale
 //! and evidence handles; mapping labels to verdicts or reviews is the
 //! worker's job (§4.2), never the adapter's. Adapters:
 //!
@@ -44,6 +45,10 @@ pub struct PremiseChange {
     pub asserted: Item,
     pub current: Item,
 }
+/// A rule task (`pair` is `None`): the rule's conclusion and its changed
+/// Sem premises. A pair task (`pair` is `Some`): `conclusion` is the new
+/// head and `pair` the other side; `rule`, `curvec` and `premises` are
+/// unused (`RuleId(0)`, empty).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
     pub job: [u8; 16],
@@ -52,11 +57,28 @@ pub struct Task {
     pub curvec: HeadVector,
     pub conclusion: Item,
     pub premises: Vec<PremiseChange>,
+    pub pair: Option<Item>,
 }
 impl Task {
+    /// A pair task: do `a` (the new head) and `b` contradict each other?
+    pub fn pair(job: [u8; 16], branch: BranchId, a: Item, b: Item) -> Self {
+        Self {
+            job,
+            branch,
+            rule: RuleId(0),
+            curvec: Vec::new(),
+            conclusion: a,
+            premises: Vec::new(),
+            pair: Some(b),
+        }
+    }
+    pub fn is_pair(&self) -> bool {
+        self.pair.is_some()
+    }
     /// Every handle the task shows: the only ones evidence may cite.
     pub fn handles(&self) -> Vec<&str> {
         let mut out = vec![self.conclusion.handle.as_str()];
+        out.extend(self.pair.as_ref().map(|b| b.handle.as_str()));
         for p in &self.premises {
             out.push(&p.asserted.handle);
             out.push(&p.current.handle);
@@ -65,6 +87,7 @@ impl Task {
     }
     pub fn body_bytes(&self) -> usize {
         self.conclusion.body.len()
+            + self.pair.as_ref().map_or(0, |b| b.body.len())
             + self
                 .premises
                 .iter()
@@ -81,6 +104,15 @@ impl Task {
                 "body": i.body,
             })
         };
+        if let Some(b) = &self.pair {
+            return serde_json::json!({
+                "job": hex(&self.job),
+                "branch": self.branch.0,
+                "task": "pair",
+                "a": item(&self.conclusion),
+                "b": item(b),
+            });
+        }
         serde_json::json!({
             "job": hex(&self.job),
             "branch": self.branch.0,
@@ -146,8 +178,15 @@ pub fn run(v: &dyn Validator, task: &Task, deadline: Instant) -> Result<Outcome,
     check(task, &outcome)?;
     Ok(outcome)
 }
-/// The handle allowlist and the rationale cap.
+/// The handle allowlist, the rationale cap, and for a pair task the two
+/// labels it allows (`conflict`, `none`).
 pub fn check(task: &Task, o: &Outcome) -> Result<(), ValidatorError> {
+    if task.is_pair() && !matches!(o.label, Label::Conflict | Label::None) {
+        return Err(ValidatorError::Malformed(format!(
+            "a pair task takes conflict or none, not {}",
+            o.label.name()
+        )));
+    }
     let allowed = task.handles();
     if let Some(h) = o.evidence.iter().find(|h| !allowed.contains(&h.as_str())) {
         return Err(ValidatorError::Disallowed(h.clone()));
@@ -323,7 +362,36 @@ mod tests {
                 asserted: item("db@0", "postgres"),
                 current: item("db@2", "postgres 16"),
             }],
+            pair: None,
         }
+    }
+    #[test]
+    fn pair_tasks_show_both_sides_and_take_two_labels() {
+        let item = |h: &str, body: &str| Item {
+            handle: h.into(),
+            key: h.split('@').next().unwrap().into(),
+            kind: RecordKind::Fact,
+            body: body.into(),
+        };
+        let t = Task::pair([2; 16], MAIN, item("a@3", "x"), item("b@1", "yy"));
+        assert_eq!(t.handles(), vec!["a@3", "b@1"]);
+        assert_eq!(t.body_bytes(), 3);
+        let j = t.to_json();
+        assert_eq!(j["task"], "pair");
+        assert_eq!(j["b"]["handle"], "b@1");
+        assert!(j.get("premises").is_none());
+        let mut o = mock::Mock::outcome(Label::Conflict);
+        o.evidence = vec!["b@1".into()];
+        assert_eq!(check(&t, &o), Ok(()));
+        assert_eq!(check(&t, &mock::Mock::outcome(Label::None)), Ok(()));
+        for l in [Label::Reinforcement, Label::BoundaryChange, Label::NewRule] {
+            assert!(matches!(
+                check(&t, &mock::Mock::outcome(l)),
+                Err(ValidatorError::Malformed(_))
+            ));
+        }
+        // A rule task does not get the pair's handles.
+        assert!(!task().handles().contains(&"b@1"));
     }
     #[test]
     fn outcome_parsing_is_strict_and_evidence_is_allowlisted() {

@@ -222,7 +222,8 @@ ctx conflicts list|open|resolve <dir> ...
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 validator jobs; none run until <dir>/validators.toml lists a
-                                 # validator. LLM validators only open PendingReviews.
+                                 # validator. LLM validators only open PendingReviews; one with
+                                 # `pairs = true` also judges lexical candidate pairs.
 ctx shutdown <dir>
 ```
 

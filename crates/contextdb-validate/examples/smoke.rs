@@ -30,6 +30,7 @@ fn main() {
                 "The service stores its data in MongoDB; PostgreSQL is dropped.",
             ),
         }],
+        pair: None,
     };
     let cli = ClaudeCli {
         name: "claude-cli".into(),

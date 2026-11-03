@@ -63,6 +63,32 @@ impl CandState {
         }
     }
 }
+/// Where a pair stands with the validators that judge pairs (milestone
+/// 6b, ADR 0015 §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Judge {
+    /// Not judged yet (or given back for a retry).
+    Pending = 0,
+    /// A worker holds it under a lease.
+    Running = 1,
+    /// Judged: `none`, or `conflict` with a PendingReview opened.
+    Done = 2,
+    /// Out of attempts.
+    Failed = 3,
+    /// No longer worth judging (a side moved, or the pair was acted on).
+    Skipped = 4,
+}
+impl Judge {
+    fn from_i64(n: i64) -> Self {
+        match n {
+            0 => Self::Pending,
+            1 => Self::Running,
+            2 => Self::Done,
+            3 => Self::Failed,
+            _ => Self::Skipped,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub id: u64,
@@ -73,6 +99,16 @@ pub struct Candidate {
     pub score: f64,
     pub epoch: Epoch,
     pub state: CandState,
+    pub judge: Judge,
+    /// The judging validator's label and name, once judged.
+    pub label: Option<String>,
+    pub validator: Option<String>,
+    /// The PendingReview a `conflict` judgement opened.
+    pub review: Option<ArtifactId>,
+    pub attempts: u32,
+    pub error: Option<String>,
+    /// The worker's claim token while `Running`.
+    pub token: u64,
 }
 /// Counters for `ctx validators status` and the G5/G6 reports.
 #[derive(Debug, Default)]
@@ -102,9 +138,29 @@ fn row_to(r: &rusqlite::Row<'_>) -> Sql<Candidate> {
         score: r.get(4)?,
         epoch: Epoch(r.get::<_, i64>(5)? as u64),
         state: CandState::from_i64(r.get(6)?),
+        judge: Judge::from_i64(r.get(7)?),
+        label: r.get(8)?,
+        validator: r.get(9)?,
+        review: r.get::<_, Option<u32>>(10)?.map(ArtifactId),
+        attempts: r.get(11)?,
+        error: r.get(12)?,
+        token: r.get::<_, i64>(13)? as u64,
     })
 }
-const COLUMNS: &str = "id, branch, a_rev, b_rev, score, epoch, state";
+const COLUMNS: &str = "id, branch, a_rev, b_rev, score, epoch, state, judge, label, validator, review, attempts, error, judge_token";
+/// Judging columns, added to a table from milestone 6 on open.
+const JUDGE_COLUMNS: &[(&str, &str)] = &[
+    ("judge", "INTEGER NOT NULL DEFAULT 0"),
+    ("judge_token", "INTEGER NOT NULL DEFAULT 0"),
+    ("lease_until", "INTEGER NOT NULL DEFAULT 0"),
+    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("next_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("label", "TEXT"),
+    ("validator", "TEXT"),
+    ("review", "INTEGER"),
+    ("error", "TEXT"),
+    ("meta", "BLOB"),
+];
 impl Candidates {
     /// Opens (or creates) the table; memory when `path` is `None`.
     pub fn open(path: Option<&Path>) -> Result<Self, String> {
@@ -131,6 +187,22 @@ impl Candidates {
              CREATE INDEX IF NOT EXISTS candidates_b ON candidates(branch, b_logical) WHERE state = 0;
              CREATE TABLE IF NOT EXISTS candidates_watermark(
                  id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);",
+        )
+        .map_err(|e| format!("{FILE}: {e}"))?;
+        for (name, ty) in JUDGE_COLUMNS {
+            if conn
+                .prepare(&format!("SELECT {name} FROM candidates LIMIT 0"))
+                .is_err()
+            {
+                conn.execute_batch(&format!("ALTER TABLE candidates ADD COLUMN {name} {ty}"))
+                    .map_err(|e| format!("{FILE}: {e}"))?;
+            }
+        }
+        // This process holds the data directory's lock: a pair left
+        // Running was held by a worker that is gone.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS candidates_judge ON candidates(id) WHERE state = 0 AND judge = 0;
+             UPDATE candidates SET judge = 0 WHERE judge = 1;",
         )
         .map_err(|e| format!("{FILE}: {e}"))?;
         Ok(Self {
@@ -222,6 +294,113 @@ impl Candidates {
             params![id as i64, state as i64],
         )?;
         Ok(())
+    }
+    // Judging (milestone 6b).
+
+    /// Pairs not acted on and not judged, whose retry time has come, oldest
+    /// first.
+    pub fn judge_queue(&self, now_ms: i64, limit: usize) -> Sql<Vec<Candidate>> {
+        let db = self.db();
+        let mut stmt = db.prepare_cached(&format!(
+            "SELECT {COLUMNS} FROM candidates
+             WHERE state = 0 AND judge = 0 AND next_at <= ?1 ORDER BY id LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![now_ms, limit as i64], row_to)?;
+        rows.collect()
+    }
+    /// Takes a pending pair under a lease; false when another worker has it.
+    pub fn judge_claim(&self, id: u64, token: u64, lease_until_ms: i64) -> Sql<bool> {
+        Ok(self.db().execute(
+            "UPDATE candidates SET judge = 1, judge_token = ?2, lease_until = ?3
+             WHERE id = ?1 AND judge = 0",
+            params![id as i64, token as i64, lease_until_ms],
+        )? == 1)
+    }
+    /// Running pairs whose lease lapsed count an attempt and go back to
+    /// pending (or `Failed` after `max_attempts`).
+    pub fn judge_expire(&self, now_ms: i64, max_attempts: u32) -> Sql<usize> {
+        self.db().execute(
+            "UPDATE candidates SET
+                 attempts = attempts + 1,
+                 judge = CASE WHEN attempts + 1 >= ?2 THEN 3 ELSE 0 END,
+                 error = 'lease expired'
+             WHERE judge = 1 AND lease_until < ?1",
+            params![now_ms, max_attempts],
+        )
+    }
+    /// Ends a claim held by `token`; false when the token no longer holds it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn judge_finish(
+        &self,
+        id: u64,
+        token: u64,
+        judge: Judge,
+        label: Option<&str>,
+        validator: Option<&str>,
+        review: Option<ArtifactId>,
+        meta: Option<&[u8]>,
+    ) -> Sql<bool> {
+        Ok(self.db().execute(
+            "UPDATE candidates SET judge = ?3, label = ?4, validator = ?5, review = ?6,
+                 meta = ?7, error = NULL
+             WHERE id = ?1 AND judge = 1 AND judge_token = ?2",
+            params![
+                id as i64,
+                token as i64,
+                judge as i64,
+                label,
+                validator,
+                review.map(|a| a.0),
+                meta
+            ],
+        )? == 1)
+    }
+    /// A failed attempt: retried at `next_at_ms`, or `Failed` after
+    /// `max_attempts`.
+    pub fn judge_fail(
+        &self,
+        id: u64,
+        token: u64,
+        error: &str,
+        max_attempts: u32,
+        next_at_ms: i64,
+    ) -> Sql<bool> {
+        Ok(self.db().execute(
+            "UPDATE candidates SET
+                 attempts = attempts + 1,
+                 judge = CASE WHEN attempts + 1 >= ?4 THEN 3 ELSE 0 END,
+                 error = ?3, next_at = ?5
+             WHERE id = ?1 AND judge = 1 AND judge_token = ?2",
+            params![id as i64, token as i64, error, max_attempts, next_at_ms],
+        )? == 1)
+    }
+    /// Gives a claim back without counting an attempt (the LLM call cap).
+    pub fn judge_release(&self, id: u64, token: u64, next_at_ms: i64) -> Sql<bool> {
+        Ok(self.db().execute(
+            "UPDATE candidates SET judge = 0, next_at = ?3
+             WHERE id = ?1 AND judge = 1 AND judge_token = ?2",
+            params![id as i64, token as i64, next_at_ms],
+        )? == 1)
+    }
+    /// Marks a pending pair `Skipped` (no claim needed).
+    pub fn judge_skip(&self, id: u64) -> Sql<()> {
+        self.db().execute(
+            "UPDATE candidates SET judge = 4 WHERE id = ?1 AND judge = 0",
+            params![id as i64],
+        )?;
+        Ok(())
+    }
+    /// Counts by judge state (`ctx validators status`).
+    pub fn judge_counts(&self) -> Sql<[u64; 5]> {
+        let db = self.db();
+        let mut stmt =
+            db.prepare_cached("SELECT judge, count(*) FROM candidates GROUP BY judge")?;
+        let mut out = [0u64; 5];
+        for r in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (j, n) = r?;
+            out[Judge::from_i64(j) as usize] += n as u64;
+        }
+        Ok(out)
     }
     /// Open pairs on `branch` with a side on logical `l`.
     fn touching(&self, branch: BranchId, l: LogicalId) -> Sql<Vec<Candidate>> {
@@ -554,5 +733,39 @@ pub(crate) fn indexer<D: Durability>(
             drop(snap);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// A milestone-6 table gains the judging columns; its pairs are pending.
+    /// A pair left Running by a dead worker is pending again on open.
+    #[test]
+    fn a_milestone_6_table_gains_the_judging_columns() {
+        let dir = std::env::temp_dir().join(format!("cand-m6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE candidates(id INTEGER PRIMARY KEY, branch INTEGER NOT NULL,
+                     a_rev INTEGER NOT NULL, b_rev INTEGER NOT NULL, a_logical INTEGER NOT NULL,
+                     b_logical INTEGER NOT NULL, score REAL NOT NULL, epoch INTEGER NOT NULL,
+                     state INTEGER NOT NULL);
+                 INSERT INTO candidates VALUES (1, 0, 5, 3, 2, 1, 2.5, 7, 0);",
+            )
+            .unwrap();
+        }
+        let t = Candidates::open(Some(&path)).unwrap();
+        let c = t.get(1).unwrap().unwrap();
+        assert_eq!((c.judge, c.attempts, c.label), (Judge::Pending, 0, None));
+        assert!(t.judge_claim(1, 42, i64::MAX).unwrap());
+        assert!(!t.judge_claim(1, 43, i64::MAX).unwrap(), "held");
+        drop(t);
+        let t = Candidates::open(Some(&path)).unwrap();
+        assert_eq!(t.get(1).unwrap().unwrap().judge, Judge::Pending);
+        assert_eq!(t.judge_queue(0, 10).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

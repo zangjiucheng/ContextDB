@@ -136,6 +136,7 @@ fn loaded(v: Arc<dyn Validator>, limits: Limits) -> Loaded {
             filter: Filter::default(),
             validator: v,
             note: "test".into(),
+            pairs: false,
         }],
         error: None,
     }
