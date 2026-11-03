@@ -115,6 +115,15 @@ pub struct StreamState {
     pub baseline: Vec<(String, ContentHash)>,
     /// Facts dropped because the log reached [`LOG_CAP`].
     pub dropped: u64,
+    /// The harness version, once found (unknown is not cached).
+    pub harness_version: String,
+    /// The last non-Empty warning rendered per agent, as a digest of the
+    /// verdict, the named reads and git HEAD: an identical warning is not
+    /// repeated on shell commands (P4 audit follow-up 2).
+    pub warned: Vec<(Option<String>, ContentHash)>,
+    /// Drift paths already shown per agent: (undeclared, unrealised). Only
+    /// paths new since the last Stop are rendered (P4 audit follow-up 4).
+    pub drift_shown: Vec<(Option<String>, Vec<String>, Vec<String>)>,
 }
 impl Wire for StreamState {
     fn encode(&self, o: &mut Vec<u8>) {
@@ -127,6 +136,9 @@ impl Wire for StreamState {
         self.empty_warned.encode(o);
         self.baseline.encode(o);
         self.dropped.encode(o);
+        self.harness_version.encode(o);
+        self.warned.encode(o);
+        self.drift_shown.encode(o);
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         Ok(Self {
@@ -139,6 +151,22 @@ impl Wire for StreamState {
             empty_warned: Wire::decode(i)?,
             baseline: Wire::decode(i)?,
             dropped: Wire::decode(i)?,
+            // Fields added in 0.2.1: a state written by 0.2.0 ends here.
+            harness_version: if i.remaining() == 0 {
+                String::new()
+            } else {
+                Wire::decode(i)?
+            },
+            warned: if i.remaining() == 0 {
+                Vec::new()
+            } else {
+                Wire::decode(i)?
+            },
+            drift_shown: if i.remaining() == 0 {
+                Vec::new()
+            } else {
+                Wire::decode(i)?
+            },
         })
     }
 }
@@ -700,6 +728,42 @@ mod tests {
         );
         assert_eq!(calls[1].1, Some((1, 2)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn state_from_0_2_0_still_reads() {
+        let full = StreamState {
+            harness: "claude".into(),
+            tokens: vec![(None, 7)],
+            dropped: 3,
+            harness_version: "2.1.316".into(),
+            warned: vec![(Some("a".into()), [9; 32])],
+            drift_shown: vec![(None, vec!["x".into()], vec![])],
+            ..StreamState::default()
+        };
+        assert_eq!(
+            StreamState::from_bytes(&full.canonical_bytes()),
+            Ok(full.clone())
+        );
+        // 0.2.0 wrote the state without the last three fields.
+        let mut old = Vec::new();
+        full.harness.encode(&mut old);
+        full.harness_session.encode(&mut old);
+        full.session.encode(&mut old);
+        full.head_sha.encode(&mut old);
+        full.roots.encode(&mut old);
+        full.tokens.encode(&mut old);
+        full.empty_warned.encode(&mut old);
+        full.baseline.encode(&mut old);
+        full.dropped.encode(&mut old);
+        assert_eq!(
+            StreamState::from_bytes(&old),
+            Ok(StreamState {
+                harness_version: String::new(),
+                warned: Vec::new(),
+                drift_shown: Vec::new(),
+                ..full
+            })
+        );
     }
     #[test]
     fn state_round_trips_and_dirty_lists_streams() {

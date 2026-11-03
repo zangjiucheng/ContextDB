@@ -1,6 +1,6 @@
 # ADR 0010 — P4 hooks, outbox and action gating
 
-Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0; **revision 3.4** records the independent implementation review (§18); **revision 3.3** records implementation notes from milestone 1 (§4: requests changed in place under protocol 2, final tag tables; §2.3: a claim serves every request of its tool call). The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
+Status: **Accepted (revision 3.2)**, 2026-10-21, for P4 G0; **revision 3.5** applies three follow-ups from the P4 G6 audit (§19); **revision 3.4** records the independent implementation review (§18); **revision 3.3** records implementation notes from milestone 1 (§4: requests changed in place under protocol 2, final tag tables; §2.3: a claim serves every request of its tool call). The reviewer's closure check of revision 3.1 found C1 and M1–M3 closed, no new blocker or major, and G0 acceptable; revision 3.2 applies its three text fixes (§17).
 
 Review history (non-implementing reviewer):
 
@@ -272,7 +272,7 @@ It contains:
   - `<stream>.log`: the records;
   - `<stream>.seq`: `next_seq`, guarded by the **append lock** (`flock` on this file);
   - `<stream>.ack`: `acked_through`, guarded by the **delivery lock** (`flock` on this file);
-  - `<stream>.state`: cached repository roots, per-agent update tokens, the last empty-warning time and the baseline (§5.4). It is written under the append lock.
+  - `<stream>.state`: cached repository roots, per-agent update tokens, the last empty-warning time and the baseline (§5.4); from r3.5 also the harness version, the last warning digest per agent (§6.1) and the drift paths last shown per agent (§5.4). It is written under the append lock.
 - **Record format.** `"CXOB" | len u32 LE | blake3(body) | body`, where `body = Wire(OutboxRecord{seq, agent_id, event})`.
   - A record is valid iff its hash matches.
   - The scan resyncs at the next magic.
@@ -339,6 +339,7 @@ It sends `Drift{agent_id, done}`. The daemon computes:
 - Edits made by people, or by agents without hooks, remain in `undeclared`. The report states that `undeclared` is an upper bound.
 - Drift goes to the session log, and to the user as one `systemMessage`. It is never gated.
 - It is not a kernel `Artifact` in P4, because `OpenArtifact` requires a target revision (amendment A3).
+- **Rendering (r3.5).** The report covers the whole session, so the hook renders only paths not in that agent's previous report; a path that leaves the report and comes back is rendered again. `done` is still sent whole, since `unrealised` needs it. `ctx gate-report` counts drift paths once per session.
 
 ## 6. Gating
 
@@ -367,6 +368,7 @@ gate(mode: GateMode, verdict: &Validation) -> Decision     // daemon (Check), CL
 
 - **`Off`:** allow, with no daemon call.
 - **Empty never allows (I6).** The hook *renders* an Empty warning once per stream and agent (every 10 minutes before SPEC v1.6.11, which repeated it for hours in long sessions), but logs the decision every time.
+- **Other warnings are said once per stale read set (r3.5).** A warn whose verdict, named reads and git HEAD equal the last one rendered to that agent is not rendered again on a shell or other non-edit action. File edits always render it, and a commit moves HEAD, so it is said again. Denies always render; every decision is logged.
 - **Reasons** name the stale items, the agent whose read put each into the view (so reviewers can label child-read false denies), and how to clear the decision, in at most 480 bytes.
 
 ### 6.2 Configuration
@@ -519,7 +521,7 @@ The unavailable outcome is recorded in the outbox as a `Gate` fact.
 **Reported, no threshold.**
 - the true-positive share of stale-action intercepts, and the legitimate-action allow rate;
 - drift totals;
-- daemon-side check latency, per harness version;
+- daemon-side check latency, per harness version (Claude Code does not pass `CLAUDE_CODE_EXECPATH` to hooks; from r3.5 the hook reads the version from the newest transcript line that records one and caches it per stream);
 - `Unparsed` events, `Unclaimed` MCP calls, and outbox drops and skips.
 
 **Output.** `docs/gates/p4-dogfood.md`, plus a JSON file of raw counts. (Written as `p4-g6-dogfood-report.md`: the planned name collides with the kit `P4-dogfood.md` on case-insensitive file systems.)
@@ -722,6 +724,16 @@ A non-implementing reviewer reviewed `4df803a..aa8dd1a` plus the working tree: 1
 | Closure N4: window between leaving the live map and joining the ended | The session joins the ended before it leaves the live map |
 | Closure notes | Property (d) now acknowledges any kept token (up to eight per agent); the dogfood kit starts from an empty data directory and says the unclaimed count checks Claude only |
 | Notes | Full shell commands are recorded (README says so); a broken-log session's reason says to start a new session; telemetry and keys grow with use and are replayed at start (bounded by the dogfood's scale; compaction is P10 material) |
+
+## 19. P4 G6 audit follow-ups (revision 3.5)
+
+From [the audit](../gates/p4-g6-audit.md) §5. No protocol or log format change; `<stream>.state` gains three trailing fields that a 0.2.0 state file lacks and reads as empty.
+
+| Audit item | Change | Test |
+|---|---|---|
+| 2: Invalid repeated on every action (61 times in one Codex session) | §6.1: said once per verdict, named reads and HEAD; file edits and denies always | `invalid_warnings_are_said_once_per_read_set` |
+| 4: drift re-reported the whole dirty tree each Stop (21,270 entries over ~200 paths) | §5.4: only paths new to the agent's report are rendered; the report counts paths once per session | `drift_notices_list_truncate_and_name_unrealised_edits`, `drift_paths_count_once_per_session` |
+| 5: Claude Code's version never recorded | §10: read from the transcript and cached | `claude_version_comes_from_the_transcript`, `state_from_0_2_0_still_reads` |
 
 ## 16. Risks and limitations
 

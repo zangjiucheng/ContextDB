@@ -483,6 +483,94 @@ fn empty_warnings_are_rendered_once_per_agent() {
     assert!(warned_in("s2", None), "a new session's first warning");
 }
 
+/// A non-Empty warning is said once per stale read set (P4 audit follow-up
+/// 2): an identical one is not repeated on shell commands, but file edits
+/// always see it, and a change of the named reads or of git HEAD (a commit)
+/// says it again. Denies always show. Each check still reaches the daemon.
+#[test]
+fn invalid_warnings_are_said_once_per_read_set() {
+    let repo = Repo::new("invalid-once");
+    let fake = Fake::start(&repo.data());
+    let read = |current: u32| NamedRead {
+        key: "db".into(),
+        agent: None,
+        read: RevisionId(2),
+        current: Some(RevisionId(current)),
+        summary: Summary::Stale(StaleReason::HeadSuperseded),
+    };
+    let invalid = Validation::Invalid {
+        reason: InvalidReason::Changed,
+        diffs: Vec::new(),
+    };
+    let set = |gate: Decision, current: u32| {
+        let c = check(invalid.clone(), gate, vec![read(current)]);
+        fake.set(move |s| s.check = c)
+    };
+    let shell = |agent: Option<&str>| {
+        let input = repo.input(
+            "PreToolUse",
+            "s",
+            agent,
+            json!({ "tool_name": "Bash", "tool_use_id": "toolu_b",
+                "tool_input": { "command": "cargo test" } }),
+        );
+        repo.hook("claude", "pre-tool-use", &input).is_some()
+    };
+    let edit = || {
+        repo.hook("claude", "pre-tool-use", &repo.edit_lib("s", None))
+            .is_some()
+    };
+    set(Decision::Warn, 3);
+    assert!(shell(None), "first warning");
+    assert!(
+        !shell(None),
+        "the same warning on a shell command is not repeated"
+    );
+    assert!(edit(), "a file edit always sees it");
+    assert!(!shell(None));
+    assert!(shell(Some("a1")), "another agent has its own record");
+    set(Decision::Warn, 4);
+    assert!(shell(None), "the head moved again: a new warning");
+    assert!(!shell(None));
+    std::fs::write(repo.root.join("tracked.txt"), "t2").unwrap();
+    git_in(&repo.root, &["commit", "-q", "-am", "work"]);
+    assert!(shell(None), "a commit moved HEAD: said again");
+    assert!(!shell(None));
+    set(Decision::Deny, 4);
+    assert!(shell(None), "a deny always shows");
+    assert!(shell(None));
+    let n = checks(&fake.take()).len();
+    assert_eq!(n, 11, "every action is still checked");
+}
+
+/// Claude Code does not pass CLAUDE_CODE_EXECPATH to hooks: the version is
+/// read from the newest transcript line that has one, and cached.
+#[test]
+fn claude_version_comes_from_the_transcript() {
+    let repo = Repo::new("transcript");
+    let fake = Fake::start(&repo.data());
+    let transcript = repo.root.join("t.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"user\",\"version\":\"2.1.300\"}\n\
+         {\"type\":\"assistant\",\"message\":{\"version\":\"9\"},\"version\":\"2.1.316\"}\n\
+         {\"type\":\"summary\"}\n\
+         {\"partial",
+    )
+    .unwrap();
+    let mut input = repo.edit_lib("s", None);
+    input["transcript_path"] = json!(transcript);
+    repo.hook("claude", "pre-tool-use", &input);
+    assert_eq!(checks(&fake.take())[0].2, "2.1.316");
+    // Cached for the stream: the transcript is not read again.
+    std::fs::remove_file(&transcript).unwrap();
+    repo.hook("claude", "pre-tool-use", &input);
+    assert_eq!(checks(&fake.take())[0].2, "2.1.316");
+    // No transcript, no cache: unknown.
+    repo.hook("claude", "pre-tool-use", &repo.edit_lib("s2", None));
+    assert_eq!(checks(&fake.take())[0].2, "");
+}
+
 /// The harness version goes with each check (ADR 0010 §10).
 #[test]
 fn harness_versions_go_with_each_check() {
@@ -725,7 +813,9 @@ fn context_updates_keep_each_agents_token() {
 }
 
 /// The Stop notice lists at most eight paths per kind, then "(+k more)",
-/// and names unrealised edits only when there are some.
+/// and names unrealised edits only when there are some. Only paths new since
+/// the agent's last Stop are shown; one that leaves the report and comes back
+/// is new again (P4 audit follow-up 4).
 #[test]
 fn drift_notices_list_truncate_and_name_unrealised_edits() {
     let repo = Repo::new("driftmsg");
@@ -742,17 +832,36 @@ fn drift_notices_list_truncate_and_name_unrealised_edits() {
         system(&o),
         "ContextDB drift: changed without a recorded edit: f0, f1, f2, f3, f4, f5, f6, f7 (+1 more);"
     );
-    fake.set(|s| s.drift = Some(report(files(8), Vec::new())));
+    // The same report again: nothing new.
+    assert_eq!(repo.hook("claude", "stop", &repo.stop("s")), None);
+    // f8 leaves; f9 and an unrealised edit are new.
+    let mut now = files(8);
+    now.push("f9".into());
+    fake.set(|s| s.drift = Some(report(now.clone(), vec!["u.rs".into()])));
     let o = repo.hook("claude", "stop", &repo.stop("s")).unwrap();
     assert_eq!(
         system(&o),
-        "ContextDB drift: changed without a recorded edit: f0, f1, f2, f3, f4, f5, f6, f7;"
+        "ContextDB drift: changed without a recorded edit: f9; edited but no longer changed: u.rs;"
     );
-    fake.set(|s| s.drift = Some(report(Vec::new(), vec!["u.rs".into()])));
+    // f8 comes back: shown again.
+    now.push("f8".into());
+    fake.set(|s| s.drift = Some(report(now.clone(), vec!["u.rs".into()])));
     let o = repo.hook("claude", "stop", &repo.stop("s")).unwrap();
     assert_eq!(
         system(&o),
-        "ContextDB drift: edited but no longer changed: u.rs;"
+        "ContextDB drift: changed without a recorded edit: f8;"
+    );
+    // Another agent has its own record.
+    let sub = repo.input(
+        "SubagentStop",
+        "s",
+        Some("a1"),
+        json!({ "stop_hook_active": false }),
+    );
+    let o = repo.hook("claude", "subagent-stop", &sub).unwrap();
+    assert!(
+        system(&o).contains("f0, ") && system(&o).contains("u.rs"),
+        "{o}"
     );
     fake.set(|s| s.drift = Some(report(Vec::new(), Vec::new())));
     assert_eq!(repo.hook("claude", "stop", &repo.stop("s")), None);

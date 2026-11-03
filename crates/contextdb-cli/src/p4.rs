@@ -884,6 +884,8 @@ pub struct Report {
 pub fn report(entries: &[TelemetryEntry], labels: &BTreeMap<String, String>) -> Report {
     let mut r = Report::default();
     let mut spans: BTreeMap<[u8; 16], (u64, u64)> = BTreeMap::new();
+    let mut undeclared = std::collections::BTreeSet::new();
+    let mut unrealised = std::collections::BTreeSet::new();
     for e in entries {
         let id = entry_id(e);
         match e {
@@ -943,15 +945,21 @@ pub fn report(entries: &[TelemetryEntry], labels: &BTreeMap<String, String>) -> 
                 r.writes += 1;
                 r.writes_with_deps += usize::from(*with_deps);
             }
-            TelemetryEntry::Drift { report, .. } => {
+            // Each Stop reports the session's whole drift, so paths are
+            // counted once per session (P4 audit finding 5).
+            TelemetryEntry::Drift {
+                session, report, ..
+            } => {
                 r.drift_reports += 1;
-                r.undeclared += report.undeclared.len();
-                r.unrealised += report.unrealised.len();
+                undeclared.extend(report.undeclared.iter().map(|p| (*session, p.clone())));
+                unrealised.extend(report.unrealised.iter().map(|p| (*session, p.clone())));
             }
             TelemetryEntry::Skip { from, to, .. } => r.skipped += to - from + 1,
             TelemetryEntry::Unclaimed { .. } => r.unclaimed += 1,
         }
     }
+    r.undeclared = undeclared.len();
+    r.unrealised = unrealised.len();
     r.sessions = spans.len();
     // Most sessions active at once (by first and last gated action).
     let mut edges: Vec<(u64, i32)> = spans
@@ -1014,7 +1022,7 @@ pub fn render_report(r: &Report) -> String {
     ));
     s.push_str("Reported only:\n\n");
     s.push_str(&format!(
-        "- gated actions {}, unavailable {}\n- stale-action intercepts {}, true positives {}\n- legitimate-action allow rate (sampled allows) {}\n- drift reports {}: {} undeclared, {} unrealised paths\n- MCP calls without a claim {}; outbox facts skipped {}\n",
+        "- gated actions {}, unavailable {}\n- stale-action intercepts {}, true positives {}\n- legitimate-action allow rate (sampled allows) {}\n- drift reports {}: {} undeclared, {} unrealised paths (distinct per session)\n- MCP calls without a claim {}; outbox facts skipped {}\n",
         r.gated,
         r.unavailable,
         r.stale_intercepts,
@@ -1304,5 +1312,27 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("66.7% (2/3) | PASS"), "{md}");
+    }
+    /// Each Stop reports the session's whole drift: a path is counted once
+    /// per session, not once per report (P4 audit finding 5).
+    #[test]
+    fn drift_paths_count_once_per_session() {
+        let drift = |session: u8, undeclared: &[&str], unrealised: &[&str]| TelemetryEntry::Drift {
+            session: [session; 16],
+            agent: None,
+            report: DriftReport {
+                undeclared: undeclared.iter().map(|p| p.to_string()).collect(),
+                unrealised: unrealised.iter().map(|p| p.to_string()).collect(),
+                ..DriftReport::default()
+            },
+        };
+        let entries = vec![
+            drift(1, &["a", "b"], &[]),
+            drift(1, &["a", "b", "c"], &["u"]),
+            drift(1, &["a"], &["u"]),
+            drift(2, &["a"], &[]),
+        ];
+        let r = report(&entries, &BTreeMap::new());
+        assert_eq!((r.drift_reports, r.undeclared, r.unrealised), (4, 4, 1));
     }
 }

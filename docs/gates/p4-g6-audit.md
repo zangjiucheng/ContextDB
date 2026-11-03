@@ -95,7 +95,7 @@ Every warn (1,783) and every sampled allow (126) is labelled by rule.
 ## 5. Follow-ups (not P4 blockers)
 
 1. **Adoption.** Agents stop reading certified context once the warning becomes background noise. v1.6.11 reduces the Empty warning to once per session and agent. What is still missing is a reason to read: for example, a briefing that names the decisions relevant to the files being touched (P5a anchors make that possible).
-2. **Repeated Invalid warnings.** Like Empty before v1.6.11, Invalid repeats on every action. It should be said once per stale read, and again when the agent changes the repository.
+2. **Repeated Invalid warnings.** Like Empty before v1.6.11, Invalid repeats on every action. It should be said once per stale read, and again when the agent changes the repository. **Done** (ADR 0010 r3.5): once per verdict, named reads and git HEAD; file edits and denies always.
 3. **Gate file edits, warn on shell.** Document `mode = "enforce"`, `shell_mode = "warn"` as the recommended stricter setting. A further step would skip writes outside the repository: those are the 5 remaining false alarms.
-4. **Drift should report per-turn deltas,** not the whole dirty tree each Stop.
-5. **Record Claude Code's harness version** in telemetry.
+4. **Drift should report per-turn deltas,** not the whole dirty tree each Stop. **Done** (r3.5): only new paths are shown, and the report counts paths once per session.
+5. **Record Claude Code's harness version** in telemetry. **Done** (r3.5): read from the session transcript.

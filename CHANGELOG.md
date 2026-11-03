@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Hooks act on three P4 audit follow-ups** (ADR 0010 r3.5, SPEC v1.6.14).
+  - A stale-read warning is shown once per set of stale reads. A shell command no longer repeats an identical warning; file edits, denies and a new commit show it again. Every decision is still logged. One Codex session had seen the same Invalid warning 61 times.
+  - The Stop drift notice names only paths new since that agent's last report, and `ctx gate-report` counts drift paths once per session.
+  - Claude Code's version is recorded: hooks do not get `CLAUDE_CODE_EXECPATH`, so the hook reads it from the session transcript.
+  - No protocol or log format change. A hook state file written by 0.2.0 still reads.
 - The kernel no longer keeps a per-rule history of premises before a rebind (`ChangeLog.rebindings`). A rule's premises never change: Rebind disables the rule and adds a new one (SD9), so the history always equalled the current rows. Historical observation closures read the rule directly; one mutation waiver goes with it.
 - **Nightly mutation testing runs again.** It had failed every night since P6.
   - Kernel mutants now run against the anchor and P6 suites as well, so code covered only there is no longer reported missed.

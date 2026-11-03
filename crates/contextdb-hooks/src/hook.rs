@@ -217,6 +217,58 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
+/// The harness version from the newest transcript line that records one
+/// (Claude Code writes a top-level `"version"` on its entries). Reads at most
+/// the last 1 MiB; a partial first line is skipped.
+pub fn transcript_version(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 1 << 20;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.take(TAIL).read_to_end(&mut buf).ok()?;
+    let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines.iter().rev().find_map(|l| {
+        let v: serde_json::Value = serde_json::from_slice(l).ok()?;
+        let s = v.get("version")?.as_str()?;
+        (!s.is_empty() && s.len() <= 64).then(|| s.to_owned())
+    })
+}
+/// What makes two non-Empty warnings the same: verdict, the named reads
+/// (key, reader, read and current revision) and git HEAD.
+fn warning_digest(
+    verdict: &str,
+    named: &[contextdb_proto::proto::NamedRead],
+    head: &str,
+) -> ContentHash {
+    let mut reads: Vec<String> = named
+        .iter()
+        .map(|n| {
+            format!(
+                "{}\u{0}{}\u{0}{}\u{0}{:?}",
+                n.key,
+                n.agent.as_deref().unwrap_or(""),
+                n.read.0,
+                n.current.map(|c| c.0)
+            )
+        })
+        .collect();
+    reads.sort();
+    let mut h = blake3::Hasher::new();
+    h.update(verdict.as_bytes());
+    h.update(&[0]);
+    h.update(head.as_bytes());
+    for r in &reads {
+        h.update(&[1]);
+        h.update(r.as_bytes());
+    }
+    *h.finalize().as_bytes()
+}
 fn summary(s: &Summary) -> String {
     match s {
         Summary::Certified => "CERTIFIED".into(),
@@ -395,14 +447,39 @@ impl Hook {
     }
     fn harness_version(&self) -> String {
         match self.harness {
-            Harness::Claude => std::env::var("CLAUDE_CODE_EXECPATH")
-                .ok()
-                .and_then(|p| {
-                    Path::new(&p)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                })
-                .unwrap_or_default(),
+            // Claude Code sets CLAUDE_CODE_EXECPATH for its shell tool but
+            // not for hooks (P4 audit: every Claude entry was unknown). Its
+            // transcript records the version on every line; the first one
+            // found is cached for the stream.
+            Harness::Claude => {
+                if let Some(v) = std::env::var("CLAUDE_CODE_EXECPATH")
+                    .ok()
+                    .and_then(|p| {
+                        Path::new(&p)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                    })
+                    .filter(|v| !v.is_empty())
+                {
+                    return v;
+                }
+                let cached = self.outbox.state(&self.stream).harness_version;
+                if !cached.is_empty() {
+                    return cached;
+                }
+                let found = self
+                    .ev
+                    .transcript
+                    .as_deref()
+                    .and_then(|t| transcript_version(Path::new(t)))
+                    .unwrap_or_default();
+                if !found.is_empty() {
+                    let _ = self
+                        .outbox
+                        .update_state(&self.stream, |st| st.harness_version = found.clone());
+                }
+                found
+            }
             // Written by `ctx hooks install` (neither passes a version).
             Harness::Codex | Harness::OpenCode => {
                 std::fs::read_to_string(self.data.join(format!("{}.version", self.harness.name())))
@@ -821,6 +898,34 @@ impl Hook {
             } => ". The session log was cut under this session: start a new session.",
             _ => ". Re-read them (ctx_read/ctx_recall, certified) or supersede before editing.",
         });
+        // A warning is said once per stale read set: an identical one (same
+        // verdict, named reads and git HEAD) is not repeated on a shell
+        // command, which mostly reads. File edits always see it, and a commit
+        // moves HEAD, so it is said again (P4 audit follow-up 2). The
+        // decision is logged by the daemon every time; a deny always shows.
+        if decision == Decision::Warn {
+            let head = git(&self.root, &["rev-parse", "HEAD"], GIT_LIMIT)
+                .map(line)
+                .unwrap_or_default();
+            let digest = warning_digest(verdict, &named, &head);
+            let agent = self.agent();
+            let repeat = self
+                .outbox
+                .state(&self.stream)
+                .warned
+                .iter()
+                .any(|(a, d)| *a == agent && *d == digest);
+            if repeat {
+                if matches!(action.tool, ToolClass::Shell | ToolClass::Other(_)) {
+                    return Output::default();
+                }
+            } else {
+                let _ = self.outbox.update_state(&self.stream, |st| {
+                    st.warned.retain(|(a, _)| *a != agent);
+                    st.warned.push((agent.clone(), digest));
+                });
+            }
+        }
         let system = match decision {
             Decision::Deny => format!("ContextDB denied {:?} ({verdict})", action.tool),
             _ => format!("ContextDB warning: {verdict}"),
@@ -921,6 +1026,29 @@ impl Hook {
         let reports = self.deliver(budget, true);
         let Some(r) = reports.last() else {
             return Output::default();
+        };
+        // Show only paths new since this agent's last Stop: the report is of
+        // the whole session, and repeating it each turn was noise (P4 audit
+        // follow-up 4). A path that leaves the report and comes back is new.
+        let agent = self.agent();
+        let shown = st
+            .drift_shown
+            .iter()
+            .find(|(a, _, _)| *a == agent)
+            .map(|(_, u, n)| (u.clone(), n.clone()))
+            .unwrap_or_default();
+        let _ = self.outbox.update_state(&self.stream, |st| {
+            st.drift_shown.retain(|(a, _, _)| *a != agent);
+            st.drift_shown
+                .push((agent.clone(), r.undeclared.clone(), r.unrealised.clone()));
+        });
+        let fresh = |all: &[String], seen: &[String]| -> Vec<String> {
+            all.iter().filter(|p| !seen.contains(p)).cloned().collect()
+        };
+        let r = DriftReport {
+            undeclared: fresh(&r.undeclared, &shown.0),
+            unrealised: fresh(&r.unrealised, &shown.1),
+            ..r.clone()
         };
         if r.undeclared.is_empty() && r.unrealised.is_empty() {
             return Output::default();
