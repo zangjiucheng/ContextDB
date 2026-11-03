@@ -142,17 +142,33 @@ pub struct Service<D: Durability> {
     writer: Mutex<mpsc::Sender<Writer>>,
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     recall: Arc<Mutex<RecallIndex>>,
+    /// Lexical contradiction candidates (P7, ADR 0015 §5).
+    pub candidates: Arc<crate::candidates::Candidates>,
     stop: Arc<AtomicBool>,
     /// The P7 job scheduler, when the daemon runs one (ADR 0015 §4.4).
     pub validators: std::sync::OnceLock<Arc<crate::validators::Scheduler<D>>>,
+    /// The recall and candidate indexer.
+    indexer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop_indexer();
         self.stop_writer();
     }
 }
 impl<D: Durability> Service<D> {
+    /// Stops the recall and candidate indexer and waits for it, so a
+    /// stopped daemon no longer writes `recall.sqlite` or
+    /// `candidates.sqlite` (a successor in the same process owns them).
+    pub fn stop_indexer(&self) {
+        self.stop.store(true, Ordering::Release);
+        let thread = self.indexer_thread.lock().expect("indexer").take();
+        if let Some(t) = thread
+            && t.thread().id() != std::thread::current().id()
+        {
+            let _ = t.join();
+        }
+    }
     /// Writes every queued session event and stops the writer thread. Run
     /// before the store (and its lock) is released, so nothing appends to
     /// `sessions/` unlocked and no lazy event is lost on a clean shutdown
@@ -361,14 +377,26 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .or_else(|_| RecallIndex::open(None))
                 .expect("recall index"),
         ));
+        // Contradiction candidates sit next to the recall projection.
+        let cand_path = recall_path.map(|p| p.with_file_name(crate::candidates::FILE));
+        let candidates = Arc::new(
+            crate::candidates::Candidates::open(cand_path.as_deref())
+                .or_else(|_| crate::candidates::Candidates::open(None))
+                .expect("candidate table"),
+        );
         let stop = Arc::new(AtomicBool::new(false));
-        {
-            let (actor, recall, stop) = (actor.clone(), recall.clone(), stop.clone());
+        let indexer_thread = {
+            let (actor, recall, candidates, stop) = (
+                actor.clone(),
+                recall.clone(),
+                candidates.clone(),
+                stop.clone(),
+            );
             std::thread::Builder::new()
                 .name("ctxd-indexer".into())
-                .spawn(move || indexer(actor, recall, stop))
-                .expect("indexer thread");
-        }
+                .spawn(move || crate::candidates::indexer(actor, recall, candidates, stop))
+                .expect("indexer thread")
+        };
         let (tx, rx) = mpsc::channel();
         let writer_thread = std::thread::Builder::new()
             .name("ctxd-session-log".into())
@@ -391,7 +419,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             writer: Mutex::new(tx),
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
+            candidates,
             stop,
+            indexer_thread: Mutex::new(Some(indexer_thread)),
             validators: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
@@ -1753,15 +1783,21 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .collect();
         // Full-text candidates after key matches; the index may lag the
         // snapshot, but every candidate's status comes from the snapshot.
-        if let Ok(hits) = self
-            .recall
-            .lock()
-            .expect("recall")
-            .search(query, scope, limit)
+        // Rows are per branch: a hit counts only when its revision is the
+        // head on the session's branch (main rows it shadows drop out).
+        let branch = db.info().id;
+        if let Ok(hits) =
+            self.recall
+                .lock()
+                .expect("recall")
+                .search(query, scope, branch, limit * 2 + 8)
         {
-            for (n, l) in hits.into_iter().enumerate() {
-                if db.logical_info(l).is_some() && !found.iter().any(|(_, f)| *f == l) {
-                    found.push((3 + n.min(250) as u8, l));
+            let hits = hits
+                .into_iter()
+                .filter(|h| db.head(h.logical) == Some(h.rev));
+            for (n, h) in hits.enumerate() {
+                if !found.iter().any(|(_, f)| *f == h.logical) {
+                    found.push((3 + n.min(250) as u8, h.logical));
                 }
             }
         }
@@ -3154,73 +3190,5 @@ impl Pending {
 }
 const DRAIN_MAX: usize = 4_096;
 const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
-
-/// Keeps the recall projection up to date with published snapshots: the
-/// logicals whose heads moved since the indexed epoch are reindexed (full
-/// rebuild when the projection is ahead of the log or empty).
-fn indexer<D: Durability>(
-    actor: ActorHandle<D>,
-    recall: Arc<Mutex<RecallIndex>>,
-    stop: Arc<AtomicBool>,
-) {
-    // Logical ids are global: each logical is indexed once, with its head on
-    // the first branch (main first) that sees it. Recall re-reads every
-    // candidate on the session's branch.
-    let text = |snap: &Snapshot<D>,
-                l: LogicalId|
-     -> Option<(LogicalId, String, RecordKind, String, String)> {
-        let db = (snap.kernel.branches())
-            .map(|b| snap.view(b.id))
-            .find(|v| v.logical_info(l).is_some())?;
-        let (key, kind, scope) = db.logical_info(l)?;
-        let content = db.revision_content(db.head(l)?).ok()?;
-        let body = match snap.log.read_blob(&content) {
-            Payload::Available(b) => {
-                let mut s = String::from_utf8_lossy(&b).into_owned();
-                s.truncate(64 * 1024);
-                s
-            }
-            Payload::Unavailable(_) => String::new(),
-        };
-        Some((l, key, kind, scope, body))
-    };
-    while !stop.load(Ordering::Acquire) {
-        let snap = actor.snapshot();
-        let indexed = recall
-            .lock()
-            .expect("recall")
-            .watermark()
-            .unwrap_or(Epoch(0));
-        if indexed == snap.epoch {
-            // Never hold a snapshot while idle: it would keep the actor from
-            // reclaiming that replica (forcing a clone per group, ADR 0008 §3.3).
-            drop(snap);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            continue;
-        }
-        let touched: Vec<LogicalId> = if indexed > snap.epoch || indexed.0 == 0 {
-            let _ = recall.lock().expect("recall").clear();
-            let mut all = std::collections::BTreeSet::new();
-            for b in snap.kernel.branches() {
-                all.extend(snap.view(b.id).logicals());
-            }
-            all.into_iter().collect()
-        } else {
-            let mut t = std::collections::BTreeSet::new();
-            for e in indexed.0 + 1..=snap.epoch.0 {
-                if let Ok(row) = snap.log.read_row(Epoch(e))
-                    && let Ok(result) = row.result()
-                {
-                    t.extend(result.net_delta.head_moves.iter().map(|(l, _, _)| *l));
-                }
-            }
-            t.into_iter().collect()
-        };
-        let entries: Vec<_> = touched.into_iter().filter_map(|l| text(&snap, l)).collect();
-        let epoch = snap.epoch;
-        drop(snap);
-        let _ = recall.lock().expect("recall").update(epoch, &entries);
-    }
-}
 
 include!("anchor_checks.rs");

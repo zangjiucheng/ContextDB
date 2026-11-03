@@ -22,7 +22,7 @@ use contextdb_core::BranchView;
 use contextdb_model::*;
 use contextdb_proto::docs::{Label, ReviewDoc, Suggestion, ValidationMeta, ValidatorKind};
 use contextdb_store::{Durability, Payload, StoreError, TxnStatus};
-use contextdb_validate::config::{Config, Filter, Limits};
+use contextdb_validate::config::{CandidateLimits, Config, Filter, Limits};
 use contextdb_validate::{Item, Outcome, PremiseChange, Task, Validator};
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -52,6 +52,7 @@ pub struct Configured {
 #[derive(Clone, Default)]
 pub struct Loaded {
     pub limits: Limits,
+    pub candidates: CandidateLimits,
     pub validators: Vec<Configured>,
     /// The last load or reload error; the previous configuration stays.
     pub error: Option<String>,
@@ -105,6 +106,7 @@ impl Loaded {
             .collect();
         Self {
             limits: config.limits.clone(),
+            candidates: config.candidates,
             validators,
             error: None,
         }
@@ -144,6 +146,8 @@ pub struct Scheduler<D: Durability> {
     /// Decoded validator review keys by payload hash (payloads are
     /// immutable): the open-review check reads no blob twice.
     review_keys: Mutex<std::collections::HashMap<ContentHash, Option<ReviewKey>>>,
+    /// The candidate table, which takes `[candidates]` on load and reload.
+    candidates: std::sync::OnceLock<Arc<crate::candidates::Candidates>>,
 }
 type ReviewKey = (BranchId, Option<RuleId>, HeadVector);
 fn now_ms() -> i64 {
@@ -200,6 +204,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             stats: Stats::default(),
             threads: Mutex::new(Vec::new()),
             review_keys: Mutex::new(std::collections::HashMap::new()),
+            candidates: std::sync::OnceLock::new(),
         })
     }
     /// Opens `<dir>/jobs.sqlite`, recovers it and loads `validators.toml`
@@ -221,8 +226,16 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
     }
     /// Replaces the validators (tests) and wakes the workers.
     pub fn set_loaded(&self, loaded: Loaded) {
+        if let Some(c) = self.candidates.get() {
+            c.set_limits(loaded.candidates);
+        }
         *self.loaded.lock().expect("loaded") = Arc::new(loaded);
         self.notify();
+    }
+    /// Hands `[candidates]` to the candidate table, now and on each reload.
+    pub fn link_candidates(&self, c: Arc<crate::candidates::Candidates>) {
+        c.set_limits(self.loaded().candidates);
+        let _ = self.candidates.set(c);
     }
     /// `ctx validators reload`: re-reads `validators.toml`. On an error the
     /// previous configuration stays and the error is reported.
@@ -356,6 +369,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             counter("lease_secs", l.lease_secs),
             counter("attempts", l.attempts as u64),
             counter("llm_calls_per_hour", l.llm_calls_per_hour as u64),
+            counter("candidate_per_head", loaded.candidates.per_head as u64),
+            counter(
+                "candidate_min_score_milli",
+                (loaded.candidates.min_score * 1000.0) as u64,
+            ),
         ];
         let counts = self.jobs.counts()?;
         report.jobs = (JobState::ALL.iter())
@@ -386,6 +404,16 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             counter("discovery_scans", v(&st.discovery_scans)),
             counter("discovery_rows", v(&st.discovery_rows)),
         ];
+        if let Some(c) = self.candidates.get() {
+            let cs = &c.stats;
+            report.stats.extend([
+                counter("candidate_heads", v(&cs.heads)),
+                counter("candidate_pairs", v(&cs.pairs)),
+                counter("candidate_gone", v(&cs.gone)),
+                counter("candidate_us_total", v(&cs.micros)),
+                counter("candidate_us_max", v(&cs.micros_max)),
+            ]);
+        }
         report.error = loaded.error.clone();
         Ok(report)
     }

@@ -1029,6 +1029,7 @@ impl<B: Backend> Server<B> {
                 "rule": i.rule.map(|r| r.0),
                 "marks": i.marks,
                 "evidence": i.evidence,
+                "candidate": i.candidate,
             })).collect::<Vec<_>>(),
         }))
     }

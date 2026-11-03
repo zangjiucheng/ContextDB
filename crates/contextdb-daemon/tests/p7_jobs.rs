@@ -131,6 +131,7 @@ fn limits() -> Limits {
 fn loaded(v: Arc<dyn Validator>, limits: Limits) -> Loaded {
     Loaded {
         limits,
+        candidates: Default::default(),
         validators: vec![Configured {
             filter: Filter::default(),
             validator: v,

@@ -495,6 +495,29 @@ configuration and never enters derived state (M2: r0.1's
 - **Off the writer.** Candidate generation runs on its own thread and never
   delays a commit (G5).
 
+**Implementation notes (milestone 6).**
+- **One thread.** The recall indexer and the generator share a thread: each
+  pass brings the index to the snapshot's epoch, then queries the heads
+  moved since the candidate watermark. A `ctxd` stop joins it.
+- **Rows carry their revision.** A reader on `β` keeps a hit only when the
+  row's revision is `β`'s head. Main rows that `β` shadows or cannot see
+  drop out without a per-branch visibility table.
+- **Terms.** The query terms are the head's key and body terms that at
+  least two rows hold, by idf over all rows (at most 12). A term only one
+  row holds can pair with nothing.
+- **Kinds.** Both sides are Decision, Plan or Fact.
+- **Neighbours** are logical-level: premises of rules concluding any
+  revision of the head's logical, and conclusions of rules citing one.
+- **Backfill.** With no watermark (first start, or the log went backwards)
+  the table is cleared and every live head is queried. A restart does not
+  query again.
+- **States.** `new`, `opened` (a Conflict was opened from it) and `gone` (a
+  side is no longer the head, or the branch is archived). `list` re-checks
+  both sides against the snapshot and fixes a stale state on the way.
+- **Settings.** `validators.toml [candidates]`: `min_score` (1.0, initial)
+  and `per_head` (5); reloaded with `ctx validators reload`.
+- **Not yet.** LLM judging of candidate pairs is milestone 6b.
+
 ## 6. `ctx_conflicts` and `ctx_resolve`
 
 All three operations act on the caller's branch.
@@ -527,7 +550,7 @@ All three operations act on the caller's branch.
 - **Grouping.** `list` groups Conflicts by their shared `ConflictDoc`. A
   Conflict without one (a P6 merge conflict) is listed per artifact, with
   origin `merge`.
-- **Candidates.** `from = candidate` is refused until milestone 6.
+- **Candidates.** `from = candidate` was refused until milestone 6.
 - **Projections.** §9's `validator_reviews` table is replaced by an
   in-memory cache of decoded review payloads in the worker. Payloads are
   immutable, so no blob is read twice. `list` reads review payloads directly;

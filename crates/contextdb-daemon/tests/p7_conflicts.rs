@@ -305,7 +305,7 @@ fn t78_conflicts_are_per_branch() {
 }
 
 /// T78: `open` refuses a == b, a side not visible on the branch, a pair
-/// already open, an empty reason, candidates (milestone 6), and an agent
+/// already open, an empty reason, an unknown candidate, and an agent
 /// without a session.
 #[test]
 fn t78_open_refusals() {
@@ -367,7 +367,7 @@ fn t78_open_refusals() {
     if let Request::ConflictOpen { from, .. } = &mut r {
         *from = Some(ConflictFrom::Candidate(3));
     }
-    assert_eq!(code(&call(&s, AGENT, r)), "InvalidArgument");
+    assert_eq!(code(&call(&s, AGENT, r)), "UnknownRef");
     // Agents act through a session.
     let unbound = call(&s, AGENT, open(None, None, key_rev("b", 1), None));
     assert_eq!(code(&unbound), "InvalidArgument");

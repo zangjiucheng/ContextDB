@@ -464,6 +464,8 @@ pub struct ConflictItem {
     /// curvec` (a review's vector moved on).
     pub marks: Vec<String>,
     pub evidence: Vec<String>,
+    /// A candidate pair's id, for `open{from: candidate}`.
+    pub candidate: Option<u64>,
 }
 /// What `ctx validators` asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -801,7 +803,8 @@ wire_struct!(ConflictItem {
     origin,
     rule,
     marks,
-    evidence
+    evidence,
+    candidate
 });
 wire_struct!(ValidatorsReport {
     validators,
@@ -2345,6 +2348,7 @@ mod tests {
                     rule: Some(RuleId(1)),
                     marks: vec!["side superseded".into()],
                     evidence: vec!["a@2".into()],
+                    candidate: Some(4),
                 }],
                 truncated: true,
             },

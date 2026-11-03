@@ -4,10 +4,11 @@
 //!
 //! - **list** returns open Conflicts grouped into their pairs (marked `side
 //!   superseded` when a side is no longer the head), open PendingReviews
-//!   (marked `stale curvec` when the rule's vector moved on) and, from
-//!   milestone 6, candidate pairs.
+//!   (marked `stale curvec` when the rule's vector moved on) and lexical
+//!   candidate pairs not yet acted on, both sides still the branch's heads.
 //! - **open** commits the pair (or one side) in one batch with one shared
-//!   `ConflictDoc`; `from = review` resolves that review in the same batch.
+//!   `ConflictDoc`; `from = review` resolves that review in the same batch,
+//!   and `from = candidate` marks the candidate opened once committed.
 //! - **resolve** closes Conflicts and PendingReviews only, with a
 //!   `ResolutionDoc` note; `AnchorBroken` stays observer-only.
 //!
@@ -116,6 +117,7 @@ fn conflicts<D: Durability>(
                     rule: None,
                     marks,
                     evidence: d.evidence,
+                    candidate: None,
                 });
             }
             // A Conflict without a ConflictDoc (a merge conflict, P6): one
@@ -140,6 +142,7 @@ fn conflicts<D: Durability>(
                         rule: None,
                         marks,
                         evidence: Vec::new(),
+                        candidate: None,
                     });
                 }
             }
@@ -176,6 +179,7 @@ fn reviews<D: Durability>(
             rule: None,
             marks: Vec::new(),
             evidence: Vec::new(),
+            candidate: None,
         };
         if let Some(r) = review {
             let meta = doc::<D, ValidationMeta>(snap, &r.meta);
@@ -200,7 +204,55 @@ fn reviews<D: Durability>(
     }
     out
 }
+/// Whether an open Conflict on the branch already names both revisions.
+fn pair_open(view: &BranchView<'_>, a: RevisionId, b: RevisionId) -> bool {
+    let mut by_payload: BTreeMap<ContentHash, Vec<RevisionId>> = BTreeMap::new();
+    for (_, x) in view.artifacts() {
+        if x.open && x.ty == ArtifactType::Conflict {
+            by_payload.entry(x.payload_hash).or_default().push(x.target);
+        }
+    }
+    by_payload
+        .values()
+        .any(|t| t.contains(&a) && t.contains(&b))
+}
 impl<D: Durability + Clone + 'static> Service<D> {
+    /// Candidate pairs on the branch not yet acted on. A pair a side of
+    /// which is no longer the head is marked `gone`; one already open as a
+    /// Conflict is marked `opened`. Neither is listed.
+    fn candidate_items(&self, view: &BranchView<'_>, scope: Option<&str>) -> Vec<ConflictItem> {
+        use crate::candidates::{CandState, current};
+        let mut out = Vec::new();
+        let listed = self
+            .candidates
+            .listed(Some(view.info().id))
+            .unwrap_or_default();
+        for c in listed {
+            if !current(Some(view), &c) {
+                let _ = self.candidates.set_state(c.id, CandState::Gone);
+                continue;
+            }
+            if pair_open(view, c.a, c.b) {
+                let _ = self.candidates.set_state(c.id, CandState::Opened);
+                continue;
+            }
+            if !in_scope(view, &[c.a, c.b], scope) {
+                continue;
+            }
+            out.push(ConflictItem {
+                kind: "candidate".into(),
+                artifacts: Vec::new(),
+                sides: vec![side(view, c.a), side(view, c.b)],
+                reason: format!("lexical similarity, bm25 {:.2}", c.score),
+                origin: format!("candidate {}", c.id),
+                rule: None,
+                marks: Vec::new(),
+                evidence: Vec::new(),
+                candidate: Some(c.id),
+            });
+        }
+        out
+    }
     /// The branch a conflicts request acts on, with the session when bound.
     #[allow(clippy::result_large_err)]
     fn conflict_branch(
@@ -262,7 +314,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if matches!(state, ConflictState::Review | ConflictState::All) {
             items.extend(reviews(&snap, &view, scope));
         }
-        // Candidate pairs arrive with milestone 6.
+        if matches!(state, ConflictState::Candidates | ConflictState::All) {
+            items.extend(self.candidate_items(&view, scope));
+        }
         let limit = match limit {
             0 => DEFAULT_LIST,
             n => n.min(MAX_LIST),
@@ -301,23 +355,66 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok((_, r)) => r,
             Err(r) => return r,
         };
-        let side_b = match &b {
+        let mut side_b = match &b {
             Some(t) => match self.resolve_plain(t, &view) {
                 Ok((_, r)) => Some(r),
                 Err(r) => return r,
             },
             None => None,
         };
+        // A candidate names the pair: `a` must be one of its sides, and `b`
+        // (when given) the other; an omitted `b` is filled in.
+        if let Some(ConflictFrom::Candidate(n)) = from {
+            use crate::candidates::{CandState, current};
+            let c = match self.candidates.get(n) {
+                Ok(Some(c)) if c.branch == branch => c,
+                Ok(_) => return err("UnknownRef", format!("no candidate {n} on this branch")),
+                Err(e) => return err("Internal", format!("candidates: {e}")),
+            };
+            let gone = || {
+                err(
+                    "InvalidArgument",
+                    format!("candidate {n} is gone: a side is no longer the head"),
+                )
+            };
+            match c.state {
+                CandState::New => {}
+                CandState::Opened => {
+                    return err(
+                        "InvalidArgument",
+                        format!("candidate {n} was already opened"),
+                    );
+                }
+                CandState::Gone => return gone(),
+            }
+            if !current(Some(&view), &c) {
+                let _ = self.candidates.set_state(n, CandState::Gone);
+                return gone();
+            }
+            let not_side = |r: RevisionId| {
+                err(
+                    "InvalidArgument",
+                    format!("revision {} is not a side of candidate {n}", r.0),
+                )
+            };
+            let other = if side_a == c.a {
+                c.b
+            } else if side_a == c.b {
+                c.a
+            } else {
+                return not_side(side_a);
+            };
+            match side_b {
+                None => side_b = Some(other),
+                Some(x) if x == other => {}
+                Some(x) => return not_side(x),
+            }
+        }
         if side_b == Some(side_a) {
             return err("InvalidArgument", "a Conflict pair needs two revisions");
         }
         let source = match from {
-            Some(ConflictFrom::Candidate(_)) => {
-                return err(
-                    "InvalidArgument",
-                    "contradiction candidates arrive with P7 milestone 6",
-                );
-            }
+            Some(ConflictFrom::Candidate(n)) => ConflictSource::Candidate(n),
             Some(ConflictFrom::Review(r)) => match view.artifact(r) {
                 Some(x) if x.ty == ArtifactType::PendingReview && x.open => {
                     ConflictSource::Review(r)
@@ -367,7 +464,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 note: None,
             });
         }
-        self.conflict_write(
+        let response = self.conflict_write(
             id,
             branch,
             bound,
@@ -376,7 +473,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
             expect_cert_valid,
             client_txn_id,
             snap,
-        )
+        );
+        // Lost on a crash here, the mark is restored by the next list, which
+        // finds the pair open.
+        if let (Some(ConflictFrom::Candidate(n)), Response::Committed { .. }) = (from, &response) {
+            let _ = self
+                .candidates
+                .set_state(n, crate::candidates::CandState::Opened);
+        }
+        response
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn resolve(

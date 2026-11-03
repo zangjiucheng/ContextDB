@@ -2,10 +2,18 @@
 
 ## Unreleased
 
+- **P7 milestone 6: lexical contradiction candidates** (ADR 0015 §5).
+  - The recall index now has one row per `(branch, logical)`: `main`'s head, plus another branch's head where it differs from `main`'s. Each row names the revision it indexes. A session on a branch finds text only that branch's head has, and no longer gets hits from `main` text the branch has replaced. An older `recall.sqlite` is dropped and rebuilt on first start.
+  - When an epoch moves a head of kind Decision, Plan or Fact, `ctxd` takes the head's rarest shared terms (at most 12) and runs a bm25-ranked OR query over the rows visible on that branch, in the same scope lane. It drops the head's own logical, its direct premises and dependents, other kinds, and rows that are not the branch's head, and keeps at most 5 pairs scoring at least `min_score`. This runs on the indexer thread, never the writer.
+  - Pairs are stored in `<data>/candidates.sqlite`, per branch and unordered pair. A pair is marked `gone` once a side is no longer the head on its branch. The first start backfills from every head; a restart does not query again.
+  - `ctx_conflicts list` shows candidate pairs not yet acted on, each with its id and score. `open{from_candidate}` (CLI `--from-candidate ID`) opens the gating pair from one, filling in the other side, and marks it opened. A candidate never gates by itself. Candidates never pair a revision invisible on the branch (T84).
+  - `validators.toml` gains `[candidates] min_score` (default 1.0, an initial value calibrated in G6) and `per_head` (default 5, 0 turns new pairs off). `ctx validators status` reports the candidate counters.
+  - A stopped daemon now also stops its indexer thread.
+  - An LLM judging candidate pairs (§5, a non-gating PendingReview on the new head) is not in this milestone.
 - **P7 milestone 5: `ctx_conflicts` and `ctx_resolve`** (ADR 0015 §2, §6; SD20).
   - `ctx_conflicts open` lets an agent (through its session) or the admin assert that two records cannot both hold. Both sides get an open Conflict sharing one `ConflictDoc`, and both read CONFLICTED until the pair is resolved or a side is superseded; the new head of a superseded side is not gated. With `from_review`, the same commit resolves that review.
   - `open` refuses a pair of one revision, a side not visible on the branch, a pair already open, and an empty reason.
-  - `ctx_conflicts list` shows the branch's open Conflict pairs and validator reviews, with each review's suggestion, rationale and model. It marks a pair `side superseded` when one side is no longer the head, and a review `stale curvec` when the rule's premises moved on. Candidate pairs come with milestone 6.
+  - `ctx_conflicts list` shows the branch's open Conflict pairs and validator reviews, with each review's suggestion, rationale and model. It marks a pair `side superseded` when one side is no longer the head, and a review `stale curvec` when the rule's premises moved on. Candidate pairs came with milestone 6.
   - `ctx_resolve` closes Conflicts and PendingReviews only, with a note stored as a blob. `AnchorBroken` stays observer-only.
   - Everything acts on the caller's branch. Admin gets `ctx conflicts list|open|resolve <dir>`.
   - **Claude Code:** the PreToolUse claim now matches the two new tools. Run `ctx hooks install --harness claude` again (or `ctx setup`) so their calls bind to the session.

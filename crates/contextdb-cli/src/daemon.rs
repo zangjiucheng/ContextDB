@@ -286,7 +286,20 @@ pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
             b: positional.get(1).map(|t| target(t)).transpose()?,
             reason: flag("--reason").ok_or("--reason is required")?,
             evidence: Vec::new(),
-            from: None,
+            from: match (flag("--from-candidate"), flag("--from-review")) {
+                (Some(_), Some(_)) => {
+                    return Err("--from-candidate or --from-review, not both".into());
+                }
+                (Some(c), None) => Some(ConflictFrom::Candidate(
+                    c.parse()
+                        .map_err(|_| "--from-candidate takes a candidate id")?,
+                )),
+                (None, Some(r)) => Some(ConflictFrom::Review(ArtifactId(
+                    r.parse()
+                        .map_err(|_| "--from-review takes an artifact id")?,
+                ))),
+                (None, None) => None,
+            },
             expect_cert_valid: false,
             client_txn_id: None,
         },

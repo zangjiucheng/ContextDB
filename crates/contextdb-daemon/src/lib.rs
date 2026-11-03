@@ -8,6 +8,8 @@ pub mod publish;
 #[cfg(not(loom))]
 pub mod actor;
 #[cfg(not(loom))]
+pub mod candidates;
+#[cfg(not(loom))]
 pub mod jobs;
 #[cfg(not(loom))]
 pub mod lease;

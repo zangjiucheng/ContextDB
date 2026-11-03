@@ -10,6 +10,10 @@
 //! attempts = 3
 //! llm_calls_per_hour = 200
 //!
+//! [candidates]                  # lexical contradiction candidates (§5)
+//! min_score = 1.0               # bm25 floor; initial, calibrated in G6
+//! per_head = 5                  # most pairs per new head
+//!
 //! [[validator]]
 //! name = "claude"
 //! type = "claude"               # claude | command
@@ -52,6 +56,24 @@ impl Default for Limits {
         }
     }
 }
+/// Lexical contradiction candidates (ADR 0015 §5). They run whether or not
+/// a validator is configured: they only list pairs and call nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CandidateLimits {
+    /// Pairs scoring below this bm25 score are dropped (initial value,
+    /// calibrated in G6).
+    pub min_score: f64,
+    /// Most pairs kept per new head.
+    pub per_head: usize,
+}
+impl Default for CandidateLimits {
+    fn default() -> Self {
+        Self {
+            min_score: 1.0,
+            per_head: 5,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Adapter {
     Claude {
@@ -86,9 +108,10 @@ pub struct Entry {
     pub adapter: Adapter,
     pub filter: Filter,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
     pub limits: Limits,
+    pub candidates: CandidateLimits,
     pub validators: Vec<Entry>,
 }
 fn kind_of(s: &str) -> Option<RecordKind> {
@@ -123,7 +146,7 @@ impl Config {
         let table: toml::Table = text.parse().map_err(|e| format!("{FILE}: {e}"))?;
         let mut config = Self::default();
         for key in table.keys() {
-            if key != "limits" && key != "validator" {
+            if !["limits", "candidates", "validator"].contains(&key.as_str()) {
                 return Err(format!("{FILE}: unknown section `{key}`"));
             }
         }
@@ -156,6 +179,27 @@ impl Config {
             }
             if let Some(n) = int("llm_calls_per_hour", 0, 100_000)? {
                 config.limits.llm_calls_per_hour = n as u32;
+            }
+        }
+        if let Some(c) = table.get("candidates") {
+            let c = c.as_table().ok_or("candidates must be a table")?;
+            for (k, v) in c {
+                match k.as_str() {
+                    "min_score" => {
+                        let n = (v.as_float())
+                            .or_else(|| v.as_integer().map(|i| i as f64))
+                            .filter(|n| n.is_finite() && *n >= 0.0)
+                            .ok_or("candidates.min_score must be a number >= 0")?;
+                        config.candidates.min_score = n;
+                    }
+                    "per_head" => {
+                        let n = (v.as_integer())
+                            .filter(|n| (0..=50).contains(n))
+                            .ok_or("candidates.per_head must be an integer in 0..=50")?;
+                        config.candidates.per_head = n as usize;
+                    }
+                    _ => return Err(format!("unknown candidates setting `{k}`")),
+                }
             }
         }
         let empty = Vec::new();
@@ -292,6 +336,27 @@ mod tests {
         let c = Config::parse("", None).unwrap();
         assert!(c.validators.is_empty());
         assert_eq!(c.limits, Limits::default());
+        assert_eq!(c.candidates, CandidateLimits::default());
+    }
+
+    #[test]
+    fn parses_candidate_limits() {
+        let c = Config::parse("[candidates]\nmin_score = 2\nper_head = 0", None).unwrap();
+        assert_eq!(
+            c.candidates,
+            CandidateLimits {
+                min_score: 2.0,
+                per_head: 0
+            }
+        );
+        for bad in [
+            "[candidates]\nmin_score = -1.0",
+            "[candidates]\nper_head = 51",
+            "[candidates]\nlimit = 1",
+            "candidates = 1",
+        ] {
+            assert!(Config::parse(bad, None).is_err(), "{bad}");
+        }
     }
 
     #[test]

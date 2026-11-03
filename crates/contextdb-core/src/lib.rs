@@ -418,6 +418,30 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             current,
         })
     }
+    /// Logicals one rule away from logical `l` (P7 contradiction candidates,
+    /// ADR 0015 §5): the premises of rules concluding any revision of `l`,
+    /// and the conclusions of rules citing any revision of `l`. Sorted,
+    /// without `l` itself.
+    pub fn neighbour_logicals(&self, l: LogicalId) -> Vec<LogicalId> {
+        if l.index() >= self.logicals.len() {
+            return Vec::new();
+        }
+        let view = self.view();
+        let mut out = Vec::new();
+        for r in self.indexes.revisions_by_logical.row(l.index()) {
+            for j in self.indexes.rules_by_concl.row(r.index()) {
+                out.extend(view.premises(*j).map(|p| self.revisions.logical(p.premise)));
+            }
+            for i in self.indexes.rules_by_premise.row(r.index()) {
+                let j = self.indexes.inc_rule[i.index()];
+                out.push(self.revisions.logical(view.conclusion(j)));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out.retain(|x| *x != l);
+        out
+    }
     /// Rules with a Sem incidence on logical `l` (the `sem_by_logical` index).
     pub fn sem_rules_of(&self, l: LogicalId) -> Vec<RuleId> {
         if l.index() >= self.logicals.len() {

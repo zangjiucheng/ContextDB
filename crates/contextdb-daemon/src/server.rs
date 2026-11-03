@@ -125,6 +125,7 @@ impl Daemon {
         // called unless validators.toml configures one.
         let scheduler = crate::validators::Scheduler::open(service.actor.clone(), &dir)
             .map_err(io::Error::other)?;
+        scheduler.link_candidates(service.candidates.clone());
         scheduler.start()?;
         let _ = service.validators.set(scheduler);
         let uid = nix::unistd::getuid().as_raw();
@@ -233,6 +234,7 @@ impl Daemon {
         if let Some(s) = self.service.validators.get() {
             s.stop();
         }
+        self.service.stop_indexer();
         self.service.stop_writer();
         let _ = self
             .service

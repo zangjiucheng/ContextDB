@@ -163,3 +163,97 @@ fn ctxd_without_validators_toml_calls_nothing() {
     d.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn create(c: &mut Client, key: &str, kind: RecordKind, body: &str) {
+    raw(
+        c,
+        vec![body.as_bytes().to_vec()],
+        vec![Op::CreateLogical {
+            key: key.into(),
+            kind,
+            scope_lane: "repo".into(),
+            content: h(body.as_bytes()),
+            adopt_as_base: true,
+        }],
+    );
+}
+fn candidates_settled(d: &Daemon) {
+    let start = Instant::now();
+    while d.service.candidates.watermark().unwrap() != Some(d.service.actor.snapshot().epoch) {
+        assert!(start.elapsed() < Duration::from_secs(30), "no candidates");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Candidates live in `<data>/candidates.sqlite`: a store written before
+/// they existed is backfilled once, a restart keeps the pairs without
+/// querying again, and `[candidates] per_head = 0` turns new pairs off.
+#[test]
+fn ctxd_candidates_backfill_persist_and_obey_the_config() {
+    let dir = tmp("cand");
+    let d = Daemon::start(&dir, &Options::default()).unwrap();
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    for (i, w) in ["alpha", "bravo", "charlie", "delta", "echo", "golf"]
+        .iter()
+        .enumerate()
+    {
+        create(
+            &mut admin,
+            &format!("f{i}"),
+            RecordKind::Fact,
+            &format!("{w} {w} note on {w}"),
+        );
+    }
+    create(
+        &mut admin,
+        "cache",
+        RecordKind::Decision,
+        "api responses are cached in memcached for ten minutes",
+    );
+    create(
+        &mut admin,
+        "cache-fact",
+        RecordKind::Fact,
+        "api responses are never cached in memcached",
+    );
+    candidates_settled(&d);
+    let first = d.service.candidates.all().unwrap();
+    assert!(!first.is_empty());
+    let r = report(&mut admin, ValidatorsAction::Status);
+    assert!(count(&r.stats, "candidate_pairs") >= 1);
+    assert_eq!(count(&r.limits, "candidate_per_head"), 5);
+    d.stop();
+    assert!(dir.join("candidates.sqlite").exists());
+
+    // Restart: same pairs, nothing queried again.
+    std::fs::write(dir.join("validators.toml"), "[candidates]\nper_head = 0\n").unwrap();
+    let d = Daemon::start(&dir, &Options::default()).unwrap();
+    let mut admin = Client::connect(d.socket(Channel::Admin)).unwrap();
+    candidates_settled(&d);
+    assert_eq!(d.service.candidates.all().unwrap(), first);
+    let r = report(&mut admin, ValidatorsAction::Status);
+    assert_eq!(count(&r.stats, "candidate_heads"), 0);
+    assert_eq!(count(&r.limits, "candidate_per_head"), 0);
+    // per_head = 0: a new similar head adds no pair.
+    create(
+        &mut admin,
+        "cache-plan",
+        RecordKind::Plan,
+        "move api responses cached in memcached to redis",
+    );
+    candidates_settled(&d);
+    assert_eq!(d.service.candidates.all().unwrap(), first);
+    // Reload with the default: the next head pairs again.
+    std::fs::write(dir.join("validators.toml"), "").unwrap();
+    report(&mut admin, ValidatorsAction::Reload);
+    create(
+        &mut admin,
+        "cache-ttl",
+        RecordKind::Decision,
+        "api responses stay in memcached for one hour",
+    );
+    candidates_settled(&d);
+    assert!(d.service.candidates.all().unwrap().len() > first.len());
+    d.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -43,6 +43,7 @@ Usage (via a running ctxd, admin socket):
                                        merge a branch (default into main)
   ctx conflicts list <dir> [--state open|review|candidates|all] [--branch B]
   ctx conflicts open <dir> <key@rev> [<key@rev>] --reason R [--branch B]
+               [--from-candidate ID | --from-review ID]
   ctx conflicts resolve <dir> <artifact>... [--note T] [--branch B]
                                        contradictions and validator reviews (SD20)
   ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed

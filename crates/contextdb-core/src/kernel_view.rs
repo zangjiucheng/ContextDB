@@ -263,6 +263,17 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
         out.sort_unstable();
         out
     }
+    /// Logicals one rule away from `l` (global ids; P7 candidates).
+    pub fn neighbour_logicals(&self, l: LogicalId) -> Vec<LogicalId> {
+        let Ok(local) = self.ll(l) else {
+            return Vec::new();
+        };
+        let mut out: Vec<LogicalId> = (self.b.db.neighbour_logicals(local).into_iter())
+            .map(|x| self.global_logical(x))
+            .collect();
+        out.sort_unstable();
+        out
+    }
     /// Every enabled rule whose semantic state is `Pending`, with its
     /// current Sem vector (global ids): the start-up job scan.
     pub fn pending_rules(&self) -> Vec<(RuleId, HeadVector)> {
