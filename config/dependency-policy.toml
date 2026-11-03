@@ -48,10 +48,16 @@ reviewed_external = ["blake3", "nix", "sha1-checked", "sha2"]
 [symbols]
 reviewed_external = ["blake3", "tree-sitter", "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-javascript", "tree-sitter-python", "tree-sitter-go"]
 
+# ADR 0015 §4.1: validator adapters. serde_json for the Command protocol and
+# the claude JSON envelope, sha2 for prompt_sha256 (SPEC P7), blake3 for
+# nonces, nix (signal) to kill a validator's process group at its deadline.
+[validate]
+reviewed_external = ["serde_json", "sha2", "blake3", "nix"]
+
 [light]
-crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors", "contextdb-symbols"]
+crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors", "contextdb-symbols", "contextdb-validate"]
 
 # ADR 0012 §1: the daemon's live path never parses, so no grammar is linked
 # into ctxd or the crates it and the hooks are built from.
 [grammar_free]
-crates = ["contextdb-daemon", "contextdb-anchors", "contextdb-proto", "contextdb-hooks", "contextdb-mcp"]
+crates = ["contextdb-daemon", "contextdb-anchors", "contextdb-proto", "contextdb-hooks", "contextdb-mcp", "contextdb-validate"]

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P7 milestone 3: validator adapters** (new crate `contextdb-validate`, ADR 0015 §4.1).
+  - The `Validator` trait judges one task: a Sem rule's conclusion with each premise's asserted and current revision.
+  - Every outcome passes the same checks. Evidence may only cite handles shown in the task. The rationale is capped at 2 KiB. Tasks over 256 KiB fail rather than being judged on truncated bodies.
+  - Adapters:
+    - `Mock`, for tests;
+    - `Command`, an external program speaking JSON. It counts as an LLM unless configured `trusted`.
+    - `ClaudeCli`, which runs `claude -p` sandboxed: no tools, no MCP servers, no settings sources (so no hooks), an empty private working directory, a minimal environment, an optional isolated login directory, untrusted bodies inside nonce fences, and its own process group killed at the deadline. Only a one-turn reply holding exactly one outcome object is accepted (T82).
 - **P7 milestone 2: admin validation with metadata; protocol 5** (ADR 0015 §4.2, §4.3).
   - An agent batch carrying a `RecordValidation` (`Commit`, `WhatIf`, so MCP `ctx_commit`, or `Raw`) is refused with `ChannelRestricted` (T80). Before this, an agent's `ctx_commit` could record any verdict, including `Rejected`.
   - `ctx validate` takes `--label`, `--rationale`, `--evidence key@rev` (repeatable) and `--from-review ID`. The daemon stores a `ValidationMeta` blob (kind Admin) and names it in the record. `--from-review` converts an open PendingReview and resolves it in the same batch.

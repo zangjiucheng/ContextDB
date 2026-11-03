@@ -270,6 +270,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "contextdb-validate"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "contextdb-model",
+ "contextdb-proto",
+ "nix",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "contextdb-workload"
 version = "0.2.0"
 
