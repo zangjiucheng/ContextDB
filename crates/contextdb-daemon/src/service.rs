@@ -975,6 +975,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     if let Some(r) = certificate_reads(&ops) {
                         return r;
                     }
+                    if let Some(r) = agent_validation(id, &ops) {
+                        return r;
+                    }
                     let mut batch = Batch::new(ops);
                     batch.branch = s.lock().expect("session").branch;
                     batch.channel = id.channel;
@@ -1107,25 +1110,73 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 verdict,
                 curvec_seen,
                 validator,
+                label,
+                rationale,
+                evidence,
+                from_review,
             } => {
-                drop(snap);
-                // Human validation only (ADR 0008 §0.4).
+                // Admin validation only (ADR 0008 §0.4, SPEC §4.4).
                 if id.channel != Channel::Admin {
                     return err(
                         "ChannelRestricted",
                         "ctx validate requires the admin socket",
                     );
                 }
-                let mut batch = Batch::new(vec![Op::RecordValidation {
+                // A converted suggestion must be an open PendingReview on the
+                // branch (ADR 0015 §4.2).
+                if let Some(a) = from_review {
+                    match snap.view(branch).artifact(a) {
+                        Some(r) if r.ty == ArtifactType::PendingReview && r.open => {}
+                        Some(_) => {
+                            return err(
+                                "InvalidArgument",
+                                format!("artifact {} is not an open PendingReview", a.0),
+                            );
+                        }
+                        None => return err("UnknownRef", format!("no artifact {}", a.0)),
+                    }
+                }
+                drop(snap);
+                let meta = contextdb_proto::docs::ValidationMeta {
+                    v: 1,
+                    kind: contextdb_proto::docs::ValidatorKind::Admin,
+                    validator: validator.clone(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    model: None,
+                    prompt_sha256: None,
+                    label: label.unwrap_or(match verdict {
+                        Verdict::Rejected => contextdb_proto::docs::Label::Conflict,
+                        _ => contextdb_proto::docs::Label::Reinforcement,
+                    }),
+                    rationale,
+                    evidence,
+                    tokens_in: None,
+                    tokens_out: None,
+                    job: None,
+                    based_on: from_review,
+                    at: unix_now(),
+                };
+                let (hash, bytes) = match contextdb_proto::docs::blob(&meta) {
+                    Ok(b) => b,
+                    Err(e) => return err("InvalidArgument", e),
+                };
+                let mut ops = vec![Op::RecordValidation {
                     rule: rule.into(),
                     curvec_seen,
                     verdict,
                     validator,
-                    meta: None,
+                    meta: Some(hash),
                     if_absent: false,
-                }]);
+                }];
+                if let Some(a) = from_review {
+                    ops.push(Op::ResolveArtifact {
+                        id: a.into(),
+                        note: None,
+                    });
+                }
+                let mut batch = Batch::new(ops);
                 batch.branch = branch;
-                self.commit(id, Vec::new(), batch, None)
+                self.commit(id, vec![bytes], batch, None)
             }
             Request::Raw { blobs, batch } => {
                 drop(snap);
@@ -1450,6 +1501,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: Arc<Snapshot<D>>,
     ) -> Response {
         if let Some(r) = certificate_reads(&ops) {
+            return r;
+        }
+        if let Some(r) = agent_validation(id, &ops) {
             return r;
         }
         if ops.iter().any(|op| {
@@ -2839,6 +2893,21 @@ impl Hooks {
             self.ended.pop_front();
         }
     }
+}
+/// SPEC §6.1 contract 14, ADR 0015 §4.3 (T80): validation is admin-only
+/// (`ctx validate`) or the in-process worker's; an agent batch carrying a
+/// `RecordValidation` is refused, whatever the verdict.
+fn agent_validation(id: Identity, ops: &[Op]) -> Option<Response> {
+    (id.channel == Channel::Agent
+        && ops
+            .iter()
+            .any(|op| matches!(op, Op::RecordValidation { .. })))
+    .then(|| {
+        err(
+            "ChannelRestricted",
+            "RecordValidation requires the admin socket (ctx validate)",
+        )
+    })
 }
 fn unix_now() -> u64 {
     std::time::SystemTime::now()

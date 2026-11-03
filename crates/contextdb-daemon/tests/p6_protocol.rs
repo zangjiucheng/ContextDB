@@ -254,6 +254,10 @@ fn t19_window_changes_other_than_head_moves() {
                 verdict,
                 curvec_seen: vec![(q.logical, q2)],
                 validator: "t".into(),
+                label: None,
+                rationale: String::new(),
+                evidence: Vec::new(),
+                from_review: None,
             },
         )
     };

@@ -135,6 +135,10 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
         verdict: Verdict::Verified,
         curvec_seen: Vec::new(),
         validator: "agent".into(),
+        label: None,
+        rationale: String::new(),
+        evidence: Vec::new(),
+        from_review: None,
     };
     assert_eq!(code(&call(&s, AGENT, validate)), "ChannelRestricted");
     // The observer channel may write anchors through raw batches.
@@ -409,6 +413,10 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
         verdict: Verdict::Verified,
         curvec_seen: Vec::new(),
         validator: "human".into(),
+        label: None,
+        rationale: String::new(),
+        evidence: Vec::new(),
+        from_review: None,
     };
     // Admin reaches the kernel (which rejects: no Sem incidence), agent never does.
     assert_eq!(code(&call(&s, ADMIN, validate.clone())), "NoSemIncidence");

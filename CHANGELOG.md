@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **P7 milestone 2: admin validation with metadata; protocol 5** (ADR 0015 §4.2, §4.3).
+  - An agent batch carrying a `RecordValidation` (`Commit`, `WhatIf`, so MCP `ctx_commit`, or `Raw`) is refused with `ChannelRestricted` (T80). Before this, an agent's `ctx_commit` could record any verdict, including `Rejected`.
+  - `ctx validate` takes `--label`, `--rationale`, `--evidence key@rev` (repeatable) and `--from-review ID`. The daemon stores a `ValidationMeta` blob (kind Admin) and names it in the record. `--from-review` converts an open PendingReview and resolves it in the same batch.
+  - IPC protocol 5: install all four binaries together.
 - **P7 milestone 1: op_log format 4** (ADR 0015 §3, §9; SPEC v1.7.0).
   - `RecordValidation` gains `meta`, a metadata blob hash the kernel stores but never reads, and `if_absent`. A worker's record fails with `ValidationExists` instead of replacing an existing verdict (T81).
   - `ResolveArtifact` gains `note`, and `MissingBlob` covers both new blob fields.

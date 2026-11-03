@@ -31,7 +31,8 @@ Usage (via a running ctxd, admin socket):
   ctx why-not <dir> <key[@rev]>        failing incidences per rule
   ctx impact <dir> <key[@rev]>         dependents (reachable impact)
   ctx diff <dir> <from> <to>           status changes between epochs
-  ctx validate <dir> <key@rev> verified|rejected [--yes]
+  ctx validate <dir> <key@rev> verified|rejected [--label L] [--rationale T]
+               [--evidence key@rev]... [--from-review ID] [--yes]
                                        controlled validation of Sem rules (shows the
                                        vectors, records exactly what was shown)
   ctx shutdown <dir>                   stop ctxd

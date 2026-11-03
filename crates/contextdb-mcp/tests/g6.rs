@@ -206,6 +206,10 @@ fn g6_three_agents_stale_plan_invalid_and_semantic_plan_recertified() {
             verdict: Verdict::Verified,
             curvec_seen: vec![(d1, RevisionId(v2 as u32))],
             validator: "human".into(),
+            label: None,
+            rationale: String::new(),
+            evidence: Vec::new(),
+            from_review: None,
         },
     );
     assert!(

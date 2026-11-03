@@ -189,6 +189,22 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     }
 
     // Current-mode reads.
+    /// A visible artifact by global id, with its target as a global id.
+    pub fn artifact(&self, a: ArtifactId) -> Option<Artifact> {
+        let l = self.local(Kind::Artifact, a.0)?;
+        let mut record = self.b.db.artifact_record(ArtifactId(l)).clone();
+        record.target = self.global_revision(record.target);
+        Some(record)
+    }
+    /// Visible artifacts with global ids and global targets (P7
+    /// `ctx_conflicts`).
+    pub fn artifacts(&self) -> impl Iterator<Item = (ArtifactId, Artifact)> + '_ {
+        (0..self.b.db.artifact_count() as u32).map(|l| {
+            let mut record = self.b.db.artifact_record(ArtifactId(l)).clone();
+            record.target = self.global_revision(record.target);
+            (self.global_artifact(ArtifactId(l)), record)
+        })
+    }
     pub fn logical_by_key(&self, key: &str) -> Option<LogicalId> {
         let l = self.b.db.logical_by_key(key)?;
         Some(self.global_logical(l))

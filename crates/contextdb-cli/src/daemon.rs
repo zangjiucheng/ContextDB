@@ -138,10 +138,14 @@ pub fn run(cmd: &str, dir: &Path, args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
-/// `ctx validate <dir> <key@rev> verified|rejected [--yes]`: shows every Sem
-/// rule concluding the revision with its current vector, asks for
-/// confirmation, then records exactly the vector shown (CurvecMoved if it
-/// changed meanwhile).
+/// `ctx validate <dir> <key@rev> verified|rejected [--label L] [--rationale T]
+/// [--evidence key@rev]... [--from-review ID] [--yes]`: shows every Sem rule
+/// concluding the revision with its current vector, asks for confirmation,
+/// then records exactly the vector shown (CurvecMoved if it changed
+/// meanwhile). The daemon stores a metadata blob with the label, rationale
+/// and evidence; `--from-review` converts an LLM suggestion and resolves the
+/// review in the same batch (ADR 0015 §4.2; the independent evidence SPEC
+/// §4.4 asks for is the caller's).
 fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<(), String> {
     let t = target(
         args.first()
@@ -153,6 +157,28 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
         _ => return Err("verdict must be verified or rejected".into()),
     };
     let yes = args.iter().any(|a| a == "--yes");
+    let flag = |name: &str| -> Vec<String> {
+        args.windows(2)
+            .filter(|w| w[0] == name)
+            .map(|w| w[1].clone())
+            .collect()
+    };
+    let label = match flag("--label").first() {
+        Some(l) => Some(
+            contextdb_proto::docs::Label::parse(l)
+                .ok_or("--label: reinforcement|none|conflict|boundary_change|new_rule")?,
+        ),
+        None => None,
+    };
+    let rationale = flag("--rationale").first().cloned().unwrap_or_default();
+    let evidence = flag("--evidence");
+    let from_review = match flag("--from-review").first() {
+        Some(a) => Some(ArtifactId(
+            a.parse()
+                .map_err(|_| "--from-review takes an artifact id")?,
+        )),
+        None => None,
+    };
     let env = call(
         c,
         on(
@@ -193,6 +219,7 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
         }
     }
     let validator = std::env::var("USER").unwrap_or_else(|_| "human".into());
+    let first = rules[0].rule;
     for r in rules {
         let env = call(
             c,
@@ -203,6 +230,11 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
                     verdict,
                     curvec_seen: r.current.clone(),
                     validator: validator.clone(),
+                    label,
+                    rationale: rationale.clone(),
+                    evidence: evidence.clone(),
+                    // One review resolves once, with the first rule.
+                    from_review: if r.rule == first { from_review } else { None },
                 },
             ),
         )?;

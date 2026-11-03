@@ -7,7 +7,7 @@ use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -228,12 +228,19 @@ pub enum Request {
     TxnStatus {
         id: [u8; 16],
     },
-    /// Admin only (ADR 0008 §0.4).
+    /// Admin only (ADR 0008 §0.4). Protocol 5 (ADR 0015 §3.2, §4.2): the
+    /// daemon writes a `ValidationMeta` blob (kind Admin) with the label,
+    /// rationale and evidence; `from_review` also resolves that open
+    /// PendingReview in the same batch.
     Validate {
         rule: RuleId,
         verdict: Verdict,
         curvec_seen: HeadVector,
         validator: String,
+        label: Option<crate::docs::Label>,
+        rationale: String,
+        evidence: Vec<String>,
+        from_review: Option<ArtifactId>,
     },
     /// Observer and admin only; kernel channel rules still apply. `blobs`
     /// are stored before the batch (e.g. anchor contents).
@@ -959,12 +966,20 @@ impl Wire for Request {
                 verdict,
                 curvec_seen,
                 validator,
+                label,
+                rationale,
+                evidence,
+                from_review,
             } => {
                 14u8.encode(o);
                 rule.encode(o);
                 verdict.encode(o);
                 curvec_seen.encode(o);
                 validator.encode(o);
+                label.encode(o);
+                rationale.encode(o);
+                evidence.encode(o);
+                from_review.encode(o);
             }
             Self::Raw { blobs, batch } => {
                 15u8.encode(o);
@@ -1193,6 +1208,10 @@ impl Wire for Request {
                 verdict: Wire::decode(i)?,
                 curvec_seen: Wire::decode(i)?,
                 validator: Wire::decode(i)?,
+                label: Wire::decode(i)?,
+                rationale: Wire::decode(i)?,
+                evidence: Wire::decode(i)?,
+                from_review: Wire::decode(i)?,
             },
             15 => Self::Raw {
                 blobs: Wire::decode(i)?,
@@ -1733,6 +1752,10 @@ mod tests {
                 verdict: Verdict::Verified,
                 curvec_seen: vec![(LogicalId(0), RevisionId(1))],
                 validator: "human".into(),
+                label: Some(crate::docs::Label::Reinforcement),
+                rationale: "checked".into(),
+                evidence: vec!["db@1".into()],
+                from_review: Some(ArtifactId(3)),
             },
             Request::Raw {
                 blobs: vec![b"x".to_vec()],
