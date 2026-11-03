@@ -62,13 +62,13 @@ struct AgentState {
     writes: u32,
     writes_with_deps: u32,
 }
-struct Session {
+pub(crate) struct Session {
     principal: PrincipalId,
     head_sha: String,
     repo: String,
     /// The branch every read, write, check and certificate of the session
     /// uses, fixed for its lifetime (ADR 0013 §7, D1).
-    branch: BranchId,
+    pub(crate) branch: BranchId,
     /// The harness session this session serves, if any.
     key: Option<(String, String)>,
     started_epoch: Epoch,
@@ -171,7 +171,7 @@ impl<D: Durability> Service<D> {
 }
 /// A resolved binding: session id, session, agent, and whether the session
 /// was just started.
-type Bound = (SessionId, Arc<Mutex<Session>>, Agent, bool);
+pub(crate) type Bound = (SessionId, Arc<Mutex<Session>>, Agent, bool);
 /// Most items one recall returns (ADR 0008 §9).
 pub const MAX_RECALL: usize = 1_000;
 /// A session's branch (ADR 0013 §7, D1): the named branch, which must exist
@@ -278,7 +278,7 @@ fn explain_rule_error(response: Response, deps: &[(String, RecordKind, EdgeKind)
     };
     err(code, format!("{detail}: {hint}"))
 }
-fn err(code: &str, detail: impl Into<String>) -> Response {
+pub(crate) fn err(code: &str, detail: impl Into<String>) -> Response {
     Response::Error {
         code: code.into(),
         detail: detail.into(),
@@ -1194,6 +1194,53 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 self.commit(id, blobs, batch, None)
             }
+            Request::Conflicts {
+                binding,
+                branch,
+                scope,
+                state,
+                limit,
+            } => self.conflicts_list(id, binding, branch, scope, state, limit, snap),
+            Request::ConflictOpen {
+                binding,
+                branch,
+                a,
+                b,
+                reason,
+                evidence,
+                from,
+                expect_cert_valid,
+                client_txn_id,
+            } => self.conflict_open(
+                id,
+                binding,
+                branch,
+                a,
+                b,
+                reason,
+                evidence,
+                from,
+                expect_cert_valid,
+                client_txn_id,
+                snap,
+            ),
+            Request::Resolve {
+                binding,
+                branch,
+                artifacts,
+                note,
+                expect_cert_valid,
+                client_txn_id,
+            } => self.resolve(
+                id,
+                binding,
+                branch,
+                artifacts,
+                note,
+                expect_cert_valid,
+                client_txn_id,
+                snap,
+            ),
             Request::Validators { action } => {
                 drop(snap);
                 if id.channel != Channel::Admin {
@@ -1432,7 +1479,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         Ok((session_id, session, None, true))
     }
     /// Resolves a binding to (session, agent) (ADR 0010 §2).
-    fn bind(&self, id: Identity, b: &Binding, snap: &Arc<Snapshot<D>>) -> Result<Bound, Response> {
+    pub(crate) fn bind(
+        &self,
+        id: Identity,
+        b: &Binding,
+        snap: &Arc<Snapshot<D>>,
+    ) -> Result<Bound, Response> {
         match b {
             Binding::Session { session, agent } => {
                 let Some(s) = self.session(session) else {
@@ -1491,7 +1543,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         })
     }
     /// Stamps the transport identity, assigns a client_txn_id and commits.
-    fn commit(
+    pub(crate) fn commit(
         &self,
         id: Identity,
         blobs: Vec<Vec<u8>>,
@@ -1512,7 +1564,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// `ctx_commit` (ADR 0013 §4).
     #[allow(clippy::too_many_arguments)]
-    fn commit_ops(
+    pub(crate) fn commit_ops(
         &self,
         id: Identity,
         (session, s, agent, _): Bound,
@@ -1616,7 +1668,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
     }
     /// Target → (logical, revision) without session context (no handles).
-    fn resolve_plain(
+    pub(crate) fn resolve_plain(
         &self,
         target: &Target,
         db: &BranchView<'_>,

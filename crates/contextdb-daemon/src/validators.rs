@@ -141,7 +141,11 @@ pub struct Scheduler<D: Durability> {
     pub retry_base: Duration,
     pub stats: Stats,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Decoded validator review keys by payload hash (payloads are
+    /// immutable): the open-review check reads no blob twice.
+    review_keys: Mutex<std::collections::HashMap<ContentHash, Option<ReviewKey>>>,
 }
+type ReviewKey = (BranchId, Option<RuleId>, HeadVector);
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -195,6 +199,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             retry_base: Duration::from_secs(10),
             stats: Stats::default(),
             threads: Mutex::new(Vec::new()),
+            review_keys: Mutex::new(std::collections::HashMap::new()),
         })
     }
     /// Opens `<dir>/jobs.sqlite`, recovers it and loads `validators.toml`
@@ -566,6 +571,30 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             None => Ran::Lost,
         })
     }
+    /// Whether an open PendingReview by the LLM worker names this job's
+    /// `(branch, rule, curvec)` (T84): a scan of the branch's open reviews
+    /// with each payload decoded once (ADR 0015 §4.2; this cache stands in
+    /// for the `validator_reviews` projection).
+    fn open_review(&self, snap: &Snapshot<D>, view: &BranchView<'_>, job: &Job) -> bool {
+        use contextdb_model::Wire;
+        let mut keys = self.review_keys.lock().expect("review keys");
+        view.artifacts().any(|(_, a)| {
+            if !(a.open && a.ty == ArtifactType::PendingReview && a.author == LLM_PRINCIPAL) {
+                return false;
+            }
+            let key = keys.entry(a.payload_hash).or_insert_with(|| {
+                match snap.log.read_blob(&a.payload_hash) {
+                    Payload::Available(b) => ReviewDoc::from_bytes(&b)
+                        .ok()
+                        .map(|d| (d.branch, d.rule, d.curvec)),
+                    _ => None,
+                }
+            });
+            key.as_ref().is_some_and(|(b, r, v)| {
+                *b == job.branch && *r == Some(job.rule) && *v == job.curvec
+            })
+        })
+    }
     /// Whether an LLM call may start now; counts it if so.
     fn llm_permit(&self, cap: u32) -> bool {
         let mut w = self.llm_window.lock().expect("llm window");
@@ -613,7 +642,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             return self.end(job, JobState::Done, None, None, Ran::AlreadyValidated);
         }
         let kind = v.kind();
-        if kind == ValidatorKind::Llm && job.generation == 0 && open_review(&snap, &view, job) {
+        if kind == ValidatorKind::Llm && job.generation == 0 && self.open_review(&snap, &view, job)
+        {
             return self.end(job, JobState::Done, None, None, Ran::AlreadyReviewed);
         }
         let task = match build_task(&snap, &view, job, &rule) {
@@ -852,23 +882,6 @@ fn choose<D: Durability>(loaded: &Loaded, snap: &Snapshot<D>, job: &Job) -> Choi
         Some(n) => Choice::Run(n),
         None => Choice::Skip,
     }
-}
-/// Whether an open PendingReview by the LLM worker names this job's
-/// `(branch, rule, curvec)` (T84). A linear scan of open reviews; the
-/// `validator_reviews` projection replaces it in milestone 5.
-fn open_review<D: Durability>(snap: &Snapshot<D>, view: &BranchView<'_>, job: &Job) -> bool {
-    use contextdb_model::Wire;
-    view.artifacts().any(|(_, a)| {
-        a.open
-            && a.ty == ArtifactType::PendingReview
-            && a.author == LLM_PRINCIPAL
-            && match snap.log.read_blob(&a.payload_hash) {
-                Payload::Available(b) => ReviewDoc::from_bytes(&b).is_ok_and(|d| {
-                    d.branch == job.branch && d.rule == Some(job.rule) && d.curvec == job.curvec
-                }),
-                _ => false,
-            }
-    })
 }
 /// The current vector of rule `j` when it is enabled and Pending.
 fn pending_at(view: &BranchView<'_>, j: RuleId) -> Option<HeadVector> {

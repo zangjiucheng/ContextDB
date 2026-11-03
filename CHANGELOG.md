@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P7 milestone 5: `ctx_conflicts` and `ctx_resolve`** (ADR 0015 §2, §6; SD20).
+  - `ctx_conflicts open` lets an agent (through its session) or the admin assert that two records cannot both hold. Both sides get an open Conflict sharing one `ConflictDoc`, and both read CONFLICTED until the pair is resolved or a side is superseded; the new head of a superseded side is not gated. With `from_review`, the same commit resolves that review.
+  - `open` refuses a pair of one revision, a side not visible on the branch, a pair already open, and an empty reason.
+  - `ctx_conflicts list` shows the branch's open Conflict pairs and validator reviews, with each review's suggestion, rationale and model. It marks a pair `side superseded` when one side is no longer the head, and a review `stale curvec` when the rule's premises moved on. Candidate pairs come with milestone 6.
+  - `ctx_resolve` closes Conflicts and PendingReviews only, with a note stored as a blob. `AnchorBroken` stays observer-only.
+  - Everything acts on the caller's branch. Admin gets `ctx conflicts list|open|resolve <dir>`.
+  - **Claude Code:** the PreToolUse claim now matches the two new tools. Run `ctx hooks install --harness claude` again (or `ctx setup`) so their calls bind to the session.
 - **P7 milestone 4: validator jobs** (ADR 0015 §4.2–§4.4).
   - `ctxd` keeps a durable job table, `<data>/jobs.sqlite`, with one row per `(branch, rule, curvec)`. Claiming a row is one SQLite update, so of several workers exactly one gets it (T53).
   - Discovery follows the op_log: head moves of Sem premises, new and re-enabled rules, recorded validations, and a rescan on branch ops and at start-up. The same rule pending on two branches is two jobs (T84).

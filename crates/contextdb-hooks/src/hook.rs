@@ -24,7 +24,7 @@ use std::{
 
 /// ContextDB's session-scoped MCP tools, which the PreToolUse hook claims
 /// (ADR 0010 §2.3).
-pub const CLAIMED_TOOLS: [&str; 11] = [
+pub const CLAIMED_TOOLS: [&str; 13] = [
     "ctx_recall",
     "ctx_read",
     "ctx_record",
@@ -37,6 +37,9 @@ pub const CLAIMED_TOOLS: [&str; 11] = [
     "ctx_commit",
     "ctx_what_if",
     "ctx_merge",
+    // Conflicts and reviews on the session's branch (P7, ADR 0015 §6).
+    "ctx_conflicts",
+    "ctx_resolve",
 ];
 const GIT_LIMIT: Duration = Duration::from_millis(300);
 

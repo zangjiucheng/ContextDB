@@ -4,7 +4,8 @@
 - op_log format 4;
 - the agent-validation refusal and admin metadata, with protocol 5;
 - the validator adapters, including a sandboxed `claude -p`;
-- validator jobs: `jobs.sqlite`, discovery, workers, leases and recovery, `validators.toml` and `ctx validators`.
+- validator jobs: `jobs.sqlite`, discovery, workers, leases and recovery, `validators.toml` and `ctx validators`;
+- `ctx_conflicts` and `ctx_resolve` (SD20 pairs).
 
 **Gate P6 passed** (2026-11-02) ([P6 gate](gates/P6.md), [ADR 0013](adr/0013-p6-branches-transactions.md) r0.6). G0–G5, G7 and G8 pass and G6 is none for P6. G3: PROP13 against an independent branch oracle (10,000 seeds), PROP7/8/10/11 per branch, and [mutation](gates/p6-g3-mutation.md) with every survivor closed by a test or argued equivalent. G4's branch stress found two merge defects (a cubic merge-base search and sync points retaining whole databases), fixed in ADR r0.6 without semantic change. [G5](gates/p6-g5.md): fork O(1), WHAT_IF ≤ 1.6× a commit, branch commit at parity with `main`; the first write after a fork or merge copies the branch (≈ 0.05–0.25 s at 10⁶ revisions). The independent implementation review found 8 majors (among them a `require_certified` merge passing with Conflicts off the head, an idempotency hash ignoring the branch, and group-commit projections differing from a rebuild), all fixed with regression tests (ADR r0.7, SPEC v1.6.9); G1, G3, G4 and G7 were rerun on the fixed tree. All P6 layers pass; the phase gate closed with P4, P5a and P5b on 2026-11-02 (SPEC A11, v1.6.12).
 

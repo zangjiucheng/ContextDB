@@ -41,6 +41,10 @@ Usage (via a running ctxd, admin socket):
                                        like their git branch)
   ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
                                        merge a branch (default into main)
+  ctx conflicts list <dir> [--state open|review|candidates|all] [--branch B]
+  ctx conflicts open <dir> <key@rev> [<key@rev>] --reason R [--branch B]
+  ctx conflicts resolve <dir> <artifact>... [--note T] [--branch B]
+                                       contradictions and validator reviews (SD20)
   ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed
                                        P7 validator jobs (<dir>/validators.toml;
                                        check runs each validator on a probe task)
@@ -221,6 +225,10 @@ fn run(args: &[String]) -> Result<u8, String> {
             daemon::branch(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
         }
         Some("merge") => daemon::merge(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
+        Some("conflicts") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            daemon::conflicts(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
+        }
         Some("validators") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             daemon::validators(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)

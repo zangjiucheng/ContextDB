@@ -202,6 +202,7 @@ ctx export <dir>        # export as EventLog v0 JSONL
 | `ctx_txn_status` | Look up `Committed{epoch}` or `NotCommitted` by `client_txn_id` |
 | `ctx_commit` / `ctx_what_if` | Several ops atomically on the session's branch (optionally only while the session certificate is valid), or a dry run of them (P6) |
 | `ctx_branch` / `ctx_merge` | Create, list or archive branches; merge one into another (P6) |
+| `ctx_conflicts` / `ctx_resolve` | List contradictions and validator reviews on the session's branch; assert that two records cannot both hold (both read CONFLICTED until resolved or superseded); resolve with a note (P7) |
 
 P3 does not offer `ctx_validate` to agents.
 
@@ -215,6 +216,8 @@ ctx diff <dir> <from> <to>
 ctx validate <dir> <key@rev> verified|rejected [--yes]
                                  # controlled validation: shows the current semantic vectors first;
                                  # automation may pass --yes, still admin-only with a curvec CAS
+ctx conflicts list|open|resolve <dir> ...
+                                 # contradictions and validator reviews (SD20), as admin
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 validator jobs; none run until <dir>/validators.toml lists a

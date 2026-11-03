@@ -245,6 +245,121 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
     Ok(())
 }
 /// `ctx branch create|list|archive <dir> …` (ADR 0013 §10).
+/// `ctx conflicts list|open|resolve <dir> …` (ADR 0015 §6), as admin.
+pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
+    use contextdb_proto::proto::{ConflictState, Response as R};
+    let (branch, args) = take_branch(args)?;
+    let flag = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+    let positional: Vec<&String> = {
+        let mut out = Vec::new();
+        let mut skip = false;
+        for a in &args {
+            if skip {
+                skip = false;
+            } else if a.starts_with("--") {
+                skip = true;
+            } else {
+                out.push(a);
+            }
+        }
+        out
+    };
+    let mut c = connect(dir)?;
+    let request = match sub {
+        "list" => Request::Conflicts {
+            binding: None,
+            branch: branch.clone(),
+            scope: flag("--scope"),
+            state: match flag("--state").as_deref().unwrap_or("all") {
+                "open" => ConflictState::Open,
+                "review" => ConflictState::Review,
+                "candidates" => ConflictState::Candidates,
+                "all" => ConflictState::All,
+                other => return Err(format!("unknown state {other}")),
+            },
+            limit: flag("--limit").and_then(|l| l.parse().ok()).unwrap_or(0),
+        },
+        "open" => Request::ConflictOpen {
+            binding: None,
+            branch: branch.clone(),
+            a: target(positional.first().ok_or("missing <key@rev>")?)?,
+            b: positional.get(1).map(|t| target(t)).transpose()?,
+            reason: flag("--reason").ok_or("--reason is required")?,
+            evidence: Vec::new(),
+            from: None,
+            expect_cert_valid: false,
+            client_txn_id: None,
+        },
+        "resolve" => Request::Resolve {
+            binding: None,
+            branch: branch.clone(),
+            artifacts: (positional.iter())
+                .map(|a| {
+                    a.parse()
+                        .map(ArtifactId)
+                        .map_err(|_| format!("bad artifact id {a}"))
+                })
+                .collect::<Result<_, _>>()?,
+            note: flag("--note").unwrap_or_default(),
+            expect_cert_valid: false,
+            client_txn_id: None,
+        },
+        _ => return Err("usage: ctx conflicts list|open|resolve <dir> ...".into()),
+    };
+    let env = call(&mut c, request)?;
+    match env.response {
+        R::Conflicts { items, truncated } => {
+            for i in &items {
+                let ids: Vec<String> = i.artifacts.iter().map(|a| a.0.to_string()).collect();
+                let sides: Vec<String> = (i.sides.iter())
+                    .map(|s| {
+                        format!(
+                            "{}@{}{}",
+                            s.key,
+                            s.rev.0,
+                            if s.current { "" } else { " (superseded)" }
+                        )
+                    })
+                    .collect();
+                println!(
+                    "{} [{}] {} — {} ({}){}",
+                    i.kind,
+                    ids.join(","),
+                    sides.join(" vs "),
+                    i.reason,
+                    i.origin,
+                    if i.marks.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", i.marks.join(", "))
+                    }
+                );
+            }
+            if items.is_empty() {
+                println!("nothing open");
+            }
+            if truncated {
+                println!("(more; raise --limit)");
+            }
+        }
+        R::Committed { result } => {
+            let ids: Vec<String> = (result.allocations.new_artifacts.iter())
+                .map(|a| a.0.to_string())
+                .collect();
+            println!(
+                "committed at epoch {}{}",
+                result.epoch.0,
+                if ids.is_empty() {
+                    String::new()
+                } else {
+                    format!("; artifacts {}", ids.join(","))
+                }
+            );
+        }
+        other => return Err(format!("unexpected response {other:?}")),
+    }
+    Ok(())
+}
 /// `ctx validators status|reload|check <dir>` and `ctx validators retry
 /// <dir> <job-key>|--failed` (ADR 0015 §4.4).
 pub fn validators(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {

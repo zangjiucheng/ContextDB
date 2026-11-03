@@ -520,6 +520,22 @@ All three operations act on the caller's branch.
   ordinary certified write, so it goes through `expect_cert_valid` when the
   caller asks for it.
 
+**Implementation notes (milestone 5).**
+- **Branch.** Agents must give a session binding, and act on its branch. An
+  unbound admin call names a branch or uses `main`. A binding together with a
+  different branch name is `BranchMismatch`.
+- **Grouping.** `list` groups Conflicts by their shared `ConflictDoc`. A
+  Conflict without one (a P6 merge conflict) is listed per artifact, with
+  origin `merge`.
+- **Candidates.** `from = candidate` is refused until milestone 6.
+- **Projections.** §9's `validator_reviews` table is replaced by an
+  in-memory cache of decoded review payloads in the worker. Payloads are
+  immutable, so no blob is read twice. `list` reads review payloads directly;
+  the open set is small.
+  - `validation_meta` and `artifact_notes` are not built in P7, because no
+    reader needs them yet. Metadata and notes are reachable from the record's
+    and the op's hashes.
+
 ## 7. Handoff
 
 **Storage.** Handoffs live in the session log (SPEC §3.5 #7's enumerated

@@ -204,6 +204,7 @@ ctx export <dir>        # 导出为 EventLog v0 JSONL
 | `ctx_txn_status` | 按 `client_txn_id` 查询 `Committed{epoch}` 或 `NotCommitted` |
 | `ctx_commit` / `ctx_what_if` | 在本会话的 branch 上原子提交多个 op（可要求会话证书此刻仍有效），或只演练不提交（P6） |
 | `ctx_branch` / `ctx_merge` | 创建、列出、归档 branch；把一个 branch 合并进另一个（P6） |
+| `ctx_conflicts` / `ctx_resolve` | 列出会话所在 branch 上的矛盾与验证器的待审项；声明两条记录不能同时成立（解决或 supersede 前两侧都是 CONFLICTED）；附说明解决（P7） |
 
 P3 不向 agent 提供 `ctx_validate`。
 
@@ -216,6 +217,8 @@ ctx why|why-not|impact <dir> <key[@rev]>
 ctx diff <dir> <from> <to>
 ctx validate <dir> <key@rev> verified|rejected [--yes]
                                  # 受控验证：先列出当前语义向量；自动流程可用 --yes，仍只走 admin 与 curvec CAS
+ctx conflicts list|open|resolve <dir> ...
+                                 # 矛盾与验证器待审项（SD20），以 admin 身份
 ctx validators status|reload|check <dir>
 ctx validators retry <dir> <job-key>|--failed
                                  # P7 验证任务；<dir>/validators.toml 未配置验证器时什么都不调用；

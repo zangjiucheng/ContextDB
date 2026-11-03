@@ -357,6 +357,113 @@ pub enum Request {
     Validators {
         action: ValidatorsAction,
     },
+    /// `ctx_conflicts list` (ADR 0015 §6) on the bound session's branch, or
+    /// `branch` (admin), else `main`.
+    Conflicts {
+        binding: Option<Binding>,
+        branch: Option<String>,
+        scope: Option<String>,
+        state: ConflictState,
+        limit: u32,
+    },
+    /// `ctx_conflicts open`: a Conflict pair (or one side) sharing one
+    /// `ConflictDoc` (SD20); `from` names the review it converts (resolved
+    /// in the same batch) or the candidate it confirms.
+    ConflictOpen {
+        binding: Option<Binding>,
+        branch: Option<String>,
+        a: Target,
+        b: Option<Target>,
+        reason: String,
+        evidence: Vec<String>,
+        from: Option<ConflictFrom>,
+        expect_cert_valid: bool,
+        client_txn_id: Option<[u8; 16]>,
+    },
+    /// `ctx_resolve`: Conflict and PendingReview artifacts only, with a note.
+    Resolve {
+        binding: Option<Binding>,
+        branch: Option<String>,
+        artifacts: Vec<ArtifactId>,
+        note: String,
+        expect_cert_valid: bool,
+        client_txn_id: Option<[u8; 16]>,
+    },
+}
+/// Which items `ctx_conflicts list` returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictState {
+    Open,
+    Review,
+    Candidates,
+    All,
+}
+impl Wire for ConflictState {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o)
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Open,
+            1 => Self::Review,
+            2 => Self::Candidates,
+            3 => Self::All,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// What a `ConflictOpen` converts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictFrom {
+    Candidate(u64),
+    Review(ArtifactId),
+}
+impl Wire for ConflictFrom {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Candidate(id) => {
+                0u8.encode(o);
+                id.encode(o);
+            }
+            Self::Review(a) => {
+                1u8.encode(o);
+                a.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Candidate(Wire::decode(i)?),
+            1 => Self::Review(Wire::decode(i)?),
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// One side of a listed item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictSide {
+    pub rev: RevisionId,
+    pub key: String,
+    /// Whether `rev` is still its logical's head on the branch.
+    pub current: bool,
+}
+/// One `ctx_conflicts list` item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictItem {
+    /// `conflict`, `review` or `candidate`.
+    pub kind: String,
+    pub artifacts: Vec<ArtifactId>,
+    pub sides: Vec<ConflictSide>,
+    /// A Conflict's reason; a review's suggestion and rationale.
+    pub reason: String,
+    /// Who opened it: agent, admin, candidate N, review N, merge, or the
+    /// validator (and model) of a review.
+    pub origin: String,
+    pub rule: Option<RuleId>,
+    /// `side superseded` (a Conflict side is no longer the head), `stale
+    /// curvec` (a review's vector moved on).
+    pub marks: Vec<String>,
+    pub evidence: Vec<String>,
 }
 /// What `ctx validators` asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -656,6 +763,11 @@ pub enum Response {
     Validators {
         report: ValidatorsReport,
     },
+    Conflicts {
+        items: Vec<ConflictItem>,
+        /// More items than `limit` matched.
+        truncated: bool,
+    },
 }
 /// Every response names the snapshot epoch it was computed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -680,6 +792,17 @@ wire_struct!(JobInfo {
     last_error
 });
 wire_struct!(Counter { name, value });
+wire_struct!(ConflictSide { rev, key, current });
+wire_struct!(ConflictItem {
+    kind,
+    artifacts,
+    sides,
+    reason,
+    origin,
+    rule,
+    marks,
+    evidence
+});
 wire_struct!(ValidatorsReport {
     validators,
     limits,
@@ -1244,6 +1367,58 @@ impl Wire for Request {
                 32u8.encode(o);
                 action.encode(o);
             }
+            Self::Conflicts {
+                binding,
+                branch,
+                scope,
+                state,
+                limit,
+            } => {
+                33u8.encode(o);
+                binding.encode(o);
+                branch.encode(o);
+                scope.encode(o);
+                state.encode(o);
+                limit.encode(o);
+            }
+            Self::ConflictOpen {
+                binding,
+                branch,
+                a,
+                b,
+                reason,
+                evidence,
+                from,
+                expect_cert_valid,
+                client_txn_id,
+            } => {
+                34u8.encode(o);
+                binding.encode(o);
+                branch.encode(o);
+                a.encode(o);
+                b.encode(o);
+                reason.encode(o);
+                evidence.encode(o);
+                from.encode(o);
+                expect_cert_valid.encode(o);
+                client_txn_id.encode(o);
+            }
+            Self::Resolve {
+                binding,
+                branch,
+                artifacts,
+                note,
+                expect_cert_valid,
+                client_txn_id,
+            } => {
+                35u8.encode(o);
+                binding.encode(o);
+                branch.encode(o);
+                artifacts.encode(o);
+                note.encode(o);
+                expect_cert_valid.encode(o);
+                client_txn_id.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1423,6 +1598,32 @@ impl Wire for Request {
             32 => Self::Validators {
                 action: Wire::decode(i)?,
             },
+            33 => Self::Conflicts {
+                binding: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                scope: Wire::decode(i)?,
+                state: Wire::decode(i)?,
+                limit: Wire::decode(i)?,
+            },
+            34 => Self::ConflictOpen {
+                binding: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                a: Wire::decode(i)?,
+                b: Wire::decode(i)?,
+                reason: Wire::decode(i)?,
+                evidence: Wire::decode(i)?,
+                from: Wire::decode(i)?,
+                expect_cert_valid: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+            },
+            35 => Self::Resolve {
+                binding: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                artifacts: Wire::decode(i)?,
+                note: Wire::decode(i)?,
+                expect_cert_valid: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -1583,6 +1784,11 @@ impl Wire for Response {
                 25u8.encode(o);
                 report.encode(o);
             }
+            Self::Conflicts { items, truncated } => {
+                26u8.encode(o);
+                items.encode(o);
+                truncated.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1686,6 +1892,10 @@ impl Wire for Response {
             },
             25 => Self::Validators {
                 report: Wire::decode(i)?,
+            },
+            26 => Self::Conflicts {
+                items: Wire::decode(i)?,
+                truncated: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1899,6 +2109,35 @@ mod tests {
             Request::Validators {
                 action: ValidatorsAction::Check,
             },
+            Request::Conflicts {
+                binding: None,
+                branch: Some("dev".into()),
+                scope: Some("repo".into()),
+                state: ConflictState::Review,
+                limit: 9,
+            },
+            Request::ConflictOpen {
+                binding: Some(Binding::root([1; 16])),
+                branch: None,
+                a: Target::Key("a".into()),
+                b: Some(Target::KeyRev {
+                    key: "b".into(),
+                    rev: RevisionId(3),
+                }),
+                reason: "contradicts".into(),
+                evidence: vec!["a@1".into()],
+                from: Some(ConflictFrom::Review(ArtifactId(2))),
+                expect_cert_valid: true,
+                client_txn_id: Some([3; 16]),
+            },
+            Request::Resolve {
+                binding: None,
+                branch: None,
+                artifacts: vec![ArtifactId(1), ArtifactId(4)],
+                note: "fixed".into(),
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -2090,6 +2329,30 @@ mod tests {
                 validation: Validation::Invalid {
                     reason: InvalidReason::BranchMismatch,
                     diffs: Vec::new(),
+                },
+            },
+            Response::Conflicts {
+                items: vec![ConflictItem {
+                    kind: "conflict".into(),
+                    artifacts: vec![ArtifactId(0), ArtifactId(1)],
+                    sides: vec![ConflictSide {
+                        rev: RevisionId(2),
+                        key: "a".into(),
+                        current: false,
+                    }],
+                    reason: "r".into(),
+                    origin: "agent".into(),
+                    rule: Some(RuleId(1)),
+                    marks: vec!["side superseded".into()],
+                    evidence: vec!["a@2".into()],
+                }],
+                truncated: true,
+            },
+            Response::Validators {
+                report: ValidatorsReport {
+                    retried: 2,
+                    check: vec!["ok".into()],
+                    ..ValidatorsReport::default()
                 },
             },
         ]

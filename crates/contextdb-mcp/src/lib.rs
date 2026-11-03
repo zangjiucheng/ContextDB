@@ -227,6 +227,24 @@ fn tools() -> Value {
               "certify": { "type": "array", "items": { "type": "string" } },
               "client_txn_id": { "type": "string" } },
             "required": ["source"] } },
+        { "name": "ctx_conflicts", "description": "Contradictions on this session's branch. list: open Conflict pairs (marked `side superseded` when a side is no longer the head), open PendingReviews from validators (marked `stale curvec` when the rule's premises moved on), and candidate pairs. open: assert that a and b cannot both hold (b omitted: a alone conflicts with something outside the store); both sides read CONFLICTED until resolved or superseded. from_review converts that review and resolves it in the same commit.",
+          "inputSchema": { "type": "object", "properties": {
+              "list": { "type": "object", "properties": {
+                  "state": { "enum": ["open", "review", "candidates", "all"] },
+                  "scope": { "type": "string" }, "limit": { "type": "integer" } } },
+              "open": { "type": "object", "properties": {
+                  "a": target.clone(), "b": target.clone(),
+                  "reason": { "type": "string" },
+                  "evidence": { "type": "array", "items": { "type": "string" }, "description": "key@rev handles" },
+                  "from_review": { "type": "integer" }, "from_candidate": { "type": "integer" },
+                  "expect_cert_valid": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
+                "required": ["a", "reason"] } } } },
+        { "name": "ctx_resolve", "description": "Resolve Conflict or PendingReview artifacts (ids from ctx_conflicts) on this session's branch, with a note.",
+          "inputSchema": { "type": "object", "properties": {
+              "artifacts": { "type": "array", "items": { "type": "integer" } },
+              "note": { "type": "string" },
+              "expect_cert_valid": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
+            "required": ["artifacts", "note"] } },
     ])
 }
 /// The session a `tools/call` acts for, from the harness's `_meta` (ADR 0010
@@ -279,6 +297,16 @@ fn action_of(v: &Value) -> Result<Action, String> {
         paths,
         command,
     })
+}
+/// `client_txn_id`, always set so OutcomeUnknown can be resolved (ADR 0008
+/// §8.1).
+fn txn(args: &Value) -> Result<Option<[u8; 16]>, String> {
+    match arg(args, "client_txn_id") {
+        Some(t) => unhex(t)
+            .map(Some)
+            .ok_or_else(|| "client_txn_id must be 32 hex digits".into()),
+        None => Ok(Some(random_id())),
+    }
 }
 fn arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
     args.get(name).and_then(Value::as_str)
@@ -560,15 +588,6 @@ impl<B: Backend> Server<B> {
         let binding = match binding {
             Some(b) => b,
             None => Binding::root(self.session()?),
-        };
-        let txn = |args: &Value| -> Result<Option<[u8; 16]>, String> {
-            match arg(args, "client_txn_id") {
-                Some(t) => unhex(t)
-                    .map(Some)
-                    .ok_or_else(|| "client_txn_id must be 32 hex digits".into()),
-                // Always set, so OutcomeUnknown can be resolved (ADR 0008 §8.1).
-                None => Ok(Some(random_id())),
-            }
         };
         let mode = |args: &Value| match arg(args, "mode") {
             Some("advisory") => Mode::Advisory,
@@ -907,8 +926,111 @@ impl<B: Backend> Server<B> {
                     "convergent": report.convergent,
                 }))
             }
+            "ctx_conflicts" => self.conflicts(&binding, args),
+            "ctx_resolve" => {
+                let artifacts = (args.get("artifacts").and_then(Value::as_array))
+                    .ok_or("artifacts required")?
+                    .iter()
+                    .map(|v| {
+                        v.as_u64()
+                            .map(|n| ArtifactId(n as u32))
+                            .ok_or("artifact ids are integers")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let env = self.call(Request::Resolve {
+                    binding: Some(binding.clone()),
+                    branch: None,
+                    artifacts,
+                    note: arg(args, "note").unwrap_or_default().into(),
+                    expect_cert_valid: args
+                        .get("expect_cert_valid")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    client_txn_id: txn(args)?,
+                })?;
+                committed(env)
+            }
             other => Err(format!("unknown tool {other}")),
         }
+    }
+    /// `ctx_conflicts{list}` or `ctx_conflicts{open}` (ADR 0015 §6).
+    fn conflicts(&mut self, binding: &Binding, args: &Value) -> Result<Value, String> {
+        if let Some(o) = args.get("open") {
+            let target = |k: &str| -> Result<Option<Target>, String> {
+                arg(o, k).map(parse_target).transpose()
+            };
+            let from = match (
+                o.get("from_review").and_then(Value::as_u64),
+                o.get("from_candidate").and_then(Value::as_u64),
+            ) {
+                (Some(_), Some(_)) => return Err("from_review or from_candidate, not both".into()),
+                (Some(r), None) => Some(ConflictFrom::Review(ArtifactId(r as u32))),
+                (None, Some(c)) => Some(ConflictFrom::Candidate(c)),
+                (None, None) => None,
+            };
+            let env = self.call(Request::ConflictOpen {
+                binding: Some(binding.clone()),
+                branch: None,
+                a: target("a")?.ok_or("open.a required")?,
+                b: target("b")?,
+                reason: arg(o, "reason").ok_or("open.reason required")?.into(),
+                evidence: (o.get("evidence").and_then(Value::as_array))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                from,
+                expect_cert_valid: o
+                    .get("expect_cert_valid")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                client_txn_id: txn(o)?,
+            })?;
+            let Response::Committed { result } = &env.response else {
+                return Err("unexpected response".into());
+            };
+            return Ok(json!({
+                "epoch": result.epoch.0,
+                "artifacts": result.allocations.new_artifacts.iter().map(|a| a.0).collect::<Vec<_>>(),
+                "status_diff": result.status_diff.iter().map(|r| r.0).collect::<Vec<_>>(),
+            }));
+        }
+        let l = args.get("list").cloned().unwrap_or_else(|| json!({}));
+        let state = match arg(&l, "state").unwrap_or("all") {
+            "open" => ConflictState::Open,
+            "review" => ConflictState::Review,
+            "candidates" => ConflictState::Candidates,
+            "all" => ConflictState::All,
+            other => return Err(format!("unknown state {other}")),
+        };
+        let env = self.call(Request::Conflicts {
+            binding: Some(binding.clone()),
+            branch: None,
+            scope: arg(&l, "scope").map(str::to_owned),
+            state,
+            limit: l.get("limit").and_then(Value::as_u64).unwrap_or(0) as u32,
+        })?;
+        let Response::Conflicts { items, truncated } = env.response else {
+            return Err("unexpected response".into());
+        };
+        Ok(json!({
+            "epoch": env.epoch.0,
+            "truncated": truncated,
+            "items": items.iter().map(|i| json!({
+                "kind": i.kind,
+                "artifacts": i.artifacts.iter().map(|a| a.0).collect::<Vec<_>>(),
+                "sides": i.sides.iter().map(|s| json!({
+                    "handle": format!("{}@{}", s.key, s.rev.0), "current": s.current,
+                })).collect::<Vec<_>>(),
+                "reason": i.reason,
+                "origin": i.origin,
+                "rule": i.rule.map(|r| r.0),
+                "marks": i.marks,
+                "evidence": i.evidence,
+            })).collect::<Vec<_>>(),
+        }))
     }
     /// `key@rev` of the expected head → the logical id (advisory read) and rev.
     fn revise(&mut self, binding: &Binding, head: &str) -> Result<WriteTarget, String> {
