@@ -60,6 +60,7 @@ nav:
       - 0012 P5b symbol anchors: adr/0012-p5b-symbol-anchors.md
       - 0013 P6 branches and transactions: adr/0013-p6-branches-transactions.md
       - 0014 OpenCode harness: adr/0014-opencode-harness.md
+      - 0015 P7 validation and conflicts: adr/0015-p7-validation-conflicts.md
   - Gates:
       - P0: gates/P0.md
       - P1: gates/P1.md
@@ -69,4 +70,5 @@ nav:
       - P5a: gates/P5a.md
       - P5b: gates/P5b.md
       - P6: gates/P6.md
+      - P7: gates/P7.md
   - Changelog: CHANGELOG.md

@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.6.14 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.7.0 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -160,7 +160,7 @@ sem(j) = NotRequired                   若 j 无 Sem incidence
        = Pending                       否则
 ```
 
-`RecordValidation(j, curvec_seen, verdict, validator)` 在 Op 执行时若 `curvec_seen ≠ curvec(j)`（staged 值）返回 `CurvecMoved`（CAS 语义）。便捷 API `validate_revision(r, verdict)` 为 r 的每条带 Sem 的 active 规则各提交一条记录。
+`RecordValidation(j, curvec_seen, verdict, validator)` 在 Op 执行时若 `curvec_seen ≠ curvec(j)`（staged 值）返回 `CurvecMoved`（CAS 语义）。便捷 API `validate_revision(r, verdict)` 为 r 的每条带 Sem 的 active 规则各提交一条记录。P7 起（op_log 格式 4，ADR 0015 §3.1）：`RecordValidation` 增加 `meta: Option<ContentHash>`（元数据 blob，内核不读、不参与 sem）与 `if_absent: bool`；`if_absent=true` 时若该分支已有 `(j, curvec)` 的记录 → `ValidationExists{rule, curvec, verdict}`（CAS 类，在 `CurvecMoved` 之后检查）。worker 恒置 true，admin 置 false（最新者胜）。
 
 **SD11 三层正向不动点（传递认证）。** 共用 L0 的图。
 
@@ -254,6 +254,12 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - **observer 域与 merge**：对 T 中已可见的 logical，merge 不取仅 observer 通道可写的状态（CodeAnchor 的 head / base、AnchorBroken、ObserverWatermark），因此 agent 通道可执行 merge。新可见的 CodeAnchor logical 以 S 的 head / base 作为初始观察，并置 `anchor_unobserved`：期间无论 watermark 如何都读作 `PENDING(ObservationLag)`（**SD14b 扩展**）；T 上提交覆盖该 scope 的 `ObserverWatermark` 时清除。
 - **跨 branch 规则去重（SD6 例外）**：`AddRule` 的 canonical 去重跨 branch 进行，命中不可见的同 canonical 规则时复用其 RuleId、引入当前 branch 可见集合并按 Op 设置本 branch 的 enabled；仍占用 `New(k)` 序号、计入 new_rules、进入本 branch cycle 图（可 `CycleDetected`）；`Rebind` 同理。
 - **session 与 git（D1）**：session 起始时绑定显式给出的 branch，否则绑定与当前 git branch 同名且 open 的 branch，否则 main；整个 session 固定。observer 按其 worktree 当前 git branch 的同名 branch 提交，否则 main。git merge 后由显式 `ctx_merge` / `ctx merge` 认定。agent 可创建、提交与合并（含合并进 main）。
+
+**SD20 Conflict 的形式定义（v1.7.0，P7 G0，回答 O4；完整定义见 ADR 0015 §2）。**
+- revision `a` 与 `b` 在 branch β 上的*矛盾*是输入层断言（SD7）“a 与 b 不能同时成立”，表示为在 β 上同一 batch 中开启的一对 open Conflict artifact（target 分别为 a、b，`payload_hash` 相同）；单边 Conflict（merge 冲突，或与库外事物的矛盾）只有一个 artifact。artifact 按 branch 存储，merge 按 P6 规则携带。
+- gate 同 SD17：`L2(r)` 另需 r 上无 open Conflict。`open_conflict` 是比 L2 更低层的输入事实，否定是分层的，最小模型唯一；L0、L1、sem、support 不受影响。
+- Conflict 指向 revision 而非 logical：supersede a 后 Conflict 留在 a，新 head 不受阻；另一侧 b 在解决前保持 CONFLICTED（`ctx_conflicts` 标注 `side superseded`）。
+- `not A` 从不作为记录存在；矛盾是两条记录之间的关系，只能作为输入断言。规则结论只能是 revision（SD7），任何推导都不能产生 Conflict；矛盾候选与 LLM 判断也从不开启 Conflict（只能写不 gate 的 PendingReview）。agent 与 admin 通道可开启与解决 Conflict（owner 决定 D3）。
 
 ### 2.4 已决策的取舍（2026-10-19 用户确认，见 `docs/adr/0001-semantic-decisions.md`）
 
@@ -400,7 +406,7 @@ commit(batch):
 4. 无前置条件的先读后写编辑（必须 CAS）。
 5. 无 fencing（epoch / token）的租约作为写入互斥。
 6. 丢失任一来源即硬删派生项（必须 OR 计数，失去全部支持时标记而不删除）。
-7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集、证书以及 P4 起的会话事实与遥测（行动、门控决定、drift、基线、增量确认、流标记、会话键；ADR 0010 A8）这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
+7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集、证书以及 P4 起的会话事实与遥测（行动、门控决定、drift、基线、增量确认、流标记、会话键；ADR 0010 A8）以及 P7 起的 handoff 事件（`HandoffBegin` / `HandoffAccept`，ADR 0015 §7）这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
 8. mtime 漂移扫描作为锚点或失效信号。
 9. 可被调用方忽略错误的“否决 hook”（否决必须在提交事务内生效）。
 10. 嵌入 Dolt / prolly tree 作为内核存储。
@@ -645,7 +651,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - Validator adapter trait（core 之外）；worker 池在 writer 之外执行，提交 `RecordValidation(j, curvec_seen, …)`，内核以 `CurvecMoved` CAS 拒绝过期结果，worker 重排队。
 - 任务按 `(rule_id, curvec)` claim 去重（token 栅栏，多槽表），marker-first（崩溃可发现）。
 - ValidationRecord 记录 validator 类型/版本、model、`prompt_sha256`、标签。标签映射（reinforcement/none → Verified；conflict → Rejected；boundary_change/new_rule → 保持 Pending）**只适用于可信 validator**（确定性检查器，或受控 admin 验证；不要求人工执行）。**LLM validator 的 conflict 只写 PendingReview artifact，sem 保持 Pending**；LLM 不得写 Rejected。
-- 矛盾候选生成（P7 只做 lexical 相似度；embedding 候选在 P8）→ Conflict artifact（输入层，SD7）→ L2 gate；`ctx_conflicts` / `ctx_resolve`。
+- 矛盾候选生成（P7 只做 lexical 相似度；embedding 候选在 P8）→ 候选列表（可配置的 LLM validator 只写不 gate 的 PendingReview）→ agent / admin 确认后开启 Conflict artifact（输入层，SD7、SD20）→ L2 gate；`ctx_conflicts` / `ctx_resolve`。v1.7.0（ADR 0015）：LLM validator 从不写 ValidationRecord，任何标签都只写 PendingReview 建议（Verify / Reject / Investigate），由 admin `ctx validate --from-review` 在独立证据下转换（§4.4）；`claude -p` 适配器在沙箱中运行（无工具、无 MCP、不加载设置与 hook）。
 - Handoff：`ctx_handoff_begin/accept`（claim-once CAS + 附带 certificate 校验）。
 - `ctx_changes(since_epoch)` 与订阅流。
 
@@ -737,10 +743,10 @@ tx.assert_base(rev)?; tx.retract_base(rev)?;
 tx.add_rule(conclusion, &[(premise, EdgeKind::Cur), ...], enabled)?;
 tx.set_rule_enabled(rule, false)?;
 tx.rebind(rule, from, to)?;
-tx.record_validation(rule, curvec_seen, verdict, validator)?;   // CAS on curvec
+tx.record_validation(rule, curvec_seen, verdict, validator, meta, if_absent)?;   // CAS on curvec (meta, if_absent: P7)
 tx.set_policy(policy_doc)?;                       // admin channel only
 tx.set_metadata(logical, tags, dirs)?;             // 不影响派生状态
-tx.open_artifact(ty, target, payload_hash)?; tx.resolve_artifact(id)?;
+tx.open_artifact(ty, target, payload_hash)?; tx.resolve_artifact(id, note)?;   // note: P7
 tx.observer_watermark(scope, expected, position)?; // observer channel only
 let committed: CommitResult = tx.commit()?;        // epoch, diff, stats
 
@@ -781,6 +787,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 11. **P0 EventLog v0**：每行规范 JSON 为 `{"version":0,"batch_hex":"..."}`；batch_hex 是 model 的规范小端二进制编码的十六进制。规范键顺序固定，支持空行，未知 version 拒绝。二进制按声明字段顺序编码，枚举 tag、集合长度与字节边界详见 `docs/EVENTLOG.md`。这是 P0 的测试 trace 格式，P2 durable op_log 另行版本化。P0 仅接受 MAIN branch，其他 branch 返回 UnknownRef。
 12. **Read set（P6）**：`ExpectHeads{entries, source: Client|Certificate(cert_id)}` 在 batch 末尾检查（A5 `PolicyViolation` 之后），逐项与**该 batch 之前**本 branch 已提交的 head 比较，不等 → `ReadSetConflict{logical, read, now}`；同一 logical 多个不同值或 `New` 引用 → `InvalidReadSet`；`source: Certificate` 只能由 daemon actor 追加（客户端提交 → `ChannelRestricted`）。`ctx_commit(expect_cert_valid=true)`：actor 在同组前序 batch 之后、本 batch 之前按完整证书判定校验（非 Valid/ValidRecertified 即拒绝；ValidRecertified 用新 vector），再追加 `ExpectHeads{Certificate}`；幂等以客户端 hash（客户端 ops + flag + batch 的 branch、channel、principal；不含 cert_id 与追加项，证书被 `ctx_check` 重新签发后重试仍返回原结果）判定并持久化于 op_log 帧；无会话证书时 `expect_cert_valid` 以 `Empty` 判定拒绝。
 13. **Branch Op（P6）**：`CreateBranch`、`ArchiveBranch` 须独占 batch，`Merge` 只能与 `ExpectHeads` 同 batch，否则 `SoleOpRequired`；`Merge` 不分配新 revision，A5 对其为空检查；merge 结果以 `CommitResult` 的版本化尾部返回（op_log 格式 3，ADR 0013 §8）。
+14. **验证元数据与格式 4（P7，ADR 0015 §3、§9）**：`RecordValidation` 增加 `meta`、`if_absent`，`ResolveArtifact` 增加 `note: Option<ContentHash>`。新字段都未设置时仍按原 tag（8、13）编码，用到新字段才用新 tag 18 `RecordValidation4`、19 `ResolveArtifact4`，因此格式 3 的 batch 在格式 4 下字节相同、`batch_hash` 不变。`MissingBlob` 扩展到 `meta` 与 `note`（随 batch 经 `Commit.blobs` 提交）；`OpenArtifact.payload_hash` 仍不检查。merge 对 ValidationRecord 只按 verdict 分类，`validator` 或 `meta` 不同视为收敛、保留目标侧记录。daemon 层（协议 5）：`RecordValidation` 只接受 Admin 通道与 validator worker 的进程内身份，agent 的 `Commit` / `WhatIf` / `ctx_commit` 携带它 → `ChannelRestricted`；内核通道规则不变。
 
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
@@ -798,6 +805,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `InvalidPolicy` | §6.1 输入契约 8 | 同名 |
 | `MissingBlob{content}` | P2 起 payload 未先写入 store | 同名 |
 | `CurvecMoved{rule, seen, current}` | RecordValidation CAS（SD10） | 同名 |
+| `ValidationExists{rule, curvec, verdict}` | `if_absent` 的 RecordValidation 遇到已有记录（P7，SD10） | 同名 |
+| `HandoffTaken{by}` / `HandoffNotAddressed` / `BranchMismatch` | handoff 已被他人接受；`to_agent` 不符；接受方不在 handoff 的 branch（P7，daemon 错误，ADR 0015 §7） | 同名 |
 | `UnknownRef` | 引用不存在的 id / handle | `InvalidArgument` |
 | `InvalidDep` | deps 引用非本会话证书中 required 条目的 handle，且不是显式 `logical@rev`（P3；daemon 在构造 batch 之前检查） | 同名 |
 | `NotCertified{logical, summary}` | `CertifiedCurrent` 读取的目标不是 CERTIFIED head（P3，读错误） | 同名 |
@@ -826,7 +835,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 **P6 检查顺序**（v1.6.8，ADR 0013 §9）：幂等 → store 可编码性 → batch 级 `UnknownBranch → BranchArchived → SoleOpRequired` → 各 Op（ExpectHeads：`UnknownRef → ChannelRestricted → InvalidReadSet`；CreateBranch：`InvalidBranchName → BranchExists → CapacityExceeded{Branch}`；Merge：`InvalidMerge → MergeConflict{Policy} → CycleDetected → UnknownRef(certify)`）→ batch 末 `PolicyViolation → ReadSetConflict → MergeNotCertified`。
 
 **单个 Op 的检查顺序**（规范性；oracle 与 front-end 相同，PROP1 / P0 G3 的错误等价按此判定）：
-`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。P2 起 store 在所有 Op 检查之前做 batch 级检查：先幂等（`TxnIdReuse` 或返回原结果），再编码容量（`CapacityExceeded{kind: Encoding}`）。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
+`UnknownRef → ChannelRestricted → KindRestricted → ImmutableKind → InvalidKey → InvalidPolicy → MissingBlob → InvalidMetadata → LogicalMismatch → InvalidRebind → InvalidRule`（按 SD6 列出顺序：EmptyPremises、SelfPremise、ConflictingVersions、TooManyPremises、ForbiddenConclusion、ForbiddenPremise；规范化先于 kind 准入）`→ DuplicateRule → NoSemIncidence → CAS 类（HeadConflict / CurvecMoved / ValidationExists（P7，紧接 CurvecMoved）/ WatermarkConflict / LogicalExists / ArtifactNotOpen）→ CycleDetected → CapacityExceeded`；`PolicyViolation`、`ReadSetConflict` 在 batch 末尾检查。P2 起 store 在所有 Op 检查之前做 batch 级检查：先幂等（`TxnIdReuse` 或返回原结果），再编码容量（`CapacityExceeded{kind: Encoding}`）。一个 batch 返回第一个失败 Op 的第一个失败检查。A5 按 RevisionId 升序扫描，同 revision 同时违反两项时 BaseNotAllowed 优先。
 
 ### 6.3 MCP 工具（`ctx-mcp`）
 
@@ -838,13 +847,16 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ctx_supersede` | `(logical, body, expected_head, adopt_as_base, carry_rules: copy\|none, reason)`；`copy` 只把旧 head **自己的**支撑规则（结论为旧 head 的 enabled 规则）复制到新 revision，**从不**改写依赖旧 revision 的规则（§3.5 #2） | P3 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | SD15；impact 支持 hypothetical batch | P3 |
 | `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径）；P4 起 `context_update` 在 MCP 中只是不消费的 peek，由 UserPromptSubmit 确认（ADR 0010 A6） |
-| `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker |
+| `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker | P7（ADR 0015）：增加 `from_review`，返回还可能是 `ValidationExists`；agent 通道携带 RecordValidation 的提交一律 `ChannelRestricted`。
 | `ctx_txn_status` | `(client_txn_id)` → `Committed{epoch, result} \| NotCommitted`；所有写工具都接受可选 `client_txn_id` | P3 |
 | `ctx_commit` | `(ops, expect_cert_valid?, client_txn_id?)`：多 head 原子；expect_cert_valid 见 §6.1 契约 12 | P6 |
 | `ctx_branch` | `(create\|list\|archive, name?)` | P6 |
 | `ctx_what_if` | `(ops)` → diff；在 standby replica 上以 undo journal 执行后回滚，不写 op_log、不分配持久 ID、不推进 epoch | P6 |
 | `ctx_merge` | `(source, require_certified = true, certify?)` → 类型化 merge 结果 | P6 |
-| `ctx_conflicts` / `ctx_resolve` / `ctx_handoff_begin` / `ctx_handoff_accept` / `ctx_changes` | | P7 |
+| `ctx_conflicts` | `list{scope?, state?: open\|review\|candidates\|all, limit}` → open Conflict（标注 `side superseded`）、open PendingReview（标注 `stale curvec`）、候选对；`open{a, b?, reason, from?: candidate\|review}` → 同一 batch 开启 Conflict 对（from=review 时同时 resolve 该 review）；均作用于调用方 branch | P7 |
+| `ctx_resolve` | `(artifacts, note)`：只接受 Conflict 与 PendingReview；note 作为 blob 随 batch 提交 | P7 |
+| `ctx_handoff_begin` / `ctx_handoff_accept` | begin：证书须为 Valid / ValidRecertified，写入 session log 后回复；accept：claim-once（durable 后回复，`HandoffTaken` / `HandoffNotAddressed` / `BranchMismatch`），返回证书校验结果与摘要，把读集复制进接受方 ledger（已读过的 logical 跳过） | P7 |
+| `ctx_changes` | `(since_epoch, scope?, branch?, max_items, wait_ms? ≤ 30 s)` → 持久化 `diff_log` 中逐 epoch 的 status_diff；`Truncated{earliest}` 仅在投影重建或无法追上时出现 | P7 |
 
 所有工具返回逐维度状态，汇总遵守 SD13。
 
@@ -945,8 +957,9 @@ artifacts(id, rev_id, branch, type, state /*open|resolved*/, info_hash, payload,
 sessions(id, parent_session, harness, repo, branch, head_sha, principal, started_epoch)
 read_ledger(session_id, agent_id NULL, logical_id, rev_id, layer, epoch, required)  -- append-only；agent_id 自 P4（ADR 0010 A9）
 certificates(id, session_id, vector_json, issued_epoch, code_commit, watermarks_json, strict_no_aba)
-jobs(claim_key, token, state, pid, started)
-handoffs(id, owner, state, cert_id, summary)
+jobs(claim_key, branch, rule, curvec, generation, token, state, lease_until, attempts, last_error, outcome_meta)  -- <data>/jobs.sqlite（P7，ADR 0015 §4.4；claim_key = H(branch, rule, curvec)）
+handoffs(id, owner, state, cert_id, summary)  -- P7 起为 session log 中 HandoffBegin / HandoffAccept 事件的投影
+candidates(id, branch, a_rev, b_rev, score, epoch, state)  -- <data>/candidates.sqlite（P7）
 -- client side outbox/<stream>.{log,seq,ack,state}: self-verifying records (seq, agent_id, event); packet_id = (stream, seq)（ADR 0010 §5）
 ```
 
@@ -1061,7 +1074,16 @@ handoffs(id, owner, state, cert_id, summary)
 | T50 | P7 | LLM verdict=conflict 只产生 PendingReview，sem 保持 Pending |
 | T51 | P6 | open Conflict 阻塞 CERTIFIED 但不改变 S / L1（v1.6.8 自 P7 移入） |
 | T52 | P7 | handoff 只能被接受一次 |
-| T53 | P7 | 同一 (rule, curvec) 并发任务只执行一次 |
+| T53 | P7 | 同一 (branch, rule, curvec) 并发任务只提交一次；各步骤崩溃与租约过期后恰有一条记录或一个 PendingReview |
+| T76 | P7 | `ctx_changes` 分页拼接等于重放的逐 epoch status_diff；只在投影重建后返回 `Truncated` |
+| T77 | P7 | op_log 格式 3 → 4 迁移：batch 字节与 digest、派生状态不变；迁移前签发的证书读成 `LogMismatch`；幂等记录仍有效 |
+| T78 | P7 | SD20：Conflict 对、单侧 supersede（`side superseded`）、按 branch；`ctx_conflicts open` 的拒绝情形 |
+| T79 | P7 | handoff 复制读集（已读 logical 跳过），交出的读集变化时接受方恰好变为 Invalid；`to_agent` 与 branch 拒绝 |
+| T80 | P7 | agent 的 Commit / WhatIf / MCP `ctx_commit` / Raw 携带 RecordValidation → `ChannelRestricted` |
+| T81 | P7 | worker 认领后 admin 提交的 Rejected 不会被覆盖（`ValidationExists`） |
+| T82 | P7 | `claude -p` 沙箱：确切 argv 与环境、注入用例、无 hook 运行、无 ContextDB 会话 |
+| T83 | P7 | handoff 认领与 flush 之间崩溃，两个 accept 不可能都成功 |
+| T84 | P7 | 同一规则在两个 branch 待验证 → 两个任务、两条记录；候选从不配对 branch 上不可见的 revision；validator review 按 curvec 去重 |
 | T54 | P8 | 检索结果中 STALE 项被过滤（certified）或显式标注（advisory） |
 | T55 | P8 | packing 截断不改变状态标签 |
 | T56 | P8 | 索引重建前后检索结果的状态一致 |
@@ -1188,7 +1210,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | MCP 调用无法关联到 session / agent | 按 harness 的 tool-call id（`_meta`）绑定（Codex 直接，Claude Code 经 PreToolUse claim）；无 id 时用 MCP 自身 session 并在报告中计数 `Unclaimed`，从不按内容猜测（ADR 0010 A7） | P4 |
 | Bash 副作用绕过 PreToolUse 的路径解析 | 只能经 PostToolUse git diff 与 drift 事后检测；文档化 | P4 |
 | retry escape（知情覆盖） | CAS 只防 lost update；文档化限制（T32） | P3 |
-| LLM validator 被诱导误判 | 永不写 Rejected；handle allowlist；去重与上限；可审计（prompt_sha256） | P7 |
+| LLM validator 被诱导误判 | 从不写 ValidationRecord（只写不 gate 的 PendingReview）；handle allowlist；`claude -p` 沙箱（无工具 / MCP / 设置 / hook，nonce 包裹正文，进程组超时终止；用户 CLAUDE.md、记忆与托管设置可能仍加载，除非隔离配置目录可用——如实报告）；`Command` 的 `trusted` 由数据目录写入者自行声明；去重与上限；可审计（prompt_sha256、ValidationMeta） | P7（ADR 0015 §4.1–§4.3） |
 | 篡改 op log | hash 链 + doctor 校验；可选签名 | P2 / P9 |
 | 敏感内容需删除 | blob crypto-shred；`content_hash` 确认攻击边界文档化，必要时 keyed hash；P9 前文档化“不支持 erasure” | P9 |
 | 检索索引滞后绕过认证 | status 是排序前硬过滤；索引只用于候选发现 | P8 |
@@ -1234,7 +1256,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 - **O1** P11 递归：动态 SCC 下计数器重分类的正确算法与成本。
 - **O2** ValidationRecord 按规则键控导致多条 Sem 规则需多次验证；是否改为 per-revision union 向量（P7 实测后决定）。
 - **O3**（v1.3 已解决）Sem premise 已 supersede 且对新 head h 验证通过时要求 `L1(h)` / `L2(h)`；成环问题由 SD5 的 `V_l` 边解决。
-- **O4** Conflict 的形式定义（`A` 与 `not A`）：按 stratified negation 层接入，P7 G0 前写成 SD。
+- **O4**（v1.7.0 已解决）Conflict 的形式定义：见 SD20（ADR 0015 §2）。
 - **O5** branch 的长期实现形式（COW overlay vs `Product<epoch, branch>` 时间 vs 有界 ATMS label）；语义由 SD19 固定，实现可替换。
 - **O6** certificate closure 在 hub 图上可能很大：witness-only closure 与增量证书缓存。
 - **O7** Evidence identity：content hash + source 去重，防止重复摄入抬高 support。
@@ -1305,6 +1327,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.7.0 | 2026-11-02 | P7 G0（ADR 0015 r0.3，独立复核 + 两轮闭环；owner 决定 D1 真实评测用本机 `claude -p`、D2 op_log 格式 4 只存元数据哈希、D3 agent 与 admin 可开 gate 生效的 Conflict）：SD20 Conflict 形式定义（O4 解决）；SD10 增加 `meta`、`if_absent` 与 `ValidationExists`；LLM validator 从不写 ValidationRecord，只写 PendingReview；agent 通道提交 RecordValidation 一律 `ChannelRestricted`；§3.5 #7 session log 增加 handoff 事件；§6.1 契约 14 与格式 4（新字段未设置时保持原 tag）；§6.2 新错误；§6.3 P7 工具；§7 jobs / handoffs / candidates；§8.1 T76–T84；§10 LLM 威胁行 |
 | 1.6.12 | 2026-11-02 | P4 G6 dogfood 结束（owner 决定）：以 11.8 天代替 ≥ 2 周结束——10-24 之后再无 certified 读与写入，延长只增加 Empty 警告（[审计](docs/gates/p4-g6-audit.md)）。依赖覆盖率 69.6% 通过（样本小）；false-deny 30.6%（shell 也 enforce）；`shell_mode = "warn"` 只对文件编辑 enforce 时为 0.11%，可推荐。默认仍为 warn。标注由规则完成，经两轮盲审核对（独立样本 95.2% 一致，分歧方向只会低估 false-deny）。P4 通过；按 A11 等待它的 P5a、P5b、P6 Gate 随之可以结束。语义不变 |
 | 1.6.11 | 2026-10-28 | 外部仓库 dogfood 的可用性修订：只有 `Ref` 的规则被接受且永不 active（SD3、SD6，T09w），agent 可以只记录引用；`Ref` 可指向 Summary（A2）；A5 只认有 premise 的规则。旧 op_log 不含此类规则，重放结果不变；含此类规则的 op_log 不能被旧二进制打开 |
 | 1.6.10 | 2026-10-26 | P5b 实现独立复核（ADR 0012 r0.9）：normaliser walk 4——任何子节点都未覆盖的源文本计入哈希（Python 字符串转义之间的文字、f-string 格式说明、Rust raw string 定界符、macro 重复分隔符），同文件上下文项的解析错误视为 symbol 的错误，Python 条件块中的语句各自成项，Go `for` 子句保留分号，分组 `var` 可提取；`CTXPOS02` 头部与版本检查只看生效锚点（Missing/Broken 锚点不再使 migrate 后的扫描永久 unavailable）；裸类型参数 self 类型保留名字（key 冻结，修订 ADR 而非代码）；同目录 rebind 搜索从未实现，ADR 据实修订。symbol 锚点需 `ctx anchors migrate`；G6 以 walk 4 重新评分 |
