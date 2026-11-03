@@ -111,3 +111,43 @@ fn conflicts_open_list_and_resolve_through_mcp() {
     )
     .unwrap();
 }
+
+/// Milestone 7: `ctx_handoff_begin` on one MCP session and
+/// `ctx_handoff_accept` (list, then accept) on another; a second accept is
+/// refused.
+#[test]
+fn handoff_through_mcp() {
+    let s = service();
+    let mut owner = Server::new(InProcess(s.clone()), "claude", "repo", "h");
+    tool(
+        &mut owner,
+        "ctx_record",
+        json!({ "kind": "decision", "body": "use postgres", "key": "db", "create_only": true, "adopt_as_base": true }),
+    )
+    .unwrap();
+    tool(
+        &mut owner,
+        "ctx_read",
+        json!({ "target": "db", "mode": "certified" }),
+    )
+    .unwrap();
+    let begun = tool(
+        &mut owner,
+        "ctx_handoff_begin",
+        json!({ "summary": "db chosen; write the schema" }),
+    )
+    .unwrap();
+    let id = begun["id"].as_str().unwrap().to_owned();
+    assert_eq!(id.len(), 32);
+    let mut next = Server::new(InProcess(s.clone()), "claude", "repo", "h");
+    let listed = tool(&mut next, "ctx_handoff_accept", json!({})).unwrap();
+    assert_eq!(listed["handoffs"][0]["id"], id.as_str());
+    assert_eq!(listed["handoffs"][0]["reads"], 1);
+    let accepted = tool(&mut next, "ctx_handoff_accept", json!({ "id": id })).unwrap();
+    assert_eq!(accepted["validation"], "Valid");
+    assert_eq!(accepted["summary"], "db chosen; write the schema");
+    assert_eq!(accepted["reads_copied"], 1);
+    let mut third = Server::new(InProcess(s), "claude", "repo", "h");
+    let taken = tool(&mut third, "ctx_handoff_accept", json!({ "id": id })).unwrap_err();
+    assert!(taken.to_string().contains("HandoffTaken"), "{taken}");
+}

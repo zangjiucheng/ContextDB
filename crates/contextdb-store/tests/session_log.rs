@@ -68,10 +68,13 @@ fn p5a_legacy_tail_rolls_before_new_event_and_old_reader_refuses_without_repair(
         log::parse_header_with(&log::SESSION_LOG, &disk.read(&segments[1]).unwrap())
             .unwrap()
             .format,
-        2
+        contextdb_store::session::SESSION_FORMAT
     );
     let old = log::scan_with::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, 1).unwrap();
-    assert_eq!(old.newer_format, Some(2));
+    assert_eq!(
+        old.newer_format,
+        Some(contextdb_store::session::SESSION_FORMAT)
+    );
     assert!(old.torn_tail.is_none());
     assert!(old.empty_tail_segment.is_none());
     let before = disk.read(&segments[1]).unwrap();
@@ -367,4 +370,87 @@ fn legacy_header_only_rollover_is_recovered_before_format_upgrade() {
             }
         );
     }
+}
+
+fn cert() -> Certificate {
+    Certificate {
+        cert_id: [4; 32],
+        session_id: [7; 16],
+        principal: PrincipalId(0),
+        branch: MAIN,
+        issued_epoch: Epoch(0),
+        log_checksum_at_issue: [0; 32],
+        code_commit: String::new(),
+        watermarks: Vec::new(),
+        entries: Vec::new(),
+        vector: Vec::new(),
+        strict_no_aba: false,
+    }
+}
+/// P7 (ADR 0015 §7): handoff events round-trip in format 3; a format-2
+/// tail rolls to a new segment before them, a format-2 reader refuses the
+/// log, and a handoff event inside a format-2 segment does not decode.
+#[test]
+fn p7_handoff_events_need_format_3() {
+    use contextdb_store::log::{self, GroupPos, Record};
+    use contextdb_store::session::SessionRecord;
+    let disk = SimDisk::new();
+    let dir = Path::new(DIR).join("sessions");
+    disk.create_dir_all(&dir).unwrap();
+    let row = SessionRecord {
+        event: read(1),
+        prev: log::GENESIS,
+        group: GroupPos {
+            seq: 1,
+            idx: 0,
+            count: 1,
+        },
+    };
+    let (frame, _) = log::frame_with(&log::SESSION_LOG, &row.encode());
+    let mut bytes = log::segment_header_with(&log::SESSION_LOG, 1, log::GENESIS, 2);
+    bytes.extend(frame);
+    let first = dir.join(log::segment_name(Epoch(1)));
+    disk.write_new(&first, &bytes).unwrap();
+    disk.sync(&first).unwrap();
+    disk.sync_dir(&dir).unwrap();
+    let begin = SessionEvent::HandoffBegin {
+        id: [9; 16],
+        session_id: [7; 16],
+        agent: Some("a".into()),
+        branch: MAIN,
+        cert: Box::new(cert()),
+        summary: "half done".into(),
+        to_agent: None,
+        epoch: Epoch(3),
+    };
+    let accept = SessionEvent::HandoffAccept {
+        id: [9; 16],
+        session_id: [8; 16],
+        agent: None,
+        epoch: Epoch(4),
+    };
+    let (mut opened, events) = open(&disk, usize::MAX);
+    assert_eq!(events, vec![read(1)]);
+    opened
+        .append_group(&[begin.clone(), accept.clone()])
+        .unwrap();
+    drop(opened);
+    assert_eq!(disk.read(&first).unwrap(), bytes, "format-2 segment kept");
+    let (_, events) = open(&disk, usize::MAX);
+    assert_eq!(events, vec![read(1), begin.clone(), accept]);
+    let old =
+        log::scan_with_formats::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, 1, 2).unwrap();
+    assert_eq!(old.newer_format, Some(3));
+    // A handoff event framed in a format-2 segment is refused.
+    let row = SessionRecord {
+        event: begin,
+        prev: log::GENESIS,
+        group: GroupPos {
+            seq: 1,
+            idx: 0,
+            count: 1,
+        },
+    };
+    assert!(SessionRecord::decode(&row.encode(), 2).is_err());
+    assert!(SessionRecord::decode(&row.encode(), 3).is_ok());
 }

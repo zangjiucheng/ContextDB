@@ -149,6 +149,8 @@ pub struct Service<D: Durability> {
     pub validators: std::sync::OnceLock<Arc<crate::validators::Scheduler<D>>>,
     /// The recall and candidate indexer.
     indexer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Handoffs (P7, ADR 0015 §7), a projection of the session log.
+    handoffs: Mutex<Handoffs>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -422,6 +424,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             candidates,
             stop,
             indexer_thread: Mutex::new(Some(indexer_thread)),
+            handoffs: Mutex::new(Handoffs::default()),
             validators: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
@@ -471,8 +474,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         .map(|(_, s)| s.clone())
                 })
             };
+        let mut handoffs = self.handoffs.lock().expect("handoffs");
         for e in events {
+            handoffs.replay(&e);
             match e {
+                SessionEvent::HandoffBegin { .. } | SessionEvent::HandoffAccept { .. } => {}
                 SessionEvent::Start {
                     session_id,
                     principal,
@@ -933,6 +939,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     strict,
                     &snap,
                 ),
+                Err(r) => r,
+            },
+            Request::HandoffBegin {
+                binding,
+                summary,
+                to_agent,
+            } => match self.bind(id, &binding, &snap) {
+                Ok(b) => self.handoff_begin(b, summary, to_agent, &snap),
+                Err(r) => r,
+            },
+            Request::HandoffAccept { binding, id: h } => match self.bind(id, &binding, &snap) {
+                Ok(b) => self.handoff_accept(b, h, &snap),
                 Err(r) => r,
             },
             Request::Diff { from, to } => {
@@ -3176,6 +3194,8 @@ impl Pending {
                             | SessionEvent::SessionCert { .. }
                             | SessionEvent::LogBroken { .. }
                             | SessionEvent::End { .. }
+                            | SessionEvent::HandoffBegin { .. }
+                            | SessionEvent::HandoffAccept { .. }
                     )
                 });
                 self.events.extend(e);
@@ -3192,3 +3212,4 @@ const DRAIN_MAX: usize = 4_096;
 const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
 
 include!("anchor_checks.rs");
+include!("handoff.rs");

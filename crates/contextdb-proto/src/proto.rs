@@ -389,6 +389,30 @@ pub enum Request {
         expect_cert_valid: bool,
         client_txn_id: Option<[u8; 16]>,
     },
+    /// `ctx_handoff_begin` (ADR 0015 §7): hands the caller's certified
+    /// state to another session; `to_agent` limits who may accept.
+    HandoffBegin {
+        binding: Binding,
+        summary: String,
+        to_agent: Option<String>,
+    },
+    /// `ctx_handoff_accept`: claims a handoff once; without an id, lists
+    /// the open handoffs on the caller's branch the caller may accept.
+    HandoffAccept {
+        binding: Binding,
+        id: Option<[u8; 16]>,
+    },
+}
+/// One open handoff, as `ctx_handoff_accept` without an id lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffInfo {
+    pub id: [u8; 16],
+    pub owner: SessionId,
+    pub owner_agent: Option<String>,
+    pub to_agent: Option<String>,
+    pub summary: String,
+    pub epoch: Epoch,
+    pub reads: u32,
 }
 /// Which items `ctx_conflicts list` returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -765,6 +789,27 @@ pub enum Response {
     Validators {
         report: ValidatorsReport,
     },
+    /// `ctx_handoff_begin`: the handoff id and the certificate it carries.
+    HandoffBegun {
+        id: [u8; 16],
+        cert_id: ContentHash,
+    },
+    /// `ctx_handoff_accept`: the claim, the handoff certificate's verdict
+    /// now (with the changed reads), the summary, and how many reads were
+    /// copied into the acceptor's ledger (and skipped as already read).
+    HandoffAccepted {
+        id: [u8; 16],
+        owner: SessionId,
+        owner_agent: Option<String>,
+        summary: String,
+        validation: Validation,
+        copied: u32,
+        skipped: u32,
+    },
+    /// `ctx_handoff_accept` without an id.
+    Handoffs {
+        items: Vec<HandoffInfo>,
+    },
     Conflicts {
         items: Vec<ConflictItem>,
         /// More items than `limit` matched.
@@ -795,6 +840,15 @@ wire_struct!(JobInfo {
 });
 wire_struct!(Counter { name, value });
 wire_struct!(ConflictSide { rev, key, current });
+wire_struct!(HandoffInfo {
+    id,
+    owner,
+    owner_agent,
+    to_agent,
+    summary,
+    epoch,
+    reads
+});
 wire_struct!(ConflictItem {
     kind,
     artifacts,
@@ -1422,6 +1476,21 @@ impl Wire for Request {
                 expect_cert_valid.encode(o);
                 client_txn_id.encode(o);
             }
+            Self::HandoffBegin {
+                binding,
+                summary,
+                to_agent,
+            } => {
+                36u8.encode(o);
+                binding.encode(o);
+                summary.encode(o);
+                to_agent.encode(o);
+            }
+            Self::HandoffAccept { binding, id } => {
+                37u8.encode(o);
+                binding.encode(o);
+                id.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1627,6 +1696,15 @@ impl Wire for Request {
                 expect_cert_valid: Wire::decode(i)?,
                 client_txn_id: Wire::decode(i)?,
             },
+            36 => Self::HandoffBegin {
+                binding: Wire::decode(i)?,
+                summary: Wire::decode(i)?,
+                to_agent: Wire::decode(i)?,
+            },
+            37 => Self::HandoffAccept {
+                binding: Wire::decode(i)?,
+                id: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -1792,6 +1870,33 @@ impl Wire for Response {
                 items.encode(o);
                 truncated.encode(o);
             }
+            Self::HandoffBegun { id, cert_id } => {
+                27u8.encode(o);
+                id.encode(o);
+                cert_id.encode(o);
+            }
+            Self::HandoffAccepted {
+                id,
+                owner,
+                owner_agent,
+                summary,
+                validation,
+                copied,
+                skipped,
+            } => {
+                28u8.encode(o);
+                id.encode(o);
+                owner.encode(o);
+                owner_agent.encode(o);
+                summary.encode(o);
+                validation.encode(o);
+                copied.encode(o);
+                skipped.encode(o);
+            }
+            Self::Handoffs { items } => {
+                29u8.encode(o);
+                items.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1899,6 +2004,22 @@ impl Wire for Response {
             26 => Self::Conflicts {
                 items: Wire::decode(i)?,
                 truncated: Wire::decode(i)?,
+            },
+            27 => Self::HandoffBegun {
+                id: Wire::decode(i)?,
+                cert_id: Wire::decode(i)?,
+            },
+            28 => Self::HandoffAccepted {
+                id: Wire::decode(i)?,
+                owner: Wire::decode(i)?,
+                owner_agent: Wire::decode(i)?,
+                summary: Wire::decode(i)?,
+                validation: Wire::decode(i)?,
+                copied: Wire::decode(i)?,
+                skipped: Wire::decode(i)?,
+            },
+            29 => Self::Handoffs {
+                items: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2141,6 +2262,19 @@ mod tests {
                 expect_cert_valid: false,
                 client_txn_id: None,
             },
+            Request::HandoffBegin {
+                binding: Binding::root([1; 16]),
+                summary: "half done".into(),
+                to_agent: Some("reviewer".into()),
+            },
+            Request::HandoffAccept {
+                binding: Binding::root([2; 16]),
+                id: Some([5; 16]),
+            },
+            Request::HandoffAccept {
+                binding: Binding::root([2; 16]),
+                id: None,
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -2351,6 +2485,30 @@ mod tests {
                     candidate: Some(4),
                 }],
                 truncated: true,
+            },
+            Response::HandoffBegun {
+                id: [5; 16],
+                cert_id: [6; 32],
+            },
+            Response::HandoffAccepted {
+                id: [5; 16],
+                owner: [1; 16],
+                owner_agent: Some("a".into()),
+                summary: "s".into(),
+                validation: Validation::Valid,
+                copied: 3,
+                skipped: 1,
+            },
+            Response::Handoffs {
+                items: vec![HandoffInfo {
+                    id: [5; 16],
+                    owner: [1; 16],
+                    owner_agent: None,
+                    to_agent: Some("b".into()),
+                    summary: "s".into(),
+                    epoch: Epoch(4),
+                    reads: 2,
+                }],
             },
             Response::Validators {
                 report: ValidatorsReport {

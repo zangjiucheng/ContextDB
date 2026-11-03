@@ -624,6 +624,23 @@ becomes a projection of those events (§12).
 A handoff is not a lock. Its owner may keep working, and expiry is not
 modelled.
 
+**Implementation notes (milestone 7).**
+- **The event carries the certificate.** `HandoffBegin` holds the whole
+  certificate, not only `cert_id`: the owner's session may end before the
+  accept, and its certificates are not kept after that.
+- **Session log format 3** for the two events. The first new event rolls
+  a fresh segment; a format-2 build refuses the log.
+- **Empty is refused.** A session with no required read gets an `Empty`
+  certificate, which is neither Valid nor ValidRecertified.
+- **Listing.** `ctx_handoff_accept` without an id lists the open handoffs
+  on the caller's branch that it may accept (unaddressed, or addressed to
+  its agent), so the acceptor can find the id.
+- **Skipped reads** are the logicals in the acceptor's checked view (its
+  own, the root's, and its session's other agents' reads).
+- **Retries.** A retry by the winner returns the same verdict computed
+  now; the copied and skipped counts are kept in memory and read 0 after a
+  restart.
+
 ## 8. `ctx_changes`
 
 - **Source (M4).** It serves the projection's durable `diff_log(branch,

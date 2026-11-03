@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **P7 milestone 7: handoff between sessions** (ADR 0015 §7).
+  - New MCP tools `ctx_handoff_begin{summary, to_agent?}` and `ctx_handoff_accept{id?}`.
+  - **Begin** issues the caller's session certificate as `ctx_check` would and refuses unless it is Valid or ValidRecertified (an empty read set is refused too). It replies with the handoff id once the `HandoffBegin` event is durable. The summary is at most 8 KiB.
+  - **Accept** claims a handoff once, under one lock, and replies only after the `HandoffAccept` event is durable. Another accept gets `HandoffTaken`, while the winner's retry gets its own claim back. `to_agent` must match the acceptor's agent (`HandoffNotAddressed`), and the acceptor's session must be on the handoff's branch (`BranchMismatch`). Without an id, accept lists the open handoffs the caller may accept.
+  - The accept copies the certificate's reads into the acceptor's ledger at their original revisions, skipping logicals it already reads. The acceptor's next `ctx_check` is then Invalid exactly when a handed-over read changed (T79). The reply carries the certificate's verdict now, the summary, and the copied and skipped counts.
+  - If a handoff event cannot be made durable, `ctxd` refuses every handoff operation until it restarts. On restart the first durable accept decides, so two accepts never both succeed, even across a crash (T52, T83).
+  - A handoff is not a lock and does not expire.
+  - **Session log format 3:** it adds the two handoff events. The first new event rolls a fresh segment, and a build that knows only format 2 refuses to open the log, so install all binaries together.
+  - **Claude Code:** the PreToolUse claim matches the two new tools. Run `ctx hooks install --harness claude` again (or `ctx setup`).
 - **P7 milestone 6b: validators judge candidate pairs** (ADR 0015 §5).
   - A validator with `pairs = true` in `validators.toml` also judges contradiction candidates; it is off by default. Its filters match the pair's newer side, and workers take pairs only when no rule job waits.
   - A pair task shows both records and accepts only `conflict` or `none`. `claude -p` gets its own pair prompt, with its own `prompt_sha256`, under the same sandbox (T82). The command protocol receives `{"task": "pair", "a", "b"}`.

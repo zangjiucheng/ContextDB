@@ -245,6 +245,14 @@ fn tools() -> Value {
               "note": { "type": "string" },
               "expect_cert_valid": { "type": "boolean" }, "client_txn_id": { "type": "string" } },
             "required": ["artifacts", "note"] } },
+        { "name": "ctx_handoff_begin", "description": "Hand this session's certified state to another session: its certificate must be Valid (run ctx_check first if unsure) and is passed with the summary. Returns the handoff id to give the next agent. Not a lock: you may keep working.",
+          "inputSchema": { "type": "object", "properties": {
+              "summary": { "type": "string", "description": "what was done and what is left, at most 8 KiB" },
+              "to_agent": { "type": "string", "description": "only this agent id may accept" } },
+            "required": ["summary"] } },
+        { "name": "ctx_handoff_accept", "description": "Accept a handoff on this session's branch (once; another accept gets HandoffTaken). Copies the handed-over reads into this session, so your next ctx_check is Invalid exactly when one of them changed, and returns the summary and the certificate's verdict now. Without id: lists the open handoffs you may accept.",
+          "inputSchema": { "type": "object", "properties": {
+              "id": { "type": "string", "description": "32 hex digits from ctx_handoff_begin" } } } },
     ])
 }
 /// The session a `tools/call` acts for, from the harness's `_meta` (ADR 0010
@@ -949,6 +957,62 @@ impl<B: Backend> Server<B> {
                     client_txn_id: txn(args)?,
                 })?;
                 committed(env)
+            }
+            "ctx_handoff_begin" => {
+                let env = self.call(Request::HandoffBegin {
+                    binding: binding.clone(),
+                    summary: arg(args, "summary").ok_or("summary required")?.into(),
+                    to_agent: arg(args, "to_agent").map(str::to_owned),
+                })?;
+                match env.response {
+                    Response::HandoffBegun { id, cert_id } => Ok(json!({
+                        "id": hex(&id), "cert_id": hex(&cert_id),
+                    })),
+                    Response::Refused { validation: v } => {
+                        let (verdict, diffs) = validation(&v);
+                        Ok(json!({
+                            "refused": true, "validation": verdict, "diffs": diffs,
+                            "hint": "a handoff passes on a Valid certificate: re-read what changed, then ctx_check",
+                        }))
+                    }
+                    _ => Err("unexpected response".into()),
+                }
+            }
+            "ctx_handoff_accept" => {
+                let id = match arg(args, "id") {
+                    Some(t) => Some(unhex(t).ok_or("id must be 32 hex digits")?),
+                    None => None,
+                };
+                let env = self.call(Request::HandoffAccept {
+                    binding: binding.clone(),
+                    id,
+                })?;
+                match env.response {
+                    Response::HandoffAccepted {
+                        id,
+                        owner,
+                        owner_agent,
+                        summary,
+                        validation: v,
+                        copied,
+                        skipped,
+                    } => {
+                        let (verdict, diffs) = validation(&v);
+                        Ok(json!({
+                            "id": hex(&id), "owner": hex(&owner), "owner_agent": owner_agent,
+                            "summary": summary, "validation": verdict, "diffs": diffs,
+                            "reads_copied": copied, "reads_skipped": skipped,
+                        }))
+                    }
+                    Response::Handoffs { items } => Ok(json!({
+                        "handoffs": items.iter().map(|h| json!({
+                            "id": hex(&h.id), "owner": hex(&h.owner), "owner_agent": h.owner_agent,
+                            "to_agent": h.to_agent, "summary": h.summary, "epoch": h.epoch.0,
+                            "reads": h.reads,
+                        })).collect::<Vec<_>>(),
+                    })),
+                    _ => Err("unexpected response".into()),
+                }
             }
             other => Err(format!("unknown tool {other}")),
         }

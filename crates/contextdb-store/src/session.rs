@@ -15,7 +15,9 @@ use crate::{
 use contextdb_model::*;
 use std::path::{Path, PathBuf};
 
-pub const SESSION_FORMAT: u32 = 2;
+/// 3 (P7): handoff events (ADR 0015 §7); a build that knows only 2 refuses
+/// to open a log holding them.
+pub const SESSION_FORMAT: u32 = 3;
 
 /// Original per-root proof, independent of the session aggregate certificate.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +151,27 @@ pub enum SessionEvent {
     },
     /// An MCP call arrived without a claim (ADR 0010 §2.4), for the report.
     Unclaimed {
+        epoch: Epoch,
+    },
+    /// A handoff offered (ADR 0015 §7): the owner's certified state, with
+    /// the certificate itself (the owner's session may end before the
+    /// accept) and a summary of at most 8 KiB. Durable before its reply.
+    HandoffBegin {
+        id: [u8; 16],
+        session_id: [u8; 16],
+        agent: Option<String>,
+        branch: BranchId,
+        cert: Box<Certificate>,
+        summary: String,
+        to_agent: Option<String>,
+        epoch: Epoch,
+    },
+    /// The one accept of a handoff; on replay the first durable one wins.
+    /// Durable before its reply.
+    HandoffAccept {
+        id: [u8; 16],
+        session_id: [u8; 16],
+        agent: Option<String>,
         epoch: Epoch,
     },
 }
@@ -334,6 +357,38 @@ impl Wire for SessionEvent {
                 18u8.encode(o);
                 epoch.encode(o);
             }
+            Self::HandoffBegin {
+                id,
+                session_id,
+                agent,
+                branch,
+                cert,
+                summary,
+                to_agent,
+                epoch,
+            } => {
+                20u8.encode(o);
+                id.encode(o);
+                session_id.encode(o);
+                agent.encode(o);
+                branch.encode(o);
+                cert.encode(o);
+                summary.encode(o);
+                to_agent.encode(o);
+                epoch.encode(o);
+            }
+            Self::HandoffAccept {
+                id,
+                session_id,
+                agent,
+                epoch,
+            } => {
+                21u8.encode(o);
+                id.encode(o);
+                session_id.encode(o);
+                agent.encode(o);
+                epoch.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -449,6 +504,22 @@ impl Wire for SessionEvent {
             18 => Self::Unclaimed {
                 epoch: Wire::decode(i)?,
             },
+            20 => Self::HandoffBegin {
+                id: Wire::decode(i)?,
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
+                cert: Box::new(Wire::decode(i)?),
+                summary: Wire::decode(i)?,
+                to_agent: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
+            21 => Self::HandoffAccept {
+                id: Wire::decode(i)?,
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -472,6 +543,14 @@ impl Record for SessionRecord {
             return Err(WireError::TrailingBytes);
         }
         if format < 2 && matches!(r.event, SessionEvent::RootProof { .. }) {
+            return Err(WireError::UnknownVersion);
+        }
+        if format < 3
+            && matches!(
+                r.event,
+                SessionEvent::HandoffBegin { .. } | SessionEvent::HandoffAccept { .. }
+            )
+        {
             return Err(WireError::UnknownVersion);
         }
         Ok(r)
