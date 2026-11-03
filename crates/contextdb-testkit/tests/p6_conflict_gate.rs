@@ -63,6 +63,7 @@ fn t51_open_conflict_blocks_certified_only() {
     // Resolving releases it.
     db.commit(&Batch::new(vec![Op::ResolveArtifact {
         id: opened.allocations.new_artifacts[0].into(),
+        note: None,
     }]))
     .unwrap();
     assert_eq!(db.status(RevisionId(0)).unwrap(), Summary::Certified);
@@ -100,7 +101,10 @@ fn gate_matches_the_oracles() {
                 .collect();
             if !open.is_empty() && rng.next_u32() % 3 == 0 {
                 let id = open[rng.next_u32() as usize % open.len()];
-                b.ops.push(Op::ResolveArtifact { id: id.into() });
+                b.ops.push(Op::ResolveArtifact {
+                    id: id.into(),
+                    note: None,
+                });
             }
             let (got, want) = (db.commit(&b), full.commit(&b));
             assert_eq!(got, want, "seed {seed}");

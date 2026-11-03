@@ -871,11 +871,15 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
                 curvec_seen,
                 verdict,
                 validator,
+                meta,
+                if_absent,
             } => Op::RecordValidation {
                 rule: j(rule),
                 curvec_seen: curvec_seen.iter().map(|(x, y)| (lid(x), rid(y))).collect(),
                 verdict: *verdict,
                 validator: validator.clone(),
+                meta: *meta,
+                if_absent: *if_absent,
             },
             Op::SetMetadata {
                 logical,
@@ -895,7 +899,10 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
                 target: r(target),
                 payload_hash: *payload_hash,
             },
-            Op::ResolveArtifact { id } => Op::ResolveArtifact { id: a(id) },
+            Op::ResolveArtifact { id, note } => Op::ResolveArtifact {
+                id: a(id),
+                note: *note,
+            },
             Op::ExpectHeads { entries, source } => Op::ExpectHeads {
                 entries: entries.iter().map(|(x, y)| (l(x), rid(y))).collect(),
                 source: *source,
@@ -1024,6 +1031,15 @@ fn map_error(e: TxError, map: &dyn Fn(Kind, u32) -> u32) -> TxError {
             rule: j(rule),
             seen: seen.into_iter().map(|(x, y)| (l(x), r(y))).collect(),
             current: current.into_iter().map(|(x, y)| (l(x), r(y))).collect(),
+        },
+        TxError::ValidationExists {
+            rule,
+            curvec,
+            verdict,
+        } => TxError::ValidationExists {
+            rule: j(rule),
+            curvec: curvec.into_iter().map(|(x, y)| (l(x), r(y))).collect(),
+            verdict,
         },
         TxError::ArtifactNotOpen { id } => TxError::ArtifactNotOpen {
             id: ArtifactId(map(Kind::Artifact, id.0)),

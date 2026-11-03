@@ -100,6 +100,8 @@ fn validate_rule(j: u32, x: u32, v: u32) -> Op {
         curvec_seen: vec![(LogicalId(x), RevisionId(v))],
         verdict: Verdict::Verified,
         validator: "human".into(),
+        meta: None,
+        if_absent: false,
     }
 }
 /// X (logical 0): v1 = r0 base. D (logical 1): r1 with rule 0 `D ← X@r0 [Sem]`.

@@ -286,9 +286,9 @@ fn g4_migrate_2_to_3_interrupted_and_resumed() {
                     let again = migrate::migrate(&crashed, Path::new(DIR))
                         .unwrap_or_else(|e| panic!("seed {seed} {op}#{n} {fate:?}: {e:?}"));
                     if done {
-                        assert_eq!((again.from, again.to, again.frames), (3, 3, 0));
+                        assert_eq!((again.from, again.to, again.frames), (4, 4, 0));
                     } else {
-                        assert_eq!((again.from, again.to), (2, 3));
+                        assert_eq!((again.from, again.to), (2, 4));
                         assert_eq!(again.frames, report.frames);
                     }
                     resumed += usize::from(swap);

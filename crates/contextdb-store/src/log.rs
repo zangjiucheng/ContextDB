@@ -7,9 +7,11 @@ use contextdb_model::*;
 use std::path::{Path, PathBuf};
 
 /// op_log format 2 adds the group header (ADR 0008 §3.2); format 3 adds
-/// the branch ops (tags 14–17) and the result trailer (ADR 0013 §8). Older
-/// formats migrate explicitly (`migrate`).
-pub const FORMAT_VERSION: u32 = 3;
+/// the branch ops (tags 14–17) and the result trailer (ADR 0013 §8); format
+/// 4 adds `RecordValidation4` and `ResolveArtifact4` (tags 18, 19; ADR 0015
+/// §9) with an unchanged frame layout. Older formats migrate explicitly
+/// (`migrate`).
+pub const FORMAT_VERSION: u32 = 4;
 pub const SEGMENT_TARGET: usize = 64 * 1024 * 1024;
 /// magic 8 + format 4 + first record number 8 + prev_checksum 32 + header_check 8.
 pub const HEADER_LEN: usize = 60;

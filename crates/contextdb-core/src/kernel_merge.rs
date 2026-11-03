@@ -568,13 +568,21 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut validations = BTreeMap::new();
         let (sval, tval) = (s.validations(), t.validations());
         let bval: Vec<_> = bs.iter().map(|v| v.validations()).collect();
+        // `meta` takes no part in classification (ADR 0015 §3.1): records are
+        // compared without it, and a taken record keeps the source's.
+        let bare = |r: Option<&ValidationRecord>| {
+            r.map(|r| ValidationRecord {
+                meta: None,
+                ..r.clone()
+            })
+        };
         for (key, record) in &sval {
-            let values: Vec<_> = bval.iter().map(|m| m.get(key).cloned()).collect();
-            let (sv, tv) = (Some(record.clone()), tval.get(key).cloned());
+            let values: Vec<_> = bval.iter().map(|m| bare(m.get(key))).collect();
+            let (sv, tv) = (bare(Some(record)), bare(tval.get(key)));
             match classify(&values, &sv, &tv, &mut convergent) {
                 Outcome::Keep => {}
-                Outcome::Take(v) => {
-                    validations.insert(key.clone(), v);
+                Outcome::Take(_) => {
+                    validations.insert(key.clone(), record.clone());
                 }
                 // Only different verdicts conflict.
                 Outcome::Conflict if tv.as_ref().is_some_and(|t| t.verdict == record.verdict) => {

@@ -45,6 +45,16 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
             curvec_seen: vec![(LogicalId(0), RevisionId(1))],
             verdict: Verdict::Rejected,
             validator: "人工验证".into(),
+            meta: None,
+            if_absent: false,
+        },
+        Op::RecordValidation {
+            rule: RuleId(1).into(),
+            curvec_seen: vec![(LogicalId(0), RevisionId(1))],
+            verdict: Verdict::Verified,
+            validator: "worker".into(),
+            meta: Some([7; 32]),
+            if_absent: true,
         },
         Op::SetPolicy {
             policy: PolicyDoc {
@@ -69,6 +79,11 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
         },
         Op::ResolveArtifact {
             id: ArtifactRef::New(0),
+            note: None,
+        },
+        Op::ResolveArtifact {
+            id: ArtifactRef::New(0),
+            note: Some([8; 32]),
         },
     ];
     let mut batch = Batch::new(ops);
@@ -92,7 +107,7 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
 #[test]
 fn log_rejects_unknown_version_bad_hex_and_unbounded_lengths() {
     assert_eq!(
-        EventLog::from_jsonl("{\"version\":2,\"batch_hex\":\"\"}"),
+        EventLog::from_jsonl("{\"version\":3,\"batch_hex\":\"\"}"),
         Err(WireError::UnknownVersion)
     );
     for line in [

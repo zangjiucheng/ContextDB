@@ -970,16 +970,24 @@ impl BranchOracle {
                 }
             }
         }
+        // `meta` takes no part in classification (ADR 0015 §3.1): records are
+        // compared without it, and a taken record keeps the source's.
+        let bare = |r: Option<ValidationRecord>| r.map(|r| ValidationRecord { meta: None, ..r });
         for (key, record) in &s.validations {
             let bv: Vec<_> = bases
                 .iter()
-                .map(|x| x.validations.get(key).cloned())
+                .map(|x| bare(x.validations.get(key).cloned()))
                 .collect();
-            let tr = tstate.validations.get(key).cloned();
-            match three(&bv, Some(record.clone()), tr.clone(), &mut out.convergent) {
+            let tr = bare(tstate.validations.get(key).cloned());
+            match three(
+                &bv,
+                bare(Some(record.clone())),
+                tr.clone(),
+                &mut out.convergent,
+            ) {
                 None => {}
-                Some(Ok(v)) => {
-                    next.validations.insert(key.clone(), v);
+                Some(Ok(_)) => {
+                    next.validations.insert(key.clone(), record.clone());
                 }
                 Some(Err(())) if tr.as_ref().is_some_and(|x| x.verdict == record.verdict) => {
                     out.convergent += 1;
@@ -1241,7 +1249,7 @@ fn remap(b: &Batch, map: &dyn Fn(usize, u32) -> u32) -> Batch {
                 }
             }
             Op::OpenArtifact { target, .. } => *target = r(target),
-            Op::ResolveArtifact { id } => *id = a(id),
+            Op::ResolveArtifact { id, .. } => *id = a(id),
             Op::ExpectHeads { entries, .. } => {
                 for (x, y) in entries {
                     *x = l(x);

@@ -418,7 +418,7 @@ fn remap(
                 }
             }
             Op::OpenArtifact { target, .. } => *target = r(target),
-            Op::ResolveArtifact { id } => *id = a(id),
+            Op::ResolveArtifact { id, .. } => *id = a(id),
             Op::ExpectHeads { entries, .. } => {
                 for (x, y) in entries {
                     *x = l(x);

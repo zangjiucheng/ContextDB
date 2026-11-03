@@ -177,9 +177,13 @@ one-side supersede and the per-branch cases.
   `ctx why`. `meta` holds everything else.
 - The kernel and the oracle store and replay `meta`, but never read it, and
   it is not part of `sem`.
-- **Merge** classifies validation records by verdict only, as today
-  (`kernel_merge.rs:579`). A difference in `validator` or `meta` alone is
-  convergent, and the target's record is kept. `Take` carries the source's `meta`. Conflict payload hashes
+- **Merge** classifies validation records as today, except that `meta`
+  is left out of the comparison:
+  - only different verdicts conflict (`kernel_merge.rs:579`);
+  - a source that changed only `meta` counts as unchanged, so the target's
+    record is kept;
+  - a record taken from the source keeps the source's `meta` (implementation
+    note, milestone 1). `Take` carries the source's `meta`. Conflict payload hashes
   for validation entries exclude `meta`. With this rule, PROP7's "meta never
   changes derived state" holds (m6).
 
@@ -684,7 +688,7 @@ G0 was not acceptable.
 | m3 SD20 | `side superseded`; the duplicate check uses `(ty, target, payload_hash)` |
 | m4 `ctx_resolve` scope | Conflict and PendingReview only |
 | m5 truncation and self-declared trust | `TooLarge` instead of truncating; the threat row says `trusted` is self-declared |
-| m6 merge and `meta` | merge classifies by verdict only; `meta` excluded from conflict hashes |
+| m6 merge and `meta` | merge leaves `meta` out of classification and out of conflict hashes |
 | m7 gates | percentiles, mock validators, memory; T81–T84; "one record or one PendingReview"; multi-slot answered (§4.4) |
 
 **r0.2 closure check (2026-11-02):** B1, B3, B4, M2–M4, M7, m1–m7 were
@@ -698,7 +702,7 @@ minors. G0 was acceptable after text fixes.
 | N3 handoff on log failure | a daemon-level `session_log_failed` state, not `log_broken`; an idempotent own accept; ValidRecertified accepted; the summary inline in the event (§7) |
 | N4 canonical encoding across migration | old tags when the new fields are unset; byte-identical batches (§9; T77) |
 | N5 sandbox residuals | `CLAUDE_CONFIG_DIR` when the login works there; otherwise residuals reported and listed in the threat row; T82 asserts no hook and no memory (§4.1) |
-| N6 clarifications | dedup through `client_txn_id` plus the projection's `ReviewDoc` key; `ValidationExists` after `CurvecMoved`; merge by verdict only (§3.1, §4.2) |
+| N6 clarifications | dedup through `client_txn_id` plus the projection's `ReviewDoc` key; `ValidationExists` after `CurvecMoved`; merge leaves `meta` out of classification, and only verdicts conflict (§3.1, §4.2) |
 | N7 recall visibility | filter by visibility on the branch, over-fetch; recall regressions (§5) |
 
 **r0.3 check (2026-11-02):** N1–N7 were closed, and **G0 was acceptable**.

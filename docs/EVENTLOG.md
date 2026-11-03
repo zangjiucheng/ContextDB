@@ -23,6 +23,13 @@ The encoder emits lowercase hex. Binary layout:
   future variants append. `Op` tags 0–13 correspond to CreateLogical, AddRevision,
   SetHead, AssertBase, RetractBase, AddRule, SetRuleEnabled, Rebind, RecordValidation,
   SetPolicy, ObserverWatermark, SetMetadata, OpenArtifact, ResolveArtifact.
+  v1 (P6) adds tags 14–17: CreateBranch, ArchiveBranch, ExpectHeads, Merge, and
+  non-main batches. v2 (P7, ADR 0015 §9) adds tag 18 `RecordValidation4`
+  (RecordValidation's fields, then `meta: Option<[u8;32]>`, `if_absent: bool`)
+  and tag 19 `ResolveArtifact4` (`id`, then `note: Option<[u8;32]>`). They are
+  used only when a new field is set: tag 18 with `meta = None` and
+  `if_absent = false` is rejected, as is tag 19 with `note = None`. Each line
+  carries the lowest version that can represent it.
 - Edge tags: Ref=0, Pin=1, Sem=2, Cur=3. Channel: Agent=0, Observer=1, Admin=2.
 - RecordKind: Fact, Assumption, Decision, Plan, Convention, Procedure, Artifact,
   Evidence, CodeAnchor, Summary (0–9).

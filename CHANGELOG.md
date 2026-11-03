@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P7 milestone 1: op_log format 4** (ADR 0015 §3, §9; SPEC v1.7.0).
+  - `RecordValidation` gains `meta`, a metadata blob hash the kernel stores but never reads, and `if_absent`. A worker's record fails with `ValidationExists` instead of replacing an existing verdict (T81).
+  - `ResolveArtifact` gains `note`, and `MissingBlob` covers both new blob fields.
+  - Merge leaves `meta` out of its classification.
+  - Ops that don't use the new fields keep their old encoding, so format-3 batches, batch hashes and digests are byte-identical under format 4.
+  - **Upgrade:** stop `ctxd` and run `ctx migrate` once (3 → 4, keeps `log.v3.bak`). It changes no result (T77), but certificates issued before it read `Invalid(LogMismatch)`, so restart agent sessions.
+  - EventLog v2 carries the new encodings.
 - **Hooks act on three P4 audit follow-ups** (ADR 0010 r3.5, SPEC v1.6.14).
   - A stale-read warning is shown once per set of stale reads. A shell command no longer repeats an identical warning; file edits, denies and a new commit show it again. Every decision is still logged. One Codex session had seen the same Invalid warning 61 times.
   - The Stop drift notice names only paths new since that agent's last report, and `ctx gate-report` counts drift paths once per session.

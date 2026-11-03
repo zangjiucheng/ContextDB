@@ -68,3 +68,7 @@ Exceeding any of these numbers later is a gate failure. A budget is never recali
 - P1 G5 is judged by `contextdb-bench` per scope and on total live heap. Both shapes must exit 0 with `memory_scopes_pass=true` and `live_heap_within_total_budget=true`.
 - In P2, history retention moves into the persistent `diff_log`. ADR 0006 decides whether the in-memory history is bounded.
 - Candidates for further compaction, not required now: a compact pooled PK adjacency, a packed `NodeState` in history, and a bitset for `DerivedSnapshot.sat` (which needs a model change).
+
+## Layout note (P7, 2026-11-02)
+
+ADR 0015 adds `meta: Option<ContentHash>` to `ValidationRecord`. That adds 40 bytes per validation record to `inputs`, one B-tree slot per record. The `metadata_lanes` accounting golden moves from 496,898 to 497,602 bytes (+704). Accounting stays a tight lower bound. Hot scopes and per-incidence budgets are unchanged, because validation records are not incidences.

@@ -40,6 +40,8 @@ fn validation(rule: u32, logical: u32, rev: u32, verdict: Verdict) -> Op {
         curvec_seen: vec![(LogicalId(logical), RevisionId(rev))],
         verdict,
         validator: "test".into(),
+        meta: None,
+        if_absent: false,
     }
 }
 struct Rig {
@@ -699,6 +701,7 @@ fn t09u_artifact_local_binding_and_resolve() {
         },
         Op::ResolveArtifact {
             id: ArtifactRef::New(0),
+            note: None,
         },
     ]);
     assert_eq!(result.allocations.new_artifacts, vec![ArtifactId(0)]);
@@ -706,6 +709,7 @@ fn t09u_artifact_local_binding_and_resolve() {
     x.err(
         vec![Op::ResolveArtifact {
             id: ArtifactId(0).into(),
+            note: None,
         }],
         TxError::ArtifactNotOpen { id: ArtifactId(0) },
     );

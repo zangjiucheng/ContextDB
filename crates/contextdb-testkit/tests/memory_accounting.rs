@@ -134,6 +134,8 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
                 curvec_seen: vec![(LogicalId(2_000 + k), RevisionId(2_000 + k))],
                 verdict: Verdict::Verified,
                 validator: format!("validator-{k}"),
+                meta: None,
+                if_absent: false,
             })
             .chain((0..30u32).map(|k| Op::OpenArtifact {
                 ty: ArtifactType::PendingReview,
@@ -197,7 +199,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     let lanes = check("metadata_lanes", db, 0.04);
     golden(
         &lanes,
-        [496898, 100624, 147408, 196672, 187127, 238236, 4549],
+        [497602, 100624, 147408, 196672, 187127, 238236, 4549],
     );
 
     // Rebinds: each adds a rule (Rebind disables the old one and adds a new

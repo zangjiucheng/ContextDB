@@ -521,15 +521,40 @@ impl Wire for Rule {
         })
     }
 }
+/// Flag on the verdict byte: a metadata hash follows the validator. Without
+/// metadata the encoding is the format-3 one, so digests are unchanged.
+const VALIDATION_META: u8 = 0x80;
 impl Wire for ValidationRecord {
     fn encode(&self, o: &mut Vec<u8>) {
-        self.verdict.encode(o);
+        let flag = if self.meta.is_some() {
+            VALIDATION_META
+        } else {
+            0
+        };
+        (self.verdict as u8 | flag).encode(o);
         self.validator.encode(o);
+        if let Some(m) = &self.meta {
+            m.encode(o);
+        }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let b = u8::decode(i)?;
+        let verdict = match b & !VALIDATION_META {
+            0 => Verdict::Verified,
+            1 => Verdict::Rejected,
+            2 => Verdict::Pending,
+            _ => return Err(WireError::InvalidEncoding),
+        };
+        let validator = Wire::decode(i)?;
+        let meta = if b & VALIDATION_META != 0 {
+            Some(Wire::decode(i)?)
+        } else {
+            None
+        };
         Ok(Self {
-            verdict: Wire::decode(i)?,
-            validator: Wire::decode(i)?,
+            verdict,
+            validator,
+            meta,
         })
     }
 }
@@ -997,17 +1022,26 @@ impl Wire for Op {
                 from.encode(o);
                 to.encode(o);
             }
+            // Format 4 (ADR 0015 §9): the old tag while the new fields are
+            // unset, so format-3 batches keep their bytes and hashes.
             Self::RecordValidation {
                 rule,
                 curvec_seen,
                 verdict,
                 validator,
+                meta,
+                if_absent,
             } => {
-                8u8.encode(o);
+                let v4 = meta.is_some() || *if_absent;
+                (if v4 { 18u8 } else { 8u8 }).encode(o);
                 rule.encode(o);
                 curvec_seen.encode(o);
                 verdict.encode(o);
                 validator.encode(o);
+                if v4 {
+                    meta.encode(o);
+                    if_absent.encode(o);
+                }
             }
             Self::SetPolicy { policy } => {
                 9u8.encode(o);
@@ -1043,9 +1077,12 @@ impl Wire for Op {
                 target.encode(o);
                 payload_hash.encode(o);
             }
-            Self::ResolveArtifact { id } => {
-                13u8.encode(o);
+            Self::ResolveArtifact { id, note } => {
+                (if note.is_some() { 19u8 } else { 13u8 }).encode(o);
                 id.encode(o);
+                if note.is_some() {
+                    note.encode(o);
+                }
             }
             Self::CreateBranch { name } => {
                 14u8.encode(o);
@@ -1116,7 +1153,28 @@ impl Wire for Op {
                 curvec_seen: Wire::decode(i)?,
                 verdict: Wire::decode(i)?,
                 validator: Wire::decode(i)?,
+                meta: None,
+                if_absent: false,
             }),
+            18 => {
+                let op = Self::RecordValidation {
+                    rule: Wire::decode(i)?,
+                    curvec_seen: Wire::decode(i)?,
+                    verdict: Wire::decode(i)?,
+                    validator: Wire::decode(i)?,
+                    meta: Wire::decode(i)?,
+                    if_absent: Wire::decode(i)?,
+                };
+                // Canonical: tag 18 only when a new field is set.
+                match &op {
+                    Self::RecordValidation {
+                        meta: None,
+                        if_absent: false,
+                        ..
+                    } => Err(WireError::InvalidEncoding),
+                    _ => Ok(op),
+                }
+            }
             9 => Ok(Self::SetPolicy {
                 policy: Wire::decode(i)?,
             }),
@@ -1137,7 +1195,15 @@ impl Wire for Op {
             }),
             13 => Ok(Self::ResolveArtifact {
                 id: Wire::decode(i)?,
+                note: None,
             }),
+            19 => {
+                let id = Wire::decode(i)?;
+                match Option::<ContentHash>::decode(i)? {
+                    None => Err(WireError::InvalidEncoding),
+                    note => Ok(Self::ResolveArtifact { id, note }),
+                }
+            }
             14 => Ok(Self::CreateBranch {
                 name: Wire::decode(i)?,
             }),
@@ -1241,8 +1307,9 @@ pub struct EventLog {
     pub batches: Vec<Batch>,
 }
 impl EventLog {
-    /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches.
-    pub const VERSION: u16 = 1;
+    /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches; v2
+    /// (P7, ADR 0015 §9) adds the format-4 op encodings (tags 18, 19).
+    pub const VERSION: u16 = 2;
     /// The lowest version that can carry `batch`.
     pub fn version_of(batch: &Batch) -> u16 {
         let p6 = batch.branch != MAIN
@@ -1255,7 +1322,18 @@ impl EventLog {
                         | Op::Merge { .. }
                 )
             });
-        u16::from(p6)
+        let p7 = batch.ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::RecordValidation { meta: Some(_), .. }
+                    | Op::RecordValidation {
+                        if_absent: true,
+                        ..
+                    }
+                    | Op::ResolveArtifact { note: Some(_), .. }
+            )
+        });
+        if p7 { 2 } else { u16::from(p6) }
     }
     /// One line per batch, each at the lowest version that carries it, so a
     /// log without P6 features stays readable by v0 importers.
@@ -1295,6 +1373,7 @@ impl EventLog {
             let version: u16 = match v {
                 "0" => 0,
                 "1" => 1,
+                "2" => 2,
                 _ => return Err(WireError::UnknownVersion),
             };
             let hex = rest.strip_suffix("\"}").ok_or(WireError::InvalidEncoding)?;
@@ -1310,7 +1389,7 @@ impl EventLog {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let batch = Batch::from_bytes(&bytes)?;
-            // A v0 line cannot carry P6 features.
+            // A line cannot carry features newer than its version.
             if Self::version_of(&batch) > version {
                 return Err(WireError::UnknownVersion);
             }

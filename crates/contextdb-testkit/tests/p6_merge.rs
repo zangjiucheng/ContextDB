@@ -181,6 +181,7 @@ fn head_conflict_and_convergence() {
     k.commit(&on(b2, move_to(0, 2, 40))).unwrap();
     k.commit(&Batch::new(vec![Op::ResolveArtifact {
         id: c.artifact.into(),
+        note: None,
     }]))
     .unwrap();
     k.commit(&Batch::new(move_to(0, 3, 41))).unwrap();

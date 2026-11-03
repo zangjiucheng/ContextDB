@@ -63,6 +63,8 @@ fn bounded_depth6() {
                 curvec_seen: vec![(LogicalId(0), RevisionId(current))],
                 verdict,
                 validator: "exhaustive".into(),
+                meta: None,
+                if_absent: false,
             });
         }
     }

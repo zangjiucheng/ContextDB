@@ -118,7 +118,10 @@ pub fn prepare_anchors(
                 }
                 if let Some(s) = old {
                     for id in &s.breaks {
-                        out.ops.push(Op::ResolveArtifact { id: (*id).into() });
+                        out.ops.push(Op::ResolveArtifact {
+                            id: (*id).into(),
+                            note: None,
+                        });
                     }
                 }
             }

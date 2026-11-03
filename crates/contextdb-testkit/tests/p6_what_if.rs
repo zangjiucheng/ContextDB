@@ -108,6 +108,8 @@ fn t14_what_if_changes_nothing() {
             curvec_seen: vec![(LogicalId(0), RevisionId(0))],
             verdict: Verdict::Verified,
             validator: "t14".into(),
+            meta: None,
+            if_absent: false,
         },
         create("d", 3, "elsewhere"),
         Op::SetMetadata {
@@ -117,6 +119,7 @@ fn t14_what_if_changes_nothing() {
         },
         Op::ResolveArtifact {
             id: ArtifactId(0).into(),
+            note: None,
         },
         Op::OpenArtifact {
             ty: ArtifactType::PendingReview,

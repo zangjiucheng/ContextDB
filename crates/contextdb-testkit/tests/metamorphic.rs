@@ -204,6 +204,8 @@ fn build(seed: u64, variant: usize) -> Inputs {
             curvec_seen: vec![(a, new)],
             verdict: Verdict::Verified,
             validator: "metamorphic".into(),
+            meta: None,
+            if_absent: false,
         }],
     );
     normalized(db.inputs())

@@ -224,6 +224,8 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
             curvec_seen,
             verdict,
             validator,
+            meta,
+            if_absent,
         } => {
             for (l, r) in curvec_seen {
                 lr(&LogicalRef::Existing(*l))?;
@@ -234,6 +236,8 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
                 curvec_seen: curvec_seen.clone(),
                 verdict: *verdict,
                 validator: validator.clone(),
+                meta: *meta,
+                if_absent: *if_absent,
             }
         }
         Op::SetMetadata {
@@ -254,8 +258,9 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
             target: rr(*target)?,
             payload_hash: *payload_hash,
         },
-        Op::ResolveArtifact { id } => Op::ResolveArtifact {
+        Op::ResolveArtifact { id, note } => Op::ResolveArtifact {
             id: ArtifactRef::Existing(artifact(i, a, *id)?),
+            note: *note,
         },
     })
 }
@@ -305,7 +310,7 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
             target,
             ..
         } => kind(i, rid(*target)) == RecordKind::CodeAnchor,
-        Op::ResolveArtifact { id } => {
+        Op::ResolveArtifact { id, .. } => {
             let a = &i.artifacts[aid(*id).index()];
             a.ty == ArtifactType::AnchorBroken && kind(i, a.target) == RecordKind::CodeAnchor
         }
@@ -313,7 +318,7 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
     };
     let broken = match op {
         Op::OpenArtifact { ty, .. } => *ty == ArtifactType::AnchorBroken,
-        Op::ResolveArtifact { id } => {
+        Op::ResolveArtifact { id, .. } => {
             i.artifacts[aid(*id).index()].ty == ArtifactType::AnchorBroken
         }
         _ => false,
@@ -649,7 +654,14 @@ fn apply_op(
             curvec_seen,
             verdict,
             validator,
+            meta,
+            if_absent,
         } => {
+            if let Some(content) = meta
+                && !blobs.contains(&content)
+            {
+                return Err(TxError::MissingBlob { content });
+            }
             let id = jid(rule);
             let j = &i.rules[id.index()];
             if asserted_vector(i, j).is_empty() {
@@ -663,8 +675,21 @@ fn apply_op(
                     current,
                 });
             }
-            i.validations
-                .insert((id, current), ValidationRecord { verdict, validator });
+            if if_absent && let Some(old) = i.validations.get(&(id, current.clone())) {
+                return Err(TxError::ValidationExists {
+                    rule: id,
+                    curvec: current,
+                    verdict: old.verdict,
+                });
+            }
+            i.validations.insert(
+                (id, current),
+                ValidationRecord {
+                    verdict,
+                    validator,
+                    meta,
+                },
+            );
         }
         Op::SetPolicy { policy } => {
             if policy.version != 1 {
@@ -737,7 +762,12 @@ fn apply_op(
             });
             a.new_artifacts.push(id);
         }
-        Op::ResolveArtifact { id } => {
+        Op::ResolveArtifact { id, note } => {
+            if let Some(content) = note
+                && !blobs.contains(&content)
+            {
+                return Err(TxError::MissingBlob { content });
+            }
             let id = aid(id);
             if !i.artifacts[id.index()].open {
                 return Err(TxError::ArtifactNotOpen { id });

@@ -257,6 +257,8 @@ fn generate_inner(seed: u64, p1: bool) -> EventLog {
                             _ => Verdict::Pending,
                         },
                         validator: "generator".into(),
+                        meta: None,
+                        if_absent: false,
                     }
                 }
                 _ => Op::RetractBase {

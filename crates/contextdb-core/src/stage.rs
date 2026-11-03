@@ -537,6 +537,7 @@ mod tests {
         let record = |verdict| ValidationRecord {
             verdict,
             validator: "v".into(),
+            meta: None,
         };
         db.tables
             .validations

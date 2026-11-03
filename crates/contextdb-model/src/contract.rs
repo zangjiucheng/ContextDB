@@ -152,6 +152,11 @@ pub enum Op {
         curvec_seen: HeadVector,
         verdict: Verdict,
         validator: String,
+        /// Metadata blob (ADR 0015 §3): stored, never read by the kernel.
+        meta: Option<ContentHash>,
+        /// Fail with `ValidationExists` if `(rule, curvec)` already has a
+        /// record on the branch (workers; ADR 0015 §3.1).
+        if_absent: bool,
     },
     SetPolicy {
         policy: PolicyDoc,
@@ -173,6 +178,8 @@ pub enum Op {
     },
     ResolveArtifact {
         id: ArtifactRef,
+        /// Resolution note blob (ADR 0015 §6).
+        note: Option<ContentHash>,
     },
     /// Forks the batch's branch at this commit (SD19, P6). Sole Op of its batch.
     CreateBranch {
@@ -322,6 +329,12 @@ pub enum TxError {
         seen: HeadVector,
         current: HeadVector,
     },
+    /// `if_absent` RecordValidation found a record (ADR 0015 §3.1).
+    ValidationExists {
+        rule: RuleId,
+        curvec: HeadVector,
+        verdict: Verdict,
+    },
     WatermarkConflict {
         scope: String,
         expected: Option<Vec<u8>>,
@@ -426,6 +439,8 @@ pub struct Rule {
 pub struct ValidationRecord {
     pub verdict: Verdict,
     pub validator: String,
+    /// Metadata blob (ADR 0015 §3); not part of `sem` or merge classification.
+    pub meta: Option<ContentHash>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Metadata {

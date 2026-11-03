@@ -118,6 +118,8 @@ impl Resolver<'_, '_> {
                 curvec_seen,
                 verdict,
                 validator,
+                meta,
+                if_absent,
             } => {
                 let rule = self.j(*rule)?;
                 for (l, r) in curvec_seen {
@@ -129,6 +131,8 @@ impl Resolver<'_, '_> {
                     curvec_seen: curvec_seen.clone(),
                     verdict: *verdict,
                     validator: validator.clone(),
+                    meta: *meta,
+                    if_absent: *if_absent,
                 }
             }
             Op::SetMetadata {
@@ -149,7 +153,10 @@ impl Resolver<'_, '_> {
                 target: self.r(*target)?,
                 payload_hash: *payload_hash,
             },
-            Op::ResolveArtifact { id } => Op::ResolveArtifact { id: self.a(*id)? },
+            Op::ResolveArtifact { id, note } => Op::ResolveArtifact {
+                id: self.a(*id)?,
+                note: *note,
+            },
             Op::ExpectHeads { entries, source } => Op::ExpectHeads {
                 entries: entries
                     .iter()
@@ -207,7 +214,7 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
     };
     let broken = match op {
         Op::OpenArtifact { ty, target, .. } => Some((*ty, *target)),
-        Op::ResolveArtifact { id } => {
+        Op::ResolveArtifact { id, .. } => {
             let (ty, target, _) = i.artifact(a(*id));
             Some((ty, target.into()))
         }
@@ -529,7 +536,15 @@ pub(crate) fn apply<S: StatsSink>(
             curvec_seen,
             verdict,
             validator,
+            meta,
+            if_absent,
         } => {
+            // §6.2 order: MissingBlob before NoSemIncidence and the CAS class.
+            if let Some(content) = meta
+                && !blobs.contains(&content)
+            {
+                return Err(TxError::MissingBlob { content });
+            }
             let rule = j(rule);
             let mut current: Vec<_> = i
                 .premises(rule)
@@ -550,8 +565,22 @@ pub(crate) fn apply<S: StatsSink>(
                     current,
                 });
             }
-            i.validations
-                .insert((rule, current), ValidationRecord { verdict, validator });
+            // ADR 0015 §3.1: right after CurvecMoved in the CAS class.
+            if if_absent && let Some(old) = i.validation(rule, &current) {
+                return Err(TxError::ValidationExists {
+                    rule,
+                    curvec: current,
+                    verdict: old.verdict,
+                });
+            }
+            i.validations.insert(
+                (rule, current),
+                ValidationRecord {
+                    verdict,
+                    validator,
+                    meta,
+                },
+            );
         }
         Op::SetPolicy { policy } => {
             if policy.version != 1 {
@@ -629,7 +658,12 @@ pub(crate) fn apply<S: StatsSink>(
             });
             ids.new_artifacts.push(artifact);
         }
-        Op::ResolveArtifact { id } => {
+        Op::ResolveArtifact { id, note } => {
+            if let Some(content) = note
+                && !blobs.contains(&content)
+            {
+                return Err(TxError::MissingBlob { content });
+            }
             let id = a(id);
             if !i.artifact(id).2 {
                 return Err(TxError::ArtifactNotOpen { id });

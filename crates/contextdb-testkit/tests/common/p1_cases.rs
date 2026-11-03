@@ -319,6 +319,7 @@ fn artifact_nonzero_id_and_observer_resolve() {
         open(),
         Op::ResolveArtifact {
             id: ArtifactId(1).into(),
+            note: None,
         },
     ]);
     assert!(s.db.inputs().artifacts[0].open);
@@ -336,6 +337,7 @@ fn artifact_nonzero_id_and_observer_resolve() {
     s.db.commit(&b).unwrap();
     let mut b = Batch::new(vec![Op::ResolveArtifact {
         id: ArtifactId(2).into(),
+        note: None,
     }]);
     assert_eq!(
         s.db.commit(&b),

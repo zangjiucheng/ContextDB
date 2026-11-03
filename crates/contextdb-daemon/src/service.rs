@@ -1121,6 +1121,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     curvec_seen,
                     verdict,
                     validator,
+                    meta: None,
+                    if_absent: false,
                 }]);
                 batch.branch = branch;
                 self.commit(id, Vec::new(), batch, None)

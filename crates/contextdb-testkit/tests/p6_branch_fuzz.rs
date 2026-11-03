@@ -93,6 +93,7 @@ impl Gen {
                     id: view
                         .global_artifact(ArtifactId(self.pick(inputs.artifacts.len()) as u32))
                         .into(),
+                    note: None,
                 },
                 _ => Op::AssertBase {
                     rev: rev(self).into(),

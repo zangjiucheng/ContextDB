@@ -84,7 +84,8 @@ fn classifier_restores_identical_retracted_head_and_handles_broken_paths() {
                 rev: RevisionId(0).into()
             },
             Op::ResolveArtifact {
-                id: ArtifactId(0).into()
+                id: ArtifactId(0).into(),
+                note: None
             },
         ]
     );
@@ -332,6 +333,8 @@ fn t42_t43_t46_cur_sem_pin_deletion_restore_old_head_and_exact_oracle_counters()
         curvec_seen: vec![(LogicalId(0), RevisionId(4))],
         verdict: Verdict::Verified,
         validator: "human".into(),
+        meta: None,
+        if_absent: false,
     }]))
     .unwrap();
     assert_eq!(db.status(RevisionId(2)).unwrap(), Summary::Certified);
@@ -454,6 +457,8 @@ fn t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effe
             curvec_seen: vec![(LogicalId(2), RevisionId(4))],
             verdict: Verdict::Verified,
             validator: "human".into(),
+            meta: None,
+            if_absent: false,
         },
     ]))
     .unwrap();
@@ -648,6 +653,8 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
                 curvec_seen: vec![(LogicalId(2), RevisionId(4))],
                 verdict: Verdict::Verified,
                 validator: "human".into(),
+                meta: None,
+                if_absent: false,
             },
         ],
         false,
@@ -800,6 +807,8 @@ fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
                 curvec_seen: vec![(LogicalId(2), RevisionId(4))],
                 verdict: Verdict::Verified,
                 validator: "human".into(),
+                meta: None,
+                if_absent: false,
             },
         ],
         false,

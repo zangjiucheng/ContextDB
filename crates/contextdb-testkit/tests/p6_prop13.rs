@@ -293,6 +293,8 @@ impl Gen {
                         verdict: [Verdict::Verified, Verdict::Rejected, Verdict::Pending]
                             [self.pick(3)],
                         validator: format!("v{}", self.pick(2)),
+                        meta: None,
+                        if_absent: false,
                     }
                 }
                 82..=86 => Op::OpenArtifact {
@@ -302,6 +304,7 @@ impl Gen {
                 },
                 87..=90 if !artifacts.is_empty() => Op::ResolveArtifact {
                     id: ArtifactId(artifacts[self.pick(artifacts.len())]).into(),
+                    note: None,
                 },
                 91..=94 if !facts.is_empty() => {
                     let l = facts[self.pick(facts.len())];

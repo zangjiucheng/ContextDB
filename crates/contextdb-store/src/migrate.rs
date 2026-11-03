@@ -100,7 +100,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
                 changed,
             });
         }
-        Some(f @ (0..=2)) => f,
+        Some(f @ (0..=3)) => f,
         Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
         Some(f) => return Err(StoreError::FormatUnsupported(f)),
         None => return Err(StoreError::Io("no log to migrate".into())),
@@ -139,8 +139,8 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
             (None, 0, _) | (None, _, false) => Some(recorded.canonical_bytes()),
             (None, _, true) => None,
         };
-        // Format 2 groups are real; older frames become their own group.
-        let group = if from == 2 {
+        // Format 2 and 3 groups are real; older frames become their own group.
+        let group = if from >= 2 {
             old.group
         } else {
             log::GroupPos {
@@ -153,12 +153,17 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
             branch: batch.branch,
             merge,
         };
+        // Format 3 also recorded the trailer (merge report): it must agree.
+        if from >= 3 && same && old.trailer().ok().flatten().as_ref() != Some(&trailer) {
+            changed.push(old.epoch);
+        }
         let row = LogRow {
             result_blob: log::encode_result(&derived, &trailer),
             acked_result,
             prev_checksum: prev,
             group,
-            client_hash: None,
+            // Format 3 already records the idempotency hash: keep it (T77).
+            client_hash: if from >= 3 { old.client_hash } else { None },
             ..old.clone()
         };
         let (bytes, sum) = log::frame(&row);
@@ -246,6 +251,8 @@ fn compare(
 ) -> Result<(CommitResult, bool), StoreError> {
     let recorded = match from {
         0 => legacy::decode_result(&old.result_blob),
+        // Format 3 results carry a trailer (ADR 0013 §8).
+        3.. => old.result(),
         _ => CommitResult::from_bytes_with(&old.result_blob, DecodeLimits::DURABLE),
     }
     .map_err(|_| StoreError::ReplayDivergence { epoch: old.epoch })?;
@@ -317,6 +324,14 @@ fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<Log
     }
     Ok(rows)
 }
+/// Test support: the rows of the log in `dir/log`, verified as `format`.
+pub fn rows_for_test(
+    disk: &dyn Durability,
+    dir: &Path,
+    format: u32,
+) -> Result<Vec<LogRow>, StoreError> {
+    legacy_rows(disk, &dir.join("log"), format)
+}
 /// Test and tooling support: writes a format-0 log for `batches` (frozen layout).
 pub fn write_legacy(
     disk: &dyn Durability,
@@ -343,6 +358,15 @@ pub fn write_format2_with(
     recorded: &dyn Fn(&Batch, CommitResult) -> CommitResult,
 ) -> Result<u64, StoreError> {
     write_format_with(disk, dir, batches, 2, recorded)
+}
+/// Test and tooling support: writes a format-3 log (P6 layout, single branch:
+/// results carry a main-branch trailer).
+pub fn write_format3(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 3)
 }
 /// Test and tooling support: writes a format-1 log (P2 layout, no group header).
 pub fn write_format1(
@@ -387,10 +411,16 @@ fn write_format_with(
             client_txn_id: b.client_txn_id,
             batch_hash: *blake3::hash(&batch_blob).as_bytes(),
             batch_blob,
-            result_blob: if format == 0 {
-                legacy::encode_result(&result)
-            } else {
-                result.canonical_bytes()
+            result_blob: match format {
+                0 => legacy::encode_result(&result),
+                3.. => log::encode_result(
+                    &result,
+                    &ResultTrailer {
+                        branch: b.branch,
+                        merge: None,
+                    },
+                ),
+                _ => result.canonical_bytes(),
             },
             acked_result: None,
             client_hash: None,

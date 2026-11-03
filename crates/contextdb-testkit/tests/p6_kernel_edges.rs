@@ -47,6 +47,8 @@ fn validate(rule: RuleId, verdict: Verdict, validator: &str) -> Op {
         curvec_seen: vec![(LogicalId(0), RevisionId(0))],
         verdict,
         validator: validator.into(),
+        meta: None,
+        if_absent: false,
     }
 }
 /// `main` with a, b and a Sem rule a → b; two forks.

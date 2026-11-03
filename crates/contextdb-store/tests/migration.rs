@@ -137,7 +137,7 @@ fn format1_log_migrates_to_group_framing_t68() {
 /// gate changes some of them; those epochs are reported and their acked
 /// results survive for idempotent retries.
 #[test]
-fn format2_log_migrates_to_format3_and_reports_changed_results() {
+fn format2_log_migrates_to_the_current_format_and_reports_changed_results() {
     let disk = SimDisk::new();
     let fact = |key: &str, content: u8| Op::CreateLogical {
         key: key.into(),
@@ -178,7 +178,7 @@ fn format2_log_migrates_to_format3_and_reports_changed_results() {
         Err(StoreError::FormatMigrationRequired(2))
     ));
     let report = migrate::migrate(&disk, Path::new(DIR)).unwrap();
-    assert_eq!((report.from, report.to, report.frames), (2, 3, 3));
+    assert_eq!((report.from, report.to, report.frames), (2, 4, 3));
     assert_eq!(report.changed, vec![Epoch(2)]);
     assert!(disk.exists(&Path::new(DIR).join("log.v2.bak")));
     let (mut store, open) =
@@ -332,4 +332,105 @@ fn multi_branch_snapshot_round_trip() {
     assert_eq!(digests(&store), before);
     let z = fact(&mut store, "z");
     store.commit(&on(b, vec![z])).unwrap();
+}
+
+/// T77 (ADR 0015 §9): a format-3 log migrates to format 4 with every batch
+/// byte-identical (old ops keep their tags), no changed result, the same
+/// digest, and idempotent retries still answered.
+#[test]
+fn t77_format3_log_migrates_to_format4_byte_identical() {
+    let disk = SimDisk::new();
+    let fact = |key: &str, content: u8| Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: [content; 32],
+        adopt_as_base: true,
+    };
+    let rule = Op::AddRule {
+        conclusion: RevisionId(1).into(),
+        incidences: vec![(RevisionId(0).into(), EdgeKind::Sem)],
+        enabled: true,
+    };
+    let next = Op::AddRevision {
+        logical: LogicalId(0).into(),
+        content: [9; 32],
+        adopt_as_base: true,
+    };
+    let head = Op::SetHead {
+        logical: LogicalId(0).into(),
+        expected: RevisionId(0).into(),
+        new: RevisionId(2).into(),
+    };
+    let validate = Op::RecordValidation {
+        rule: RuleId(0).into(),
+        curvec_seen: vec![(LogicalId(0), RevisionId(2))],
+        verdict: Verdict::Verified,
+        validator: "admin".into(),
+        meta: None,
+        if_absent: false,
+    };
+    let conflict = Op::OpenArtifact {
+        ty: ArtifactType::Conflict,
+        target: RevisionId(1).into(),
+        payload_hash: [1; 32],
+    };
+    let resolve = Op::ResolveArtifact {
+        id: ArtifactId(0).into(),
+        note: None,
+    };
+    let batches: Vec<Batch> = [
+        vec![fact("a", 0), fact("b", 1)],
+        vec![rule],
+        vec![next, head],
+        vec![validate],
+        vec![conflict],
+        vec![resolve],
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(n, ops)| {
+        let mut b = Batch::new(ops);
+        b.client_txn_id = Some(txn(n as u64));
+        b
+    })
+    .collect();
+    let mut fresh = Db::default();
+    for b in &batches {
+        fresh.commit(b).unwrap();
+    }
+    assert_eq!(
+        migrate::write_format3(&disk, Path::new(DIR), &batches).unwrap(),
+        6
+    );
+    let old: Vec<_> = {
+        let rows = migrate::rows_for_test(&disk, Path::new(DIR), 3).unwrap();
+        rows.into_iter()
+            .map(|r| (r.batch_blob, r.batch_hash, r.client_hash))
+            .collect()
+    };
+    assert!(matches!(
+        Store::open(disk.clone(), Path::new(DIR), &OpenOptions::default()),
+        Err(StoreError::FormatMigrationRequired(3))
+    ));
+    let report = migrate::migrate(&disk, Path::new(DIR)).unwrap();
+    assert_eq!((report.from, report.to, report.frames), (3, 4, 6));
+    assert!(report.changed.is_empty(), "{:?}", report.changed);
+    assert!(disk.exists(&Path::new(DIR).join("log.v3.bak")));
+    let new: Vec<_> = migrate::rows_for_test(&disk, Path::new(DIR), 4)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.batch_blob, r.batch_hash, r.client_hash))
+        .collect();
+    assert_eq!(
+        old, new,
+        "batches, hashes and idempotency records unchanged"
+    );
+    let (mut store, open) =
+        Store::open(disk.clone(), Path::new(DIR), &OpenOptions::default()).unwrap();
+    assert_eq!(open.replayed, 6);
+    assert_eq!(store.db().unwrap().digest(), fresh.digest());
+    // An idempotent retry still returns the recorded result.
+    let retried = store.commit(&batches[3]).unwrap();
+    assert_eq!(retried.epoch, Epoch(4));
 }
