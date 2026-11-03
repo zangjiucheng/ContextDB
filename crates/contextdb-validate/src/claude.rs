@@ -53,6 +53,32 @@ pub struct ClaudeCli {
     /// When set, a private `CLAUDE_CONFIG_DIR` gets a copy of these login
     /// files from this directory for each run.
     pub isolated_login: Option<PathBuf>,
+    /// A file holding a long-lived subscription token (`claude
+    /// setup-token`), passed as `CLAUDE_CODE_OAUTH_TOKEN`. It must not be
+    /// readable by group or others; the token never appears in errors.
+    pub token_file: Option<PathBuf>,
+}
+/// Reads a token file, refusing one that group or others can read.
+pub fn read_token(path: &Path) -> Result<String, ValidatorError> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path)
+        .map_err(|e| ValidatorError::Failed(format!("token file {}: {e}", path.display())))?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        return Err(ValidatorError::Failed(format!(
+            "token file {} is readable by group or others (chmod 600)",
+            path.display()
+        )));
+    }
+    let token = std::fs::read_to_string(path)
+        .map_err(|e| ValidatorError::Failed(format!("token file {}: {e}", path.display())))?;
+    let token = token.trim();
+    if token.is_empty() || token.contains(char::is_whitespace) {
+        return Err(ValidatorError::Failed(format!(
+            "token file {} does not hold one token",
+            path.display()
+        )));
+    }
+    Ok(token.to_owned())
 }
 impl ClaudeCli {
     pub fn prompt_sha256() -> ContentHash {
@@ -112,9 +138,12 @@ impl ClaudeCli {
         if v.get("is_error").and_then(|b| b.as_bool()) != Some(false)
             || v.get("subtype").and_then(|s| s.as_str()) != Some("success")
         {
+            let field = |k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or("?").to_owned();
+            let text: String = field("result").chars().take(300).collect();
             return Err(ValidatorError::Failed(format!(
-                "claude reported an error: {}",
-                v.get("subtype").and_then(|s| s.as_str()).unwrap_or("?")
+                "claude reported an error ({}, {}): {text}",
+                field("subtype"),
+                field("terminal_reason")
             )));
         }
         // More than one turn means a tool was attempted; tools are off, so
@@ -138,8 +167,11 @@ impl ClaudeCli {
                 .and_then(|x| x.as_u64())
                 .map(|x| x as u32)
         };
+        // Cached prompt tokens are reported apart from `input_tokens`.
         if let (Some(i), Some(out)) = (n("input_tokens"), n("output_tokens")) {
-            o.tokens = Some((i, out));
+            let cached = n("cache_creation_input_tokens").unwrap_or(0)
+                + n("cache_read_input_tokens").unwrap_or(0);
+            o.tokens = Some((i + cached, out));
         }
         Ok(o)
     }
@@ -192,6 +224,9 @@ impl Validator for ClaudeCli {
                 cmd.env(k, v);
             }
         }
+        if let Some(f) = &self.token_file {
+            cmd.env("CLAUDE_CODE_OAUTH_TOKEN", read_token(f)?);
+        }
         let config = match &self.isolated_login {
             Some(src) => {
                 let dir = TempDir::new("login")?;
@@ -208,8 +243,18 @@ impl Validator for ClaudeCli {
             None => None,
         };
         let prompt = Self::prompt(task, &Self::nonce(task));
-        let out = run_process(&mut cmd, prompt.as_bytes(), deadline);
+        let out = run_process_raw(&mut cmd, prompt.as_bytes(), deadline);
         drop(config);
-        self.parse_envelope(&out?)
+        let (ok, stdout, stderr) = out?;
+        // claude exits nonzero with an error envelope on stdout: report it.
+        match self.parse_envelope(&stdout) {
+            Ok(o) if ok => Ok(o),
+            Ok(_) => Err(ValidatorError::Failed(failure(&stdout, &stderr))),
+            Err(e) if !ok && serde_json::from_slice::<serde_json::Value>(&stdout).is_err() => {
+                let _ = e;
+                Err(ValidatorError::Failed(failure(&stdout, &stderr)))
+            }
+            Err(e) => Err(e),
+        }
     }
 }

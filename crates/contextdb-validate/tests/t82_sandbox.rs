@@ -80,6 +80,7 @@ cat $R/reply
             model: "claude-haiku-5-5".into(),
             version: "2.1.316".into(),
             isolated_login: login,
+            token_file: None,
         }
     }
 }
@@ -329,4 +330,36 @@ fn command_validator_protocol_and_trust() {
     let sent: serde_json::Value = serde_json::from_str(&fake.read("task")).unwrap();
     assert_eq!(sent["premises"][0]["current"]["handle"], "db@2");
     assert_eq!(sent["rule"], 0);
+}
+
+/// A token file reaches the child only as CLAUDE_CODE_OAUTH_TOKEN; a file
+/// readable by group or others is refused before anything runs, and the
+/// token never appears in an error.
+#[test]
+fn t82_token_file_is_private_and_passed_by_environment() {
+    let fake = Fake::new("token");
+    fake.reply(&envelope(OK, 1));
+    let token = fake.dir.join("token");
+    std::fs::write(&token, "sk-ant-oat01-secret\n").unwrap();
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut cli = fake.cli(None);
+    cli.token_file = Some(token.clone());
+    match run(&cli, &task(), soon()) {
+        Err(ValidatorError::Failed(m)) => {
+            assert!(m.contains("chmod 600"), "{m}");
+            assert!(!m.contains("secret"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.read("argv"), "", "nothing ran");
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    run(&cli, &task(), soon()).unwrap();
+    assert!(
+        fake.read("env")
+            .contains("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-secret\n")
+    );
+    assert!(
+        !fake.read("argv").contains("secret"),
+        "never on the command line"
+    );
 }

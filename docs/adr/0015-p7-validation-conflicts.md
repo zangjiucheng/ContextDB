@@ -294,6 +294,15 @@ Implementations:
       settings may still load. `ctx validators status` says so, and the
       threat row in SPEC §10 lists it.
     - Tools, MCP and project settings stay off either way.
+  - **Login (implementation note, milestone 3).** On the owner's machine the
+    standalone CLI has no login of its own; the interactive session's
+    credentials do not reach child processes, and a nested `claude -p`
+    cannot read the Keychain. The adapter therefore takes `token_file`: a
+    long-lived subscription token from `claude setup-token` (still D1, not an
+    API key), passed only as `CLAUDE_CODE_OAUTH_TOKEN`. A file readable by
+    group or others is refused, and the token never appears in argv or
+    errors (T82). This also works for `ctxd` under launchd. Smoke check: one
+    real call returned `Conflict` with allowlisted evidence in 4 s.
   - **Tests (T82):** the exact argv and environment; that no hook ran and no
     memory file was read; an injection fixture in
     which a body tells the model to call a tool or open a Conflict; a fake

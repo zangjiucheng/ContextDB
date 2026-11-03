@@ -207,6 +207,32 @@ pub(crate) fn run_process(
     stdin: &[u8],
     deadline: Instant,
 ) -> Result<Vec<u8>, ValidatorError> {
+    let (ok, stdout, stderr) = run_process_raw(cmd, stdin, deadline)?;
+    if !ok {
+        return Err(ValidatorError::Failed(failure(&stdout, &stderr)));
+    }
+    Ok(stdout)
+}
+/// The tails of a failed process's output, stderr first.
+pub(crate) fn failure(stdout: &[u8], stderr: &[u8]) -> String {
+    let tail = |b: &[u8]| {
+        let t = String::from_utf8_lossy(b);
+        let t: Vec<char> = t.trim().chars().collect();
+        t[t.len().saturating_sub(400)..].iter().collect::<String>()
+    };
+    format!(
+        "exit nonzero; stderr: {}; stdout: {}",
+        tail(stderr),
+        tail(stdout)
+    )
+}
+/// Like [`run_process`], but returns (zero exit, stdout, stderr) so an
+/// adapter can read a structured error from stdout.
+pub(crate) fn run_process_raw(
+    cmd: &mut Command,
+    stdin: &[u8],
+    deadline: Instant,
+) -> Result<(bool, Vec<u8>, Vec<u8>), ValidatorError> {
     use std::os::unix::process::CommandExt;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -252,22 +278,10 @@ pub(crate) fn run_process(
     let _ = writer.join();
     let stdout = reader.join().unwrap_or_default();
     let stderr = err_reader.join().unwrap_or_default();
-    if !status.success() {
-        let tail = String::from_utf8_lossy(&stderr);
-        let tail: String = tail
-            .chars()
-            .rev()
-            .take(400)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        return Err(ValidatorError::Failed(format!("{status}: {tail}")));
-    }
     if stdout.len() > MAX_STDOUT_BYTES {
         return Err(ValidatorError::Malformed("stdout over 1 MiB".into()));
     }
-    Ok(stdout)
+    Ok((status.success(), stdout, stderr))
 }
 
 #[cfg(test)]

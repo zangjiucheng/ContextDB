@@ -41,6 +41,7 @@ fn main() {
             .unwrap_or_else(|| "claude-haiku-5-5".into()),
         version: "smoke".into(),
         isolated_login: None,
+        token_file: std::env::args().nth(3).map(Into::into),
     };
     let start = Instant::now();
     let got = run(&cli, &task, Instant::now() + Duration::from_secs(120));
