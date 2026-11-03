@@ -245,6 +245,89 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
     Ok(())
 }
 /// `ctx branch create|list|archive <dir> …` (ADR 0013 §10).
+/// `ctx validators status|reload|check <dir>` and `ctx validators retry
+/// <dir> <job-key>|--failed` (ADR 0015 §4.4).
+pub fn validators(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
+    use contextdb_proto::proto::ValidatorsAction;
+    let action = match sub {
+        "status" => ValidatorsAction::Status,
+        "reload" => ValidatorsAction::Reload,
+        "check" => ValidatorsAction::Check,
+        "retry" => match args.first().map(String::as_str) {
+            Some("--failed") => ValidatorsAction::Retry {
+                key: None,
+                failed: true,
+            },
+            Some(hex) => ValidatorsAction::Retry {
+                key: Some(parse_key(hex)?),
+                failed: false,
+            },
+            None => return Err("usage: ctx validators retry <dir> <job-key>|--failed".into()),
+        },
+        _ => {
+            return Err(
+                "usage: ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed"
+                    .into(),
+            );
+        }
+    };
+    let mut c = connect(dir)?;
+    let env = call(&mut c, Request::Validators { action })?;
+    let Response::Validators { report } = env.response else {
+        return Err(format!("unexpected response {:?}", env.response));
+    };
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let line = |v: &[contextdb_proto::proto::Counter]| {
+        v.iter()
+            .map(|c| format!("{}={}", c.name, c.value))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if report.validators.is_empty() {
+        println!(
+            "validators: none configured ({}/validators.toml)",
+            dir.display()
+        );
+    }
+    for v in &report.validators {
+        println!("validator {} [{:?}] {}", v.name, v.kind, v.version);
+    }
+    if let Some(e) = &report.error {
+        println!("config error (previous configuration kept): {e}");
+    }
+    println!("limits: {}", line(&report.limits));
+    println!("jobs: {}", line(&report.jobs));
+    println!("stats: {}", line(&report.stats));
+    for j in &report.failed {
+        println!(
+            "failed {} branch={} rule={} gen={} attempts={}: {}",
+            hex(&j.key),
+            j.branch.0,
+            j.rule.0,
+            j.generation,
+            j.attempts,
+            j.last_error.as_deref().unwrap_or("")
+        );
+    }
+    if sub == "retry" {
+        println!("requeued {}", report.retried);
+    }
+    for l in &report.check {
+        println!("check: {l}");
+    }
+    Ok(())
+}
+fn parse_key(hex: &str) -> Result<[u8; 32], String> {
+    let bad = || format!("job key must be 64 hex digits: {hex}");
+    if hex.len() != 64 {
+        return Err(bad());
+    }
+    let mut out = [0u8; 32];
+    for (n, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * n..2 * n + 2], 16).map_err(|_| bad())?;
+    }
+    Ok(out)
+}
 pub fn branch(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
     let mut c = connect(dir)?;
     let name = || args.first().cloned().ok_or("missing branch name");

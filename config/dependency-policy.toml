@@ -15,9 +15,11 @@ reviewed_external = ["rusqlite", "blake3", "nix"]
 # ADR 0008 §1: ctxd uses std threads (no async runtime), nix for sockets, peer
 # credentials, statfs and process checks, arc-swap for lock-free snapshot
 # publication, and blake3 for payload hashes. IPC uses the model's Wire
-# encoding, so serde stays out of the daemon.
+# encoding, so serde stays out of the daemon. ADR 0015 §4.4: rusqlite
+# (bundled, as in contextdb-store) for the operational job table
+# jobs.sqlite, which is never truth and never derived state.
 [daemon]
-reviewed_external = ["nix", "arc-swap", "blake3"]
+reviewed_external = ["nix", "arc-swap", "blake3", "rusqlite"]
 
 # ADR 0008 §10: hand-rolled JSON-RPC over stdio (owner decision).
 [mcp]
@@ -50,9 +52,10 @@ reviewed_external = ["blake3", "tree-sitter", "tree-sitter-rust", "tree-sitter-t
 
 # ADR 0015 §4.1: validator adapters. serde_json for the Command protocol and
 # the claude JSON envelope, sha2 for prompt_sha256 (SPEC P7), blake3 for
-# nonces, nix (signal) to kill a validator's process group at its deadline.
+# nonces, nix (signal) to kill a validator's process group at its deadline,
+# toml (parse only, no serde_derive) for validators.toml (§4.4).
 [validate]
-reviewed_external = ["serde_json", "sha2", "blake3", "nix"]
+reviewed_external = ["serde_json", "sha2", "blake3", "nix", "toml"]
 
 [light]
 crates = ["contextdb-proto", "contextdb-hooks", "contextdb-anchors", "contextdb-symbols", "contextdb-validate"]

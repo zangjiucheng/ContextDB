@@ -353,6 +353,92 @@ pub enum Request {
         certify: Vec<String>,
         client_txn_id: Option<[u8; 16]>,
     },
+    /// `ctx validators …` (ADR 0015 §4.4). Admin only.
+    Validators {
+        action: ValidatorsAction,
+    },
+}
+/// What `ctx validators` asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidatorsAction {
+    Status,
+    /// Re-reads `validators.toml`.
+    Reload,
+    /// Requeues one job by key, or every `Failed` one, with the generation
+    /// bumped.
+    Retry {
+        key: Option<ContentHash>,
+        failed: bool,
+    },
+    /// Runs each configured validator on a fixed probe task.
+    Check,
+}
+impl Wire for ValidatorsAction {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Status => 0u8.encode(o),
+            Self::Reload => 1u8.encode(o),
+            Self::Retry { key, failed } => {
+                2u8.encode(o);
+                key.encode(o);
+                failed.encode(o);
+            }
+            Self::Check => 3u8.encode(o),
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Status,
+            1 => Self::Reload,
+            2 => Self::Retry {
+                key: Wire::decode(i)?,
+                failed: Wire::decode(i)?,
+            },
+            3 => Self::Check,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// One configured validator in a report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatorInfo {
+    pub name: String,
+    pub kind: crate::docs::ValidatorKind,
+    pub version: String,
+}
+/// One job row in a report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobInfo {
+    pub key: ContentHash,
+    pub branch: BranchId,
+    pub rule: RuleId,
+    pub curvec: HeadVector,
+    pub generation: u32,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+/// A named counter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Counter {
+    pub name: String,
+    pub value: u64,
+}
+/// `ctx validators` output.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ValidatorsReport {
+    pub validators: Vec<ValidatorInfo>,
+    /// workers, lease seconds, attempts, LLM calls per hour.
+    pub limits: Vec<Counter>,
+    /// Job rows per state.
+    pub jobs: Vec<Counter>,
+    pub failed: Vec<JobInfo>,
+    pub stats: Vec<Counter>,
+    /// The last `validators.toml` error; the previous configuration stays.
+    pub error: Option<String>,
+    /// Rows a retry requeued.
+    pub retried: u64,
+    /// `check`: one line per validator.
+    pub check: Vec<String>,
 }
 /// A payload's content hash (SPEC §6.1 contract 4), for clients that send
 /// ops with their bodies (`Commit`, `WhatIf`).
@@ -567,6 +653,9 @@ pub enum Response {
     Refused {
         validation: Validation,
     },
+    Validators {
+        report: ValidatorsReport,
+    },
 }
 /// Every response names the snapshot epoch it was computed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -576,6 +665,31 @@ pub struct Envelope {
 }
 
 wire_struct!(Dep { target, kind });
+wire_struct!(ValidatorInfo {
+    name,
+    kind,
+    version
+});
+wire_struct!(JobInfo {
+    key,
+    branch,
+    rule,
+    curvec,
+    generation,
+    attempts,
+    last_error
+});
+wire_struct!(Counter { name, value });
+wire_struct!(ValidatorsReport {
+    validators,
+    limits,
+    jobs,
+    failed,
+    stats,
+    error,
+    retried,
+    check
+});
 wire_struct!(Item {
     logical,
     key,
@@ -1126,6 +1240,10 @@ impl Wire for Request {
                 certify.encode(o);
                 client_txn_id.encode(o);
             }
+            Self::Validators { action } => {
+                32u8.encode(o);
+                action.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1302,6 +1420,9 @@ impl Wire for Request {
                 certify: Wire::decode(i)?,
                 client_txn_id: Wire::decode(i)?,
             },
+            32 => Self::Validators {
+                action: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -1458,6 +1579,10 @@ impl Wire for Response {
                 24u8.encode(o);
                 validation.encode(o);
             }
+            Self::Validators { report } => {
+                25u8.encode(o);
+                report.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1558,6 +1683,9 @@ impl Wire for Response {
             },
             24 => Self::Refused {
                 validation: Wire::decode(i)?,
+            },
+            25 => Self::Validators {
+                report: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -1762,6 +1890,15 @@ mod tests {
                 batch: Batch::new(Vec::new()),
             },
             Request::Shutdown,
+            Request::Validators {
+                action: ValidatorsAction::Retry {
+                    key: Some([4; 32]),
+                    failed: false,
+                },
+            },
+            Request::Validators {
+                action: ValidatorsAction::Check,
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),

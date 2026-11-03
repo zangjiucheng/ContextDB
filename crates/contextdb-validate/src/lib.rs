@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 pub mod claude;
 pub mod command;
+pub mod config;
 pub mod mock;
 
 /// Largest total body size of a task; larger tasks fail as `TooLarge`
@@ -284,6 +285,21 @@ pub(crate) fn run_process_raw(
     Ok((status.success(), stdout, stderr))
 }
 
+/// `program --version`'s first line within 10 s, for the metadata's
+/// `version` (`unknown` when it cannot be read).
+pub fn program_version(program: &std::path::Path) -> String {
+    let mut cmd = Command::new(program);
+    cmd.arg("--version");
+    match run_process(&mut cmd, &[], Instant::now() + Duration::from_secs(10)) {
+        Ok(out) => String::from_utf8_lossy(&out)
+            .lines()
+            .next()
+            .map(|l| l.trim().chars().take(80).collect())
+            .filter(|l: &String| !l.is_empty())
+            .unwrap_or_else(|| "unknown".into()),
+        Err(_) => "unknown".into(),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

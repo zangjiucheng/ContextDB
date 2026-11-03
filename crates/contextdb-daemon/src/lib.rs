@@ -8,6 +8,8 @@ pub mod publish;
 #[cfg(not(loom))]
 pub mod actor;
 #[cfg(not(loom))]
+pub mod jobs;
+#[cfg(not(loom))]
 pub mod lease;
 #[cfg(not(loom))]
 pub use contextdb_proto::proto;
@@ -15,6 +17,8 @@ pub use contextdb_proto::proto;
 pub mod server;
 #[cfg(not(loom))]
 pub mod service;
+#[cfg(not(loom))]
+pub mod validators;
 
 #[cfg(not(loom))]
 mod anchors;

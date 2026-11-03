@@ -32,6 +32,7 @@ fn main() {
         }],
     };
     let cli = ClaudeCli {
+        name: "claude-cli".into(),
         program: std::env::args()
             .nth(1)
             .unwrap_or_else(|| "claude".into())

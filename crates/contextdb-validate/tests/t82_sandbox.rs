@@ -76,6 +76,7 @@ cat $R/reply
     }
     fn cli(&self, login: Option<PathBuf>) -> ClaudeCli {
         ClaudeCli {
+            name: "claude-cli".into(),
             program: self.program.clone(),
             model: "claude-haiku-5-5".into(),
             version: "2.1.316".into(),

@@ -41,6 +41,9 @@ Usage (via a running ctxd, admin socket):
                                        like their git branch)
   ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K ...]
                                        merge a branch (default into main)
+  ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed
+                                       P7 validator jobs (<dir>/validators.toml;
+                                       check runs each validator on a probe task)
 
 Hooks and gating (P4, ADR 0010):
   ctx check <dir> (--session HEX | --harness H --key K) [--agent A] [--strict]
@@ -218,6 +221,10 @@ fn run(args: &[String]) -> Result<u8, String> {
             daemon::branch(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
         }
         Some("merge") => daemon::merge(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
+        Some("validators") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            daemon::validators(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
+        }
         _ => run_p3(args).map(|()| 0),
     }
 }

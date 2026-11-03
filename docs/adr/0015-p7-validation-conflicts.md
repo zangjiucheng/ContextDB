@@ -436,6 +436,20 @@ Runtime discovery applies the same rules.
 `ctx validators retry <key | --failed>` requeues by hand and increments the
 generation, so its commit is not answered by an earlier attempt's result.
 
+**Implementation notes (milestone 4).**
+- `jobs.sqlite` is opened by `ctxd` through `rusqlite` (bundled, as in
+  `contextdb-store`); the daemon's dependency policy lists it. `validators.toml`
+  is parsed in `contextdb-validate` (`toml`, parse only).
+- Discovery reads each new op_log row's batch and result. It looks at the
+  current snapshot, not the row's epoch: a rule that changed again later is
+  also listed by the later row. A row it cannot read triggers a full rescan.
+- Until the milestone 5 projection exists, the open-review check is a scan
+  of the branch's open PendingReviews by the LLM principal. Within one job
+  generation, `TxnStatus` answers first, so the scan only matters across
+  generations.
+- At shutdown, discovery is joined, but a worker inside a validator call is
+  not waited for. Its row stays `Running` and is recovered at the next start.
+
 **Limits** (`validators.toml`, defaults):
 - 2 workers;
 - a 120 s lease;

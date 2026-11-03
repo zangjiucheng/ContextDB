@@ -215,6 +215,10 @@ ctx diff <dir> <from> <to>
 ctx validate <dir> <key@rev> verified|rejected [--yes]
                                  # controlled validation: shows the current semantic vectors first;
                                  # automation may pass --yes, still admin-only with a curvec CAS
+ctx validators status|reload|check <dir>
+ctx validators retry <dir> <job-key>|--failed
+                                 # P7 validator jobs; none run until <dir>/validators.toml lists a
+                                 # validator. LLM validators only open PendingReviews.
 ctx shutdown <dir>
 ```
 

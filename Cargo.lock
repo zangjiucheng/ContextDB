@@ -169,10 +169,12 @@ dependencies = [
  "contextdb-model",
  "contextdb-proto",
  "contextdb-store",
+ "contextdb-validate",
  "loom",
  "nix",
  "rand_chacha",
  "rand_core",
+ "rusqlite",
 ]
 
 [[package]]
@@ -279,6 +281,7 @@ dependencies = [
  "nix",
  "serde_json",
  "sha2",
+ "toml",
 ]
 
 [[package]]

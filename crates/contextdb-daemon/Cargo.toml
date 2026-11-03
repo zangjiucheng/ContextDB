@@ -16,9 +16,11 @@ contextdb-model.workspace = true
 contextdb-core.workspace = true
 contextdb-store.workspace = true
 contextdb-proto.workspace = true
+contextdb-validate.workspace = true
 nix = { version = "=0.30.1", default-features = false, features = ["fs", "socket", "user", "process", "signal"] }
 arc-swap = "=1.9.3"
 blake3 = "=1.8.7"
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
 
 [dev-dependencies]
 rand_chacha = "=0.9.0"

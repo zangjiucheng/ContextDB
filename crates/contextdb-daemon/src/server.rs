@@ -121,6 +121,12 @@ impl Daemon {
         if let Some(timeout) = options.anchor_live_timeout {
             service.set_anchor_live_timeout(timeout);
         }
+        // P7 jobs (ADR 0015 §4.4): discovery always runs; no validator is
+        // called unless validators.toml configures one.
+        let scheduler = crate::validators::Scheduler::open(service.actor.clone(), &dir)
+            .map_err(io::Error::other)?;
+        scheduler.start()?;
+        let _ = service.validators.set(scheduler);
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;
@@ -222,7 +228,11 @@ impl Daemon {
         if self.cleaned.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Session events first, then the store and its lock (review finding 5).
+        // Validator jobs, then session events, then the store and its lock
+        // (review finding 5).
+        if let Some(s) = self.service.validators.get() {
+            s.stop();
+        }
         self.service.stop_writer();
         let _ = self
             .service

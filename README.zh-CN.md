@@ -216,6 +216,10 @@ ctx why|why-not|impact <dir> <key[@rev]>
 ctx diff <dir> <from> <to>
 ctx validate <dir> <key@rev> verified|rejected [--yes]
                                  # 受控验证：先列出当前语义向量；自动流程可用 --yes，仍只走 admin 与 curvec CAS
+ctx validators status|reload|check <dir>
+ctx validators retry <dir> <job-key>|--failed
+                                 # P7 验证任务；<dir>/validators.toml 未配置验证器时什么都不调用；
+                                 # LLM 验证器只开 PendingReview
 ctx shutdown <dir>
 ```
 

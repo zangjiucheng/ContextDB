@@ -143,6 +143,8 @@ pub struct Service<D: Durability> {
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     recall: Arc<Mutex<RecallIndex>>,
     stop: Arc<AtomicBool>,
+    /// The P7 job scheduler, when the daemon runs one (ADR 0015 §4.4).
+    pub validators: std::sync::OnceLock<Arc<crate::validators::Scheduler<D>>>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -390,6 +392,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
             stop,
+            validators: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
         let broken = service.replay(events);
@@ -1191,9 +1194,28 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 self.commit(id, blobs, batch, None)
             }
+            Request::Validators { action } => {
+                drop(snap);
+                if id.channel != Channel::Admin {
+                    return err(
+                        "ChannelRestricted",
+                        "ctx validators requires the admin socket",
+                    );
+                }
+                match self.validators.get() {
+                    Some(s) => match s.report(action) {
+                        Ok(report) => Response::Validators { report },
+                        Err(e) => err("InvalidArgument", e),
+                    },
+                    None => err("Unavailable", "this daemon runs no validator jobs"),
+                }
+            }
             Request::Shutdown => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "shutdown requires the admin socket");
+                }
+                if let Some(s) = self.validators.get() {
+                    s.stop();
                 }
                 self.stop_writer();
                 match self.actor.request(|reply| Message::Shutdown { reply }) {

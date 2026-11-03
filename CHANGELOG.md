@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **P7 milestone 4: validator jobs** (ADR 0015 §4.2–§4.4).
+  - `ctxd` keeps a durable job table, `<data>/jobs.sqlite`, with one row per `(branch, rule, curvec)`. Claiming a row is one SQLite update, so of several workers exactly one gets it (T53).
+  - Discovery follows the op_log: head moves of Sem premises, new and re-enabled rules, recorded validations, and a rescan on branch ops and at start-up. The same rule pending on two branches is two jobs (T84).
+  - Workers commit on the admin channel with one `client_txn_id` per job generation:
+    - after a crash, a job whose commit already happened is marked done without calling the validator again;
+    - a late result after its lease expired commits nothing more;
+    - a vector that moved during validation supersedes the job, and the new vector becomes a new job (T49).
+  - Trusted validators record a verdict (`if_absent`). LLM validators only open a non-gating PendingReview, and a batch from the LLM principal that carries a `RecordValidation` is refused before it is sent (T50, 10,000-case property). An open review for the same key is not repeated, unless a manual retry asks for it.
+  - **No validator is configured by default**, so nothing is called until `<data>/validators.toml` lists one. It sets the limits (2 workers, 120 s lease, 3 attempts, 200 LLM calls per hour) and the `claude` or `command` validators, each with optional branch, kind and scope filters.
+  - New admin command `ctx validators status|reload|check <dir>`, and `ctx validators retry <dir> <job-key>|--failed`. `check` runs each validator once on a fixed probe task.
 - **P7 milestone 3: validator adapters** (new crate `contextdb-validate`, ADR 0015 §4.1).
   - The `Validator` trait judges one task: a Sem rule's conclusion with each premise's asserted and current revision.
   - Every outcome passes the same checks. Evidence may only cite handles shown in the task. The rationale is capped at 2 KiB. Tasks over 256 KiB fail rather than being judged on truncated bodies.

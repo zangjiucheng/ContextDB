@@ -240,6 +240,43 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
         let local = self.local(Kind::Rule, j.0)?;
         Some(self.b.db.rules.enabled[local as usize])
     }
+    /// A visible rule's semantic state, conclusion and Sem vectors, with
+    /// global ids (P7 job discovery and tasks).
+    pub fn rule_semantic(&self, j: RuleId) -> Option<crate::RuleSemantic> {
+        let local = self.local(Kind::Rule, j.0)?;
+        let r = self.b.db.rule_semantic(RuleId(local))?;
+        Some(crate::RuleSemantic {
+            conclusion: self.global_revision(r.conclusion),
+            asserted: self.g_vector(&r.asserted),
+            current: self.g_vector(&r.current),
+            ..r
+        })
+    }
+    /// Visible rules with a Sem incidence on logical `l` (global ids).
+    pub fn sem_rules_of(&self, l: LogicalId) -> Vec<RuleId> {
+        let Ok(local) = self.ll(l) else {
+            return Vec::new();
+        };
+        let mut out: Vec<RuleId> = (self.b.db.sem_rules_of(local).into_iter())
+            .map(|j| self.global_rule(j))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+    /// Every enabled rule whose semantic state is `Pending`, with its
+    /// current Sem vector (global ids): the start-up job scan.
+    pub fn pending_rules(&self) -> Vec<(RuleId, HeadVector)> {
+        let db = &self.b.db;
+        let mut out: Vec<(RuleId, HeadVector)> = (0..db.rule_count() as u32)
+            .filter_map(|j| {
+                let r = db.rule_semantic(RuleId(j))?;
+                (r.enabled && r.sem == SemState::Pending)
+                    .then(|| (self.global_rule(RuleId(j)), self.g_vector(&r.current)))
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
     pub fn is_visible_revision(&self, r: RevisionId) -> bool {
         self.local(Kind::Revision, r.0).is_some()
     }

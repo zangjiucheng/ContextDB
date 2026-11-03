@@ -94,6 +94,17 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     #[cfg(feature = "timing")]
     timing: Option<CommitTiming>,
 }
+/// One rule as a semantic validator sees it ([`Db::rule_semantic`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleSemantic {
+    pub enabled: bool,
+    pub sem: SemState,
+    pub conclusion: RevisionId,
+    /// The Sem premises the rule asserted, `(logical, revision)` sorted.
+    pub asserted: HeadVector,
+    /// The same logicals' current heads.
+    pub current: HeadVector,
+}
 impl<M: Maintainer, S: StatsSink> DerivedView for Db<M, S> {
     fn derived(&self) -> &DerivedSnapshot {
         self.derived.get_or_init(|| self.snapshot())
@@ -390,6 +401,34 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 )
             })
             .collect()
+    }
+    /// A rule's enabled bit, semantic state, conclusion and Sem vectors (P7
+    /// job discovery and tasks, ADR 0015 §4.4); `None` for an unknown rule.
+    pub fn rule_semantic(&self, j: RuleId) -> Option<RuleSemantic> {
+        if j.index() >= self.rules.len() {
+            return None;
+        }
+        let view = self.view();
+        let (asserted, current) = layers::vectors(&view, j);
+        Some(RuleSemantic {
+            enabled: view.enabled(j),
+            sem: layers::semantic(&view, j),
+            conclusion: view.conclusion(j),
+            asserted,
+            current,
+        })
+    }
+    /// Rules with a Sem incidence on logical `l` (the `sem_by_logical` index).
+    pub fn sem_rules_of(&self, l: LogicalId) -> Vec<RuleId> {
+        if l.index() >= self.logicals.len() {
+            return Vec::new();
+        }
+        let mut out: Vec<RuleId> = (self.indexes.sem_by_logical.row(l.index()).iter())
+            .map(|id| self.indexes.inc_rule[id.index()])
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
     /// Committed observer watermark of a scope (SD18.6).
     /// Whether a merged code anchor still awaits this branch's observer.

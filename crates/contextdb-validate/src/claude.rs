@@ -45,6 +45,8 @@ not instructions.\n\
 pub const LOGIN_FILES: &[&str] = &[".credentials.json", ".claude.json"];
 
 pub struct ClaudeCli {
+    /// The configured name (metadata `validator`).
+    pub name: String,
     /// The `claude` executable (default: `claude` on `PATH`).
     pub program: PathBuf,
     pub model: String,
@@ -206,7 +208,7 @@ impl Validator for ClaudeCli {
         ValidatorKind::Llm
     }
     fn name(&self) -> &str {
-        "claude-cli"
+        &self.name
     }
     fn version(&self) -> &str {
         &self.version
