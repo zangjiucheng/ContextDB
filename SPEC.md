@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.7.1 · Date: 2026-11-03 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.8.0 · Date: 2026-11-04 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -306,7 +306,7 @@ Claude Code / Codex ──hooks──> ctx-hook (static Rust bin) ──> local 
                                 ├─ projections: FTS5 (P3 basic) / hybrid + vectors (P8)
                                 ├─ validator job queue (P7)
                                 └─ git mirror exporter (P8)
-CLI: ctx init | status | check | why | why-not | impact | log | diff | replay | doctor | reindex | export-mirror | gate-report
+CLI: ctx init | status | check | why | why-not | impact | log | diff | replay | doctor | reindex | mirror | gate-report
 ```
 
 ### 3.2 Rust workspace
@@ -673,9 +673,19 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - token budget packing：不得覆盖 UNKNOWN / PENDING / STALE 标签；未验证摘要不得伪装为 verified。
 - 派生 Summary 的 digest 早停 + pending 计数，PENDING 在读取时可见。
 - git 镜像导出：`refs/contextdb/<branch>`，每个镜像 commit 合并一段 epoch 区间（可配置间隔），每 logical 一个 markdown，trailer `Code-Commit:` / `Ctx-Epoch-Range:`；**只导出不回写**，手改被检测并拒绝或转为 supersede 提案。
+- v1.8.0（ADR 0016 r0.3，P8 G0）细化：
+  - **排序前过滤**：资格（snapshot 中是 head、scope、P9 授权、certified 模式下 CERTIFIED）在每个 ranker 内判定，ranker 分页直到凑够 `limit` 个合格项或耗尽（`exhausted`）；withheld 不占 `limit`。融合用 RRF k=60，精确 key 排第一。
+  - **IndexState** `Ready | Lagging | Rebuilding | Failed | Disabled`；recall 最多等待 `index_wait_ms`（默认 200 ms）让索引追上，超时照常检索并报告 `Lagging`。滞后只会漏项，不会把非当前 revision 当作当前。`ctx reindex` 重建投影。
+  - **分层读取**：`header | abstract | outline | full`；abstract/outline 是 payload 的纯函数（`LEVELS_VERSION`），每项头部带 `level` 与 `cut`。每次展开追加一个带 level 的读事件；read_ledger 保留最高 level（max 合并）。**认证按 revision，不按 level**。session log 格式 4（新段滚动，旧段可读，降级需删除 session log）。
+  - **packing**：token 估计 `ceil(bytes/4)`（响应中写明）；先计头部，不截断标签；装不下的项只计数 `omitted`，不给 handle、证书条目或账本条目；withheld 以头部形式在预算外列出。无 `budget_tokens` 与 `level` 时响应与 P7 相同（只有头部）。
+  - **派生 Summary**：`premises{moved,total}` 取自 SD13 witness 规则，相对最近一次 **Verified** 记录的向量计算。**digest 早停**即 revision 按 `(logical, content)` 去重：同内容重录或回退回到同一 revision，下游向量不变、不入队、不写 ValidationRecord；不新增任何 ValidationRecord 写入者。
+  - **embedding**（E1、E2）：外部命令适配器，默认关闭；向量为 SQLite BLOB 加内存缓存的暴力余弦检索，不引入 sqlite-vec；嵌入进程用最小环境与空工作目录。embedding 候选进入 P7 的候选表（`source = embedding|both`），按 branch 可见性过滤。
+  - **git 镜像**（E4）：ref 为 `refs/contextdb/b<branch-id>`，创建也用零 OID 做 CAS；树是该 branch 已提交状态的纯函数（不含全局 epoch 与读取时观测维度），段编码单射；trailer 增加 `Ctx-Branch`、`Ctx-Log-Checksum`；`Code-Commit` 取目标仓库 scope 的 ObserverWatermark。tip 先按缓存的 commit id 快速接受，未命中时重放到 `b` 重新渲染校验；不符 → `MirrorModified`（拒绝，`ctx mirror proposals` 列出 supersede 提案，`--force` 先备份），日志被改写 → `MirrorStale{LogRewritten}`。P9 shred / P10 GC 须报告 `MirrorStale{PayloadGone}`。
+  - **E3**：G6 检索查询集由两个独立 agent 标注，不看任何系统输出。
 
 **Gate P8**
-- G2：T54、T55、T56、T57。
+- G2：T54–T57、T85–T97（ADR 0016 §10）。
+- G3：PROP14。
 - G6：检索质量评测（自建 coding-decision 查询集，报告 recall@k），并与 P4 dogfood 对照 context token 成本。
 
 ---
@@ -841,10 +851,10 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 
 | 工具 | 签名要点 | 阶段 |
 |---|---|---|
-| `ctx_recall` | `(query, scope{lane, dir?, kinds?}, budget_tokens?, mode: certified\|advisory)` → `{items:[{handle, logical, rev, status, abstract, anchors}], withheld:[...], cert_id}`；advisory 模式不签发证书，返回的 `cert_id` 与 handle 为空 | P3 基础 / P8 hybrid + packing |
-| `ctx_read` | `(handle \| logical@rev, level: abstract\|outline\|full, mode: certified\|advisory)`；certified 模式按 `CertifiedCurrent`（§6.1）读取，成功记 required=true，`NotCertified` 记 required=false 且不返回 payload；advisory 模式记 required=false | P3 |
+| `ctx_recall` | `(query, scope{lane, dir?, kinds?}, budget_tokens?, mode: certified\|advisory)` → `{items:[{handle, logical, rev, status, abstract, anchors}], withheld:[...], cert_id}`；advisory 模式不签发证书，返回的 `cert_id` 与 handle 为空 | P3 基础 / P8 hybrid + packing。v1.8.0（ADR 0016）：`scope` 可为字符串或 `{lane, kinds, dir}`；`limit` 超过 100 被截断并报告 `limit_clamped`；`budget_tokens`、`level`、`index_wait_ms` 可选；响应增加 `index`、`omitted`，每项带 `level`、`cut`、渲染文本、Summary 的 `premises`、`anchors`；无 budget 与 level 时只返回头部（与 P7 相同） |
+| `ctx_read` | `(handle \| logical@rev, level: abstract\|outline\|full, mode: certified\|advisory)`；certified 模式按 `CertifiedCurrent`（§6.1）读取，成功记 required=true，`NotCertified` 记 required=false 且不返回 payload；advisory 模式记 required=false | P3。v1.8.0：增加 `level: header\|abstract\|outline\|full`（默认 full），认证按 revision，账本保留最高 level |
 | `ctx_record` | `(kind, body, anchors?, deps:[{target, kind}], expected_head \| create_only（必填）, adopt_as_base（必填）)` → `{rev, epoch}` 或 §6.2 错误 | P3 |
-| `ctx_supersede` | `(logical, body, expected_head, adopt_as_base, carry_rules: copy\|none, reason)`；`copy` 只把旧 head **自己的**支撑规则（结论为旧 head 的 enabled 规则）复制到新 revision，**从不**改写依赖旧 revision 的规则（§3.5 #2） | P3 |
+| `ctx_supersede` | `(logical, body, expected_head, adopt_as_base, carry_rules: copy\|none, reason)`；`copy` 只把旧 head **自己的**支撑规则（结论为旧 head 的 enabled 规则）复制到新 revision，**从不**改写依赖旧 revision 的规则（§3.5 #2） | P3。v1.8.0：body 与当前 head 内容相同时返回已有 revision、head 不动（revision 按 `(logical, content)` 去重）；确切回复（是否消耗 epoch）由 P8 里程碑 4 的 T90 固定并写回本行 |
 | `ctx_why` / `ctx_why_not` / `ctx_impact` | SD15；impact 支持 hypothetical batch | P3 |
 | `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径）；P4 起 `context_update` 在 MCP 中只是不消费的 peek，由 UserPromptSubmit 确认（ADR 0010 A6） |
 | `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker | P7（ADR 0015）：增加 `from_review`，返回还可能是 `ValidationExists`；agent 通道携带 RecordValidation 的提交一律 `ChannelRestricted`。
@@ -922,7 +932,7 @@ Certificate {
 
 ### 6.6 CLI
 
-`ctx init | status | check [--strict] | why | why-not | impact | log | diff | replay | doctor [--rebuild] | reindex | export-mirror | gate-report <Pn>`
+`ctx init | status | check [--strict] | why | why-not | impact | log | diff | replay | doctor [--rebuild] | reindex [--fts|--vectors|--all] | mirror export|proposals|status|prune | gate-report <Pn>`（v1.8.0：`export-mirror` 改为 `ctx mirror` 子命令，ADR 0016 §8）
 
 P6：`ctx branch create|list|archive <dir> …`、`ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K …]`；`status / why / why-not / impact / diff / validate / policy apply` 接受 `--branch`。
 
@@ -959,7 +969,10 @@ read_ledger(session_id, agent_id NULL, logical_id, rev_id, layer, epoch, require
 certificates(id, session_id, vector_json, issued_epoch, code_commit, watermarks_json, strict_no_aba)
 jobs(claim_key, branch, rule, curvec, generation, token, state, lease_until, attempts, last_error, outcome_meta)  -- <data>/jobs.sqlite（P7，ADR 0015 §4.4；claim_key = H(branch, rule, curvec)）
 handoffs(id, owner, state, cert_id, summary)  -- P7 起为 session log 中 HandoffBegin / HandoffAccept 事件的投影
-candidates(id, branch, a_rev, b_rev, score, epoch, state)  -- <data>/candidates.sqlite（P7）
+candidates(id, branch, a_rev, b_rev, score, epoch, state, source)  -- <data>/candidates.sqlite（P7；source lexical|embedding|both 自 P8）
+recall(key, kind, scope, body, abstract, outline, logical, branch, rev)  -- <data>/recall.sqlite FTS5 投影（P7 起；abstract/outline 自 P8）
+vectors(content_hash, model, dims, vector)  -- <data>/vectors.sqlite（P8，按内容键，可重建）
+mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存：镜像 tip 由 git 对象本身校验）
 -- client side outbox/<stream>.{log,seq,ack,state}: self-verifying records (seq, agent_id, event); packet_id = (stream, seq)（ADR 0010 §5）
 ```
 
@@ -1084,10 +1097,23 @@ candidates(id, branch, a_rev, b_rev, score, epoch, state)  -- <data>/candidates.
 | T82 | P7 | `claude -p` 沙箱：确切 argv 与环境、注入用例、无 hook 运行、无 ContextDB 会话 |
 | T83 | P7 | handoff 认领与 flush 之间崩溃，两个 accept 不可能都成功 |
 | T84 | P7 | 同一规则在两个 branch 待验证 → 两个任务、两条记录；候选从不配对 branch 上不可见的 revision；validator review 按 curvec 去重 |
-| T54 | P8 | 检索结果中 STALE 项被过滤（certified）或显式标注（advisory） |
-| T55 | P8 | packing 截断不改变状态标签 |
-| T56 | P8 | 索引重建前后检索结果的状态一致 |
-| T57 | P8 | 手改镜像 markdown 被检测 |
+| T85 | P8 | RRF 融合确定；精确 key 排第一；scope 过滤（kinds、dir = 锚点 ∪ dirs 元数据） |
+| T86 | P8 | 索引滞后从不返回非当前 revision；滞后时报告 `Lagging`；有界等待被进度唤醒 |
+| T87 | P8 | abstract/outline 是纯函数；投影副本等于重算；头部带 level 与 cut |
+| T88 | P8 | 每次展开追加读事件；账本保留最高 level；格式 3 段可读；证书按 revision |
+| T89 | P8 | embedding 候选按 branch、不配对不可见 revision；嵌入器故障（维度错、NaN、挂起、超量输出、孙进程占用管道）不阻塞索引与写入 |
+| T90 | P8 | Summary 待验证计数相对最近 Verified 向量；同内容重录 / 回退回到同一 revision，不入队、不写记录；`ctx_supersede` 同内容的回复 |
+| T91 | P8 | 镜像导出确定且幂等（其他 branch 的提交不产生新 commit）；trailer 齐全；区间连续 |
+| T92 | P8 | 镜像 ref 只经 CAS 移动（含零 OID 创建）；并发导出一胜一 `MirrorRaced` |
+| T93 | P8 | 已开的 pair 再开返回原 Conflict（并发也只一个）；单侧 Conflict 不阻止 pair；侧移动的 pair review 被取代；跳过的 pair 不耗 attempt（P7 m4、m7） |
+| T94 | P8 | `IndexState` 出现在 `ctx_recall` 与 `ctx status`；`ctx reindex` 报告 `Rebuilding` |
+| T95 | P8 | 兼容：字符串 scope；limit 截到 100 并报告；无 budget/level 时只返回头部 |
+| T96 | P8 | `update-ref` 后、缓存写入前崩溃不产生误报；删除 mirror.sqlite 不误报；删除的 ref 被重建；`--adopt` 仍校验 |
+| T97 | P8 | 路径与 ref 编码单射且 `git fsck` 干净（`feat` / `feat/x`，`x` / `x.md/y`，`a//b` / `a/./b`，`.git`、大小写）；不可用 payload 渲染占位；截断日志 → `MirrorStale{LogRewritten}` |
+| T54 | P8 | 检索结果中 STALE 项被过滤（certified）或显式标注（advisory）；过滤在任何排序截断之前，页面只有在所有 ranker 耗尽时才不足 `limit`（ADR 0016 §3.2） |
+| T55 | P8 | packing 截断不改变状态标签；包含项是无预算顺序的前缀；withheld 列出；omitted 项无 handle |
+| T56 | P8 | 索引重建前后（含删除 recall.sqlite）检索结果的项集合与状态一致 |
+| T57 | P8 | 手改镜像 markdown 被检测（编辑、amend、rebase、手写 commit、改写树 → `MirrorModified`）；proposals 恰好列出被改文件，`base_rev` 取自有效渲染；`--force` 保留备份 ref |
 | T58 | P9 | principal 参数伪造无效 |
 | T59 | P9 | shred 后 payload 不可读、拓扑与状态不变、WHY 不泄露内容 |
 | T60 | P9 | 跨 lane 引用的授权检查 |
@@ -1126,6 +1152,7 @@ candidates(id, branch, a_rev, b_rev, score, epoch, state)  -- <data>/candidates.
 - **PROP11** certificate 判定 == 由 oracle 以相同 `live_pos` 输入重算的判定（P3）。
 - **PROP12** anchors observer 输出 == 由 git 历史全量重算（P5a/P5b）。
 - **PROP13** branch 派生状态 == 在 branch 输入上运行 oracle（P6）。
+- **PROP14** 检索（P8）：随机存储、查询、模式、预算与 level 下，certified 项在该 epoch 都是 CERTIFIED；advisory 标签等于 oracle summary；页面只在合格集耗尽时不足；packing 保持标签与顺序；重建后结果（集合与状态）相同。10,000 seed。
 
 **Coverage 门槛**（PROP1 suite 结束时断言）：≥5% tx 在同一 revision 上混合 head 与 base 翻转；≥5% 含 alternative-support save；≥3% cycle 拒绝；≥3% CAS 冲突；≥3% 同 tx 插入规则及其 premise；≥2% 触发 PK 慢路径（P1 起）。
 
@@ -1213,7 +1240,10 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | LLM validator 被诱导误判 | 从不写 ValidationRecord（只写不 gate 的 PendingReview）；handle allowlist；`claude -p` 沙箱（无工具 / MCP / 设置 / hook，nonce 包裹正文，进程组超时终止；用户 CLAUDE.md、记忆与托管设置可能仍加载，除非隔离配置目录可用——如实报告）；`Command` 的 `trusted` 由数据目录写入者自行声明；去重与上限；可审计（prompt_sha256、ValidationMeta） | P7（ADR 0015 §4.1–§4.3） |
 | 篡改 op log | hash 链 + doctor 校验；可选签名 | P2 / P9 |
 | 敏感内容需删除 | blob crypto-shred；`content_hash` 确认攻击边界文档化，必要时 keyed hash；P9 前文档化“不支持 erasure” | P9 |
-| 检索索引滞后绕过认证 | status 是排序前硬过滤；索引只用于候选发现 | P8 |
+| 检索索引滞后绕过认证 | status 是排序前硬过滤（每个 ranker 内判定资格）；索引只用于候选发现；滞后只会漏项并报告 `Lagging` | P8 |
+| embedding 命令收到记录正文 | 默认关闭，由 owner 配置；最小环境、空工作目录、进程组与输出上限 | P8 |
+| 镜像 ref 含全部正文并被推送 | ContextDB 从不推送；普通 `git push` 不带 `refs/contextdb/*`，但 `--mirror` 与备份 / 镜像工具会带上——README 与导出输出说明；导出不写临时文件 | P8 |
+| 镜像 proposals 中的文本注入 | proposals 是不可信数据，只供 agent 阅读；任何改动都经 agent 自己的 `ctx_supersede`（CAS、证书、门控） | P8 |
 | 外部 TOCTOU | 声明边界（§6.4）；建议条件写入 / 幂等 / 租约 | P4 |
 | IPC 解析漏洞 | 长度前缀帧、版本化、fuzz | P3 / P9 |
 
@@ -1327,6 +1357,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.8.0 | 2026-11-04 | P8 G0（ADR 0016 r0.3，独立复核三轮：r0.1 0 blocker / 7 major / 12 minor，r0.2 闭环余 2 major，r0.3 全部关闭）：§5 P8 细化（排序前过滤与 ranker 分页、IndexState 与有界等待、分层读取与按 revision 认证、session log 格式 4、packing 与 bytes/4 估计、Summary 待验证计数与“digest 早停 = revision 去重”、embedding 适配器、git 镜像的 ref 命名 / CAS / tip 校验 / proposals）；§6.3 recall、read 行；§6.6 `ctx mirror`；§7 新投影；§8.1 T54–T57 重述、T85–T97；§8.2 PROP14；§10 三条威胁。默认决定 E1–E4（owner 2026-11-04 要求继续，采用推荐项，G0 前仍可推翻）。op_log 格式不变。 |
 | 1.7.1 | 2026-11-03 | P7 milestone 9 更正（非语义变更）：T77 原写“迁移前签发的证书读成 `LogMismatch`”。格式 4 不增加帧字段，3 → 4 迁移后帧 body 与 checksum 逐帧相同，证书的 log link 保持有效；格式 3 的 op 含义不变，所以这是正确结果。T77 改为断言 checksum 相等（ADR 0015 §9 同步更正）。owner 决定 D4：ADR 0015 的 G5 提交预算（忙/闲 p99 ≤ 1.05×）低于 fsync 抖动，无法测量，改为在真实 premise 变化速率（2 次/s、每次 2 个 job）下，以 5 轮交错合并计算：p50 ≤ 1.10×、p99 ≤ 1.25×。 |
 | 1.7.0 | 2026-11-02 | P7 G0（ADR 0015 r0.3，独立复核 + 两轮闭环；owner 决定 D1 真实评测用本机 `claude -p`、D2 op_log 格式 4 只存元数据哈希、D3 agent 与 admin 可开 gate 生效的 Conflict）：SD20 Conflict 形式定义（O4 解决）；SD10 增加 `meta`、`if_absent` 与 `ValidationExists`；LLM validator 从不写 ValidationRecord，只写 PendingReview；agent 通道提交 RecordValidation 一律 `ChannelRestricted`；§3.5 #7 session log 增加 handoff 事件；§6.1 契约 14 与格式 4（新字段未设置时保持原 tag）；§6.2 新错误；§6.3 P7 工具；§7 jobs / handoffs / candidates；§8.1 T76–T84；§10 LLM 威胁行 |
 | 1.6.12 | 2026-11-02 | P4 G6 dogfood 结束（owner 决定）：以 11.8 天代替 ≥ 2 周结束——10-24 之后再无 certified 读与写入，延长只增加 Empty 警告（[审计](docs/gates/p4-g6-audit.md)）。依赖覆盖率 69.6% 通过（样本小）；false-deny 30.6%（shell 也 enforce）；`shell_mode = "warn"` 只对文件编辑 enforce 时为 0.11%，可推荐。默认仍为 warn。标注由规则完成，经两轮盲审核对（独立样本 95.2% 一致，分歧方向只会低估 false-deny）。P4 通过；按 A11 等待它的 P5a、P5b、P6 Gate 随之可以结束。语义不变 |

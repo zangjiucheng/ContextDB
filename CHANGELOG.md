@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **P8 G0** (ADR 0016 r0.3, SPEC v1.8.0): the design for retrieval, packing and the git mirror was accepted after three independent review rounds. No code changes yet.
+
 - **Gate P7 passed** (2026-11-03). G5: the busy/idle commit budget was restated by owner decision D4 (realistic premise-move rate, pooled p50 ≤ 1.10× and p99 ≤ 1.25×); `p7_bench` measures it that way. Remote G4 rerun: 0 violations. G7: PASS.
 - **P7 milestone 9, second part: independent implementation review** ([Gate P7](docs/gates/P7.md) §3). No blocker.
   - **Fix: jobs no validator takes no longer block the queue.** A claim looked only at the 256 oldest claimable rows, and rows outside every validator's `branches` / `kinds` / `scopes` filter stay queued. Once 256 of them existed, no job ran. Claims now page through every row.

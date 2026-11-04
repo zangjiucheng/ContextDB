@@ -1,5 +1,16 @@
 # Implementation status
 
+**P8 G0 passed** (2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.0). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
+- hybrid recall with status filtered before any cut;
+- index health and `ctx reindex`;
+- read levels;
+- token-budget packing;
+- Summary pending counts;
+- embeddings through an external command, off by default;
+- a one-way git mirror with hand-edit detection.
+
+Implementation has not started.
+
 **P7 passed** (2026-11-03; G0 2026-11-02) ([P7 gate](gates/P7.md), [ADR 0015](adr/0015-p7-validation-conflicts.md) r0.3, SPEC v1.7.1). P7 covers semantic validation, conflicts, handoff and change feeds. The independent review found 4 blockers and 7 majors in r0.1; two closure rounds closed them. Owner decisions: the real LLM evaluation uses the local `claude -p`; op_log format 4 stores only a metadata hash; agents and admin may open gating Conflicts. An LLM validator never writes a ValidationRecord. Implementation: milestones 1–8 done:
 - op_log format 4;
 - the agent-validation refusal and admin metadata, with protocol 5;

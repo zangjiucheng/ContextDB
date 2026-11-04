@@ -136,7 +136,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P5b | Symbol-level code anchors | ✅ passed |
 | P6 | Versioned transactions, branches and WHAT_IF | ✅ passed |
 | P7 | Semantic validation and conflicts | ✅ passed |
-| P8 | Retrieval, packing and git mirroring | planned |
+| P8 | Retrieval, packing and git mirroring | G0 passed; in progress |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
 | P10 | Mixed eager / lazy maintenance and scale | planned |
 | P11 | Recursive support and replication (research) | planned |
@@ -396,7 +396,7 @@ bash scripts/remote.sh run <name> <cmd...>   # long jobs on the remote Linux hos
 |---|---|
 | [`SPEC.md`](SPEC.md) | Normative specification: semantics, architecture, verification, phase plan, interfaces, test catalogue, threat model (mainly Chinese) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Architecture diagrams: processes, crates, writes, data directory, kernel, hooks, anchors |
-| [`docs/adr/`](docs/adr/) | Design decision records (ADR 0001–0015) |
+| [`docs/adr/`](docs/adr/) | Design decision records (ADR 0001–0016) |
 | [`docs/gates/`](docs/gates/) | Gate evidence, review records and benchmark results per phase |
 | [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) | Current implementation and gate status |
 | [`docs/SEMANTICS.md`](docs/SEMANTICS.md) | Mapping from semantic clauses to tests |
