@@ -403,8 +403,13 @@ fn t77_format3_log_migrates_to_format4_byte_identical() {
         migrate::write_format3(&disk, Path::new(DIR), &batches).unwrap(),
         6
     );
+    let old_rows = migrate::rows_for_test(&disk, Path::new(DIR), 3).unwrap();
+    let old_sums: Vec<_> = old_rows
+        .iter()
+        .map(|r| contextdb_store::log::checksum(&r.encode_body_format(3)))
+        .collect();
     let old: Vec<_> = {
-        let rows = migrate::rows_for_test(&disk, Path::new(DIR), 3).unwrap();
+        let rows = old_rows;
         rows.into_iter()
             .map(|r| (r.batch_blob, r.batch_hash, r.client_hash))
             .collect()
@@ -430,6 +435,12 @@ fn t77_format3_log_migrates_to_format4_byte_identical() {
         Store::open(disk.clone(), Path::new(DIR), &OpenOptions::default()).unwrap();
     assert_eq!(open.replayed, 6);
     assert_eq!(store.db().unwrap().digest(), fresh.digest());
+    // Format 4 adds no frame field, so every frame checksum is unchanged:
+    // a certificate issued before the migration keeps its log link.
+    let new_sums: Vec<_> = (1..=6)
+        .map(|e| store.checksum_at(Epoch(e)).unwrap())
+        .collect();
+    assert_eq!(old_sums, new_sums, "frame checksums survive 3 -> 4");
     // An idempotent retry still returns the recorded result.
     let retried = store.commit(&batches[3]).unwrap();
     assert_eq!(retried.epoch, Epoch(4));

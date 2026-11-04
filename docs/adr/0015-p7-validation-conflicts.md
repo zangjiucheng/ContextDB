@@ -703,11 +703,15 @@ modelled.
 - It writes `log.v3.bak`. An interrupted migration resumes. Rollback goes
   through the backup, and only before new commits land.
 
-**Checksums and idempotency.** Re-framing changes the log checksum, so a
+**Checksums and idempotency.** ~~Re-framing changes the log checksum, so a
 certificate issued before migration fails `log_checksum_at_issue` and reads
-`Invalid(LogMismatch)`. Sessions are restarted after the upgrade, as for
-0.2.0. Stored idempotency hashes cover the batch, not the frame, and stay
-valid. T77 checks both.
+`Invalid(LogMismatch)`.~~ *Corrected in milestone 9:* format 4 adds no frame
+field, so the frame body, and with it every frame checksum, is unchanged. A
+certificate issued before the migration keeps its log link and stays valid,
+which is correct because no format-3 op changes meaning. Sessions are still
+restarted after the upgrade, as for 0.2.0. Stored idempotency hashes cover
+the batch, not the frame, and stay valid. T77 checks both (the checksums
+are equal before and after).
 
 **Other state.**
 
@@ -752,7 +756,7 @@ The decision is recorded after P7.
 | Gate | Items |
 |---|---|
 | G1 | fmt, clippy, unit tests for every new module |
-| G2 | **T49** a result whose curvec moved gets `CurvecMoved`, the job becomes Superseded, and the new curvec is validated once. **T50** an LLM `Conflict` gives a PendingReview and `sem` stays Pending; over 10,000 random LLM outcomes no `RecordValidation` is committed from the LLM principal, and the daemon refuses one if built. **T52** a handoff is accepted once, under 8 concurrent accepts and after a restart. **T53** concurrent identical jobs commit once; a crash at each step (before claim, after claim, after commit, after Done) and a lease expiry end with exactly one record or one PendingReview, and at most one repeated validator call. **T76** `ctx_changes` pages equal the replay's per-epoch diffs; `Truncated` only after a rebuild. **T77** 3 → 4 migration keeps digests and derived state; pre-upgrade certificates read `LogMismatch`; idempotency survives. **T78** SD20 pair, one-side supersede (`side superseded`), per branch; `ctx_conflicts open` refusals. **T79** the handoff copies the read set (skipping logicals already read), and the acceptor turns Invalid exactly when a handed-over read changed; `to_agent` and branch refusals. **T80** an agent `Commit`, `WhatIf`, MCP `ctx_commit` or `Raw` with `RecordValidation` is refused with `ChannelRestricted`. **T81** an admin `Rejected` committed after a worker's claim is never overwritten (`ValidationExists`). **T82** the `ClaudeCli` sandbox (§4.1). **T83** a crash between the handoff claim and its flush never lets two accepts succeed. **T84** the same rule pending on two branches gives two jobs and two records; candidates never pair a revision invisible on the branch; validator review dedup per curvec |
+| G2 | **T49** a result whose curvec moved gets `CurvecMoved`, the job becomes Superseded, and the new curvec is validated once. **T50** an LLM `Conflict` gives a PendingReview and `sem` stays Pending; over 10,000 random LLM outcomes no `RecordValidation` is committed from the LLM principal, and the daemon refuses one if built. **T52** a handoff is accepted once, under 8 concurrent accepts and after a restart. **T53** concurrent identical jobs commit once; a crash at each step (before claim, after claim, after commit, after Done) and a lease expiry end with exactly one record or one PendingReview, and at most one repeated validator call. **T76** `ctx_changes` pages equal the replay's per-epoch diffs; `Truncated` only after a rebuild. **T77** 3 → 4 migration keeps digests and derived state; pre-upgrade certificates keep their log link (frame checksums unchanged; corrected in milestone 9); idempotency survives. **T78** SD20 pair, one-side supersede (`side superseded`), per branch; `ctx_conflicts open` refusals. **T79** the handoff copies the read set (skipping logicals already read), and the acceptor turns Invalid exactly when a handed-over read changed; `to_agent` and branch refusals. **T80** an agent `Commit`, `WhatIf`, MCP `ctx_commit` or `Raw` with `RecordValidation` is refused with `ChannelRestricted`. **T81** an admin `Rejected` committed after a worker's claim is never overwritten (`ValidationExists`). **T82** the `ClaudeCli` sandbox (§4.1). **T83** a crash between the handoff claim and its flush never lets two accepts succeed. **T84** the same rule pending on two branches gives two jobs and two records; candidates never pair a revision invisible on the branch; validator review dedup per curvec |
 | G3 | PROP1's generator (`generate_p1`) adds Conflict and PendingReview open/resolve, and RecordValidation with `meta` and `if_absent`; exact comparison with both oracles. PROP7 metamorphic: `meta` and notes never change derived state, including through merge. A discovery property: after quiescence, every `(branch, rule)` with `sem = Pending` has a job row, checked against the oracle. P6 properties stay green |
 | G4 | stress: 4 writers moving curvecs on 2 branches while 4 mock workers validate, 30 min, with no lost or duplicate record; kill -9 crash injection at each job step; the job table and blob store under disk-full |
 | G5 | with mock validators: commit p99 latency with workers busy within 5% of idle; candidate generation p99 under 20 ms per new head, off the writer; a `ctx_changes` long-poll wakes within 10 ms (p99) of the epoch. Memory: the job table and candidate table bounded by keys, reported at 10⁵ pending rules |

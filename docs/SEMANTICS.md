@@ -127,7 +127,7 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 | SD7 | Derivation is a pure function of committed inputs | 1,000-seed I1/PROP8, T09k/l |
 | SD8 | Ordered staged CAS, atomic rollback, final net delta | T12, T29, T11; properties.rs diff checks |
 | SD9 | Per-revision support and Rebind | T09n, T26; Cur Rebind product convenience deferred |
-| SD10 | Exact Sem vector, latest VR, validation CAS | T15bc/d, T16b-sem |
+| SD10 | Exact Sem vector, latest VR, validation CAS; P7 `meta`, `if_absent` (`ValidationExists`) | T15bc/d, T16b-sem; T49, T81, P7 PROP1/PROP7 |
 | SD11 | L0/L1/L2, Pin-strict and Sem-head | T06abc, T15bc/d, T24 |
 | SD12 | ABA permitted; Evidence immutable | T16b-sem, T09i |
 | SD13 | Summary precedence, recursive reasons, semantic witness | S13-rows-fn, T15bc/d, T24 |
@@ -137,6 +137,7 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 | SD17 | Conflict=None P0; raw cyclic oracle lfp | T09u, T11 Motik; Conflict gate P7, recursive product P11 |
 | SD18 | Observer-only CodeAnchor/watermark inputs and dedup | T09h/q/r/t, T24; filesystem observer P5 |
 | SD19 | MAIN branch only; reserve origin branch data | T15e, T26; multi-branch product tests P6 |
+| SD20 | Conflict pairs per branch: both sides CONFLICTED until resolved or superseded; LLM only PendingReview | T78, T50, T84; P7 PROP1 with artifacts |
 | §2.5 A1–A7 | Kind admission, immutability, policy, channels | T09h–v, compile-fail model tests |
 | §6.1–6.2 | IDs/local refs, canonical identity and errors | T09p–v, T29, wire.rs round trips |
 | API isolation | No mutable database or payload rewrite API | T28 core compile-fail, T09k model compile-fail |

@@ -135,7 +135,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P5a | File-level code anchors | ✅ passed |
 | P5b | Symbol-level code anchors | ✅ passed |
 | P6 | Versioned transactions, branches and WHAT_IF | ✅ passed |
-| P7 | Semantic validation and conflicts | planned |
+| P7 | Semantic validation and conflicts | implemented; gate in progress (milestone 9) |
 | P8 | Retrieval, packing and git mirroring | planned |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
 | P10 | Mixed eager / lazy maintenance and scale | planned |
@@ -315,6 +315,48 @@ ctx status|why|why-not|impact <dir> ... --branch B       # read another branch
 
 **Upgrade note**: P6 raises the IPC protocol to 4 and the op_log to format 3 (each frame records its branch and merge report). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps the old log as `log.v2.bak`, can be rerun after an interruption, and lists any epoch whose recorded result changes under the Conflict gate), then upgrade every binary together. Older binaries refuse a format-3 store. Format 3 keeps its projections in `projections.v3.sqlite`; the old `projections.sqlite` stays as it was, so rolling back (restore `log.v2.bak` as `log`, before new commits) needs nothing else. A store that crashed rather than shut down must be opened once by the old binary before migrating.
 
+### Semantic validation, conflicts and handoff (P7)
+
+A rule with a semantic (`Sem`) premise stays Pending until someone checks it against the premises' current revisions. P7 adds validators that do this, contradiction tracking, and session handoff (SPEC SD20, ADR 0015).
+
+- **Validators**: `<data dir>/validators.toml` lists them; **none is configured by default**, so nothing is called until you add one. When a Pending rule's semantic vector changes, the daemon queues one job per `(branch, rule, vector)` in `jobs.sqlite`, and workers run them with leases, retries and recovery after a crash. A `command` validator with `trusted = true` is deterministic and commits a ValidationRecord. A `claude` validator, or a command without `trusted`, counts as an LLM: it can **only** open a non-gating PendingReview that an admin accepts or rejects. An LLM verdict never writes a record (T50). `claude -p` runs sandboxed, with no tools, MCP servers, settings or hooks, in an empty working directory with a minimal environment. `token_file` is read only by path.
+- **Manual validation**: `ctx validate` (admin socket) shows the current semantic vector and commits with a compare-and-set on it, so a premise that moved in between is refused (`CurvecMoved`). Agents cannot commit `RecordValidation` (`ChannelRestricted`).
+- **Conflicts (SD20)**: `ctx_conflicts open` records that two revisions contradict. Both sides read `CONFLICTED` on that branch until `ctx_resolve` closes it or one side is superseded. Agents and admin may open them.
+- **Candidates**: when a Decision, Plan or Fact gets a new head, a per-branch lexical index (SQLite FTS5, bm25) proposes up to `per_head` likely contradictions above `min_score`. They are listed, never gating, and can be opened as a Conflict. A validator with `pairs = true` also judges them, and a `conflict` answer opens a PendingReview.
+- **Handoff**: `ctx_handoff_begin` packs the session's certified state; `ctx_handoff_accept` (exactly once, even under concurrent accepts or a crash) copies its read set into the acceptor's session. The acceptor's certificate turns Invalid as soon as a handed-over read changes.
+- **Changes**: `ctx_changes` pages through status changes per epoch from the durable diff log and can long-poll for new ones (`ctx changes --follow`).
+
+```toml
+# <data dir>/validators.toml
+[limits]                      # defaults
+workers = 2
+lease_secs = 120
+attempts = 3
+llm_calls_per_hour = 200
+
+[candidates]
+min_score = 1.0               # bm25 floor (kept at 1.0 after the G6 run)
+per_head = 5
+
+[[validator]]
+name = "claude"
+type = "claude"               # claude | command
+model = "claude-haiku-5-5"
+token_file = "~/.config/contextdb/claude-token"   # optional, passed by path
+branches = ["main"]           # optional filters: branches, kinds, scopes
+pairs = true                  # also judge candidate pairs
+
+[[validator]]
+name = "lint"
+type = "command"
+command = ["/usr/local/bin/ctx-lint", "--json"]
+trusted = true                # deterministic: may commit a ValidationRecord
+```
+
+A job goes to the first validator whose filters all match. `ctx validators reload <dir>` applies an edited file; `check` runs every loaded validator once on a probe task (one LLM call each, within the hourly cap); `status` lists jobs, counters and Failed jobs.
+
+**Upgrade note**: P7 raises the IPC protocol to 5 and the op_log to format 4 (a ValidationRecord can carry a metadata hash). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps `log.v3.bak`; batches, hashes and frame checksums are unchanged), then upgrade every binary together.
+
 ## Limits and non-goals
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.
@@ -354,7 +396,7 @@ bash scripts/remote.sh run <name> <cmd...>   # long jobs on the remote Linux hos
 |---|---|
 | [`SPEC.md`](SPEC.md) | Normative specification: semantics, architecture, verification, phase plan, interfaces, test catalogue, threat model (mainly Chinese) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Architecture diagrams: processes, crates, writes, data directory, kernel, hooks, anchors |
-| [`docs/adr/`](docs/adr/) | Design decision records (ADR 0001–0014) |
+| [`docs/adr/`](docs/adr/) | Design decision records (ADR 0001–0015) |
 | [`docs/gates/`](docs/gates/) | Gate evidence, review records and benchmark results per phase |
 | [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) | Current implementation and gate status |
 | [`docs/SEMANTICS.md`](docs/SEMANTICS.md) | Mapping from semantic clauses to tests |

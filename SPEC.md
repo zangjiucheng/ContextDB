@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.7.0 · Date: 2026-11-02 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.7.1 · Date: 2026-11-03 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -1076,7 +1076,7 @@ candidates(id, branch, a_rev, b_rev, score, epoch, state)  -- <data>/candidates.
 | T52 | P7 | handoff 只能被接受一次 |
 | T53 | P7 | 同一 (branch, rule, curvec) 并发任务只提交一次；各步骤崩溃与租约过期后恰有一条记录或一个 PendingReview |
 | T76 | P7 | `ctx_changes` 分页拼接等于重放的逐 epoch status_diff；只在投影重建后返回 `Truncated` |
-| T77 | P7 | op_log 格式 3 → 4 迁移：batch 字节与 digest、派生状态不变；迁移前签发的证书读成 `LogMismatch`；幂等记录仍有效 |
+| T77 | P7 | op_log 格式 3 → 4 迁移：batch 字节与 digest、派生状态不变；帧 checksum 不变，迁移前签发的证书保持有效（v1.7.1 更正）；幂等记录仍有效 |
 | T78 | P7 | SD20：Conflict 对、单侧 supersede（`side superseded`）、按 branch；`ctx_conflicts open` 的拒绝情形 |
 | T79 | P7 | handoff 复制读集（已读 logical 跳过），交出的读集变化时接受方恰好变为 Invalid；`to_agent` 与 branch 拒绝 |
 | T80 | P7 | agent 的 Commit / WhatIf / MCP `ctx_commit` / Raw 携带 RecordValidation → `ChannelRestricted` |
@@ -1327,6 +1327,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.7.1 | 2026-11-03 | P7 milestone 9 更正（非语义变更）：T77 原写“迁移前签发的证书读成 `LogMismatch`”。格式 4 不增加帧字段，3 → 4 迁移后帧 body 与 checksum 逐帧相同，证书的 log link 保持有效；格式 3 的 op 含义不变，所以这是正确结果。T77 改为断言 checksum 相等（ADR 0015 §9 同步更正）。 |
 | 1.7.0 | 2026-11-02 | P7 G0（ADR 0015 r0.3，独立复核 + 两轮闭环；owner 决定 D1 真实评测用本机 `claude -p`、D2 op_log 格式 4 只存元数据哈希、D3 agent 与 admin 可开 gate 生效的 Conflict）：SD20 Conflict 形式定义（O4 解决）；SD10 增加 `meta`、`if_absent` 与 `ValidationExists`；LLM validator 从不写 ValidationRecord，只写 PendingReview；agent 通道提交 RecordValidation 一律 `ChannelRestricted`；§3.5 #7 session log 增加 handoff 事件；§6.1 契约 14 与格式 4（新字段未设置时保持原 tag）；§6.2 新错误；§6.3 P7 工具；§7 jobs / handoffs / candidates；§8.1 T76–T84；§10 LLM 威胁行 |
 | 1.6.12 | 2026-11-02 | P4 G6 dogfood 结束（owner 决定）：以 11.8 天代替 ≥ 2 周结束——10-24 之后再无 certified 读与写入，延长只增加 Empty 警告（[审计](docs/gates/p4-g6-audit.md)）。依赖覆盖率 69.6% 通过（样本小）；false-deny 30.6%（shell 也 enforce）；`shell_mode = "warn"` 只对文件编辑 enforce 时为 0.11%，可推荐。默认仍为 warn。标注由规则完成，经两轮盲审核对（独立样本 95.2% 一致，分歧方向只会低估 false-deny）。P4 通过；按 A11 等待它的 P5a、P5b、P6 Gate 随之可以结束。语义不变 |
 | 1.6.11 | 2026-10-28 | 外部仓库 dogfood 的可用性修订：只有 `Ref` 的规则被接受且永不 active（SD3、SD6，T09w），agent 可以只记录引用；`Ref` 可指向 Summary（A2）；A5 只认有 premise 的规则。旧 op_log 不含此类规则，重放结果不变；含此类规则的 op_log 不能被旧二进制打开 |
