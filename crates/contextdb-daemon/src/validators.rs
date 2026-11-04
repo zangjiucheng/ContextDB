@@ -734,6 +734,15 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Err(e) => return self.fail(loaded, job, e),
         };
         drop(snap);
+        // A task over the size cap fails before it takes an LLM permit
+        // (review finding: the permit was spent with no call).
+        if task.body_bytes() > contextdb_validate::MAX_TASK_BODY_BYTES {
+            return self.fail(
+                loaded,
+                job,
+                contextdb_validate::ValidatorError::TooLarge.to_string(),
+            );
+        }
         if kind == ValidatorKind::Llm {
             if !self.llm_permit(loaded.limits.llm_calls_per_hour) {
                 let until = now_ms() + 60_000;
@@ -746,10 +755,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             self.stats.llm_calls.fetch_add(1, Ordering::Relaxed);
         }
         self.stats.calls.fetch_add(1, Ordering::Relaxed);
-        let outcome = match contextdb_validate::run(v, &task, Instant::now() + lease) {
-            Ok(o) => o,
-            Err(e) => return self.fail(loaded, job, e.to_string()),
-        };
+        let outcome =
+            match contextdb_validate::run(v, &task, lease_deadline(job.lease_until, lease)) {
+                Ok(o) => o,
+                Err(e) => return self.fail(loaded, job, e.to_string()),
+            };
         crash_point("called");
         if let Some((i, o)) = outcome.tokens {
             self.stats.tokens_in.fetch_add(i as u64, Ordering::Relaxed);
@@ -1123,4 +1133,11 @@ pub fn build_task<D: Durability>(
         premises,
         pair: None,
     })
+}
+/// The validator call ends when the claim's lease does (review finding: a
+/// deadline of now + lease, taken after the setup, let a call outlive its
+/// lease, so a second worker could claim the job and call again).
+fn lease_deadline(lease_until_ms: i64, lease: Duration) -> Instant {
+    let left = (lease_until_ms - now_ms()).clamp(0, lease.as_millis() as i64);
+    Instant::now() + Duration::from_millis(left as u64)
 }

@@ -177,7 +177,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if let Some(r) = self.handoff_unavailable() {
             return r;
         }
-        let branch = s.lock().expect("session").branch;
+        let branch = {
+            let s = s.lock().expect("session");
+            if s.ended_epoch.is_some() {
+                return err("InvalidArgument", "the session has ended");
+            }
+            s.branch
+        };
         let Some(id) = id else {
             // The open handoffs on this branch the caller may accept.
             let h = self.handoffs.lock().expect("handoffs");

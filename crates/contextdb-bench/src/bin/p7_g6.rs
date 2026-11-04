@@ -39,15 +39,7 @@ fn kind_name(k: RecordKind) -> String {
 fn kind_of(s: &str) -> RecordKind {
     use RecordKind::*;
     [
-        Fact,
-        Assumption,
-        Decision,
-        Plan,
-        Convention,
-        Procedure,
-        Artifact,
-        Evidence,
-        CodeAnchor,
+        Fact, Assumption, Decision, Plan, Convention, Procedure, Artifact, Evidence, CodeAnchor,
         Summary,
     ]
     .into_iter()
@@ -355,7 +347,9 @@ fn generated(out: &mut Vec<Value>) {
                 &format!("gen/{d}/decision"),
                 3,
                 RecordKind::Decision,
-                format!("All code that touches {subject} goes through the official {v0} client library."),
+                format!(
+                    "All code that touches {subject} goes through the official {v0} client library."
+                ),
             ),
             gen_item(
                 &format!("gen/{d}/runbook"),
@@ -370,7 +364,10 @@ fn generated(out: &mut Vec<Value>) {
             for (case, current, label) in [
                 (
                     "moved",
-                    format!("{} has moved from {v0} to {v1}; {v0} is no longer used.", cap(subject)),
+                    format!(
+                        "{} has moved from {v0} to {v1}; {v0} is no longer used.",
+                        cap(subject)
+                    ),
                     "conflict",
                 ),
                 (

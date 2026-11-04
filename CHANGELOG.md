@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **P7 milestone 9, second part: independent implementation review** ([Gate P7](docs/gates/P7.md) §3). No blocker.
+  - **Fix: jobs no validator takes no longer block the queue.** A claim looked only at the 256 oldest claimable rows, and rows outside every validator's `branches` / `kinds` / `scopes` filter stay queued. Once 256 of them existed, no job ran. Claims now page through every row.
+  - **Fix:** a store error while judging a candidate pair no longer uses an attempt, as for rule jobs.
+  - **Fix:** a validator call ends with its claim's lease, so a second worker cannot claim the same job while the first call runs.
+  - **Fix:** an oversized task fails before it takes an LLM call permit.
+  - **Fix:** `ctx_handoff_accept` refuses a session that has ended.
+  - **Docs:** G2 test map; README P7 section; T77 corrected (the 3 → 4 migration keeps frame checksums, so earlier certificates stay valid; SPEC v1.7.1).
+
 - **P7 milestone 9 (verification), first part** (ADR 0015 §11; [Gate P7](docs/gates/P7.md) §2).
   - **Fix: store failures no longer use a job's attempts.** A full disk or a poisoned store used to fail the validator job. A poisoned daemon then burnt all attempts in a row and left the job `Failed` across the restart, so the rule stayed Pending until `ctx validators retry --failed`. Such a job is now requeued without using an attempt. `ctx validators status` counts these as `store_errors`.
   - **Fix: candidate generation per new head** went from p99 204 ms to 9.7 ms at 10⁴ records:

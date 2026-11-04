@@ -96,6 +96,9 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 }
                 PairChoice::Run(n) => {
                     let t = token();
+                    // The call ends with the lease, not a full lease after
+                    // the setup (review finding: a call could outlive it).
+                    let deadline = Instant::now() + lease;
                     let until = now_ms() + lease.as_millis() as i64;
                     if !table.judge_claim(c.id, t, until).map_err(sql)? {
                         continue;
@@ -103,11 +106,23 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     drop(snap);
                     let v = loaded.validators[n].validator.clone();
                     let c = Candidate { token: t, ..c };
-                    return self.judge(&loaded, table, &c, v.as_ref(), lease).map(Some);
+                    return self
+                        .judge(&loaded, table, &c, v.as_ref(), deadline)
+                        .map(Some);
                 }
             }
         }
         Ok(None)
+    }
+    /// Gives the pair back without counting an attempt (a store error).
+    fn pair_defer(&self, table: &Candidates, c: &Candidate, error: String) -> Result<Ran, String> {
+        self.stats.store_errors.fetch_add(1, Ordering::Relaxed);
+        let until = now_ms() + self.retry_base.as_millis() as i64;
+        Ok(if table.judge_release(c.id, c.token, until).map_err(sql)? {
+            Ran::Requeued(error)
+        } else {
+            Ran::Lost
+        })
     }
     fn pair_fail(
         &self,
@@ -152,7 +167,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         table: &Candidates,
         c: &Candidate,
         v: &dyn Validator,
-        lease: Duration,
+        deadline: Instant,
     ) -> Result<Ran, String> {
         let txn = pair_txn(c);
         // Recovery: the review may already be committed.
@@ -173,8 +188,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 );
             }
             Ok(Ok(TxnStatus::NotCommitted)) => {}
-            Ok(Err(e)) => return self.pair_fail(loaded, table, c, format!("txn status: {e:?}")),
-            Err(e) => return self.pair_fail(loaded, table, c, format!("txn status: {e:?}")),
+            Ok(Err(e)) => return self.pair_defer(table, c, format!("txn status: {e:?}")),
+            Err(e) => return self.pair_defer(table, c, format!("txn status: {e:?}")),
         }
         let snap = self.actor.snapshot();
         let view = snap.kernel.branch(c.branch);
@@ -208,6 +223,16 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         };
         drop(snap);
         let kind = v.kind();
+        // A task over the size cap fails before it takes an LLM permit
+        // (review finding: the permit was spent with no call).
+        if task.body_bytes() > contextdb_validate::MAX_TASK_BODY_BYTES {
+            return self.pair_fail(
+                loaded,
+                table,
+                c,
+                contextdb_validate::ValidatorError::TooLarge.to_string(),
+            );
+        }
         if kind == ValidatorKind::Llm {
             if !self.llm_permit(loaded.limits.llm_calls_per_hour) {
                 let held = table
@@ -219,7 +244,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         }
         self.stats.calls.fetch_add(1, Ordering::Relaxed);
         self.stats.pair_calls.fetch_add(1, Ordering::Relaxed);
-        let outcome = match contextdb_validate::run(v, &task, Instant::now() + lease) {
+        let outcome = match contextdb_validate::run(v, &task, deadline) {
             Ok(o) => o,
             Err(e) => return self.pair_fail(loaded, table, c, e.to_string()),
         };
@@ -309,8 +334,14 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 None,
                 Ran::AlreadyCommitted,
             ),
-            Ok(Err(e)) => self.pair_fail(loaded, table, c, format!("commit: {e:?}")),
-            Err(e) => self.pair_fail(loaded, table, c, format!("commit: {e:?}")),
+            Ok(Err(StoreError::Tx(e))) => {
+                self.pair_fail(loaded, table, c, format!("commit: {e:?}"))
+            }
+            // A store failure (full disk, poisoned store, stopped actor) uses
+            // no attempt, as for rule jobs (review finding: pairs were left
+            // `Failed` across a recovery).
+            Ok(Err(e)) => self.pair_defer(table, c, format!("commit: {e:?}")),
+            Err(e) => self.pair_defer(table, c, format!("commit: {e:?}")),
         }
     }
 }

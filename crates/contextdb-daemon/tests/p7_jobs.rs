@@ -482,6 +482,28 @@ fn t53_exactly_one_of_concurrent_claimers_wins() {
     }
 }
 
+/// Review finding M1: rows no validator's filter takes stay Queued; more
+/// than one page of them (256) must not hide a later row a validator takes.
+#[test]
+fn declined_rows_never_hide_a_claimable_one() {
+    let dir = temp("declined");
+    let t = JobTable::open(&dir.join(jobs::FILE)).unwrap();
+    let dev = BranchId(1);
+    let keys: Vec<_> = (0..600)
+        .map(|j| (dev, RuleId(j), vec![(LogicalId(0), RevisionId(2))]))
+        .collect();
+    assert_eq!(t.discover_many(&keys).unwrap(), 600);
+    t.discover(MAIN, RuleId(9_999), &vec![(LogicalId(0), RevisionId(2))])
+        .unwrap();
+    let job = t.claim(1_000, 60_000, |j| j.branch == MAIN).unwrap();
+    assert_eq!(job.map(|j| (j.branch, j.rule)), Some((MAIN, RuleId(9_999))));
+    assert!(
+        t.claim(1_000, 60_000, |j| j.branch == MAIN)
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// T53: a worker that committed and died before marking the row: after
 /// recovery the generation's commit is found through `TxnStatus` and the
 /// validator is not called again; exactly one record or review.

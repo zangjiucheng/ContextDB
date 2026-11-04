@@ -128,20 +128,24 @@ fn sql(e: rusqlite::Error) -> String {
 const COLUMNS: &str = "claim_key, branch, rule, curvec, generation, token, state, lease_until, \
                        attempts, last_error, outcome_meta";
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
-    let key: Vec<u8> = r.get(0)?;
-    let curvec: Vec<u8> = r.get(3)?;
+    row_at(r, 0)
+}
+/// Decodes [`COLUMNS`] starting at column `o`.
+fn row_at(r: &rusqlite::Row<'_>, o: usize) -> rusqlite::Result<Job> {
+    let key: Vec<u8> = r.get(o)?;
+    let curvec: Vec<u8> = r.get(o + 3)?;
     Ok(Job {
         key: key.try_into().unwrap_or([0; 32]),
-        branch: BranchId(r.get(1)?),
-        rule: RuleId(r.get(2)?),
+        branch: BranchId(r.get(o + 1)?),
+        rule: RuleId(r.get(o + 2)?),
         curvec: decode_vector(&curvec),
-        generation: r.get(4)?,
-        token: r.get::<_, i64>(5)? as u64,
-        state: JobState::from_i64(r.get(6)?),
-        lease_until: r.get(7)?,
-        attempts: r.get(8)?,
-        last_error: r.get(9)?,
-        outcome_meta: r.get(10)?,
+        generation: r.get(o + 4)?,
+        token: r.get::<_, i64>(o + 5)? as u64,
+        state: JobState::from_i64(r.get(o + 6)?),
+        lease_until: r.get(o + 7)?,
+        attempts: r.get(o + 8)?,
+        last_error: r.get(o + 9)?,
+        outcome_meta: r.get(o + 10)?,
     })
 }
 impl JobTable {
@@ -264,7 +268,9 @@ impl JobTable {
     }
     /// Claims the oldest claimable `Queued` row that `pick` accepts (T53):
     /// marker-first, one transaction per row. Returns the claimed job with
-    /// its new token and lease.
+    /// its new token and lease. Rows are read in pages of 256 by rowid until
+    /// one is accepted, so rows `pick` declines (no validator's filter
+    /// matches) never hide a later row that it would accept.
     pub fn claim(
         &self,
         now: i64,
@@ -272,38 +278,48 @@ impl JobTable {
         mut pick: impl FnMut(&Job) -> bool,
     ) -> Result<Option<Job>, String> {
         let conn = self.conn();
-        let candidates: Vec<Job> = {
-            let mut stmt = conn
-                .prepare_cached(&format!(
-                    "SELECT {COLUMNS} FROM jobs WHERE state = 0 AND lease_until <= ?1
-                     ORDER BY rowid LIMIT 256"
-                ))
-                .map_err(sql)?;
-            stmt.query_map(params![now], row)
+        let mut after = 0i64;
+        loop {
+            let page: Vec<(i64, Job)> = {
+                let mut stmt = conn
+                    .prepare_cached(&format!(
+                        "SELECT rowid, {COLUMNS} FROM jobs
+                         WHERE state = 0 AND lease_until <= ?1 AND rowid > ?2
+                         ORDER BY rowid LIMIT 256"
+                    ))
+                    .map_err(sql)?;
+                stmt.query_map(params![now, after], |r| {
+                    let id: i64 = r.get(0)?;
+                    Ok((id, row_at(r, 1)?))
+                })
                 .map_err(sql)?
                 .collect::<Result<_, _>>()
                 .map_err(sql)?
-        };
-        for mut job in candidates {
-            if !pick(&job) {
-                continue;
-            }
-            let until = now + lease_ms;
-            let n = conn
-                .execute(
-                    "UPDATE jobs SET state = 1, token = token + 1, lease_until = ?2
-                     WHERE claim_key = ?1 AND state = 0",
-                    params![&job.key[..], until],
-                )
-                .map_err(sql)?;
-            if n == 1 {
-                job.state = JobState::Running;
-                job.token += 1;
-                job.lease_until = until;
-                return Ok(Some(job));
+            };
+            let Some(&(last, _)) = page.last() else {
+                return Ok(None);
+            };
+            after = last;
+            for (_, mut job) in page {
+                if !pick(&job) {
+                    continue;
+                }
+                let until = now + lease_ms;
+                let n = conn
+                    .execute(
+                        "UPDATE jobs SET state = 1, token = token + 1, lease_until = ?2
+                         WHERE claim_key = ?1 AND state = 0",
+                        params![&job.key[..], until],
+                    )
+                    .map_err(sql)?;
+                if n == 1 {
+                    job.state = JobState::Running;
+                    job.token += 1;
+                    job.lease_until = until;
+                    return Ok(Some(job));
+                }
             }
         }
-        Ok(None)
     }
     /// Ends a claim if `token` still holds the row. Returns whether it did.
     pub fn finish(
