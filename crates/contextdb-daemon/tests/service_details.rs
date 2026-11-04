@@ -294,6 +294,7 @@ fn recall_full(
             mode,
             limit: 50,
             index_wait_ms: 0,
+            opts: Default::default(),
         },
     ) {
         Response::Recall {
@@ -925,10 +926,11 @@ fn update_tokens_start_in_the_lower_half() {
 
 // -------------------------------------------------------------- recall
 
-/// Exact key, then key prefix, then key substring, then full-text hits in
-/// rank order; a logical is listed once.
+/// Key matches and text hits are fused (ADR 0016 §3.2, RRF): the exact
+/// key match comes first, every match is listed once, and a key match
+/// outranks a text hit at the same rank of its own ranker.
 #[test]
-fn recall_ranks_key_matches_before_text_hits_without_duplicates() {
+fn recall_fuses_key_matches_and_text_hits_without_duplicates() {
     let disk = SimDisk::new();
     let s = service(&disk);
     let a = attach(&s, "A");
@@ -949,10 +951,15 @@ fn recall_ranks_key_matches_before_text_hits_without_duplicates() {
     });
     let got = keys(&items);
     assert_eq!(got.len(), 6, "{got:?}");
-    assert_eq!(&got[..3], ["zebra", "zebras", "xzebrax"]);
-    let mut rest = got[3..].to_vec();
-    rest.sort();
-    assert_eq!(rest, ["doc-a", "doc-b", "doc-c"]);
+    assert_eq!(got[0], "zebra");
+    let pos = |k: &str| got.iter().position(|x| *x == k).unwrap();
+    assert!(pos("zebras") < pos("xzebrax"), "{got:?}");
+    let mut all = got.clone();
+    all.sort();
+    assert_eq!(
+        all,
+        ["doc-a", "doc-b", "doc-c", "xzebrax", "zebra", "zebras"]
+    );
 }
 
 /// A certified recall withholds what is not certified and issues a

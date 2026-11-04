@@ -6,6 +6,7 @@
 use crate::{
     actor::{ActorHandle, Message, Snapshot, SubmitError},
     proto::*,
+    ranking,
 };
 use contextdb_core::{BranchView, IssueRequest, LogLink};
 use contextdb_model::*;
@@ -22,6 +23,95 @@ use std::{
         mpsc,
     },
 };
+
+/// A recall's eligibility test (ADR 0016 §3.2), shared by its rankers and
+/// decided once per logical: the head in the snapshot, the scope (lane,
+/// kinds, `dir`), and in certified mode a CERTIFIED `summary_at`. A
+/// logical failing only certification becomes a `withheld` entry (at most
+/// `limit` of them); it never takes an item slot.
+struct Eligibility<'a, 'v, D: Durability> {
+    service: &'a Service<D>,
+    db: &'a BranchView<'v>,
+    lane: &'a str,
+    opts: &'a RecallOpts,
+    mode: Mode,
+    limit: usize,
+    live: &'a BTreeMap<String, Vec<u8>>,
+    /// `Some(item)` for an eligible logical, `None` for an ineligible one.
+    decided: BTreeMap<LogicalId, Option<Item>>,
+    withheld: Vec<Item>,
+}
+
+impl<D: Durability + Clone + 'static> Eligibility<'_, '_, D> {
+    /// Whether `l` may be shown. `hit` is the revision a text hit indexes:
+    /// a hit on a revision that is not the head says nothing about `l`
+    /// (another row may index the head), so it is not remembered.
+    fn admit(&mut self, l: LogicalId, hit: Option<RevisionId>) -> bool {
+        let Some(head) = self.db.head(l) else {
+            return false;
+        };
+        if hit.is_some_and(|r| r != head) {
+            return false;
+        }
+        if let Some(d) = self.decided.get(&l) {
+            return d.is_some();
+        }
+        let item = self
+            .scoped(l, head)
+            .then(|| self.service.item_at(self.db, l, head, None, self.live));
+        let item = match item {
+            Some(item) if self.mode == Mode::Certified && item.summary != Summary::Certified => {
+                // I6: never presented as certified.
+                if self.withheld.len() < self.limit {
+                    self.withheld.push(item);
+                }
+                None
+            }
+            other => other,
+        };
+        let ok = item.is_some();
+        self.decided.insert(l, item);
+        ok
+    }
+    fn scoped(&self, l: LogicalId, head: RevisionId) -> bool {
+        let Some((_, kind, lane)) = self.db.logical_info(l) else {
+            return false;
+        };
+        if !self.lane.is_empty() && lane != self.lane {
+            return false;
+        }
+        if !self.opts.kinds.is_empty() && !self.opts.kinds.contains(&kind) {
+            return false;
+        }
+        let Some(dir) = &self.opts.dir else {
+            return true;
+        };
+        // `dir` = the logical's `dirs` metadata ∪ the revision's anchors.
+        if (self.db.metadata(l).unwrap_or_default().dirs.iter()).any(|d| ranking::covers(dir, d)) {
+            return true;
+        }
+        // An anchor covers its own path; any other revision, its anchor
+        // premises' paths.
+        let covered =
+            |r: RevisionId| (self.anchor_path(r)).is_some_and(|p| ranking::covers(dir, &p));
+        covered(head)
+            || (self.db.rules_concluding(head).into_iter())
+                .flat_map(|(_, _, premises, _)| premises)
+                .any(|p| covered(p.premise))
+    }
+    /// The repository path a CodeAnchor revision observes, if `r` is one.
+    fn anchor_path(&self, r: RevisionId) -> Option<String> {
+        let l = self.db.revision_logical(r)?;
+        if self.db.logical_info(l)?.1 != RecordKind::CodeAnchor {
+            return None;
+        }
+        let content = self.db.revision_content(r).ok()?;
+        Some(match self.service.anchor_descriptor(content)? {
+            contextdb_anchors::AnchorDescriptor::File(d) => d.path,
+            contextdb_anchors::AnchorDescriptor::Symbol(d) => d.path,
+        })
+    }
+}
 
 /// Transport-bound identity of a connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,8 +284,9 @@ impl<D: Durability> Service<D> {
 /// A resolved binding: session id, session, agent, and whether the session
 /// was just started.
 pub(crate) type Bound = (SessionId, Arc<Mutex<Session>>, Agent, bool);
-/// Most items one recall returns (ADR 0008 §9).
-pub const MAX_RECALL: usize = 1_000;
+/// Largest `limit` a recall serves; more is clamped and reported (ADR 0016
+/// §3.1).
+pub const MAX_RECALL: usize = 100;
 /// A session's branch (ADR 0013 §7, D1): the named branch, which must exist
 /// and be open; else the branch named like the client's git branch, if it
 /// exists and is open; else `main`.
@@ -860,6 +951,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 mode,
                 limit,
                 index_wait_ms,
+                opts,
             } => match self.bind(id, &binding, &snap) {
                 Ok(b) => {
                     // Bounded wait for the text index to reach this snapshot
@@ -871,7 +963,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             std::time::Duration::from_millis(index_wait_ms as u64),
                         );
                     }
-                    self.recall(b, &query, &scope, mode, limit as usize, &snap)
+                    self.recall(b, &query, &scope, &opts, mode, limit as usize, &snap)
                 }
                 Err(r) => r,
             },
@@ -1833,71 +1925,99 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let e = cert.entries.get(index).filter(|e| e.required)?;
         Some((e.logical, e.rev, cert.cert_id))
     }
+    #[allow(clippy::too_many_arguments)]
     fn recall(
         &self,
         (session, s, agent, _): Bound,
         query: &str,
         scope: &str,
+        opts: &RecallOpts,
         mode: Mode,
         limit: usize,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
+        let limit_clamped = limit > MAX_RECALL;
         let limit = limit.clamp(1, MAX_RECALL);
         let db = &snap.view(s.lock().expect("session").branch);
-        // Basic retrieval (ADR 0008 §9): exact key, then prefix, then substring.
-        let mut found: Vec<(u8, LogicalId)> = db
+        let live = self.anchor_live(db);
+        let mut elig = Eligibility {
+            service: self,
+            db,
+            lane: scope,
+            opts,
+            mode,
+            limit,
+            live: &live,
+            decided: BTreeMap::new(),
+            withheld: Vec::new(),
+        };
+        // ADR 0016 §3.2: eligibility is decided inside each ranker, before
+        // any cut, and each ranker stops once it holds `limit` eligible
+        // candidates or runs out.
+        //
+        // Key ranker: exact, then prefix, then substring, over every
+        // logical on the branch.
+        let mut keyed: Vec<(ranking::KeyRank, LogicalId)> = db
             .logicals()
             .filter_map(|l| {
-                let (key, _, lane) = db.logical_info(l)?;
-                if !scope.is_empty() && lane != scope {
-                    return None;
-                }
-                let rank = if key == query {
-                    0
-                } else if key.starts_with(query) {
-                    1
-                } else if key.contains(query) {
-                    2
-                } else {
-                    return None;
-                };
-                Some((rank, l))
+                let (key, ..) = db.logical_info(l)?;
+                Some((ranking::KeyRank::of(&key, query)?, l))
             })
             .collect();
-        // Full-text candidates after key matches; the index may lag the
-        // snapshot, but every candidate's status comes from the snapshot.
-        // Rows are per branch: a hit counts only when its revision is the
-        // head on the session's branch (main rows it shadows drop out).
+        keyed.sort();
+        let mut by_key = Vec::new();
+        for (rank, l) in keyed {
+            if by_key.len() == limit {
+                break;
+            }
+            if elig.admit(l, None) {
+                by_key.push((rank, l));
+            }
+        }
+        // bm25: the AND query, then the OR query, paged. The index may lag
+        // the snapshot; a hit counts only while its revision is the head
+        // on the session's branch (main rows the branch shadows drop out).
         let branch = db.info().id;
-        if let Ok(hits) =
-            self.recall
-                .lock()
-                .expect("recall")
-                .search(query, scope, branch, limit * 2 + 8)
+        let page = limit * 4 + 16;
+        let mut by_text: Vec<LogicalId> = Vec::new();
         {
-            let hits = hits
-                .into_iter()
-                .filter(|h| db.head(h.logical) == Some(h.rev));
-            for (n, h) in hits.enumerate() {
-                if !found.iter().any(|(_, f)| *f == h.logical) {
-                    found.push((3 + n.min(250) as u8, h.logical));
+            let index = self.recall.lock().expect("recall");
+            let any = contextdb_store::recall::terms(query);
+            'phases: for phase in 0..2 {
+                let mut offset = 0;
+                loop {
+                    let hits = if phase == 0 {
+                        index.search_page(query, scope, branch, page, offset)
+                    } else {
+                        index.any_of_page(&any, scope, branch, page, offset)
+                    };
+                    // An index error ends this ranker; its state is in
+                    // the response's `index` report.
+                    let Ok(hits) = hits else { break };
+                    for h in &hits {
+                        if !by_text.contains(&h.logical) && elig.admit(h.logical, Some(h.rev)) {
+                            by_text.push(h.logical);
+                            if by_text.len() == limit {
+                                break 'phases;
+                            }
+                        }
+                    }
+                    if hits.len() < page {
+                        break;
+                    }
+                    offset += page;
                 }
             }
         }
-        found.sort();
-        found.truncate(limit);
-        let live = self.anchor_live(db);
-        let mut items = Vec::new();
-        let mut withheld = Vec::new();
-        for (_, l) in found {
-            let r = db.head(l).expect("existing logical");
-            let item = self.item_at(db, l, r, None, &live);
-            if mode == Mode::Certified && item.summary != Summary::Certified {
-                withheld.push(item); // I6: never presented as certified
-            } else {
-                items.push(item);
-            }
-        }
+        let fused = ranking::fuse(&by_key, &[&by_text]);
+        let Eligibility {
+            decided, withheld, ..
+        } = elig;
+        let mut decided = decided;
+        let mut items: Vec<Item> = (fused.into_iter())
+            .filter_map(|l| decided.remove(&l).flatten())
+            .take(limit)
+            .collect();
         let mut s = s.lock().expect("session");
         let required = mode == Mode::Certified;
         let mut events = Vec::new();
@@ -1961,6 +2081,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             withheld,
             cert_id,
             index: self.index_health.report(snap.epoch),
+            limit_clamped,
         }
     }
     /// The recall projection's stored renderings of `rev` (T87: equal to

@@ -321,6 +321,47 @@ fn t46c_indirect_path_filter_preserves_full_read_set_and_aliases_fall_back() {
     ));
     s.handle(ADMIN, Request::Shutdown);
 }
+/// T85 (`dir` = anchors ∪ `dirs`): a recall scoped to a path prefix keeps
+/// a record whose anchor premise (or which, as an anchor, itself) observes
+/// a covered path, and drops the others.
+#[test]
+fn t85_recall_dir_scope_follows_anchor_premises() {
+    let f = Fixture::new();
+    f.write("a.rs", "a");
+    f.write("b.rs", "b");
+    let s = f.service();
+    f.scan(&s, &["a.rs", "b.rs"]);
+    roots(&s);
+    let session = f.start(&s);
+    let keys = |dir: Option<&str>| -> Vec<String> {
+        match s
+            .handle(
+                AGENT,
+                Request::Recall {
+                    binding: Binding::root(session),
+                    query: "root".into(),
+                    scope: String::new(),
+                    mode: Mode::Advisory,
+                    limit: 10,
+                    index_wait_ms: 0,
+                    opts: RecallOpts {
+                        kinds: Vec::new(),
+                        dir: dir.map(Into::into),
+                    },
+                },
+            )
+            .response
+        {
+            Response::Recall { items, .. } => items.into_iter().map(|i| i.key).collect(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(keys(None), ["root-a", "root-b"]);
+    assert_eq!(keys(Some("a.rs")), ["root-a"]);
+    assert_eq!(keys(Some("./b.rs")), ["root-b"]);
+    assert!(keys(Some("c.rs")).is_empty());
+    s.handle(ADMIN, Request::Shutdown);
+}
 #[test]
 fn t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_failure() {
     let f = Fixture::new();
@@ -347,11 +388,17 @@ fn t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_fai
                 mode: Mode::Certified,
                 limit: 10,
                 index_wait_ms: 0,
+                opts: Default::default(),
             },
         )
         .response;
+    // root-a is withheld, never an item (the OR text query may also find
+    // root-b, ADR 0016 §3.2).
     assert!(
-        matches!(response,Response::Recall {items,withheld,..} if items.is_empty() && withheld.len()==1)
+        matches!(&response,Response::Recall {items,withheld,..}
+            if items.iter().all(|i| i.key != "root-a")
+                && withheld.iter().filter(|i| i.key == "root-a").count() == 1),
+        "{response:?}"
     );
     std::fs::remove_file(f.data.join("anchors.routes")).unwrap();
     let watermark = s

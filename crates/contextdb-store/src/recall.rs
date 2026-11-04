@@ -223,27 +223,49 @@ impl RecallIndex {
             "DELETE FROM recall; DELETE FROM recall_map; DELETE FROM recall_watermark;",
         )
     }
-    fn hits(&self, q: &str, scope: &str, branch: BranchId, limit: usize) -> Sql<Vec<Hit>> {
+    fn hits(
+        &self,
+        q: &str,
+        scope: &str,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT logical, rev, bm25(recall) FROM recall
              WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
-             ORDER BY rank LIMIT ?4",
+             ORDER BY rank, rowid LIMIT ?4 OFFSET ?5",
         )?;
-        let rows = stmt.query_map(params![q, scope, branch.0, limit as i64], |r| {
-            Ok(Hit {
-                logical: LogicalId(r.get(0)?),
-                rev: RevisionId(r.get(1)?),
-                score: -r.get::<_, f64>(2)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![q, scope, branch.0, limit as i64, offset as i64],
+            |r| {
+                Ok(Hit {
+                    logical: LogicalId(r.get(0)?),
+                    rev: RevisionId(r.get(1)?),
+                    score: -r.get::<_, f64>(2)?,
+                })
+            },
+        )?;
         rows.collect()
     }
     /// Best-ranked rows matching every term of `text` among `main`'s and
     /// `branch`'s rows, optionally within one scope lane. The caller keeps a
     /// hit only when its revision is the head on `branch`.
     pub fn search(&self, text: &str, scope: &str, branch: BranchId, limit: usize) -> Sql<Vec<Hit>> {
+        self.search_page(text, scope, branch, limit, 0)
+    }
+    /// [`Self::search`] from the `offset`-th hit on (ADR 0016 §3.2: rankers
+    /// page until they hold enough eligible candidates).
+    pub fn search_page(
+        &self,
+        text: &str,
+        scope: &str,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
         match fts_query(text) {
-            Some(q) => self.hits(&q, scope, branch, limit),
+            Some(q) => self.hits(&q, scope, branch, limit, offset),
             None => Ok(Vec::new()),
         }
     }
@@ -282,6 +304,17 @@ impl RecallIndex {
         branch: BranchId,
         limit: usize,
     ) -> Sql<Vec<Hit>> {
+        self.any_of_page(terms, scope, branch, limit, 0)
+    }
+    /// [`Self::any_of`] from the `offset`-th hit on.
+    pub fn any_of_page(
+        &self,
+        terms: &[String],
+        scope: &str,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
@@ -293,6 +326,7 @@ impl RecallIndex {
             scope,
             branch,
             limit,
+            offset,
         )
     }
 }

@@ -202,6 +202,7 @@ fn t08_readers_never_see_coupled_heads_out_of_step() {
                             mode: Mode::Advisory,
                             limit: 2,
                             index_wait_ms: 0,
+                            opts: Default::default(),
                         })
                         .unwrap();
                     if let Response::Recall { items, .. } = r.response {

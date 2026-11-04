@@ -222,6 +222,10 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     pub fn logical_info(&self, l: LogicalId) -> Option<(String, RecordKind, String)> {
         self.b.db.logical_info(self.ll(l).ok()?)
     }
+    /// The logical's metadata on this branch (ADR 0016 §3.1 `dir`).
+    pub fn metadata(&self, l: LogicalId) -> Option<Metadata> {
+        Some(self.b.db.metadata(self.ll(l).ok()?))
+    }
     pub fn head(&self, l: LogicalId) -> Option<RevisionId> {
         let r = self.b.db.head(self.ll(l).ok()?)?;
         Some(self.global_revision(r))

@@ -15,6 +15,8 @@ pub mod index_health;
 pub mod jobs;
 #[cfg(not(loom))]
 pub mod lease;
+/// Recall rank fusion (P8, ADR 0016 §3.2).
+pub mod ranking;
 #[cfg(not(loom))]
 pub use contextdb_proto::proto;
 #[cfg(not(loom))]

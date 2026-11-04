@@ -198,6 +198,7 @@ fn main() -> ExitCode {
                                 mode: Mode::Advisory,
                                 limit: 2,
                                 index_wait_ms: 0,
+                                opts: Default::default(),
                             });
                             if let Ok(Envelope {
                                 response: Response::Recall { items, .. },

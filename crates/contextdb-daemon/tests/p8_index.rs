@@ -108,6 +108,7 @@ fn recall(s: &Service<SimDisk>, b: &Binding, query: &str, wait_ms: u32) -> Recal
             mode: Mode::Advisory,
             limit: 100,
             index_wait_ms: wait_ms,
+            opts: Default::default(),
         },
     );
     match env.response {

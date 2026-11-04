@@ -177,6 +177,39 @@ fn kind_of(s: &str) -> Result<RecordKind, String> {
         other => return Err(format!("unknown kind {other}")),
     })
 }
+/// `ctx_recall`'s scope: a lane string (as before P8) or `{lane?, kinds?,
+/// dir?}` (ADR 0016 §3.1).
+fn recall_scope(v: Option<&Value>) -> Result<(String, RecallOpts), String> {
+    match v {
+        None | Some(Value::Null) => Ok((String::new(), RecallOpts::default())),
+        Some(Value::String(s)) => Ok((s.clone(), RecallOpts::default())),
+        Some(Value::Object(o)) => {
+            let lane = match o.get("lane") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(s)) => s.clone(),
+                Some(_) => return Err("InvalidArgument: scope.lane must be a string".into()),
+            };
+            let kinds = match o.get("kinds") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(a)) => (a.iter())
+                    .map(|k| {
+                        k.as_str()
+                            .ok_or("kinds are strings".to_string())
+                            .and_then(kind_of)
+                    })
+                    .collect::<Result<_, _>>()?,
+                Some(_) => return Err("InvalidArgument: scope.kinds must be an array".into()),
+            };
+            let dir = match o.get("dir") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => return Err("InvalidArgument: scope.dir must be a string".into()),
+            };
+            Ok((lane, RecallOpts { kinds, dir }))
+        }
+        Some(_) => Err("InvalidArgument: scope must be a string or an object".into()),
+    }
+}
 fn edge_of(s: &str) -> Result<EdgeKind, String> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "cur" => EdgeKind::Cur,
@@ -192,10 +225,17 @@ fn tools() -> Value {
         "op": { "enum": ["create", "revise", "set_head", "assert_base", "retract_base", "add_rule", "set_rule_enabled", "expect_heads"] } },
         "required": ["op"] } });
     json!([
-        { "name": "ctx_recall", "description": "Find context records by key. certified mode returns only CERTIFIED items (others are withheld) and handles usable as deps.",
+        { "name": "ctx_recall", "description": "Find context records by key and text. certified mode returns only CERTIFIED items (others are withheld) and handles usable as deps.",
           "inputSchema": { "type": "object", "properties": {
-              "query": { "type": "string" }, "scope": { "type": "string" },
-              "mode": { "enum": ["certified", "advisory"] }, "limit": { "type": "integer" },
+              "query": { "type": "string" },
+              "scope": { "description": "a scope lane, or {lane?, kinds?: [kind], dir?: path prefix covering an anchor or a dirs entry}",
+                         "oneOf": [ { "type": "string" },
+                                    { "type": "object", "properties": {
+                                        "lane": { "type": "string" },
+                                        "kinds": { "type": "array", "items": { "type": "string" } },
+                                        "dir": { "type": "string" } } } ] },
+              "mode": { "enum": ["certified", "advisory"] },
+              "limit": { "type": "integer", "description": "default 10; above 100 is clamped (limit_clamped: true)" },
               "index_wait_ms": { "type": "integer", "description": "wait up to this long (default 200, max 2000) for the text index to catch up; the response's index state says if it did not" } },
             "required": ["query"] } },
         { "name": "ctx_read", "description": "Read one record. certified mode fails closed unless the current head is CERTIFIED.",
@@ -628,10 +668,11 @@ impl<B: Backend> Server<B> {
         };
         match name {
             "ctx_recall" => {
+                let (scope, opts) = recall_scope(args.get("scope"))?;
                 let env = self.call(Request::Recall {
                     binding: binding.clone(),
                     query: arg(args, "query").unwrap_or("").into(),
-                    scope: arg(args, "scope").unwrap_or("").into(),
+                    scope,
                     mode: mode(args),
                     limit: args.get("limit").and_then(Value::as_u64).unwrap_or(10) as u32,
                     // ADR 0016 §2.2: wait up to 200 ms by default for the
@@ -641,12 +682,14 @@ impl<B: Backend> Server<B> {
                         .and_then(Value::as_u64)
                         .unwrap_or(200)
                         .min(2_000) as u32,
+                    opts,
                 })?;
                 let Response::Recall {
                     items,
                     withheld,
                     cert_id,
                     index,
+                    limit_clamped,
                 } = env.response
                 else {
                     return Err("unexpected response".into());
@@ -657,6 +700,7 @@ impl<B: Backend> Server<B> {
                     "withheld": withheld.iter().map(item).collect::<Vec<_>>(),
                     "cert_id": cert_id.map(|c| hex(&c)),
                     "index": index_json(&index),
+                    "limit_clamped": limit_clamped,
                 }))
             }
             "ctx_read" => {
@@ -1197,4 +1241,45 @@ fn committed(env: Envelope) -> Result<Value, String> {
         "revisions": result.allocations.new_revisions.iter().map(|r| r.0).collect::<Vec<_>>(),
         "status_diff": result.status_diff.iter().map(|r| r.0).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T95: a plain string is a lane; an object adds kinds and dir; bad
+    /// shapes are refused, never guessed.
+    #[test]
+    fn recall_scope_accepts_a_string_or_an_object() {
+        assert_eq!(
+            recall_scope(Some(&json!("repo"))).unwrap(),
+            ("repo".into(), RecallOpts::default())
+        );
+        assert_eq!(
+            recall_scope(None).unwrap(),
+            (String::new(), RecallOpts::default())
+        );
+        assert_eq!(
+            recall_scope(Some(
+                &json!({"lane": "repo", "kinds": ["decision", "Plan"], "dir": "src/"})
+            ))
+            .unwrap(),
+            (
+                "repo".into(),
+                RecallOpts {
+                    kinds: vec![RecordKind::Decision, RecordKind::Plan],
+                    dir: Some("src/".into()),
+                }
+            )
+        );
+        assert_eq!(recall_scope(Some(&json!({"dir": "a"}))).unwrap().0, "");
+        for bad in [
+            json!(3),
+            json!({"kinds": "decision"}),
+            json!({"kinds": ["nope"]}),
+            json!({"lane": 1}),
+        ] {
+            assert!(recall_scope(Some(&bad)).is_err(), "{bad}");
+        }
+    }
 }

@@ -475,6 +475,7 @@ fn recall_reads_the_branch_rows() {
             mode: Mode::Advisory,
             limit: 10,
             index_wait_ms: 0,
+            opts: Default::default(),
         },
     ) {
         Response::Recall { items, .. } => items,

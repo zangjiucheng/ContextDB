@@ -206,6 +206,15 @@ pub struct IndexReport {
     pub vectors: IndexState,
 }
 wire_struct!(IndexReport { fts, vectors });
+/// A recall's structured scope beyond the lane (ADR 0016 §3.1): an empty
+/// `kinds` admits every kind; `dir` is a path prefix that must cover one of
+/// the revision's anchors or one of the logical's `dirs` entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecallOpts {
+    pub kinds: Vec<RecordKind>,
+    pub dir: Option<String>,
+}
+wire_struct!(RecallOpts { kinds, dir });
 /// Which projection `ctx reindex` rebuilds (ADR 0016 §2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReindexTarget {
@@ -268,6 +277,7 @@ pub enum Request {
         /// How long to wait for the text index to reach the snapshot
         /// (ADR 0016 §2.2; capped at 2 s).
         index_wait_ms: u32,
+        opts: RecallOpts,
     },
     Read {
         binding: Binding,
@@ -820,6 +830,8 @@ pub enum Response {
         withheld: Vec<Item>,
         cert_id: Option<ContentHash>,
         index: IndexReport,
+        /// `limit` was above 100 and was clamped (ADR 0016 §3.1).
+        limit_clamped: bool,
     },
     Read {
         item: Item,
@@ -1308,6 +1320,7 @@ impl Wire for Request {
                 mode,
                 limit,
                 index_wait_ms,
+                opts,
             } => {
                 2u8.encode(o);
                 binding.encode(o);
@@ -1316,6 +1329,7 @@ impl Wire for Request {
                 mode.encode(o);
                 limit.encode(o);
                 index_wait_ms.encode(o);
+                opts.encode(o);
             }
             Self::Read {
                 binding,
@@ -1689,6 +1703,7 @@ impl Wire for Request {
                 mode: Wire::decode(i)?,
                 limit: Wire::decode(i)?,
                 index_wait_ms: Wire::decode(i)?,
+                opts: Wire::decode(i)?,
             },
             3 => Self::Read {
                 binding: Wire::decode(i)?,
@@ -1915,12 +1930,14 @@ impl Wire for Response {
                 withheld,
                 cert_id,
                 index,
+                limit_clamped,
             } => {
                 3u8.encode(o);
                 items.encode(o);
                 withheld.encode(o);
                 cert_id.encode(o);
                 index.encode(o);
+                limit_clamped.encode(o);
             }
             Self::Read { item, payload } => {
                 4u8.encode(o);
@@ -2124,6 +2141,7 @@ impl Wire for Response {
                 withheld: Wire::decode(i)?,
                 cert_id: Wire::decode(i)?,
                 index: Wire::decode(i)?,
+                limit_clamped: Wire::decode(i)?,
             },
             4 => Self::Read {
                 item: Wire::decode(i)?,
@@ -2355,6 +2373,10 @@ mod tests {
                 mode: Mode::Certified,
                 limit: 8,
                 index_wait_ms: 200,
+                opts: RecallOpts {
+                    kinds: vec![RecordKind::Decision],
+                    dir: Some("src/".into()),
+                },
             },
             Request::Read {
                 binding: Binding::Call {
@@ -2776,6 +2798,7 @@ mod tests {
                     },
                     vectors: IndexState::Disabled,
                 },
+                limit_clamped: true,
             },
             Response::Handoffs {
                 items: vec![HandoffInfo {

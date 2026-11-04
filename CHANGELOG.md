@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P8 milestone 2: ranking** (ADR 0016 §3).
+  - **Fix: a certified recall can no longer come back empty because uncertified matches filled the page.** Recall used to cut to `limit` first and sort uncertified items into `withheld` afterwards. Eligibility (current head, scope, certification) is now decided inside each ranker before any cut. Withheld entries are capped at `limit` and never take an item slot. A page holds fewer than `limit` items only when every ranker ran out (T54).
+  - The text ranker pages through bm25 hits (the AND query, then the OR query) until it holds `limit` eligible candidates.
+  - Key and text candidates are fused with reciprocal rank fusion (k = 60). An exact key match is always first; ties break by key rank, then logical id (T85). A key match no longer always outranks a text hit.
+  - `ctx_recall{scope}` accepts `{lane?, kinds?, dir?}` as well as a lane string. `dir` is a path prefix that must cover one of the logical's `dirs` entries, one of the revision's anchors, or (for an anchor) its own path.
+  - `limit` above 100 is clamped and the response says `limit_clamped: true`. The old clamp was 1,000 (T95).
+
 - **P8 milestone 1: projection health** (ADR 0016 §2, §4.1). Protocol 6.
   - Every `ctx_recall` response and `ctx status` now report the index state: `Ready{watermark}`, `Lagging{watermark, head_epoch}`, `Rebuilding{done, total}`, `Failed{error}` or `Disabled` (vectors, until an embedder exists). A lagging index can only miss newer records. It never returns a non-current revision (T86).
   - `ctx_recall{index_wait_ms}` (default 200, at most 2000) waits for the index to catch up. The wait wakes on indexer progress.
