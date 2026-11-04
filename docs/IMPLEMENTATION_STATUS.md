@@ -1,6 +1,6 @@
 # Implementation status
 
-**P7 G0 passed** (2026-11-02) ([P7 gate](gates/P7.md), [ADR 0015](adr/0015-p7-validation-conflicts.md) r0.3, SPEC v1.7.1). P7 covers semantic validation, conflicts, handoff and change feeds. The independent review found 4 blockers and 7 majors in r0.1; two closure rounds closed them. Owner decisions: the real LLM evaluation uses the local `claude -p`; op_log format 4 stores only a metadata hash; agents and admin may open gating Conflicts. An LLM validator never writes a ValidationRecord. Implementation: milestones 1–8 done:
+**P7 passed** (2026-11-03; G0 2026-11-02) ([P7 gate](gates/P7.md), [ADR 0015](adr/0015-p7-validation-conflicts.md) r0.3, SPEC v1.7.1). P7 covers semantic validation, conflicts, handoff and change feeds. The independent review found 4 blockers and 7 majors in r0.1; two closure rounds closed them. Owner decisions: the real LLM evaluation uses the local `claude -p`; op_log format 4 stores only a metadata hash; agents and admin may open gating Conflicts. An LLM validator never writes a ValidationRecord. Implementation: milestones 1–8 done:
 - op_log format 4;
 - the agent-validation refusal and admin metadata, with protocol 5;
 - the validator adapters, including a sandboxed `claude -p`;
@@ -10,7 +10,14 @@
 - handoff between sessions in the session log (format 3);
 - `ctx_changes` from the durable `diff_log`, with long-poll.
 
-Milestone 9 (verification) in progress: G2 (every T-item mapped to a test), G3 (PROP1 with artifacts, meta and if_absent; PROP7 metamorphic; 10,000 seeds), G4 (30-minute two-branch stress, kill at each job step, disk full) and G6 (real `claude -p`, 253 calls) pass; G5 is provisional (commit busy/idle ratio open); G7 and the independent implementation review are pending.
+**Gate P7 passed (2026-11-03).** Milestone 9 is done, and G1–G8 all pass:
+- **G3:** 10,000 seeds.
+- **G4:** 30-minute stress with 0 violations; crash at each job step; disk full.
+- **G5:** the commit budget was restated by owner decision D4; all four items pass.
+- **G6:** a real `claude -p` run.
+- **G7:** remote regression passes.
+
+The independent implementation review found no blocker. Its one major finding (claim starvation) and four minor ones are fixed; the other minor findings are follow-ups (gate §3).
 
 **Gate P6 passed** (2026-11-02) ([P6 gate](gates/P6.md), [ADR 0013](adr/0013-p6-branches-transactions.md) r0.6). G0–G5, G7 and G8 pass and G6 is none for P6. G3: PROP13 against an independent branch oracle (10,000 seeds), PROP7/8/10/11 per branch, and [mutation](gates/p6-g3-mutation.md) with every survivor closed by a test or argued equivalent. G4's branch stress found two merge defects (a cubic merge-base search and sync points retaining whole databases), fixed in ADR r0.6 without semantic change. [G5](gates/p6-g5.md): fork O(1), WHAT_IF ≤ 1.6× a commit, branch commit at parity with `main`; the first write after a fork or merge copies the branch (≈ 0.05–0.25 s at 10⁶ revisions). The independent implementation review found 8 majors (among them a `require_certified` merge passing with Conflicts off the head, an idempotency hash ignoring the branch, and group-commit projections differing from a rebuild), all fixed with regression tests (ADR r0.7, SPEC v1.6.9); G1, G3, G4 and G7 were rerun on the fixed tree. All P6 layers pass; the phase gate closed with P4, P5a and P5b on 2026-11-02 (SPEC A11, v1.6.12).
 

@@ -1,39 +1,43 @@
-moves 9905 jobs [("queued", 0), ("running", 0), ("done", 2109), ("failed", 0), ("superseded", 8589)] calls 2583
-moves 17646 jobs [("queued", 13), ("running", 3), ("done", 3908), ("failed", 0), ("superseded", 16475)] calls 4823
-moves 24006 jobs [("queued", 2), ("running", 3), ("done", 5487), ("failed", 0), ("superseded", 23852)] calls 6758
-moves 29203 jobs [("queued", 11), ("running", 3), ("done", 6896), ("failed", 0), ("superseded", 30456)] calls 8456
-moves 33915 jobs [("queued", 6), ("running", 3), ("done", 8229), ("failed", 0), ("superseded", 36673)] calls 10061
-moves 38194 jobs [("queued", 10), ("running", 3), ("done", 9339), ("failed", 0), ("superseded", 42567)] calls 11433
-moves 41976 jobs [("queued", 14), ("running", 3), ("done", 10374), ("failed", 0), ("superseded", 47989)] calls 12683
-moves 45562 jobs [("queued", 14), ("running", 3), ("done", 11389), ("failed", 0), ("superseded", 53202)] calls 13921
-moves 49001 jobs [("queued", 16), ("running", 4), ("done", 12358), ("failed", 0), ("superseded", 58226)] calls 15103
-moves 52083 jobs [("queued", 17), ("running", 4), ("done", 13231), ("failed", 0), ("superseded", 62815)] calls 16155
-moves 55208 jobs [("queued", 18), ("running", 4), ("done", 14148), ("failed", 0), ("superseded", 67390)] calls 17241
-moves 58146 jobs [("queued", 19), ("running", 3), ("done", 14993), ("failed", 0), ("superseded", 71819)] calls 18262
-moves 60997 jobs [("queued", 18), ("running", 4), ("done", 15817), ("failed", 0), ("superseded", 76194)] calls 19255
-moves 63691 jobs [("queued", 9), ("running", 3), ("done", 16634), ("failed", 0), ("superseded", 80285)] calls 20221
-moves 66418 jobs [("queued", 16), ("running", 4), ("done", 17433), ("failed", 0), ("superseded", 84441)] calls 21191
-moves 68972 jobs [("queued", 14), ("running", 4), ("done", 18194), ("failed", 0), ("superseded", 88382)] calls 22093
-moves 71470 jobs [("queued", 19), ("running", 3), ("done", 18945), ("failed", 0), ("superseded", 92221)] calls 22991
-moves 73830 jobs [("queued", 18), ("running", 3), ("done", 19630), ("failed", 0), ("superseded", 95934)] calls 23820
-moves 76300 jobs [("queued", 19), ("running", 2), ("done", 20350), ("failed", 0), ("superseded", 99762)] calls 24678
-moves 78703 jobs [("queued", 13), ("running", 4), ("done", 21082), ("failed", 0), ("superseded", 103467)] calls 25554
-moves 81066 jobs [("queued", 21), ("running", 3), ("done", 21804), ("failed", 0), ("superseded", 107095)] calls 26429
-moves 83229 jobs [("queued", 18), ("running", 3), ("done", 22461), ("failed", 0), ("superseded", 110484)] calls 27213
-moves 85365 jobs [("queued", 19), ("running", 3), ("done", 23086), ("failed", 0), ("superseded", 113878)] calls 27974
-moves 87521 jobs [("queued", 9), ("running", 4), ("done", 23763), ("failed", 0), ("superseded", 117216)] calls 28783
-moves 89516 jobs [("queued", 14), ("running", 4), ("done", 24367), ("failed", 0), ("superseded", 120370)] calls 29520
-moves 91575 jobs [("queued", 18), ("running", 4), ("done", 24984), ("failed", 0), ("superseded", 123618)] calls 30261
-moves 93505 jobs [("queued", 10), ("running", 4), ("done", 25574), ("failed", 0), ("superseded", 126629)] calls 30964
-moves 95611 jobs [("queued", 20), ("running", 3), ("done", 26186), ("failed", 0), ("superseded", 129989)] calls 31727
-moves 97532 jobs [("queued", 16), ("running", 4), ("done", 26789), ("failed", 0), ("superseded", 132994)] calls 32442
-validate-stress 1800s: moves 99253 (cas conflicts 8232), epoch 126615, records 10869 on {BranchId(0)}, worker reviews 16490, jobs done 27359 superseded 135688, calls 33120, store errors 0, violations 0
+moves 9348 jobs [("queued", 12), ("running", 4), ("done", 2904), ("failed", 0), ("superseded", 9039)] calls 3578
+moves 16518 jobs [("queued", 12), ("running", 4), ("done", 5090), ("failed", 0), ("superseded", 17137)] calls 6220
+moves 22325 jobs [("queued", 8), ("running", 4), ("done", 6781), ("failed", 0), ("superseded", 24524)] calls 8270
+moves 27506 jobs [("queued", 12), ("running", 4), ("done", 8297), ("failed", 0), ("superseded", 31386)] calls 10107
+moves 32137 jobs [("queued", 6), ("running", 4), ("done", 9637), ("failed", 0), ("superseded", 37839)] calls 11737
+moves 36245 jobs [("queued", 9), ("running", 3), ("done", 10844), ("failed", 0), ("superseded", 43702)] calls 13181
+moves 40262 jobs [("queued", 19), ("running", 3), ("done", 11999), ("failed", 0), ("superseded", 49534)] calls 14595
+moves 43841 jobs [("queued", 11), ("running", 2), ("done", 13062), ("failed", 0), ("superseded", 54865)] calls 15882
+moves 47268 jobs [("queued", 12), ("running", 1), ("done", 14093), ("failed", 0), ("superseded", 59966)] calls 17111
+moves 50449 jobs [("queued", 11), ("running", 4), ("done", 15098), ("failed", 0), ("superseded", 64707)] calls 18296
+moves 53557 jobs [("queued", 20), ("running", 3), ("done", 16021), ("failed", 0), ("superseded", 69442)] calls 19408
+moves 56526 jobs [("queued", 7), ("running", 3), ("done", 16879), ("failed", 0), ("superseded", 73984)] calls 20457
+moves 59479 jobs [("queued", 15), ("running", 3), ("done", 17797), ("failed", 0), ("superseded", 78450)] calls 21543
+moves 62268 jobs [("queued", 17), ("running", 4), ("done", 18638), ("failed", 0), ("superseded", 82769)] calls 22560
+moves 64870 jobs [("queued", 14), ("running", 3), ("done", 19413), ("failed", 0), ("superseded", 86813)] calls 23496
+moves 67358 jobs [("queued", 10), ("running", 3), ("done", 20184), ("failed", 0), ("superseded", 90651)] calls 24410
+moves 69760 jobs [("queued", 15), ("running", 4), ("done", 20900), ("failed", 0), ("superseded", 94415)] calls 25277
+moves 72105 jobs [("queued", 16), ("running", 3), ("done", 21628), ("failed", 0), ("superseded", 98072)] calls 26155
+moves 74411 jobs [("queued", 13), ("running", 2), ("done", 22343), ("failed", 0), ("superseded", 101697)] calls 26987
+moves 76792 jobs [("queued", 20), ("running", 3), ("done", 23063), ("failed", 0), ("superseded", 105414)] calls 27838
+moves 79071 jobs [("queued", 19), ("running", 4), ("done", 23737), ("failed", 0), ("superseded", 109006)] calls 28648
+moves 81196 jobs [("queued", 18), ("running", 4), ("done", 24384), ("failed", 0), ("superseded", 112373)] calls 29427
+moves 83307 jobs [("queued", 16), ("running", 3), ("done", 25035), ("failed", 0), ("superseded", 115699)] calls 30208
+moves 85366 jobs [("queued", 19), ("running", 4), ("done", 25649), ("failed", 0), ("superseded", 118945)] calls 30962
+moves 87391 jobs [("queued", 11), ("running", 3), ("done", 26303), ("failed", 0), ("superseded", 122103)] calls 31722
+moves 89278 jobs [("queued", 19), ("running", 3), ("done", 26877), ("failed", 0), ("superseded", 125066)] calls 32413
+moves 91202 jobs [("queued", 17), ("running", 4), ("done", 27461), ("failed", 0), ("superseded", 128126)] calls 33108
+moves 93047 jobs [("queued", 15), ("running", 4), ("done", 28034), ("failed", 0), ("superseded", 131019)] calls 33784
+moves 94838 jobs [("queued", 19), ("running", 4), ("done", 28572), ("failed", 0), ("superseded", 133847)] calls 34440
+validate-stress 1800s: moves 96576 (cas conflicts 7986), epoch 125688, records 11614 on {BranchId(0)}, worker reviews 17495, jobs done 29109 superseded 136590, calls 35085, store errors 0, violations 0
+   Compiling contextdb-store v0.2.0 (<remote>/src/crates/contextdb-store)
+   Compiling contextdb-daemon v0.2.0 (<remote>/src/crates/contextdb-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.27s
+     Running tests/p7_g4.rs (<remote>/target/debug/deps/p7_g4-827e349b6c5683da)
 
 running 3 tests
 test blob_store_full_during_a_worker_commit ... ok
-test job_table_full_loses_and_duplicates_nothing ... job table full: 38 records before space returned, 3 table errors, 362 jobs after
+test job_table_full_loses_and_duplicates_nothing ... job table full: 0 records before space returned, 0 table errors, 400 jobs after
 ok
 test kill_at_each_job_step_ends_with_one_outcome ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 467.35s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 453.88s
 

@@ -1,11 +1,13 @@
-//! `p7_bench [rounds] [commits] [corpus] [pending]` (ADR 0015 §11 G5), on
+//! `p7_bench [rounds=5] [commits] [corpus] [pending]` (ADR 0015 §11 G5), on
 //! the reference Mac:
 //!
-//! - **commit p99 with workers busy vs idle.** A real `ctxd` (fullfsync)
-//!   and one socket writer moving premises of 128 Sem rules, every 5 ms;
-//!   idle: no `validators.toml`; busy: 4 workers with a command validator
-//!   that answers after 20 ms, so they claim, call and commit throughout.
-//!   Rounds alternate idle and busy on fresh directories.
+//! - **commit latency with workers busy vs idle.** A real `ctxd`
+//!   (fullfsync); one socket writer commits ordinary records every 5 ms
+//!   (measured) while a second moves premises of 16 Sem rules twice a
+//!   second (2 jobs per move); idle: no `validators.toml`; busy: 4 workers with a command
+//!   validator that answers after 20 ms. Rounds alternate idle and busy on
+//!   fresh directories; budget (owner decision 2026-11-03): pooled p50
+//!   ≤ 1.10× and p99 ≤ 1.25× idle.
 //! - **candidates per new head.** A `corpus`-record recall index; each of
 //!   500 single-head revisions is indexed and its pairs generated (the
 //!   indexer thread's work, off the writer); p50/p99/max per head.
@@ -87,8 +89,15 @@ command = ["/bin/sh", "-c", "cat > /dev/null; sleep 0.02; echo '{\"label\": \"re
 trusted = true
 "#;
 
-/// One round: `commits` premise moves on a fresh daemon; returns the
-/// commit latencies and the validator records committed meanwhile.
+/// Premise moves per second in the background, in both modes (owner
+/// decision 2026-11-03: the budget is measured at a realistic rate).
+const MOVES_PER_SEC: u64 = 2;
+
+/// One round on a fresh daemon: `commits` ordinary commits (16 Facts that
+/// no rule depends on), every 5 ms, while a second connection moves the
+/// premises of 16 Sem rules `MOVES_PER_SEC` times a second (each move
+/// makes 2 rules Pending). Returns the commit latencies and the validator
+/// records committed meanwhile.
 fn commit_round(busy: bool, commits: usize) -> (Vec<Duration>, u64) {
     let dir = temp(if busy { "busy" } else { "idle" });
     if busy {
@@ -96,18 +105,21 @@ fn commit_round(busy: bool, commits: usize) -> (Vec<Duration>, u64) {
     }
     let d = Daemon::start(&dir, &Options::default()).expect("start");
     let mut c = Client::connect(d.socket(Channel::Admin)).unwrap();
-    const P: u32 = 16;
-    const R: u32 = 128;
+    const P: u32 = 16; // premises
+    // 16 rules over 16 premises, two premises each: a move makes 2 rules
+    // Pending (G6's generator: 0.61 jobs per move on average, max 2).
+    const R: u32 = 16; // rule conclusions
+    const W: u32 = 16; // measured Facts, outside every rule
     let mut ops = Vec::new();
     let mut blobs = Vec::new();
-    for i in 0..P + R {
+    for i in 0..P + R + W {
         let body = format!("record {i} v0");
         ops.push(Op::CreateLogical {
             key: format!("k{i}"),
-            kind: if i < P {
-                RecordKind::Fact
-            } else {
+            kind: if (P..P + R).contains(&i) {
                 RecordKind::Decision
+            } else {
+                RecordKind::Fact
             },
             scope_lane: "repo".into(),
             content: h(body.as_bytes()),
@@ -127,15 +139,11 @@ fn commit_round(busy: bool, commits: usize) -> (Vec<Duration>, u64) {
         })
         .collect();
     committed(raw(&mut c, Vec::new(), rules));
-    let mut heads: Vec<RevisionId> = (0..P).map(RevisionId).collect();
-    let mut lat = Vec::with_capacity(commits);
-    // Warm-up, not measured.
-    for n in 0..commits + 100 {
-        let l = (n as u32 * 7) % P;
-        let body = format!("premise {l} n{n}");
+    // A logical's head, moved to a fresh revision.
+    fn mv(c: &mut Client, l: u32, head: RevisionId, body: String) -> (RevisionId, Duration) {
         let t = Instant::now();
         let r = committed(raw(
-            &mut c,
+            c,
             vec![body.clone().into_bytes()],
             vec![
                 Op::AddRevision {
@@ -145,17 +153,48 @@ fn commit_round(busy: bool, commits: usize) -> (Vec<Duration>, u64) {
                 },
                 Op::SetHead {
                     logical: LogicalId(l).into(),
-                    expected: heads[l as usize].into(),
+                    expected: head.into(),
                     new: RevRef::New(0),
                 },
             ],
         ));
+        (r.allocations.new_revisions[0], t.elapsed())
+    }
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let mover = {
+        let (stop, socket) = (stop.clone(), d.socket(Channel::Admin).to_path_buf());
+        std::thread::spawn(move || {
+            let mut c = Client::connect(&socket).unwrap();
+            let mut heads: Vec<RevisionId> = (0..P).map(RevisionId).collect();
+            let mut n = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                let l = (n * 7) % P;
+                heads[l as usize] = mv(&mut c, l, heads[l as usize], format!("premise {l} n{n}")).0;
+                n += 1;
+                std::thread::sleep(Duration::from_millis(1000 / MOVES_PER_SEC));
+            }
+        })
+    };
+    let first = P + R;
+    let mut heads: Vec<RevisionId> = (first..first + W).map(RevisionId).collect();
+    let mut lat = Vec::with_capacity(commits);
+    // Warm-up, not measured.
+    for n in 0..commits + 100 {
+        let w = (n as u32 * 7) % W;
+        let (rev, t) = mv(
+            &mut c,
+            first + w,
+            heads[w as usize],
+            format!("fact {w} n{n}"),
+        );
+        heads[w as usize] = rev;
         if n >= 100 {
-            lat.push(t.elapsed());
+            lat.push(t);
         }
-        heads[l as usize] = r.allocations.new_revisions[0];
         std::thread::sleep(Duration::from_millis(5));
     }
+    stop.store(true, Ordering::Relaxed);
+    mover.join().unwrap();
     let records = match (c.call(&Request::Validators {
         action: ValidatorsAction::Status,
     }))
@@ -465,7 +504,7 @@ fn memory_bench(pending: u32) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let rounds: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(3);
+    let rounds: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
     let commits: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(1000);
     let corpus: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(10_000);
     let pending: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(100_000);
@@ -485,11 +524,15 @@ fn main() {
         idle.extend(i);
         busy.extend(b);
     }
+    // Owner decision (2026-11-03): p99 within 25% and p50 within 10%, pooled
+    // over interleaved rounds, at a realistic premise-move rate.
     let (ip99, bp99) = (pct(&mut idle, 99), pct(&mut busy, 99));
-    let ok = bp99 <= ip99 * 1.05;
+    let (ip50, bp50) = (pct(&mut idle, 50), pct(&mut busy, 50));
+    let ok = bp99 <= ip99 * 1.25 && bp50 <= ip50 * 1.10;
     pass &= ok;
     println!(
-        "commit p99 pooled: idle {ip99:.2} ms, busy {bp99:.2} ms, ratio {:.3} (budget ≤ 1.05): {}",
+        "commit pooled ({MOVES_PER_SEC} premise moves/s): p50 idle {ip50:.2} busy {bp50:.2} ms (ratio {:.3}, budget ≤ 1.10); p99 idle {ip99:.2} busy {bp99:.2} ms (ratio {:.3}, budget ≤ 1.25): {}",
+        bp50 / ip50,
         bp99 / ip99,
         if ok { "PASS" } else { "FAIL" }
     );

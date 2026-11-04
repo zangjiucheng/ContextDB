@@ -135,7 +135,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P5a | File-level code anchors | ✅ passed |
 | P5b | Symbol-level code anchors | ✅ passed |
 | P6 | Versioned transactions, branches and WHAT_IF | ✅ passed |
-| P7 | Semantic validation and conflicts | implemented; gate in progress (milestone 9) |
+| P7 | Semantic validation and conflicts | ✅ passed |
 | P8 | Retrieval, packing and git mirroring | planned |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
 | P10 | Mixed eager / lazy maintenance and scale | planned |
