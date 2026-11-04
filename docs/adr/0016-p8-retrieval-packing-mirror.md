@@ -285,7 +285,7 @@ items (SPEC §6.4).
 ### 4.1 Levels as pure functions
 
 `abstract(body)` and `outline(body)` are pure, deterministic functions of
-the payload bytes, in a new module `contextdb-proto::levels`. They have no
+the payload bytes, in a new module `contextdb-model::levels` (*implementation note, milestone 1: the store, which builds the projection, does not depend on `contextdb-proto`, and the model crate is dependency-free*). They have no
 dependencies and no model, and are versioned (`LEVELS_VERSION = 1`).
 
 - **header.** No body text, which is today's recall shape.

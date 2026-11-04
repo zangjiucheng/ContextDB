@@ -7,7 +7,7 @@ use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -129,6 +129,103 @@ pub enum Mode {
     Certified,
     Advisory,
 }
+/// The health of one retrieval projection (ADR 0016 §2.2). Lag only ever
+/// misses records: status always comes from the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexState {
+    Ready {
+        watermark: Epoch,
+    },
+    Lagging {
+        watermark: Epoch,
+        head_epoch: Epoch,
+    },
+    Rebuilding {
+        done: u64,
+        total: u64,
+    },
+    /// The last update failed; it is retried.
+    Failed {
+        error: String,
+    },
+    /// No embedder configured (vectors).
+    Disabled,
+}
+impl Wire for IndexState {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Ready { watermark } => {
+                0u8.encode(o);
+                watermark.encode(o);
+            }
+            Self::Lagging {
+                watermark,
+                head_epoch,
+            } => {
+                1u8.encode(o);
+                watermark.encode(o);
+                head_epoch.encode(o);
+            }
+            Self::Rebuilding { done, total } => {
+                2u8.encode(o);
+                done.encode(o);
+                total.encode(o);
+            }
+            Self::Failed { error } => {
+                3u8.encode(o);
+                error.encode(o);
+            }
+            Self::Disabled => 4u8.encode(o),
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Ready {
+                watermark: Wire::decode(i)?,
+            },
+            1 => Self::Lagging {
+                watermark: Wire::decode(i)?,
+                head_epoch: Wire::decode(i)?,
+            },
+            2 => Self::Rebuilding {
+                done: Wire::decode(i)?,
+                total: Wire::decode(i)?,
+            },
+            3 => Self::Failed {
+                error: Wire::decode(i)?,
+            },
+            4 => Self::Disabled,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// Both retrieval projections' health (ADR 0016 §2.2, T94).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexReport {
+    pub fts: IndexState,
+    pub vectors: IndexState,
+}
+wire_struct!(IndexReport { fts, vectors });
+/// Which projection `ctx reindex` rebuilds (ADR 0016 §2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReindexTarget {
+    Fts,
+    Vectors,
+    All,
+}
+impl Wire for ReindexTarget {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Fts,
+            1 => Self::Vectors,
+            2 => Self::All,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dep {
     pub target: Target,
@@ -168,6 +265,9 @@ pub enum Request {
         scope: String,
         mode: Mode,
         limit: u32,
+        /// How long to wait for the text index to reach the snapshot
+        /// (ADR 0016 §2.2; capped at 2 s).
+        index_wait_ms: u32,
     },
     Read {
         binding: Binding,
@@ -414,6 +514,11 @@ pub enum Request {
         scope: Option<String>,
         max_items: u32,
         wait_ms: u32,
+    },
+    /// `ctx reindex` (admin, ADR 0016 §2.3): clear and rebuild a retrieval
+    /// projection from the current snapshot, in the background.
+    Reindex {
+        target: ReindexTarget,
     },
 }
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
@@ -714,6 +819,7 @@ pub enum Response {
         items: Vec<Item>,
         withheld: Vec<Item>,
         cert_id: Option<ContentHash>,
+        index: IndexReport,
     },
     Read {
         item: Item,
@@ -753,6 +859,7 @@ pub enum Response {
         revisions: u64,
         logicals: u64,
         sessions: u64,
+        index: IndexReport,
     },
     TxnStatus {
         committed: Option<(Epoch, CommitResult)>,
@@ -845,6 +952,10 @@ pub enum Response {
     /// `ctx_check`, then follow from `earliest`.
     Truncated {
         earliest: Epoch,
+    },
+    /// `ctx reindex` accepted: the projections' state after marking.
+    Reindexed {
+        index: IndexReport,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -1196,6 +1307,7 @@ impl Wire for Request {
                 scope,
                 mode,
                 limit,
+                index_wait_ms,
             } => {
                 2u8.encode(o);
                 binding.encode(o);
@@ -1203,6 +1315,7 @@ impl Wire for Request {
                 scope.encode(o);
                 mode.encode(o);
                 limit.encode(o);
+                index_wait_ms.encode(o);
             }
             Self::Read {
                 binding,
@@ -1550,6 +1663,10 @@ impl Wire for Request {
                 max_items.encode(o);
                 wait_ms.encode(o);
             }
+            Self::Reindex { target } => {
+                39u8.encode(o);
+                target.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1571,6 +1688,7 @@ impl Wire for Request {
                 scope: Wire::decode(i)?,
                 mode: Wire::decode(i)?,
                 limit: Wire::decode(i)?,
+                index_wait_ms: Wire::decode(i)?,
             },
             3 => Self::Read {
                 binding: Wire::decode(i)?,
@@ -1772,6 +1890,9 @@ impl Wire for Request {
                 max_items: Wire::decode(i)?,
                 wait_ms: Wire::decode(i)?,
             },
+            39 => Self::Reindex {
+                target: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -1793,11 +1914,13 @@ impl Wire for Response {
                 items,
                 withheld,
                 cert_id,
+                index,
             } => {
                 3u8.encode(o);
                 items.encode(o);
                 withheld.encode(o);
                 cert_id.encode(o);
+                index.encode(o);
             }
             Self::Read { item, payload } => {
                 4u8.encode(o);
@@ -1850,11 +1973,13 @@ impl Wire for Response {
                 revisions,
                 logicals,
                 sessions,
+                index,
             } => {
                 12u8.encode(o);
                 revisions.encode(o);
                 logicals.encode(o);
                 sessions.encode(o);
+                index.encode(o);
             }
             Self::TxnStatus { committed } => {
                 13u8.encode(o);
@@ -1978,6 +2103,10 @@ impl Wire for Response {
                 31u8.encode(o);
                 earliest.encode(o);
             }
+            Self::Reindexed { index } => {
+                32u8.encode(o);
+                index.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1994,6 +2123,7 @@ impl Wire for Response {
                 items: Wire::decode(i)?,
                 withheld: Wire::decode(i)?,
                 cert_id: Wire::decode(i)?,
+                index: Wire::decode(i)?,
             },
             4 => Self::Read {
                 item: Wire::decode(i)?,
@@ -2030,6 +2160,7 @@ impl Wire for Response {
                 revisions: Wire::decode(i)?,
                 logicals: Wire::decode(i)?,
                 sessions: Wire::decode(i)?,
+                index: Wire::decode(i)?,
             },
             13 => Self::TxnStatus {
                 committed: Wire::decode(i)?,
@@ -2109,6 +2240,9 @@ impl Wire for Response {
             },
             31 => Self::Truncated {
                 earliest: Wire::decode(i)?,
+            },
+            32 => Self::Reindexed {
+                index: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2220,6 +2354,7 @@ mod tests {
                 scope: "repo".into(),
                 mode: Mode::Certified,
                 limit: 8,
+                index_wait_ms: 200,
             },
             Request::Read {
                 binding: Binding::Call {
@@ -2371,6 +2506,9 @@ mod tests {
                 scope: Some("repo".into()),
                 max_items: 50,
                 wait_ms: 30_000,
+            },
+            Request::Reindex {
+                target: ReindexTarget::All,
             },
             Request::SessionAttach {
                 harness: "claude".into(),
@@ -2608,6 +2746,37 @@ mod tests {
                 more: true,
             },
             Response::Truncated { earliest: Epoch(9) },
+            Response::Reindexed {
+                index: IndexReport {
+                    fts: IndexState::Rebuilding { done: 3, total: 9 },
+                    vectors: IndexState::Disabled,
+                },
+            },
+            Response::Status {
+                revisions: 4,
+                logicals: 3,
+                sessions: 1,
+                index: IndexReport {
+                    fts: IndexState::Lagging {
+                        watermark: Epoch(2),
+                        head_epoch: Epoch(5),
+                    },
+                    vectors: IndexState::Failed {
+                        error: "disk full".into(),
+                    },
+                },
+            },
+            Response::Recall {
+                items: Vec::new(),
+                withheld: Vec::new(),
+                cert_id: Some([7; 32]),
+                index: IndexReport {
+                    fts: IndexState::Ready {
+                        watermark: Epoch(5),
+                    },
+                    vectors: IndexState::Disabled,
+                },
+            },
             Response::Handoffs {
                 items: vec![HandoffInfo {
                     id: [5; 16],

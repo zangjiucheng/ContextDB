@@ -293,12 +293,14 @@ fn recall_full(
             scope: "repo".into(),
             mode,
             limit: 50,
+            index_wait_ms: 0,
         },
     ) {
         Response::Recall {
             items,
             withheld,
             cert_id,
+            ..
         } => (items, withheld, cert_id),
         other => panic!("{other:?}"),
     }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P8 milestone 1: projection health** (ADR 0016 §2, §4.1). Protocol 6.
+  - Every `ctx_recall` response and `ctx status` now report the index state: `Ready{watermark}`, `Lagging{watermark, head_epoch}`, `Rebuilding{done, total}`, `Failed{error}` or `Disabled` (vectors, until an embedder exists). A lagging index can only miss newer records. It never returns a non-current revision (T86).
+  - `ctx_recall{index_wait_ms}` (default 200, at most 2000) waits for the index to catch up. The wait wakes on indexer progress.
+  - New admin command `ctx reindex <dir> [--fts|--vectors|--all]` rebuilds the projection in chunks. Results and labels are the same after a reindex and after deleting `recall.sqlite` (T56).
+  - New pure read levels `abstract` and `outline` (`contextdb-model::levels`, `LEVELS_VERSION = 1`). They are stored in the recall projection, which is rebuilt when its levels version changes, and they equal a recomputation from the payload (T87).
+
 - **P8 G0** (ADR 0016 r0.3, SPEC v1.8.0): the design for retrieval, packing and the git mirror was accepted after three independent review rounds. No code changes yet.
 
 - **Gate P7 passed** (2026-11-03). G5: the busy/idle commit budget was restated by owner decision D4 (realistic premise-move rate, pooled p50 ≤ 1.10× and p99 ≤ 1.25×); `p7_bench` measures it that way. Remote G4 rerun: 0 violations. G7: PASS.

@@ -201,6 +201,7 @@ fn t08_readers_never_see_coupled_heads_out_of_step() {
                             scope: "repo".into(),
                             mode: Mode::Advisory,
                             limit: 2,
+                            index_wait_ms: 0,
                         })
                         .unwrap();
                     if let Response::Recall { items, .. } = r.response {

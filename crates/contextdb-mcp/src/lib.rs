@@ -77,6 +77,24 @@ fn status(state: &NodeState) -> Value {
         "support": state.support,
     })
 }
+/// `IndexReport` as JSON (ADR 0016 §2.2, T94).
+fn index_json(r: &IndexReport) -> Value {
+    fn state(s: &IndexState) -> Value {
+        match s {
+            IndexState::Ready { watermark } => json!({"state": "ready", "watermark": watermark.0}),
+            IndexState::Lagging {
+                watermark,
+                head_epoch,
+            } => json!({"state": "lagging", "watermark": watermark.0, "head_epoch": head_epoch.0}),
+            IndexState::Rebuilding { done, total } => {
+                json!({"state": "rebuilding", "done": done, "total": total})
+            }
+            IndexState::Failed { error } => json!({"state": "failed", "error": error}),
+            IndexState::Disabled => json!({"state": "disabled"}),
+        }
+    }
+    json!({"fts": state(&r.fts), "vectors": state(&r.vectors)})
+}
 fn item(i: &Item) -> Value {
     json!({
         "handle": i.handle,
@@ -177,7 +195,8 @@ fn tools() -> Value {
         { "name": "ctx_recall", "description": "Find context records by key. certified mode returns only CERTIFIED items (others are withheld) and handles usable as deps.",
           "inputSchema": { "type": "object", "properties": {
               "query": { "type": "string" }, "scope": { "type": "string" },
-              "mode": { "enum": ["certified", "advisory"] }, "limit": { "type": "integer" } },
+              "mode": { "enum": ["certified", "advisory"] }, "limit": { "type": "integer" },
+              "index_wait_ms": { "type": "integer", "description": "wait up to this long (default 200, max 2000) for the text index to catch up; the response's index state says if it did not" } },
             "required": ["query"] } },
         { "name": "ctx_read", "description": "Read one record. certified mode fails closed unless the current head is CERTIFIED.",
           "inputSchema": { "type": "object", "properties": { "target": target, "mode": { "enum": ["certified", "advisory"] } }, "required": ["target"] } },
@@ -615,11 +634,19 @@ impl<B: Backend> Server<B> {
                     scope: arg(args, "scope").unwrap_or("").into(),
                     mode: mode(args),
                     limit: args.get("limit").and_then(Value::as_u64).unwrap_or(10) as u32,
+                    // ADR 0016 §2.2: wait up to 200 ms by default for the
+                    // text index to reach the snapshot.
+                    index_wait_ms: args
+                        .get("index_wait_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(200)
+                        .min(2_000) as u32,
                 })?;
                 let Response::Recall {
                     items,
                     withheld,
                     cert_id,
+                    index,
                 } = env.response
                 else {
                     return Err("unexpected response".into());
@@ -629,6 +656,7 @@ impl<B: Backend> Server<B> {
                     "items": items.iter().map(item).collect::<Vec<_>>(),
                     "withheld": withheld.iter().map(item).collect::<Vec<_>>(),
                     "cert_id": cert_id.map(|c| hex(&c)),
+                    "index": index_json(&index),
                 }))
             }
             "ctx_read" => {

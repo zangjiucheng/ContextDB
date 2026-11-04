@@ -234,6 +234,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             daemon::conflicts(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
         }
         Some("changes") => daemon::changes(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
+        Some("reindex") => daemon::reindex(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
         Some("validators") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             daemon::validators(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)

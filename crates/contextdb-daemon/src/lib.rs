@@ -9,6 +9,8 @@ pub mod publish;
 pub mod actor;
 #[cfg(not(loom))]
 pub mod candidates;
+/// Retrieval projection health and the recall bounded wait (P8, ADR 0016 §2).
+pub mod index_health;
 #[cfg(not(loom))]
 pub mod jobs;
 #[cfg(not(loom))]

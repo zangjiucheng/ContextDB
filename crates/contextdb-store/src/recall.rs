@@ -24,6 +24,16 @@ pub struct Row {
     pub kind: RecordKind,
     pub scope: String,
     pub body: String,
+    /// `levels::abstract_of` / `outline_of` of the **whole** payload (the
+    /// body above may be cut), ADR 0016 §4.1.
+    pub abstract_: levels::Rendered,
+    pub outline: levels::Rendered,
+}
+/// A row's stored renderings (T87: equal to recomputing from the payload).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Levels {
+    pub abstract_: levels::Rendered,
+    pub outline: levels::Rendered,
 }
 /// A full-text hit: the logical, the revision its row indexes, and the bm25
 /// score (higher is better).
@@ -57,7 +67,9 @@ pub fn terms(text: &str) -> Vec<String> {
 }
 const SCHEMA: &str = "
     CREATE VIRTUAL TABLE IF NOT EXISTS recall USING fts5(
-        key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED);
+        key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED,
+        abstract UNINDEXED, abstract_cut UNINDEXED, outline UNINDEXED, outline_cut UNINDEXED);
+    CREATE TABLE IF NOT EXISTS recall_levels(id INTEGER PRIMARY KEY CHECK (id = 0), version INTEGER NOT NULL);
     CREATE VIRTUAL TABLE IF NOT EXISTS recall_vocab USING fts5vocab(recall, 'row');
     -- Each FTS row's logical, indexed: `logical` is UNINDEXED in the FTS
     -- table, so deleting or counting through it would scan every row.
@@ -83,18 +95,34 @@ impl RecallIndex {
                 .optional()?
                 .is_some())
         };
+        // So is one from before P8's level columns, or one whose stored
+        // renderings come from another `LEVELS_VERSION`.
+        let version: Option<i64> = if exists("recall_levels")? {
+            conn.query_row("SELECT version FROM recall_levels WHERE id = 0", [], |r| {
+                r.get(0)
+            })
+            .optional()?
+        } else {
+            None
+        };
         let old = exists("recall")?
             && (conn
-                .prepare("SELECT branch, rev FROM recall LIMIT 0")
+                .prepare("SELECT branch, rev, abstract, outline_cut FROM recall LIMIT 0")
                 .is_err()
-                || !exists("recall_map")?);
+                || !exists("recall_map")?
+                || version != Some(levels::LEVELS_VERSION as i64));
         if old {
             conn.execute_batch(
                 "DROP TABLE IF EXISTS recall_vocab; DROP TABLE recall; DROP TABLE IF EXISTS recall_watermark;
-                 DROP TABLE IF EXISTS recall_map;",
+                 DROP TABLE IF EXISTS recall_map; DROP TABLE IF EXISTS recall_levels;",
             )?;
         }
         conn.execute_batch(SCHEMA)?;
+        conn.execute(
+            "INSERT INTO recall_levels(id, version) VALUES (0, ?1)
+             ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+            params![levels::LEVELS_VERSION as i64],
+        )?;
         Ok(Self { conn })
     }
     pub fn watermark(&self) -> Sql<Epoch> {
@@ -110,6 +138,14 @@ impl RecallIndex {
     /// Replaces every row of each listed logical with the given rows and
     /// advances the watermark, in one transaction.
     pub fn update(&mut self, epoch: Epoch, entries: &[(LogicalId, Vec<Row>)]) -> Sql<()> {
+        self.write(Some(epoch), entries)
+    }
+    /// As [`RecallIndex::update`], without moving the watermark: one chunk
+    /// of a rebuild, which is complete only when the last chunk sets it.
+    pub fn update_partial(&mut self, entries: &[(LogicalId, Vec<Row>)]) -> Sql<()> {
+        self.write(None, entries)
+    }
+    fn write(&mut self, epoch: Option<Epoch>, entries: &[(LogicalId, Vec<Row>)]) -> Sql<()> {
         let tx = self.conn.transaction()?;
         for (l, rows) in entries {
             tx.prepare_cached(
@@ -120,8 +156,9 @@ impl RecallIndex {
                 .execute(params![l.0])?;
             for row in rows {
                 tx.prepare_cached(
-                    "INSERT INTO recall(key, kind, scope, body, logical, branch, rev)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO recall(key, kind, scope, body, logical, branch, rev,
+                         abstract, abstract_cut, outline, outline_cut)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )?
                 .execute(params![
                     row.key,
@@ -130,19 +167,56 @@ impl RecallIndex {
                     row.body,
                     l.0,
                     row.branch.0,
-                    row.rev.0
+                    row.rev.0,
+                    row.abstract_.text,
+                    row.abstract_.cut,
+                    row.outline.text,
+                    row.outline.cut
                 ])?;
                 let rid = tx.last_insert_rowid();
                 tx.prepare_cached("INSERT INTO recall_map(rid, logical) VALUES (?1, ?2)")?
                     .execute(params![rid, l.0])?;
             }
         }
-        tx.execute(
-            "INSERT INTO recall_watermark(id, epoch) VALUES (0, ?1)
-             ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
-            params![epoch.0 as i64],
-        )?;
+        if let Some(epoch) = epoch {
+            tx.execute(
+                "INSERT INTO recall_watermark(id, epoch) VALUES (0, ?1)
+                 ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+                params![epoch.0 as i64],
+            )?;
+        }
         tx.commit()
+    }
+    /// The stored renderings of revision `rev` of `logical`, if a row holds
+    /// it (ADR 0016 §4.1).
+    pub fn levels(&self, logical: LogicalId, rev: RevisionId) -> Sql<Option<Levels>> {
+        self.conn
+            .prepare_cached(
+                "SELECT abstract, abstract_cut, outline, outline_cut FROM recall
+                 WHERE rowid IN (SELECT rid FROM recall_map WHERE logical = ?1) AND rev = ?2
+                 LIMIT 1",
+            )?
+            .query_row(params![logical.0, rev.0], |r| {
+                Ok(Levels {
+                    abstract_: levels::Rendered {
+                        text: r.get(0)?,
+                        cut: r.get(1)?,
+                    },
+                    outline: levels::Rendered {
+                        text: r.get(2)?,
+                        cut: r.get(3)?,
+                    },
+                })
+            })
+            .optional()
+    }
+    /// Number of indexed rows (rebuild progress, ADR 0016 §2.2).
+    pub fn rows(&self) -> Sql<u64> {
+        Ok(self
+            .conn
+            .query_row("SELECT count(*) FROM recall_map", [], |r| {
+                r.get::<_, i64>(0)
+            })? as u64)
     }
     pub fn clear(&mut self) -> Sql<()> {
         self.conn.execute_batch(
@@ -233,6 +307,8 @@ mod tests {
             kind,
             scope: scope.into(),
             body: body.into(),
+            abstract_: levels::abstract_of(body.as_bytes()),
+            outline: levels::outline_of(body.as_bytes()),
         }
     }
     fn logicals(hits: Vec<Hit>) -> Vec<LogicalId> {
@@ -402,6 +478,59 @@ mod tests {
         assert_eq!(
             RecallIndex::open(Some(&path)).unwrap().watermark().unwrap(),
             Epoch(3)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A P7 projection (no level columns) and one whose stored renderings
+    /// come from another `LEVELS_VERSION` are rebuilt; a current one keeps
+    /// its rows and returns its renderings (ADR 0016 §4.1).
+    #[test]
+    fn a_projection_without_current_levels_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("recall-levels-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recall.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE VIRTUAL TABLE recall USING fts5(
+                     key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED);
+                 CREATE TABLE recall_map(rid INTEGER PRIMARY KEY, logical INTEGER NOT NULL);
+                 CREATE TABLE recall_watermark(id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);
+                 INSERT INTO recall_watermark VALUES (0, 9);",
+            )
+            .unwrap();
+        }
+        let mut idx = RecallIndex::open(Some(&path)).unwrap();
+        assert_eq!(idx.watermark().unwrap(), Epoch(0), "P7 schema rebuilt");
+        let body = "# T\n\nFirst.\n\n## A\nalpha\n";
+        idx.update(
+            Epoch(4),
+            &[(
+                LogicalId(1),
+                vec![row(0, 7, "k", RecordKind::Fact, "repo", body)],
+            )],
+        )
+        .unwrap();
+        let got = idx.levels(LogicalId(1), RevisionId(7)).unwrap().unwrap();
+        assert_eq!(got.abstract_, levels::abstract_of(body.as_bytes()));
+        assert_eq!(got.outline, levels::outline_of(body.as_bytes()));
+        assert_eq!(idx.levels(LogicalId(1), RevisionId(8)).unwrap(), None);
+        assert_eq!(idx.rows().unwrap(), 1);
+        drop(idx);
+        // Same version: kept.
+        assert_eq!(
+            RecallIndex::open(Some(&path)).unwrap().watermark().unwrap(),
+            Epoch(4)
+        );
+        // Another version: rebuilt.
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE recall_levels SET version = 0", [])
+            .unwrap();
+        assert_eq!(
+            RecallIndex::open(Some(&path)).unwrap().watermark().unwrap(),
+            Epoch(0)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

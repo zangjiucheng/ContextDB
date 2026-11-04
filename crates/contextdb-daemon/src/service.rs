@@ -142,6 +142,8 @@ pub struct Service<D: Durability> {
     writer: Mutex<mpsc::Sender<Writer>>,
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     recall: Arc<Mutex<RecallIndex>>,
+    /// The retrieval projections' health and progress signal (P8, ADR 0016 §2).
+    pub index_health: Arc<crate::index_health::IndexHealth>,
     /// Lexical contradiction candidates (P7, ADR 0015 §5).
     pub candidates: Arc<crate::candidates::Candidates>,
     stop: Arc<AtomicBool>,
@@ -389,16 +391,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .expect("candidate table"),
         );
         let stop = Arc::new(AtomicBool::new(false));
+        let index_health = Arc::new(crate::index_health::IndexHealth::new(
+            recall
+                .lock()
+                .expect("recall")
+                .watermark()
+                .unwrap_or(Epoch(0)),
+        ));
         let indexer_thread = {
-            let (actor, recall, candidates, stop) = (
+            let (actor, recall, candidates, health, stop) = (
                 actor.clone(),
                 recall.clone(),
                 candidates.clone(),
+                index_health.clone(),
                 stop.clone(),
             );
             std::thread::Builder::new()
                 .name("ctxd-indexer".into())
-                .spawn(move || crate::candidates::indexer(actor, recall, candidates, stop))
+                .spawn(move || crate::candidates::indexer(actor, recall, candidates, health, stop))
                 .expect("indexer thread")
         };
         let (tx, rx) = mpsc::channel();
@@ -423,6 +433,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             writer: Mutex::new(tx),
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
+            index_health,
             candidates,
             stop,
             indexer_thread: Mutex::new(Some(indexer_thread)),
@@ -848,10 +859,34 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 scope,
                 mode,
                 limit,
+                index_wait_ms,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.recall(b, &query, &scope, mode, limit as usize, &snap),
+                Ok(b) => {
+                    // Bounded wait for the text index to reach this snapshot
+                    // (ADR 0016 §2.2); on timeout it searches anyway and the
+                    // response says `Lagging`.
+                    if index_wait_ms > 0 {
+                        self.index_health.wait(
+                            snap.epoch,
+                            std::time::Duration::from_millis(index_wait_ms as u64),
+                        );
+                    }
+                    self.recall(b, &query, &scope, mode, limit as usize, &snap)
+                }
                 Err(r) => r,
             },
+            Request::Reindex { target } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx reindex requires the admin socket");
+                }
+                // Vectors are Disabled until milestone 5: nothing to rebuild.
+                if matches!(target, ReindexTarget::Fts | ReindexTarget::All) {
+                    self.index_health.request_reindex();
+                }
+                Response::Reindexed {
+                    index: self.index_health.report(snap.epoch),
+                }
+            }
             Request::Read {
                 binding,
                 target,
@@ -1166,6 +1201,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 revisions: db.revision_count() as u64,
                 logicals: db.logical_count() as u64,
                 sessions: self.session_count() as u64,
+                index: self.index_health.report(snap.epoch),
             },
             Request::TxnStatus { id: txn } => match self
                 .actor
@@ -1924,7 +1960,23 @@ impl<D: Durability + Clone + 'static> Service<D> {
             items,
             withheld,
             cert_id,
+            index: self.index_health.report(snap.epoch),
         }
+    }
+    /// The recall projection's stored renderings of `rev` (T87: equal to
+    /// recomputing them from the payload).
+    #[doc(hidden)]
+    pub fn recall_levels(
+        &self,
+        logical: LogicalId,
+        rev: RevisionId,
+    ) -> Option<contextdb_store::recall::Levels> {
+        self.recall
+            .lock()
+            .expect("recall")
+            .levels(logical, rev)
+            .ok()
+            .flatten()
     }
     fn issue_request(
         &self,

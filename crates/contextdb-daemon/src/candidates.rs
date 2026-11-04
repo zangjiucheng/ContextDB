@@ -26,6 +26,7 @@
 //! reached yet is never shown with a side invisible on the branch (T84).
 //! Candidates only list pairs; nothing derives a Conflict from them (D3).
 use crate::actor::{ActorHandle, Snapshot};
+use crate::index_health::IndexHealth;
 use contextdb_core::BranchView;
 use contextdb_model::*;
 use contextdb_store::recall::{RecallIndex, Row};
@@ -427,38 +428,53 @@ pub fn current(snap_view: Option<&BranchView<'_>>, c: &Candidate) -> bool {
         })
 }
 
-/// `(key, kind, scope, body)` of revision `r`; an unavailable payload
-/// indexes an empty body.
+/// What the recall projection stores for one revision.
+#[derive(Clone)]
+struct Text {
+    key: String,
+    kind: RecordKind,
+    scope: String,
+    /// Lossy UTF-8, cut at `BODY_MAX`.
+    body: String,
+    /// Rendered from the whole payload (ADR 0016 §4.1).
+    abstract_: levels::Rendered,
+    outline: levels::Rendered,
+}
+/// The text of revision `r`; an unavailable payload indexes an empty body.
 fn text<D: Durability>(
     snap: &Snapshot<D>,
     view: &BranchView<'_>,
     l: LogicalId,
     r: RevisionId,
-) -> Option<(String, RecordKind, String, String)> {
+) -> Option<Text> {
     let (key, kind, scope) = view.logical_info(l)?;
     let content = view.revision_content(r).ok()?;
-    let body = match snap.log.read_blob(&content) {
-        Payload::Available(b) => {
-            let mut s = String::from_utf8_lossy(&b).into_owned();
-            if s.len() > BODY_MAX {
-                let mut end = BODY_MAX;
-                while !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                s.truncate(end);
-            }
-            s
-        }
-        Payload::Unavailable(_) => String::new(),
+    let bytes = match snap.log.read_blob(&content) {
+        Payload::Available(b) => b,
+        Payload::Unavailable(_) => Vec::new(),
     };
-    Some((key, kind, scope, body))
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
+    if body.len() > BODY_MAX {
+        let mut end = BODY_MAX;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+    }
+    Some(Text {
+        key,
+        kind,
+        scope,
+        body,
+        abstract_: levels::abstract_of(&bytes),
+        outline: levels::outline_of(&bytes),
+    })
 }
 /// The recall rows of logical `l`: `main`'s head, and each other live
 /// branch's head where it differs from `main`'s.
 fn rows_of<D: Durability>(snap: &Snapshot<D>, l: LogicalId) -> Vec<Row> {
     let main_head = snap.kernel.branch(MAIN).and_then(|v| v.head(l));
-    let mut texts: BTreeMap<RevisionId, Option<(String, RecordKind, String, String)>> =
-        BTreeMap::new();
+    let mut texts: BTreeMap<RevisionId, Option<Text>> = BTreeMap::new();
     let mut out = Vec::new();
     for info in snap.kernel.branches() {
         if info.archived {
@@ -475,14 +491,16 @@ fn rows_of<D: Durability>(snap: &Snapshot<D>, l: LogicalId) -> Vec<Row> {
             .entry(r)
             .or_insert_with(|| text(snap, &view, l, r))
             .clone();
-        if let Some((key, kind, scope, body)) = t {
+        if let Some(t) = t {
             out.push(Row {
                 branch: info.id,
                 rev: r,
-                key,
-                kind,
-                scope,
-                body,
+                key: t.key,
+                kind: t.kind,
+                scope: t.scope,
+                body: t.body,
+                abstract_: t.abstract_,
+                outline: t.outline,
             });
         }
     }
@@ -566,38 +584,77 @@ fn all_heads<D: Durability>(snap: &Snapshot<D>) -> BTreeSet<(BranchId, LogicalId
     out
 }
 
-/// Brings the recall index up to date with `snap` (step 1). Returns
-/// whether anything was done.
-pub fn index<D: Durability>(snap: &Snapshot<D>, recall: &Mutex<RecallIndex>) -> bool {
+/// Logicals per transaction of a full rebuild: recall queries interleave
+/// between chunks, and progress is reported after each (ADR 0016 §2.2).
+const REBUILD_CHUNK: usize = 256;
+
+/// Brings the recall index up to date with `snap` (step 1), reporting to
+/// `health`. Returns whether anything was done. A full pass (first run, a
+/// branch op, an unreadable row, a watermark ahead of the log, or `ctx
+/// reindex`) clears the index and rebuilds it in chunks; the watermark is
+/// set only by the last one. A failed write is reported and retried on the
+/// next pass.
+pub fn index<D: Durability>(
+    snap: &Snapshot<D>,
+    recall: &Mutex<RecallIndex>,
+    health: &IndexHealth,
+) -> bool {
+    let forced = health.take_reindex();
     let indexed = recall
         .lock()
         .expect("recall")
         .watermark()
         .unwrap_or(Epoch(0));
-    if indexed == snap.epoch {
+    if indexed == snap.epoch && !forced {
         return false;
     }
-    let incremental = if indexed > snap.epoch || indexed.0 == 0 {
+    let incremental = if forced || indexed > snap.epoch || indexed.0 == 0 {
         None
     } else {
         moved(snap, indexed.0 + 1, snap.epoch.0)
     };
-    let touched: BTreeSet<LogicalId> = match incremental {
-        Some(m) => m.into_iter().map(|(_, l)| l).collect(),
+    let fail = |e: rusqlite::Error| {
+        health.failed(e.to_string());
+        false
+    };
+    match incremental {
+        Some(m) => {
+            let touched: BTreeSet<LogicalId> = m.into_iter().map(|(_, l)| l).collect();
+            let entries: Vec<(LogicalId, Vec<Row>)> =
+                touched.into_iter().map(|l| (l, rows_of(snap, l))).collect();
+            if let Err(e) = recall.lock().expect("recall").update(snap.epoch, &entries) {
+                return fail(e);
+            }
+        }
         None => {
-            let _ = recall.lock().expect("recall").clear();
             let mut all = BTreeSet::new();
             for b in snap.kernel.branches() {
                 if let Some(v) = snap.kernel.branch(b.id) {
                     all.extend(v.logicals());
                 }
             }
-            all
+            let all: Vec<LogicalId> = all.into_iter().collect();
+            let total = all.len() as u64;
+            health.rebuilding(0, total);
+            if let Err(e) = recall.lock().expect("recall").clear() {
+                return fail(e);
+            }
+            let mut done = 0u64;
+            for chunk in all.chunks(REBUILD_CHUNK) {
+                let entries: Vec<(LogicalId, Vec<Row>)> =
+                    chunk.iter().map(|l| (*l, rows_of(snap, *l))).collect();
+                if let Err(e) = recall.lock().expect("recall").update_partial(&entries) {
+                    return fail(e);
+                }
+                done += chunk.len() as u64;
+                health.rebuilding(done, total);
+            }
+            if let Err(e) = recall.lock().expect("recall").update(snap.epoch, &[]) {
+                return fail(e);
+            }
         }
-    };
-    let entries: Vec<(LogicalId, Vec<Row>)> =
-        touched.into_iter().map(|l| (l, rows_of(snap, l))).collect();
-    let _ = recall.lock().expect("recall").update(snap.epoch, &entries);
+    }
+    health.applied(snap.epoch);
     true
 }
 
@@ -618,7 +675,14 @@ fn pairs_for<D: Durability>(
         return 0;
     }
     let Some(rev) = view.head(l) else { return 0 };
-    let Some((key, kind, scope, body)) = text(snap, &view, l, rev) else {
+    let Some(Text {
+        key,
+        kind,
+        scope,
+        body,
+        ..
+    }) = text(snap, &view, l, rev)
+    else {
         return 0;
     };
     if !KINDS.contains(&kind) {
@@ -720,13 +784,16 @@ pub(crate) fn indexer<D: Durability>(
     actor: ActorHandle<D>,
     recall: Arc<Mutex<RecallIndex>>,
     candidates: Arc<Candidates>,
+    health: Arc<IndexHealth>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Acquire) {
         let snap = actor.snapshot();
-        let indexed = index(&snap, &recall);
+        let indexed = index(&snap, &recall, &health);
         let before = candidates.watermark().ok().flatten();
-        if before != Some(snap.epoch) {
+        // Candidates need the index at this snapshot (it may have failed).
+        let ready = recall.lock().expect("recall").watermark().ok() == Some(snap.epoch);
+        if ready && before != Some(snap.epoch) {
             generate(&snap, &recall, &candidates, &stop);
         }
         // Idle, or the table cannot advance: wait for the next epoch.

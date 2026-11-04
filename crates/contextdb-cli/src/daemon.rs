@@ -72,12 +72,14 @@ pub fn run(cmd: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 revisions,
                 logicals,
                 sessions,
+                index,
             } = env.response
             {
                 println!(
                     "epoch={} logicals={logicals} revisions={revisions} sessions={sessions}",
                     env.epoch.0
                 );
+                println!("{}", index_line(&index));
             }
         }
         "why" | "why-not" | "impact" => {
@@ -604,4 +606,38 @@ pub fn merge(dir: &Path, args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// `index fts=… vectors=…` (ADR 0016 §2.2, T94).
+pub fn index_line(r: &contextdb_proto::proto::IndexReport) -> String {
+    use contextdb_proto::proto::IndexState as S;
+    let one = |s: &S| match s {
+        S::Ready { watermark } => format!("ready@{}", watermark.0),
+        S::Lagging {
+            watermark,
+            head_epoch,
+        } => format!("lagging@{}/{}", watermark.0, head_epoch.0),
+        S::Rebuilding { done, total } => format!("rebuilding {done}/{total}"),
+        S::Failed { error } => format!("failed ({error})"),
+        S::Disabled => "disabled".into(),
+    };
+    format!("index fts={} vectors={}", one(&r.fts), one(&r.vectors))
+}
+/// `ctx reindex <dir> [--fts|--vectors|--all]` (admin, ADR 0016 §2.3).
+pub fn reindex(dir: &Path, args: &[String]) -> Result<(), String> {
+    use contextdb_proto::proto::{ReindexTarget, Response as R};
+    let target = match args.first().map(String::as_str) {
+        None | Some("--fts") => ReindexTarget::Fts,
+        Some("--vectors") => ReindexTarget::Vectors,
+        Some("--all") => ReindexTarget::All,
+        Some(other) => return Err(format!("unknown option {other} (--fts, --vectors, --all)")),
+    };
+    let mut c = connect(dir)?;
+    match call(&mut c, Request::Reindex { target })?.response {
+        R::Reindexed { index } => {
+            println!("reindex requested; {}", index_line(&index));
+            Ok(())
+        }
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }

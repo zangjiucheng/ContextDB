@@ -95,6 +95,7 @@ fn recall(s: &Service<SimDisk>, session: SessionId, query: &str) -> (Vec<Item>, 
             scope: "repo".into(),
             mode: Mode::Certified,
             limit: 10,
+            index_wait_ms: 0,
         },
     ) {
         Response::Recall {
@@ -866,6 +867,7 @@ fn recall_is_capped() {
             scope: "repo".into(),
             mode: Mode::Advisory,
             limit: 100_000,
+            index_wait_ms: 0,
         },
     );
     let Response::Recall { items, .. } = r else {

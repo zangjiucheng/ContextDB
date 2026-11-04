@@ -197,6 +197,7 @@ fn main() -> ExitCode {
                                 scope: "repo".into(),
                                 mode: Mode::Advisory,
                                 limit: 2,
+                                index_wait_ms: 0,
                             });
                             if let Ok(Envelope {
                                 response: Response::Recall { items, .. },

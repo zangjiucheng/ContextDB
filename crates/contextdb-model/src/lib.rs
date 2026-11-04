@@ -11,6 +11,7 @@ mod contract;
 pub struct Contract;
 mod cert;
 mod hook;
+pub mod levels;
 mod status;
 mod wire;
 pub use cert::*;

@@ -346,6 +346,7 @@ fn t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_fai
                 scope: String::new(),
                 mode: Mode::Certified,
                 limit: 10,
+                index_wait_ms: 0,
             },
         )
         .response;

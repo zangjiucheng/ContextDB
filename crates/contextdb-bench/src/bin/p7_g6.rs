@@ -421,6 +421,8 @@ fn generated(out: &mut Vec<Value>) {
                     kind: RecordKind::Decision,
                     scope: "repo".into(),
                     body: body.clone(),
+                    abstract_: levels::abstract_of(body.as_bytes()),
+                    outline: levels::outline_of(body.as_bytes()),
                 }],
             )
         })

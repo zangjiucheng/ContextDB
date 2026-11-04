@@ -256,7 +256,11 @@ fn candidates_bench(corpus: u32) -> (Vec<Duration>, Duration, usize, usize, u64)
     }
     let t = Instant::now();
     let snap = a.snapshot();
-    candidates::index(&snap, &recall);
+    candidates::index(
+        &snap,
+        &recall,
+        &contextdb_daemon::index_health::IndexHealth::default(),
+    );
     candidates::generate(&snap, &recall, &table, &stop);
     drop(snap);
     let backfill = t.elapsed();
@@ -304,7 +308,11 @@ fn candidates_bench(corpus: u32) -> (Vec<Duration>, Duration, usize, usize, u64)
         );
         let snap = a.snapshot();
         let t = Instant::now();
-        candidates::index(&snap, &recall);
+        candidates::index(
+            &snap,
+            &recall,
+            &contextdb_daemon::index_health::IndexHealth::default(),
+        );
         let indexed = t.elapsed();
         candidates::generate(&snap, &recall, &table, &stop);
         lat.push(t.elapsed());

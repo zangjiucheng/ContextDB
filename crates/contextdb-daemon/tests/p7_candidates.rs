@@ -474,6 +474,7 @@ fn recall_reads_the_branch_rows() {
             scope: String::new(),
             mode: Mode::Advisory,
             limit: 10,
+            index_wait_ms: 0,
         },
     ) {
         Response::Recall { items, .. } => items,
