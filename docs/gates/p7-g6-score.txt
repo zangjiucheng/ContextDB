@@ -1,0 +1,44 @@
+# p7_g6 score (claude 2.1.317, claude-haiku-5-5, 2026-11-03); references: two independent agents (dogfood), oracle (generated)
+calls 253 ok + 0 errors; tokens in 384214, out 90200; latency p50 3246 ms, p95 6026 ms
+dogfood pair: 86/88 agree (98%), 0 without a reference (disputed or unlabelled)
+dogfood rule: 3/4 agree (75%), 1 without a reference (disputed or unlabelled)
+generated pair: 40/40 agree (100%), 0 without a reference (disputed or unlabelled)
+generated rule: 114/120 agree (95%), 0 without a reference (disputed or unlabelled)
+confusion (kind, reference, LLM): count
+  pair conflict -> conflict: 20
+  pair none -> conflict: 2
+  pair none -> none: 106
+  rule boundary_change -> conflict: 1
+  rule conflict -> conflict: 57
+  rule conflict -> new_rule: 4
+  rule none -> none: 1
+  rule reinforcement -> none: 2
+  rule reinforcement -> reinforcement: 59
+disputed references (1):
+  quant-engine/rule/17: ["new_rule", "conflict"]
+LLM disagreements (9):
+  quant-engine/rule/12: reference boundary_change, LLM conflict
+  btcflow-starter/pair/1: reference none, LLM conflict
+  btcflow-starter/pair/7: reference none, LLM conflict
+  gen/rule/0/1/confirmed: reference reinforcement, LLM none
+  gen/rule/3/1/moved: reference conflict, LLM new_rule
+  gen/rule/6/1/moved: reference conflict, LLM new_rule
+  gen/rule/14/1/moved: reference conflict, LLM new_rule
+  gen/rule/14/1/confirmed: reference reinforcement, LLM none
+  gen/rule/19/1/moved: reference conflict, LLM new_rule
+calibration over 128 labelled pairs (20 conflicts):
+  min_score    0: keeps 128 pairs, 20/20 conflicts, 108 non-conflicts
+  min_score  0.5: keeps 128 pairs, 20/20 conflicts, 108 non-conflicts
+  min_score    1: keeps 128 pairs, 20/20 conflicts, 108 non-conflicts
+  min_score  1.5: keeps 123 pairs, 20/20 conflicts, 103 non-conflicts
+  min_score    2: keeps 110 pairs, 20/20 conflicts, 90 non-conflicts
+  min_score    3: keeps  81 pairs, 20/20 conflicts, 61 non-conflicts
+  min_score    4: keeps  64 pairs, 20/20 conflicts, 44 non-conflicts
+  min_score    5: keeps  52 pairs, 20/20 conflicts, 32 non-conflicts
+  min_score    7: keeps  38 pairs, 19/20 conflicts, 19 non-conflicts
+  min_score   10: keeps  20 pairs, 16/20 conflicts, 4 non-conflicts
+
+O2 ContextDB: 23 head-moving epochs, 0 jobs (mean 0.00, max 0), union-vector calls 0, saved 0 (0.0%)
+O2 quant-engine: 33 head-moving epochs, 0 jobs (mean 0.00, max 0), union-vector calls 0, saved 0 (0.0%)
+O2 btcflow-starter: 117 head-moving epochs, 0 jobs (mean 0.00, max 0), union-vector calls 0, saved 0 (0.0%)
+O2 generator (1000 seeds): 3513 head-moving epochs, 2131 jobs (mean 0.61, max 2), union-vector calls 2131, saved 0 (0.0%)

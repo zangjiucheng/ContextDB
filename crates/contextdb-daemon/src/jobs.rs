@@ -173,6 +173,19 @@ impl JobTable {
             conn: Mutex::new(conn),
         })
     }
+    /// G4 fault injection: caps the table's file at its current size plus
+    /// `extra` pages, so growth fails with `SQLITE_FULL` as on a full disk;
+    /// `None` lifts the cap.
+    #[doc(hidden)]
+    pub fn limit_pages(&self, extra: Option<u32>) -> Result<(), String> {
+        let c = self.conn();
+        let pages: i64 = c
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(sql)?;
+        let cap = extra.map_or(1_073_741_823, |e| pages + i64::from(e));
+        c.query_row(&format!("PRAGMA max_page_count = {cap}"), [], |_| Ok(()))
+            .map_err(sql)
+    }
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().expect("jobs")
     }
@@ -219,6 +232,35 @@ impl JobTable {
         } else {
             Discovered::Exists
         })
+    }
+    /// [`Self::discover`] for many keys in one transaction (one sync for a
+    /// whole discovery pass); returns how many were queued or requeued.
+    /// Nothing is written if any key fails (e.g. a full disk).
+    pub fn discover_many(&self, keys: &[(BranchId, RuleId, HeadVector)]) -> Result<usize, String> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(sql)?;
+        let mut queued = 0;
+        for (branch, rule, curvec) in keys {
+            let key = claim_key(*branch, *rule, curvec);
+            let inserted = tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO jobs(claim_key, branch, rule, curvec) VALUES (?1, ?2, ?3, ?4)",
+                )
+                .and_then(|mut st| st.execute(params![&key[..], branch.0, rule.0, encode_vector(curvec)]))
+                .map_err(sql)?;
+            queued += if inserted == 1 {
+                1
+            } else {
+                tx.prepare_cached(
+                    "UPDATE jobs SET state = 0, token = token + 1, attempts = 0, lease_until = 0,
+                         last_error = NULL WHERE claim_key = ?1 AND state = 4",
+                )
+                .and_then(|mut st| st.execute(params![&key[..]]))
+                .map_err(sql)?
+            };
+        }
+        tx.commit().map_err(sql)?;
+        Ok(queued)
     }
     /// Claims the oldest claimable `Queued` row that `pick` accepts (T53):
     /// marker-first, one transaction per row. Returns the claimed job with

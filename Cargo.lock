@@ -127,6 +127,7 @@ dependencies = [
  "contextdb-store",
  "contextdb-symbols",
  "contextdb-testkit",
+ "contextdb-validate",
  "serde_json",
  "stats_alloc",
 ]

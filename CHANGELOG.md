@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **P7 milestone 9 (verification), first part** (ADR 0015 §11; [Gate P7](docs/gates/P7.md) §2).
+  - **Fix: store failures no longer use a job's attempts.** A full disk or a poisoned store used to fail the validator job. A poisoned daemon then burnt all attempts in a row and left the job `Failed` across the restart, so the rule stayed Pending until `ctx validators retry --failed`. Such a job is now requeued without using an attempt. `ctx validators status` counts these as `store_errors`.
+  - **Fix: candidate generation per new head** went from p99 204 ms to 9.7 ms at 10⁴ records:
+    - The recall index keeps an indexed row map, so replacing or counting a logical's rows no longer scans the FTS table. An older `recall.sqlite` is dropped and rebuilt on first start.
+    - The candidate sweep uses its indexes.
+  - **Fix: discovery** queues one pass in one transaction (10⁵ Pending rules: 20 s → 0.5 s).
+  - New G3 properties (PROP1 with artifacts, `meta` and `if_absent`; PROP7 for metadata and notes through merges), `ctxd-validate-stress`, crash points at each job step (`CTX_JOB_CRASH`, debug builds only), disk-full tests, `p7_bench` and the `p7_g6` evaluation harness.
+  - The real `claude -p` smoke check passed.
+
 - **P7 milestone 8: `ctx_changes`** (ADR 0015 §8).
   - New MCP tool `ctx_changes{since_epoch, scope?, branch?, max_items?, wait_ms?}` and admin command `ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N] [--follow]`.
   - It returns what changed status on a branch after `since_epoch`, epoch by epoch: one item per revision in that epoch's status diff, with its new summary. It reads the durable `diff_log` projection, so nothing is lost across restarts and nothing is held in memory.

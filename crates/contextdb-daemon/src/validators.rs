@@ -132,6 +132,8 @@ pub struct Stats {
     pub reviews: AtomicU64,
     pub superseded: AtomicU64,
     pub failures: AtomicU64,
+    /// Store failures that requeued a job without using an attempt.
+    pub store_errors: AtomicU64,
     pub tokens_in: AtomicU64,
     pub tokens_out: AtomicU64,
     pub discovery_scans: AtomicU64,
@@ -194,6 +196,8 @@ pub enum Ran {
     Superseded,
     /// Over the LLM call cap: given back.
     Deferred,
+    /// The store failed (not the job): given back with no attempt used.
+    Requeued(String),
     /// The attempt failed (requeued or `Failed`).
     Failed(String),
     /// The token no longer held the row.
@@ -418,6 +422,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             counter("reviews", v(&st.reviews)),
             counter("superseded", v(&st.superseded)),
             counter("failures", v(&st.failures)),
+            counter("store_errors", v(&st.store_errors)),
             counter("tokens_in", v(&st.tokens_in)),
             counter("tokens_out", v(&st.tokens_out)),
             counter("discovery_scans", v(&st.discovery_scans)),
@@ -533,11 +538,10 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                         if view.info().archived {
                             continue;
                         }
-                        for j in rules {
-                            if let Some(curvec) = pending_at(&view, j) {
-                                queued += self.queue(b, j, &curvec)?;
-                            }
-                        }
+                        let keys: Vec<_> = (rules.into_iter())
+                            .filter_map(|j| pending_at(&view, j).map(|v| (b, j, v)))
+                            .collect();
+                        queued += self.jobs.discover_many(&keys)?;
                     }
                 }
             }
@@ -559,20 +563,13 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             let Some(view) = snap.kernel.branch(info.id) else {
                 continue;
             };
-            for (j, curvec) in view.pending_rules() {
-                queued += self.queue(info.id, j, &curvec)?;
-            }
+            let keys: Vec<_> = (view.pending_rules().into_iter())
+                .map(|(j, v)| (info.id, j, v))
+                .collect();
+            queued += self.jobs.discover_many(&keys)?;
         }
         Ok(queued)
     }
-    fn queue(&self, b: BranchId, j: RuleId, curvec: &HeadVector) -> Result<usize, String> {
-        use crate::jobs::Discovered;
-        Ok(match self.jobs.discover(b, j, curvec)? {
-            Discovered::New | Discovered::Requeued => 1,
-            Discovered::Exists => 0,
-        })
-    }
-
     // Workers.
 
     /// Expires lapsed leases, then claims and runs one job. `None` when no
@@ -602,6 +599,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         let Some(job) = job else {
             return Ok(None);
         };
+        crash_point("claimed");
         let ran = match chosen {
             None => self.end(&job, JobState::Superseded, None, None, Ran::Superseded)?,
             Some(n) => {
@@ -629,6 +627,17 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 Ran::Lost
             },
         )
+    }
+    /// A store failure: the row goes back to `Queued` after the retry base,
+    /// with no attempt used.
+    fn defer(&self, job: &Job, error: String) -> Result<Ran, String> {
+        self.stats.store_errors.fetch_add(1, Ordering::Relaxed);
+        let until = now_ms() + self.retry_base.as_millis() as i64;
+        Ok(if self.jobs.release(&job.key, job.token, until)? {
+            Ran::Requeued(error)
+        } else {
+            Ran::Lost
+        })
     }
     fn fail(&self, loaded: &Loaded, job: &Job, error: String) -> Result<Ran, String> {
         self.stats.failures.fetch_add(1, Ordering::Relaxed);
@@ -699,8 +708,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 return self.end(job, JobState::Done, None, None, Ran::AlreadyCommitted);
             }
             Ok(Ok(TxnStatus::NotCommitted)) => {}
-            Ok(Err(e)) => return self.fail(loaded, job, format!("txn status: {e:?}")),
-            Err(e) => return self.fail(loaded, job, format!("txn status: {e:?}")),
+            Ok(Err(e)) => return self.defer(job, format!("txn status: {e:?}")),
+            Err(e) => return self.defer(job, format!("txn status: {e:?}")),
         }
         let snap = self.actor.snapshot();
         let Some(view) = snap.kernel.branch(job.branch) else {
@@ -741,6 +750,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Ok(o) => o,
             Err(e) => return self.fail(loaded, job, e.to_string()),
         };
+        crash_point("called");
         if let Some((i, o)) = outcome.tokens {
             self.stats.tokens_in.fetch_add(i as u64, Ordering::Relaxed);
             self.stats.tokens_out.fetch_add(o as u64, Ordering::Relaxed);
@@ -791,11 +801,14 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         }
         match self.actor.write(blobs, batch) {
             Ok(Ok(_)) => {
+                crash_point("committed");
                 match ran {
                     Ran::Recorded(_) => self.stats.records.fetch_add(1, Ordering::Relaxed),
                     _ => self.stats.reviews.fetch_add(1, Ordering::Relaxed),
                 };
-                self.end(job, JobState::Done, None, None, ran)
+                let ran = self.end(job, JobState::Done, None, None, ran);
+                crash_point("done");
+                ran
             }
             Ok(Err(StoreError::Tx(TxError::CurvecMoved { .. }))) => {
                 self.end(job, JobState::Superseded, None, None, Ran::Superseded)
@@ -806,10 +819,29 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Ok(Err(StoreError::Tx(TxError::TxnIdReuse { .. }))) => {
                 self.end(job, JobState::Done, None, None, Ran::AlreadyCommitted)
             }
-            Ok(Err(e)) => self.fail(loaded, job, format!("commit: {e:?}")),
-            Err(e) => self.fail(loaded, job, format!("commit: {e:?}")),
+            Ok(Err(StoreError::Tx(e))) => self.fail(loaded, job, format!("commit: {e:?}")),
+            // The store, not the job, failed (a full disk, a poisoned store
+            // or a stopped actor): no attempt is used, so the job is not
+            // left `Failed` once the daemon recovers (G4).
+            Ok(Err(e)) => self.defer(job, format!("commit: {e:?}")),
+            Err(e) => self.defer(job, format!("commit: {e:?}")),
         }
     }
+}
+/// G4 fault injection (debug builds only; ADR 0015 §11): the process
+/// aborts at the named job step when `CTX_JOB_CRASH` names it, as a SIGKILL
+/// would (no destructors). Steps: `claimed` (row claimed, no call yet),
+/// `called` (validator answered, nothing committed), `committed` (batch
+/// durable, row still Running), `done` (row finished). Compiled out of
+/// release builds.
+#[inline]
+fn crash_point(name: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("CTX_JOB_CRASH").is_ok_and(|v| v == name) {
+        std::process::abort();
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = name;
 }
 /// The fixed `check` task: a database decision whose premise changed from
 /// PostgreSQL to MongoDB, which a working validator labels `conflict`.

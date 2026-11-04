@@ -405,9 +405,12 @@ impl Candidates {
     /// Open pairs on `branch` with a side on logical `l`.
     fn touching(&self, branch: BranchId, l: LogicalId) -> Sql<Vec<Candidate>> {
         let db = self.db();
+        // Two arms, so each uses its partial index (with `OR` SQLite scans
+        // the table: 28 ms per head at 4·10⁴ pairs, G5).
         let mut stmt = db.prepare_cached(&format!(
-            "SELECT {COLUMNS} FROM candidates
-             WHERE state = 0 AND branch = ?1 AND (a_logical = ?2 OR b_logical = ?2)"
+            "SELECT {COLUMNS} FROM candidates WHERE state = 0 AND branch = ?1 AND a_logical = ?2
+             UNION
+             SELECT {COLUMNS} FROM candidates WHERE state = 0 AND branch = ?1 AND b_logical = ?2"
         ))?;
         let rows = stmt.query_map(params![branch.0, l.0], row_to)?;
         rows.collect()

@@ -53,15 +53,24 @@ pub fn create(key: &str, kind: RecordKind, base: bool, content: u8) -> Op {
 /// PROP1 bounds: 6 logicals, 14 revisions, 10 rules, 12 batches, 1–5 Ops.
 /// Seeds use ChaCha8, never thread_rng. Generation is adaptive to accepted inputs.
 pub fn generate(seed: u64) -> EventLog {
-    generate_inner(seed, false)
+    generate_inner(seed, false, false)
 }
 
 /// Stratified PROP1 cases include the six required event families in every seed.
 /// The random tail uses the same weighted Op/edge generator as P0.
 pub fn generate_p1(seed: u64) -> EventLog {
-    generate_inner(seed, true)
+    generate_inner(seed, true, false)
 }
-fn generate_inner(seed: u64, p1: bool) -> EventLog {
+
+/// PROP1 for P7 (ADR 0015 §11 G3): `generate_p1`'s cases, where a quarter
+/// of the tail's Ops are instead Conflict and PendingReview opens and
+/// resolves (with and without a note), and `RecordValidation`s with `meta`
+/// and `if_absent`. The extra draw happens only in this mode, so
+/// `generate_p1`'s seeds keep their traces.
+pub fn generate_p7(seed: u64) -> EventLog {
+    generate_inner(seed, true, true)
+}
+fn generate_inner(seed: u64, p1: bool, p7: bool) -> EventLog {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut model = InputModel::default();
     let mut batches = Vec::new();
@@ -155,6 +164,14 @@ fn generate_inner(seed: u64, p1: bool) -> EventLog {
             let pick = (rng.next_u32() as usize) % n;
             let rev = RevisionId(pick as u32);
             let logical = i.revisions[pick].logical;
+            if p7 && rng.next_u32() % 4 == 0 {
+                batch.ops.push(p7_op(&mut rng, i, rev, (tx * 5 + k) as u8));
+                let mut candidate = model.clone();
+                if candidate.apply(&batch).is_ok() {
+                    preview = candidate;
+                }
+                continue;
+            }
             let code = rng.next_u32() % 100;
             let op = match code {
                 0..=9 if i.logicals.len() < 6 && n < 14 => create(
@@ -276,6 +293,73 @@ fn generate_inner(seed: u64, p1: bool) -> EventLog {
         batches.push(batch);
     }
     EventLog { batches }
+}
+
+/// One P7 Op for `generate_p7`: artifact opens and resolves, and
+/// validation records with metadata and the `if_absent` CAS.
+fn p7_op(rng: &mut ChaCha8Rng, i: &Inputs, rev: RevisionId, salt: u8) -> Op {
+    let artifacts = i.artifacts.len() as u32;
+    match rng.next_u32() % 100 {
+        0..=24 if artifacts < 8 => Op::OpenArtifact {
+            ty: if rng.next_u32().is_multiple_of(2) {
+                ArtifactType::Conflict
+            } else {
+                ArtifactType::PendingReview
+            },
+            target: rev.into(),
+            payload_hash: [salt; 32],
+        },
+        25..=64 if artifacts > 0 => Op::ResolveArtifact {
+            // Mostly an open one; a resolved or unknown id now and then
+            // (rejected).
+            id: {
+                let open: Vec<_> = (0..artifacts)
+                    .filter(|&a| i.artifacts[a as usize].open)
+                    .collect();
+                match rng.next_u32() % 5 {
+                    0 => ArtifactId(rng.next_u32() % (artifacts + 1)),
+                    _ if !open.is_empty() => ArtifactId(open[rng.next_u32() as usize % open.len()]),
+                    _ => ArtifactId(rng.next_u32() % (artifacts + 1)),
+                }
+            }
+            .into(),
+            note: (rng.next_u32().is_multiple_of(2)).then_some([salt.wrapping_add(1); 32]),
+        },
+        _ if !i.rules.is_empty() => {
+            // Mostly a rule with a Sem premise (a record elsewhere is
+            // rejected with NoSemIncidence).
+            let sem: Vec<_> = (0..i.rules.len() as u32)
+                .map(RuleId)
+                .filter(|j| !current_vector(i, &i.rules[j.index()]).is_empty())
+                .collect();
+            let id = if !sem.is_empty() && !rng.next_u32().is_multiple_of(5) {
+                sem[rng.next_u32() as usize % sem.len()]
+            } else {
+                RuleId(rng.next_u32() % i.rules.len() as u32)
+            };
+            Op::RecordValidation {
+                rule: id.into(),
+                curvec_seen: current_vector(i, &i.rules[id.index()]),
+                verdict: match rng.next_u32() % 3 {
+                    0 => Verdict::Verified,
+                    1 => Verdict::Rejected,
+                    _ => Verdict::Pending,
+                },
+                validator: if rng.next_u32().is_multiple_of(2) {
+                    "worker".into()
+                } else {
+                    "admin".into()
+                },
+                meta: (!rng.next_u32().is_multiple_of(4)).then_some([salt.wrapping_add(2); 32]),
+                if_absent: rng.next_u32().is_multiple_of(2),
+            }
+        }
+        _ => Op::OpenArtifact {
+            ty: ArtifactType::Conflict,
+            target: rev.into(),
+            payload_hash: [salt; 32],
+        },
+    }
 }
 
 pub mod shapes;

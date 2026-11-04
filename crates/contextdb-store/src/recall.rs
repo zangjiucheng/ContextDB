@@ -59,6 +59,10 @@ const SCHEMA: &str = "
     CREATE VIRTUAL TABLE IF NOT EXISTS recall USING fts5(
         key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED);
     CREATE VIRTUAL TABLE IF NOT EXISTS recall_vocab USING fts5vocab(recall, 'row');
+    -- Each FTS row's logical, indexed: `logical` is UNINDEXED in the FTS
+    -- table, so deleting or counting through it would scan every row.
+    CREATE TABLE IF NOT EXISTS recall_map(rid INTEGER PRIMARY KEY, logical INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS recall_map_logical ON recall_map(logical);
     CREATE TABLE IF NOT EXISTS recall_watermark(id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);";
 impl RecallIndex {
     pub fn open(path: Option<&std::path::Path>) -> Sql<Self> {
@@ -67,21 +71,27 @@ impl RecallIndex {
             None => Connection::open_in_memory()?,
         };
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        // A projection from before P7 (no branch rows) is dropped and rebuilt.
-        let old = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE name = 'recall'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-            && conn
+        // A projection from before P7 (no branch rows) or before the row
+        // map is dropped and rebuilt (the watermark goes with it).
+        let exists = |name: &str| -> Sql<bool> {
+            Ok(conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE name = ?1",
+                    [name],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some())
+        };
+        let old = exists("recall")?
+            && (conn
                 .prepare("SELECT branch, rev FROM recall LIMIT 0")
-                .is_err();
+                .is_err()
+                || !exists("recall_map")?);
         if old {
             conn.execute_batch(
-                "DROP TABLE IF EXISTS recall_vocab; DROP TABLE recall; DROP TABLE IF EXISTS recall_watermark;",
+                "DROP TABLE IF EXISTS recall_vocab; DROP TABLE recall; DROP TABLE IF EXISTS recall_watermark;
+                 DROP TABLE IF EXISTS recall_map;",
             )?;
         }
         conn.execute_batch(SCHEMA)?;
@@ -102,7 +112,11 @@ impl RecallIndex {
     pub fn update(&mut self, epoch: Epoch, entries: &[(LogicalId, Vec<Row>)]) -> Sql<()> {
         let tx = self.conn.transaction()?;
         for (l, rows) in entries {
-            tx.prepare_cached("DELETE FROM recall WHERE logical = ?1")?
+            tx.prepare_cached(
+                "DELETE FROM recall WHERE rowid IN (SELECT rid FROM recall_map WHERE logical = ?1)",
+            )?
+            .execute(params![l.0])?;
+            tx.prepare_cached("DELETE FROM recall_map WHERE logical = ?1")?
                 .execute(params![l.0])?;
             for row in rows {
                 tx.prepare_cached(
@@ -118,6 +132,9 @@ impl RecallIndex {
                     row.branch.0,
                     row.rev.0
                 ])?;
+                let rid = tx.last_insert_rowid();
+                tx.prepare_cached("INSERT INTO recall_map(rid, logical) VALUES (?1, ?2)")?
+                    .execute(params![rid, l.0])?;
             }
         }
         tx.execute(
@@ -128,8 +145,9 @@ impl RecallIndex {
         tx.commit()
     }
     pub fn clear(&mut self) -> Sql<()> {
-        self.conn
-            .execute_batch("DELETE FROM recall; DELETE FROM recall_watermark;")
+        self.conn.execute_batch(
+            "DELETE FROM recall; DELETE FROM recall_map; DELETE FROM recall_watermark;",
+        )
     }
     fn hits(&self, q: &str, scope: &str, branch: BranchId, limit: usize) -> Sql<Vec<Hit>> {
         let mut stmt = self.conn.prepare_cached(
@@ -161,8 +179,9 @@ impl RecallIndex {
     pub fn top_terms(&self, text: &str, n: usize) -> Sql<Vec<String>> {
         let total: f64 = self
             .conn
-            .query_row("SELECT count(*) FROM recall", [], |r| r.get::<_, i64>(0))?
-            as f64;
+            .query_row("SELECT count(*) FROM recall_map", [], |r| {
+                r.get::<_, i64>(0)
+            })? as f64;
         let mut stmt = self
             .conn
             .prepare_cached("SELECT doc FROM recall_vocab WHERE term = ?1")?;
@@ -384,6 +403,52 @@ mod tests {
             RecallIndex::open(Some(&path)).unwrap().watermark().unwrap(),
             Epoch(3)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A milestone-6 projection (branch rows, no row map) is rebuilt too;
+    /// updates replace exactly the listed logical's rows through the map.
+    #[test]
+    fn an_index_without_the_row_map_is_rebuilt_and_updates_replace_rows() {
+        let dir = std::env::temp_dir().join(format!("recall-map-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recall.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE VIRTUAL TABLE recall USING fts5(
+                     key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED);
+                 CREATE TABLE recall_watermark(id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);
+                 INSERT INTO recall VALUES ('k', 'Fact', 'repo', 'old', 0, 0, 0);
+                 INSERT INTO recall_watermark VALUES (0, 9);",
+            )
+            .unwrap();
+        }
+        let mut idx = RecallIndex::open(Some(&path)).unwrap();
+        assert_eq!(idx.watermark().unwrap(), Epoch(0));
+        assert!(idx.search("old", "", MAIN, 5).unwrap().is_empty());
+        let r = |branch, rev, body: &str| row(branch, rev, "k", RecordKind::Fact, "repo", body);
+        idx.update(
+            Epoch(1),
+            &[
+                (LogicalId(0), vec![r(0, 0, "alpha"), r(1, 1, "beta")]),
+                (LogicalId(1), vec![r(0, 2, "alpha")]),
+            ],
+        )
+        .unwrap();
+        idx.update(Epoch(2), &[(LogicalId(0), vec![r(0, 3, "gamma")])])
+            .unwrap();
+        let logicals = |q: &str| -> Vec<u32> {
+            let mut v: Vec<u32> = (idx.search(q, "", BranchId(1), 9).unwrap().iter())
+                .map(|h| h.logical.0)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(logicals("alpha"), vec![1]);
+        assert!(logicals("beta").is_empty());
+        assert_eq!(logicals("gamma"), vec![0]);
+        drop(idx);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

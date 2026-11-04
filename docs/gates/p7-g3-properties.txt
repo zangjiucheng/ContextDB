@@ -1,0 +1,13 @@
+# P7 G3 properties: cargo test --release -p contextdb-testkit --test p7_g3_properties -- --nocapture (10k seeds, macOS dev machine, 2026-11-03)
+
+running 3 tests
+test prop7_meta_and_notes_change_no_derived_state ... ok
+P7 PROP7 committed merges 5372, records 6314, resolves 2120
+test prop7_meta_and_notes_through_forks_and_merges ... ok
+P7 PROP1 committed ops {"AddRevision": 16104, "AddRule": 43672, "AssertBase": 15181, "CreateLogical": 53722, "OpenArtifact": 4434, "Rebind": 769, "RecordValidation": 7926, "ResolveArtifact": 1083, "RetractBase": 25088, "SetHead": 26474, "SetRuleEnabled": 14128}
+P7 PROP1 rejections {"ArtifactNotOpen": 206, "CurvecMoved": 292, "CycleDetected": 11255, "DuplicateRule": 220, "HeadConflict": 10584, "ImmutableKind": 3620, "InvalidRebind": 3449, "InvalidRule": 7136, "NoSemIncidence": 6256, "UnknownRef": 3730, "ValidationExists": 2527}
+P7 PROP1 records with meta 5547, resolves with a note 548, ValidationExists 2527
+test prop1_with_artifacts_meta_and_if_absent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.10s
+
