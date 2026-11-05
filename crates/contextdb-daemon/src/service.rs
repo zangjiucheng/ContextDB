@@ -246,6 +246,13 @@ pub struct Service<D: Durability> {
     pub validators: std::sync::OnceLock<Arc<crate::validators::Scheduler<D>>>,
     /// The recall and candidate indexer.
     indexer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Embeddings, when `embeddings.toml` configures an embedder (P8, ADR
+    /// 0016 §7); without one the vector projection is `Disabled`.
+    pub vectors: std::sync::OnceLock<Arc<crate::embedding::Vectors>>,
+    /// Why the embedder configuration could not be used: vectors report
+    /// `Failed` with it.
+    pub(crate) vectors_error: std::sync::OnceLock<String>,
+    embedding_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Handoffs (P7, ADR 0015 §7), a projection of the session log.
     handoffs: Mutex<Handoffs>,
     /// `ctx_changes` requests waiting for an epoch (ADR 0015 §8).
@@ -263,11 +270,13 @@ impl<D: Durability> Service<D> {
     /// `candidates.sqlite` (a successor in the same process owns them).
     pub fn stop_indexer(&self) {
         self.stop.store(true, Ordering::Release);
-        let thread = self.indexer_thread.lock().expect("indexer").take();
-        if let Some(t) = thread
-            && t.thread().id() != std::thread::current().id()
-        {
-            let _ = t.join();
+        for slot in [&self.indexer_thread, &self.embedding_thread] {
+            let thread = slot.lock().expect("indexer").take();
+            if let Some(t) = thread
+                && t.thread().id() != std::thread::current().id()
+            {
+                let _ = t.join();
+            }
         }
     }
     /// Writes every queued session event and stops the writer thread. Run
@@ -439,6 +448,44 @@ fn handle_of(cert: &Certificate, index: usize) -> String {
     format!("{hex}.{index}")
 }
 impl<D: Durability + Clone + 'static> Service<D> {
+    /// Starts embeddings (ADR 0016 §7) with the vector projection in
+    /// `path` (memory if `None`). Once per service.
+    pub fn start_vectors(
+        &self,
+        settings: crate::embedding::Settings,
+        path: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let v = Arc::new(crate::embedding::Vectors::open(settings, path)?);
+        if self.vectors.set(v.clone()).is_err() {
+            return Err("embeddings already started".into());
+        }
+        let (actor, table, stop) = (
+            self.actor.clone(),
+            self.candidates.clone(),
+            self.stop.clone(),
+        );
+        let t = std::thread::Builder::new()
+            .name("ctxd-embedder".into())
+            .spawn(move || crate::embedding::run(actor, v, table, stop))
+            .map_err(|e| format!("embedding thread: {e}"))?;
+        *self.embedding_thread.lock().expect("indexer") = Some(t);
+        Ok(())
+    }
+    /// An `embeddings.toml` that could not be used: vectors report `Failed`.
+    pub fn vectors_unavailable(&self, error: String) {
+        let _ = self.vectors_error.set(error);
+    }
+    /// Both projections' states (ADR 0016 §2.2).
+    pub fn index_report(&self, head: Epoch) -> IndexReport {
+        IndexReport {
+            fts: self.index_health.state(head),
+            vectors: match (self.vectors.get(), self.vectors_error.get()) {
+                (Some(v), _) => v.state(head),
+                (None, Some(e)) => IndexState::Failed { error: e.clone() },
+                (None, None) => IndexState::Disabled,
+            },
+        }
+    }
     /// Operator-selected routing configuration. It is never accepted from an
     /// agent request or inferred from a record body.
     /// Overrides the live-sample deadline. Semantic tests use a generous
@@ -534,6 +581,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             candidates,
             stop,
             indexer_thread: Mutex::new(Some(indexer_thread)),
+            vectors: std::sync::OnceLock::new(),
+            vectors_error: std::sync::OnceLock::new(),
+            embedding_thread: Mutex::new(None),
             handoffs: Mutex::new(Handoffs::default()),
             change_waiters: std::sync::atomic::AtomicUsize::new(0),
             validators: std::sync::OnceLock::new(),
@@ -979,12 +1029,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx reindex requires the admin socket");
                 }
-                // Vectors are Disabled until milestone 5: nothing to rebuild.
                 if matches!(target, ReindexTarget::Fts | ReindexTarget::All) {
                     self.index_health.request_reindex();
                 }
+                if matches!(target, ReindexTarget::Vectors | ReindexTarget::All)
+                    && let Some(v) = self.vectors.get()
+                {
+                    v.health.request_reindex();
+                }
                 Response::Reindexed {
-                    index: self.index_health.report(snap.epoch),
+                    index: self.index_report(snap.epoch),
                 }
             }
             Request::Read {
@@ -1302,7 +1356,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 revisions: db.revision_count() as u64,
                 logicals: db.logical_count() as u64,
                 sessions: self.session_count() as u64,
-                index: self.index_health.report(snap.epoch),
+                index: self.index_report(snap.epoch),
             },
             Request::TxnStatus { id: txn } => match self
                 .actor
@@ -2023,7 +2077,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
             }
         }
-        let fused = ranking::fuse(&by_key, &[&by_text]);
+        // Vectors (ADR 0016 §7.2), when an embedder is configured: cosine
+        // order over the heads visible on the branch, paged through
+        // eligibility like the others.
+        let mut by_vector: Vec<LogicalId> = Vec::new();
+        if let Some(v) = self.vectors.get()
+            && !query.trim().is_empty()
+            && let Some(q) = v.query_vector(query)
+        {
+            for (l, r) in crate::embedding::ranked(v, db, &q) {
+                if by_vector.len() == limit {
+                    break;
+                }
+                if elig.admit(l, Some(r)) {
+                    by_vector.push(l);
+                }
+            }
+        }
+        let fused = ranking::fuse(&by_key, &[&by_text, &by_vector]);
         let Eligibility {
             decided, withheld, ..
         } = elig;
@@ -2114,7 +2185,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             items,
             withheld,
             cert_id,
-            index: self.index_health.report(snap.epoch),
+            index: self.index_report(snap.epoch),
             limit_clamped,
             omitted,
             estimate,

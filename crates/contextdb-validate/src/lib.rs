@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 pub mod claude;
 pub mod command;
 pub mod config;
+pub mod embed;
 pub mod mock;
 
 /// Largest total body size of a task; larger tasks fail as `TooLarge`

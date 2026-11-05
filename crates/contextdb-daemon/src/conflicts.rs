@@ -252,7 +252,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 kind: "candidate".into(),
                 artifacts: Vec::new(),
                 sides: vec![side(view, c.a), side(view, c.b)],
-                reason: format!("lexical similarity, bm25 {:.2}", c.score),
+                reason: candidate_reason(&c),
                 origin: format!("candidate {}", c.id),
                 rule: None,
                 marks,
@@ -629,4 +629,18 @@ fn open_pair(view: &BranchView<'_>, a: RevisionId, b: RevisionId) -> Option<Vec<
             ids.sort_unstable();
             Some(ids)
         })
+}
+
+/// How a candidate was found (ADR 0016 §7.3).
+fn candidate_reason(c: &crate::candidates::Candidate) -> String {
+    use crate::candidates::{EMBEDDING, LEXICAL};
+    let cos = c.cosine.unwrap_or(0.0);
+    match (c.source & LEXICAL != 0, c.source & EMBEDDING != 0) {
+        (true, true) => format!(
+            "lexical and embedding similarity, bm25 {:.2}, cosine {cos:.2}",
+            c.score
+        ),
+        (false, true) => format!("embedding similarity, cosine {cos:.2}"),
+        _ => format!("lexical similarity, bm25 {:.2}", c.score),
+    }
 }

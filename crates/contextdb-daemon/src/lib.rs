@@ -9,6 +9,9 @@ pub mod publish;
 pub mod actor;
 #[cfg(not(loom))]
 pub mod candidates;
+/// Embeddings: vectors, the vector ranker and embedding candidates (P8, ADR 0016 §7).
+#[cfg(not(loom))]
+pub mod embedding;
 /// Retrieval projection health and the recall bounded wait (P8, ADR 0016 §2).
 pub mod index_health;
 #[cfg(not(loom))]

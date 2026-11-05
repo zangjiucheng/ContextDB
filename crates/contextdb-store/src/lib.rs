@@ -9,6 +9,7 @@ pub mod migrate;
 mod pack;
 pub mod projection;
 pub mod recall;
+pub mod vectors;
 pub mod session;
 #[doc(hidden)]
 pub mod snapshot;

@@ -205,9 +205,9 @@ impl ClaudeCli {
     }
 }
 /// A private directory removed on drop.
-struct TempDir(PathBuf);
+pub(crate) struct TempDir(pub(crate) PathBuf);
 impl TempDir {
-    fn new(tag: &str) -> Result<Self, ValidatorError> {
+    pub(crate) fn new(tag: &str) -> Result<Self, ValidatorError> {
         use std::os::unix::fs::DirBuilderExt;
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

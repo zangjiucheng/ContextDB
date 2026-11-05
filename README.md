@@ -362,6 +362,31 @@ A job goes to the first validator whose filters all match. `ctx validators reloa
 
 **Upgrade note**: P7 raises the IPC protocol to 5 and the op_log to format 4 (a ValidationRecord can carry a metadata hash). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps `log.v3.bak`; batches, hashes and frame checksums are unchanged), then upgrade every binary together.
 
+### Embeddings (P8, optional)
+
+Recall can add a third ranker that matches by meaning, next to keys and bm25 (ADR 0016 §7). It is **off by default**: without `<data dir>/embeddings.toml`, `ctx status` shows `vectors=disabled`, and recall uses keys and text only.
+
+```toml
+# <data dir>/embeddings.toml
+[embedder]
+command = ["/path/to/embed", "--model", "x"]  # JSON lines: {"id","text"} in, {"id","vector"} out
+model = "x"                                    # the cache key
+dims = 1024
+max_batch = 32                                 # defaults
+timeout_secs = 30
+
+[vectors]                                      # optional; defaults
+max_cache_mb = 256                             # in-memory vector cache
+min_cosine = 0.82                              # embedding contradiction candidates
+per_head = 5
+```
+
+- **Privacy.** The command receives record bodies, so configuring one is your decision. It runs in its own process group with a deadline, a minimal environment (`HOME`, `PATH`, `LANG`) and an empty private working directory.
+- **Vectors.** They live in `vectors.sqlite`, keyed by content and model, so branches and reverted revisions share them. A background thread fills them and never blocks the writer or the text index. A failing embedder shows `vectors=failed` and is retried with back-off. `ctx reindex --vectors` drops other models' vectors and fills in what is missing.
+- **Certification is unchanged.** The vector ranker, like the others, yields only eligible heads, so certified recall still returns only CERTIFIED records.
+- **Candidates.** New Decision, Plan and Fact heads are also paired with their nearest neighbours on the branch (cosine ≥ `min_cosine`). A pair found by both sources is listed once, as "lexical and embedding similarity".
+- `type = "mock"` (with `dims`, no `command`) is a hashed bag of words for trials. It is not a real embedder.
+
 ## Limits and non-goals
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.

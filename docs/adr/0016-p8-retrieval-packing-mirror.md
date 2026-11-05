@@ -462,6 +462,13 @@ timeout_secs = 30
   it yields only eligible candidates (§3.2).
 - **Branches.** Vectors are keyed by content, so branches share them, but
   the scan covers only heads visible on the caller's branch (SD19).
+- *Implementation note, milestone 5b:* the embedding thread is separate from
+  the recall indexer, so a hung embedder delays only vectors. Each call runs
+  on a helper thread, so shutdown never waits for it. A query embedding
+  waits at most 2 s, and a failed one is not retried for 30 s. `ctx reindex
+  --vectors` prunes other models' vectors and fills in what is missing. A
+  mock embedder can be configured with `type = "mock"` for trials; it never
+  counts for G6.
 
 ### 7.3 Embedding contradiction candidates, and the P7 fixes
 

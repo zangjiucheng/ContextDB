@@ -110,7 +110,15 @@ pub struct Candidate {
     pub error: Option<String>,
     /// The worker's claim token while `Running`.
     pub token: u64,
+    /// Which sources found the pair: [`LEXICAL`], [`EMBEDDING`] or both
+    /// (ADR 0016 §7.3).
+    pub source: u8,
+    /// The embedding cosine, when the embedding source found it.
+    pub cosine: Option<f64>,
 }
+/// `Candidate::source` bits.
+pub const LEXICAL: u8 = 1;
+pub const EMBEDDING: u8 = 2;
 /// Counters for `ctx validators status` and the G5/G6 reports.
 #[derive(Debug, Default)]
 pub struct CandStats {
@@ -146,9 +154,11 @@ fn row_to(r: &rusqlite::Row<'_>) -> Sql<Candidate> {
         attempts: r.get(11)?,
         error: r.get(12)?,
         token: r.get::<_, i64>(13)? as u64,
+        source: r.get::<_, i64>(14)? as u8,
+        cosine: r.get(15)?,
     })
 }
-const COLUMNS: &str = "id, branch, a_rev, b_rev, score, epoch, state, judge, label, validator, review, attempts, error, judge_token";
+const COLUMNS: &str = "id, branch, a_rev, b_rev, score, epoch, state, judge, label, validator, review, attempts, error, judge_token, source, cosine";
 /// Judging columns, added to a table from milestone 6 on open.
 const JUDGE_COLUMNS: &[(&str, &str)] = &[
     ("judge", "INTEGER NOT NULL DEFAULT 0"),
@@ -161,6 +171,9 @@ const JUDGE_COLUMNS: &[(&str, &str)] = &[
     ("review", "INTEGER"),
     ("error", "TEXT"),
     ("meta", "BLOB"),
+    // P8 milestone 5b: which sources found the pair.
+    ("source", "INTEGER NOT NULL DEFAULT 1"),
+    ("cosine", "REAL"),
 ];
 impl Candidates {
     /// Opens (or creates) the table; memory when `path` is `None`.
@@ -187,6 +200,8 @@ impl Candidates {
              CREATE INDEX IF NOT EXISTS candidates_a ON candidates(branch, a_logical) WHERE state = 0;
              CREATE INDEX IF NOT EXISTS candidates_b ON candidates(branch, b_logical) WHERE state = 0;
              CREATE TABLE IF NOT EXISTS candidates_watermark(
+                 id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS candidates_embed_watermark(
                  id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);",
         )
         .map_err(|e| format!("{FILE}: {e}"))?;
@@ -243,9 +258,12 @@ impl Candidates {
     }
     fn clear(&self) -> Sql<()> {
         self.db()
-            .execute_batch("DELETE FROM candidates; DELETE FROM candidates_watermark;")
+            .execute_batch(
+            "DELETE FROM candidates; DELETE FROM candidates_watermark; DELETE FROM candidates_embed_watermark;",
+        )
     }
-    /// Inserts a pair unless the branch already has it (in either order).
+    /// Inserts a lexical pair unless the branch already has it (in either
+    /// order); a pair the embedding source found becomes `both`.
     fn insert(
         &self,
         branch: BranchId,
@@ -254,12 +272,66 @@ impl Candidates {
         score: f64,
         epoch: Epoch,
     ) -> Sql<bool> {
-        let n = self.db().execute(
-            "INSERT OR IGNORE INTO candidates(branch, a_rev, b_rev, a_logical, b_logical, score, epoch, state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+        let db = self.db();
+        let n = db.execute(
+            "INSERT OR IGNORE INTO candidates(branch, a_rev, b_rev, a_logical, b_logical, score, epoch, state, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 1)",
             params![branch.0, a.1.0, b.1.0, a.0.0, b.0.0, score, epoch.0 as i64],
         )?;
+        if n == 0 {
+            db.execute(
+                "UPDATE candidates SET source = source | 1, score = max(score, ?4)
+                 WHERE branch = ?1 AND min(a_rev, b_rev) = min(?2, ?3) AND max(a_rev, b_rev) = max(?2, ?3)",
+                params![branch.0, a.1.0, b.1.0, score],
+            )?;
+        }
         Ok(n == 1)
+    }
+    /// Inserts an embedding pair (ADR 0016 §7.3) unless the branch already
+    /// has it; a pair the lexical source found becomes `both`.
+    pub(crate) fn insert_embedding(
+        &self,
+        branch: BranchId,
+        a: (LogicalId, RevisionId),
+        b: (LogicalId, RevisionId),
+        cosine: f64,
+        epoch: Epoch,
+    ) -> Sql<bool> {
+        let db = self.db();
+        let n = db.execute(
+            "INSERT OR IGNORE INTO candidates(branch, a_rev, b_rev, a_logical, b_logical, score, epoch, state, source, cosine)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 2, ?7)",
+            params![branch.0, a.1.0, b.1.0, a.0.0, b.0.0, epoch.0 as i64, cosine],
+        )?;
+        if n == 0 {
+            db.execute(
+                "UPDATE candidates SET source = source | 2, cosine = ?4
+                 WHERE branch = ?1 AND min(a_rev, b_rev) = min(?2, ?3) AND max(a_rev, b_rev) = max(?2, ?3)",
+                params![branch.0, a.1.0, b.1.0, cosine],
+            )?;
+        }
+        Ok(n == 1)
+    }
+    /// The last epoch the embedding source queried; `None` before its first
+    /// run or after the table was cleared.
+    pub fn embed_watermark(&self) -> Sql<Option<Epoch>> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT epoch FROM candidates_embed_watermark WHERE id = 0",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(|e| Epoch(e as u64)))
+    }
+    pub(crate) fn set_embed_watermark(&self, e: Epoch) -> Sql<()> {
+        self.db().execute(
+            "INSERT INTO candidates_embed_watermark(id, epoch) VALUES (0, ?1)
+             ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+            params![e.0 as i64],
+        )?;
+        Ok(())
     }
     pub fn get(&self, id: u64) -> Sql<Option<Candidate>> {
         self.db()
@@ -413,7 +485,7 @@ impl Candidates {
         Ok(out)
     }
     /// Open pairs on `branch` with a side on logical `l`.
-    fn touching(&self, branch: BranchId, l: LogicalId) -> Sql<Vec<Candidate>> {
+    pub(crate) fn touching(&self, branch: BranchId, l: LogicalId) -> Sql<Vec<Candidate>> {
         let db = self.db();
         // Two arms, so each uses its partial index (with `OR` SQLite scans
         // the table: 28 ms per head at 4·10⁴ pairs, G5).
@@ -439,18 +511,18 @@ pub fn current(snap_view: Option<&BranchView<'_>>, c: &Candidate) -> bool {
 
 /// What the recall projection stores for one revision.
 #[derive(Clone)]
-struct Text {
-    key: String,
-    kind: RecordKind,
-    scope: String,
+pub(crate) struct Text {
+    pub(crate) key: String,
+    pub(crate) kind: RecordKind,
+    pub(crate) scope: String,
     /// Lossy UTF-8, cut at `BODY_MAX`.
-    body: String,
+    pub(crate) body: String,
     /// Rendered from the whole payload (ADR 0016 §4.1).
-    abstract_: levels::Rendered,
-    outline: levels::Rendered,
+    pub(crate) abstract_: levels::Rendered,
+    pub(crate) outline: levels::Rendered,
 }
 /// The text of revision `r`; an unavailable payload indexes an empty body.
-fn text<D: Durability>(
+pub(crate) fn text<D: Durability>(
     snap: &Snapshot<D>,
     view: &BranchView<'_>,
     l: LogicalId,
@@ -549,7 +621,7 @@ fn moved<D: Durability>(
 /// The `(branch, logical)` heads epochs `from..=to` moved, for candidates
 /// (a merge's moves included). The flag asks for a sweep of every pair: a
 /// branch was archived, or a row could not be read.
-fn moved_heads<D: Durability>(
+pub(crate) fn moved_heads<D: Durability>(
     snap: &Snapshot<D>,
     from: u64,
     to: u64,
@@ -573,7 +645,7 @@ fn moved_heads<D: Durability>(
 }
 /// Every live `(branch, logical)` head: `main`'s, and other branches' where
 /// they differ from `main`'s.
-fn all_heads<D: Durability>(snap: &Snapshot<D>) -> BTreeSet<(BranchId, LogicalId)> {
+pub(crate) fn all_heads<D: Durability>(snap: &Snapshot<D>) -> BTreeSet<(BranchId, LogicalId)> {
     let main = snap.kernel.branch(MAIN);
     let mut out = BTreeSet::new();
     for info in snap.kernel.branches() {
@@ -738,7 +810,11 @@ fn pairs_for<D: Durability>(
     s.micros_max.fetch_max(us, Ordering::Relaxed);
     inserted
 }
-fn sweep_rows<D: Durability>(snap: &Snapshot<D>, table: &Candidates, rows: Vec<Candidate>) {
+pub(crate) fn sweep_rows<D: Durability>(
+    snap: &Snapshot<D>,
+    table: &Candidates,
+    rows: Vec<Candidate>,
+) {
     for c in rows {
         if !current(snap.kernel.branch(c.branch).as_ref(), &c) {
             let _ = table.set_state(c.id, CandState::Gone);

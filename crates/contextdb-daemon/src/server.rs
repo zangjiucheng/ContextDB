@@ -128,6 +128,21 @@ impl Daemon {
         scheduler.link_candidates(service.candidates.clone());
         scheduler.start()?;
         let _ = service.validators.set(scheduler);
+        // Embeddings (ADR 0016 §7): only when embeddings.toml exists. A bad
+        // file leaves vectors `Failed` with the reason; recall still runs
+        // on keys and text.
+        match contextdb_validate::embed::Config::load(&dir) {
+            Ok(None) => {}
+            Ok(Some(c)) => {
+                let settings = crate::embedding::Settings::from_config(&c);
+                if let Err(e) =
+                    service.start_vectors(settings, Some(&dir.join(contextdb_store::vectors::FILE)))
+                {
+                    service.vectors_unavailable(e);
+                }
+            }
+            Err(e) => service.vectors_unavailable(e),
+        }
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         std::fs::create_dir_all(&run)?;
