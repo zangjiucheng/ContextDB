@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P8 milestone 4: Summary pending counts** (ADR 0016 §6).
+  - A Summary item now carries `premises: {moved, total}`: how many of its witness rule's Sem premises have moved since the nearest Verified vector. MCP adds `note: "summary; 2 of 7 premises changed"` when any have moved.
+  - The SessionStart briefing lists Summaries with changed premises.
+  - Re-recording identical text, or reverting a premise to validated content, reuses the existing revision. The validated verdict applies again, no validator job is queued, and no record is written (T90).
+  - The identical-content `ctx_supersede` reply is now specified: `Committed`, naming the head itself, with an empty delta.
+
 - **P8 milestone 3: read levels and packing** (ADR 0016 §4–§5). Session log format 4.
   - `ctx_recall{level?, budget_tokens?}` renders items as `header`, `abstract`, `outline` or `full`.
     - With a budget, items are packed greedily in rank order with a `bytes/4` token estimate (`estimate: "bytes/4 v1"`). Each item gets the highest level that fits.

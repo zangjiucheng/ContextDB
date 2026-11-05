@@ -825,11 +825,23 @@ pub struct Item {
     pub state: NodeState,
     pub summary: Summary,
     pub handle: Option<String>,
+    /// For a Summary: how many of its witness rule's Sem premises moved
+    /// since the last Verified vector (ADR 0016 §6).
+    pub premises: Option<PremiseCount>,
     /// The rendering shown (ADR 0016 §4–§5): present when the request
     /// asked for a level or a budget; `None` is the pre-P8 header-only
     /// shape (and a full `ctx_read`, whose body is the payload).
     pub body: Option<Rendering>,
 }
+/// A Summary's pending count (ADR 0016 §6): `moved` of its witness rule's
+/// `total` Sem premises have a head other than the nearest Verified vector
+/// (or, with none, the vector the rule asserted).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PremiseCount {
+    pub moved: u32,
+    pub total: u32,
+}
+wire_struct!(PremiseCount { moved, total });
 /// An item's text at one level, and whether anything was left out
 /// (ADR 0016 §4.1). `Header` has empty text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -931,6 +943,8 @@ pub enum Response {
         pending: u32,
         conflicted: u32,
         items: Vec<Item>,
+        /// Summaries with moved premises (ADR 0016 §6), at most 16.
+        summaries: Vec<Item>,
     },
     Telemetry {
         entries: Vec<TelemetryEntry>,
@@ -1074,6 +1088,7 @@ wire_struct!(Item {
     state,
     summary,
     handle,
+    premises,
     body
 });
 wire_struct!(Envelope { epoch, response });
@@ -2068,12 +2083,14 @@ impl Wire for Response {
                 pending,
                 conflicted,
                 items,
+                summaries,
             } => {
                 18u8.encode(o);
                 stale.encode(o);
                 pending.encode(o);
                 conflicted.encode(o);
                 items.encode(o);
+                summaries.encode(o);
             }
             Self::Telemetry { entries, next } => {
                 19u8.encode(o);
@@ -2244,6 +2261,7 @@ impl Wire for Response {
                 pending: Wire::decode(i)?,
                 conflicted: Wire::decode(i)?,
                 items: Wire::decode(i)?,
+                summaries: Wire::decode(i)?,
             },
             19 => Self::Telemetry {
                 entries: Wire::decode(i)?,
@@ -2711,6 +2729,7 @@ mod tests {
                 pending: 2,
                 conflicted: 0,
                 items: Vec::new(),
+                summaries: Vec::new(),
             },
             Response::Telemetry {
                 entries: vec![

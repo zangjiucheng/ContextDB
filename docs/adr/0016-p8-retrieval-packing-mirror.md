@@ -387,6 +387,16 @@ writer of ValidationRecords.**
     is the vector at the rule's creation.
   - Packing shows `PENDING (summary; 2 of 7 premises changed)`, and the
     briefing lists Summaries with `moved > 0`.
+  - *Implementation note, milestone 4 (SPEC v1.8.2).*
+    - The kernel stores ValidationRecords by vector, not by time, so
+      "latest Verified" is implemented as the Verified vector with the
+      fewest differences from the current one. The two agree in the usual
+      case, and the count is 0 exactly when the current vector is verified.
+    - The witness rule is the first enabled rule concluding the revision
+      with a Sem premise, in rule-id order (the canonical witness order).
+    - A Summary must be recorded with `adopt_as_base = false`. A base
+      Summary is supported by its base, and its rule does not gate its
+      label.
 - **Digest and early stop (SPEC P8 "digest 早停").**
   - The digest of a rule's premises is its semantic vector. Revisions are
     deduplicated by `(logical, content)` (§1), so identical content means

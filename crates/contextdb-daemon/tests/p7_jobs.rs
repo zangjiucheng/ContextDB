@@ -1017,3 +1017,44 @@ fn discovery_quiescence_property() {
         }
     }
 }
+
+/// T90 (ADR 0016 §6, "digest early stop"): reverting a premise to content
+/// that already has a verdict brings back the same revision, so the
+/// vector is the validated one: discovery queues nothing new, no record
+/// is written, and the conclusion is CERTIFIED again.
+#[test]
+fn t90_reverting_to_validated_content_queues_nothing() {
+    let a = actor();
+    let _ = setup(&a);
+    let s = scheduler(&a, mock(ValidatorKind::Deterministic, Label::Reinforcement));
+    s.discover_once().unwrap();
+    while s.work_once().unwrap().is_some() {}
+    let validated = vec![(
+        LogicalId(0),
+        a.snapshot().view(MAIN).head(LogicalId(0)).unwrap(),
+    )];
+    let records = validations(&a, MAIN);
+    assert_eq!(
+        a.snapshot().db().status(RevisionId(1)).unwrap(),
+        Summary::Certified
+    );
+    // Move away, and back to the validated text before any work runs.
+    let away = move_head(&a, MAIN, LogicalId(0), b"a: cassandra");
+    assert_eq!(s.discover_once().unwrap(), 1, "the new vector's job");
+    let back = move_head(&a, MAIN, LogicalId(0), b"a: mongodb");
+    assert_eq!(back, validated, "same content, same revision");
+    assert_eq!(
+        s.discover_once().unwrap(),
+        0,
+        "the vector already has a verdict"
+    );
+    assert_eq!(
+        a.snapshot().db().status(RevisionId(1)).unwrap(),
+        Summary::Certified
+    );
+    // The stale job is only marked Superseded; no record is written.
+    assert_eq!(s.work_once().unwrap(), Some(Ran::Superseded));
+    assert_eq!(s.work_once().unwrap(), None);
+    assert_eq!(state(&s, MAIN, &away), JobState::Superseded);
+    assert_eq!(validations(&a, MAIN), records);
+}

@@ -41,6 +41,7 @@ impl Default for Script {
                 pending: 0,
                 conflicted: 0,
                 items: Vec::new(),
+                summaries: Vec::new(),
             },
             updates: Response::Updates {
                 token: 1,
@@ -707,13 +708,15 @@ fn briefing_items_and_unapplied_gating_file() {
         summary: Summary::Certified,
         handle: None,
         body: None,
+        premises: None,
     };
     fake.set(|s| {
         s.briefing = Response::Briefing {
             stale: 1,
             pending: 2,
             conflicted: 0,
-            items: vec![item],
+            items: vec![item.clone()],
+            summaries: Vec::new(),
         }
     });
     let start = repo.input("SessionStart", "s", None, json!({ "source": "startup" }));
@@ -726,6 +729,32 @@ fn briefing_items_and_unapplied_gating_file() {
         )
     );
     assert_eq!(system(&o), "", "no gating.toml: nothing to apply");
+    // ADR 0016 §6: Summaries whose premises moved get their own list.
+    let digest = Item {
+        key: "digest".into(),
+        kind: RecordKind::Summary,
+        rev: RevisionId(9),
+        summary: Summary::Pending(PendingReason::Semantic),
+        premises: Some(PremiseCount { moved: 2, total: 7 }),
+        ..item
+    };
+    fake.set(|s| {
+        s.briefing = Response::Briefing {
+            stale: 0,
+            pending: 1,
+            conflicted: 0,
+            items: Vec::new(),
+            summaries: vec![digest],
+        }
+    });
+    let o = repo.hook("claude", "session-start", &start).unwrap();
+    assert!(
+        context(&o).contains(
+            "Summaries with changed premises:\n- digest r9 PENDING(Semantic) (summary; 2 of 7 premises changed)\n"
+        ),
+        "{}",
+        context(&o)
+    );
     fake.set(|s| s.briefing = Script::default().briefing);
     let o = repo.hook("claude", "session-start", &start).unwrap();
     assert_eq!(

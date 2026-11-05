@@ -256,6 +256,17 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
             ..r
         })
     }
+    /// A visible rule's ValidationRecords on this branch, by vector
+    /// (global ids; ADR 0016 §6 pending count).
+    pub fn rule_validations(&self, j: RuleId) -> Vec<(HeadVector, ValidationRecord)> {
+        let Some(local) = self.local(Kind::Rule, j.0) else {
+            return Vec::new();
+        };
+        (self.b.db.validations().range((RuleId(local), Vec::new())..))
+            .take_while(|((r, _), _)| r.0 == local)
+            .map(|((_, v), rec)| (self.g_vector(v), rec.clone()))
+            .collect()
+    }
     /// Visible rules with a Sem incidence on logical `l` (global ids).
     pub fn sem_rules_of(&self, l: LogicalId) -> Vec<RuleId> {
         let Ok(local) = self.ll(l) else {

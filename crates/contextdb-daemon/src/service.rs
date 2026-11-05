@@ -1868,6 +1868,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let (key, kind, _) = db.logical_info(l).expect("existing logical");
         let state = db.node(r).expect("existing revision");
         let summary = db.summary_at(r, live).expect("existing revision");
+        let premises = (kind == RecordKind::Summary)
+            .then(|| premise_count(db, r))
+            .flatten();
         Item {
             logical: l,
             key,
@@ -1876,6 +1879,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             state,
             summary,
             handle,
+            premises,
             body: None,
         }
     }
@@ -3181,6 +3185,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let db = &snap.view(branch);
         let live = self.anchor_live(db);
         let (mut stale, mut pending, mut conflicted) = (0u32, 0u32, 0u32);
+        let mut summaries = Vec::new();
         for l in db.logicals() {
             let Some(r) = db.head(l) else { continue };
             match db.summary_at(r, &live) {
@@ -3188,6 +3193,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Ok(Summary::Pending(_)) => pending += 1,
                 Ok(Summary::Conflicted) => conflicted += 1,
                 _ => {}
+            }
+            // ADR 0016 §6: Summaries whose premises moved.
+            if summaries.len() < MAX_BRIEFING_SUMMARIES
+                && db
+                    .logical_info(l)
+                    .is_some_and(|(_, k, _)| k == RecordKind::Summary)
+                && premise_count(db, r).is_some_and(|c| c.moved > 0)
+            {
+                summaries.push(self.item_at(db, l, r, None, &live));
             }
         }
         // The most recently moved heads first.
@@ -3218,8 +3232,45 @@ impl<D: Durability + Clone + 'static> Service<D> {
             pending,
             conflicted,
             items,
+            summaries,
         }
     }
+}
+/// Summaries listed in a briefing.
+const MAX_BRIEFING_SUMMARIES: usize = 16;
+/// A Summary revision's pending count (ADR 0016 §6), from its witness
+/// rule: the first enabled rule concluding `r` with a Sem premise (rules
+/// in id order, the canonical witness order). `moved` counts the Sem
+/// premises whose current head differs from the nearest Verified vector
+/// of that rule (fewest differences), or from the vector the rule
+/// asserted when no Verified record exists. The kernel keeps validations
+/// by vector, not by time, so "nearest" stands for "latest": it is 0
+/// exactly when the current vector is verified.
+fn premise_count(db: &BranchView<'_>, r: RevisionId) -> Option<PremiseCount> {
+    let mut rules = db.rules_concluding(r);
+    rules.sort_by_key(|(j, ..)| *j);
+    let (j, ..) = rules.into_iter().find(|(_, enabled, premises, _)| {
+        *enabled && premises.iter().any(|p| p.kind == EdgeKind::Sem)
+    })?;
+    let sem = db.rule_semantic(j)?;
+    let verified: Vec<HeadVector> = (db.rule_validations(j).into_iter())
+        .filter(|(_, rec)| rec.verdict == Verdict::Verified)
+        .map(|(v, _)| v)
+        .collect();
+    let bases = if verified.is_empty() {
+        vec![sem.asserted.clone()]
+    } else {
+        verified
+    };
+    let moved = |base: &HeadVector| {
+        (sem.current.iter())
+            .filter(|(l, r)| !base.iter().any(|(bl, br)| bl == l && br == r))
+            .count()
+    };
+    Some(PremiseCount {
+        moved: bases.iter().map(moved).min().unwrap_or(0) as u32,
+        total: sem.current.len() as u32,
+    })
 }
 impl AgentState {
     /// Ledger rule (ADR 0008 §6.2): a required read of another revision of a

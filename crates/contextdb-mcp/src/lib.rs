@@ -106,6 +106,22 @@ fn item(i: &Item) -> Value {
         "summary": summary_text(&i.summary),
         "status": status(&i.state),
     });
+    // ADR 0016 §6: a Summary's pending count.
+    if let (Some(c), Some(o)) = (i.premises, v.as_object_mut()) {
+        o.insert(
+            "premises".into(),
+            json!({ "moved": c.moved, "total": c.total }),
+        );
+        if c.moved > 0 {
+            o.insert(
+                "note".into(),
+                json!(format!(
+                    "summary; {} of {} premises changed",
+                    c.moved, c.total
+                )),
+            );
+        }
+    }
     // ADR 0016 §4.1: a rendered item names its level and whether anything
     // was cut, even when nothing was.
     if let (Some(b), Some(o)) = (&i.body, v.as_object_mut()) {

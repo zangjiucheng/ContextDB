@@ -693,6 +693,7 @@ impl Hook {
                             pending,
                             conflicted,
                             items,
+                            summaries,
                         },
                 }) = d.call(Request::Briefing {
                     binding: Some(self.binding(session)),
@@ -709,6 +710,19 @@ impl Hook {
                                 "- {} ({:?}) r{} {}\n",
                                 i.key,
                                 i.kind,
+                                i.rev.0,
+                                summary(&i.summary)
+                            ));
+                        }
+                    }
+                    // ADR 0016 §6: Summaries whose premises moved.
+                    if !summaries.is_empty() {
+                        text.push_str("Summaries with changed premises:\n");
+                        for i in &summaries {
+                            let (moved, total) = i.premises.map_or((0, 0), |c| (c.moved, c.total));
+                            text.push_str(&format!(
+                                "- {} r{} {} (summary; {moved} of {total} premises changed)\n",
+                                i.key,
                                 i.rev.0,
                                 summary(&i.summary)
                             ));
