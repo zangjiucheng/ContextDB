@@ -387,6 +387,14 @@ per_head = 5
 - **Candidates.** New Decision, Plan and Fact heads are also paired with their nearest neighbours on the branch (cosine ≥ `min_cosine`). A pair found by both sources is listed once, as "lexical and embedding similarity".
 - `type = "mock"` (with `dims`, no `command`) is a hashed bag of words for trials. It is not a real embedder.
 
+### Git mirror (P8)
+
+`ctx mirror export <dir>` writes the branch's live records as Markdown files, one commit per export, to `refs/contextdb/b<branch id>` in the project repository, so `git log`, `git diff` and `git grep` work on them. Some properties:
+
+- **Read-only.** It is never read back. If someone edits the ref, the next export refuses with `MirrorModified`, `ctx mirror proposals` lists the edits as supersede proposals for an agent to apply through `ctx_supersede`, and `--force` moves the ref after keeping a backup.
+- **Never pushed by ContextDB.** It contains every live record's full body. A plain `git push` leaves `refs/contextdb/*` alone, but `git push --mirror` and repository backup tools send it.
+- **Concurrency-safe.** The ref moves only by compare-and-swap, so a concurrent export fails with `MirrorRaced` instead of overwriting.
+
 ## Limits and non-goals
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.

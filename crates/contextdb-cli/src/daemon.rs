@@ -627,6 +627,107 @@ pub fn index_line(r: &contextdb_proto::proto::IndexReport) -> String {
     };
     format!("index fts={} vectors={}", one(&r.fts), one(&r.vectors))
 }
+/// `ctx mirror export|proposals|status|prune` (admin, ADR 0016 §8). The
+/// project repository defaults to the git work tree holding `dir`.
+pub fn mirror(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
+    use contextdb_proto::proto::{MirrorAction, Response as R};
+    let value = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let has = |name: &str| args.iter().any(|a| a == name);
+    for (i, a) in args.iter().enumerate() {
+        let takes_value =
+            i > 0 && ["--branch", "--project", "--older-than"].contains(&args[i - 1].as_str());
+        if !takes_value
+            && ![
+                "--branch",
+                "--project",
+                "--older-than",
+                "--force",
+                "--adopt",
+            ]
+            .contains(&a.as_str())
+        {
+            return Err(format!("unknown argument {a}"));
+        }
+    }
+    let project = match value("--project") {
+        Some(p) => std::fs::canonicalize(&p).map_err(|e| format!("{p}: {e}"))?,
+        None => {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .map_err(|e| format!("git: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "{} is not inside a git work tree: pass --project <repo>",
+                    dir.display()
+                ));
+            }
+            std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+        }
+    };
+    let project = project.display().to_string();
+    let branch = value("--branch");
+    let action = match sub {
+        "export" => MirrorAction::Export {
+            branch,
+            project,
+            force: has("--force"),
+            adopt: has("--adopt"),
+        },
+        "proposals" => MirrorAction::Proposals { branch, project },
+        "status" => MirrorAction::Status { project },
+        "prune" => {
+            let v = value("--older-than").ok_or("prune needs --older-than <days>d")?;
+            let days: u64 = v
+                .strip_suffix('d')
+                .unwrap_or(&v)
+                .parse()
+                .map_err(|_| format!("--older-than {v}: expected days, like 30d"))?;
+            MirrorAction::Prune {
+                project,
+                older_than_secs: days * 86_400,
+            }
+        }
+        other => {
+            return Err(format!(
+                "unknown mirror command {other:?} (export, proposals, status, prune)"
+            ));
+        }
+    };
+    let mut c = connect(dir)?;
+    match call(&mut c, Request::Mirror { action })?.response {
+        R::Mirror { report } => {
+            for l in &report.lines {
+                println!("{l}");
+            }
+            for p in &report.proposals {
+                println!(
+                    "proposal: supersede {} (base rev {}, {})",
+                    p.key, p.base_rev.0, p.kind
+                );
+                for l in p.new_body.lines() {
+                    println!("  | {l}");
+                }
+            }
+            for a in &report.added {
+                println!("added by hand: {a}");
+            }
+            for d in &report.deleted {
+                println!("deleted by hand: {d}");
+            }
+            Ok(())
+        }
+        R::Error { code, detail } => Err(format!("{code}: {detail}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
 /// `ctx reindex <dir> [--fts|--vectors|--all]` (admin, ADR 0016 §2.3).
 pub fn reindex(dir: &Path, args: &[String]) -> Result<(), String> {
     use contextdb_proto::proto::{ReindexTarget, Response as R};

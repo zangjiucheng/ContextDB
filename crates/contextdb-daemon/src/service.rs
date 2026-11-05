@@ -253,6 +253,12 @@ pub struct Service<D: Durability> {
     /// `Failed` with it.
     pub(crate) vectors_error: std::sync::OnceLock<String>,
     embedding_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The data directory, for `mirror.sqlite` (P8, ADR 0016 §8); `None`
+    /// keeps the mirror cache in memory.
+    pub(crate) data_dir: Mutex<Option<std::path::PathBuf>>,
+    /// Serialises `ctx mirror` in this daemon (other writers of the ref are
+    /// caught by its compare-and-swap).
+    mirror_lock: Mutex<()>,
     /// Handoffs (P7, ADR 0015 §7), a projection of the session log.
     handoffs: Mutex<Handoffs>,
     /// `ctx_changes` requests waiting for an epoch (ADR 0015 §8).
@@ -471,6 +477,49 @@ impl<D: Durability + Clone + 'static> Service<D> {
         *self.embedding_thread.lock().expect("indexer") = Some(t);
         Ok(())
     }
+    /// The data directory, where `mirror.sqlite` lives.
+    pub fn set_data_dir(&self, dir: std::path::PathBuf) {
+        *self.data_dir.lock().expect("data dir") = Some(dir);
+    }
+    /// `ctx mirror` (ADR 0016 §8), on the admin socket.
+    fn mirror(&self, action: MirrorAction, snap: &Arc<Snapshot<D>>) -> Response {
+        let _one = self.mirror_lock.lock().expect("mirror");
+        let data = self.data_dir.lock().expect("data dir").clone();
+        let (project, branch) = match &action {
+            MirrorAction::Export {
+                project, branch, ..
+            }
+            | MirrorAction::Proposals { project, branch } => (project.clone(), branch.clone()),
+            MirrorAction::Status { project } | MirrorAction::Prune { project, .. } => {
+                (project.clone(), None)
+            }
+        };
+        let branch = match branch {
+            None => MAIN,
+            Some(name) => match snap.kernel.branch_by_name(&name) {
+                Some(b) => b,
+                None => return err("UnknownBranch", format!("no branch named {name}")),
+            },
+        };
+        let mut m =
+            match crate::mirror::Mirror::new(snap, std::path::Path::new(&project), data.as_deref())
+            {
+                Ok(m) => m,
+                Err(e) => return err(e.code(), e.detail()),
+            };
+        let done = match action {
+            MirrorAction::Export { force, adopt, .. } => m.export(branch, force, adopt),
+            MirrorAction::Proposals { .. } => m.proposals(branch),
+            MirrorAction::Status { .. } => m.status(),
+            MirrorAction::Prune {
+                older_than_secs, ..
+            } => m.prune(older_than_secs),
+        };
+        match done {
+            Ok(report) => Response::Mirror { report },
+            Err(e) => err(e.code(), e.detail()),
+        }
+    }
     /// An `embeddings.toml` that could not be used: vectors report `Failed`.
     pub fn vectors_unavailable(&self, error: String) {
         let _ = self.vectors_error.set(error);
@@ -584,6 +633,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             vectors: std::sync::OnceLock::new(),
             vectors_error: std::sync::OnceLock::new(),
             embedding_thread: Mutex::new(None),
+            data_dir: Mutex::new(None),
+            mirror_lock: Mutex::new(()),
             handoffs: Mutex::new(Handoffs::default()),
             change_waiters: std::sync::atomic::AtomicUsize::new(0),
             validators: std::sync::OnceLock::new(),
@@ -1025,6 +1076,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 Err(r) => r,
             },
+            Request::Mirror { action } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx mirror requires the admin socket");
+                }
+                self.mirror(action, &snap)
+            }
             Request::Reindex { target } => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx reindex requires the admin socket");

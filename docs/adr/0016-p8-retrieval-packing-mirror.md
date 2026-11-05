@@ -550,6 +550,22 @@ holds no epoch.
 **Determinism.** The tree is a function of the branch's committed state
 only. A commit on another branch changes no byte of it.
 
+*Implementation notes, milestone 6:*
+- The front matter carries `rev_epoch`, the epoch that created the revision,
+  instead of `head_epoch`. The kernel keeps no per-branch head history, and a
+  scan that tracked forks and merges for every export would be both more
+  costly and more fragile. Like `head_epoch`, `rev_epoch` is stable and a
+  function of the log. It differs only for a revision that became the head
+  later than it was created (a merge, or a revert to an older revision). The
+  front matter also carries `key`, so that `proposals` can name the record.
+- The README names the mirror format (`mirror format 1`), not the tool
+  version. A tool upgrade would otherwise change every tree and turn every
+  older tip into a false `MirrorModified` on a cache miss.
+- With the kernel's key rule (lower-case, unique per branch), two paths can
+  differ only in case if their lanes do, and then their keys differ too. So
+  case-folded collisions cannot occur, and the renaming rule is kept only as
+  a safeguard.
+
 ### 8.2 Commits
 
 The tree is written in the project repository with git plumbing:
@@ -586,6 +602,11 @@ Ctx-Mirror-Version: 1
     exported into: the repository whose `refs/contextdb/*` the mirror
     writes.
   - With no watermark for that scope, it is `none`.
+  - *Implementation note, milestone 6:* a position is a BLAKE3 digest of
+    the observation (`capture::position`), not an encoding that holds the
+    commit, so the commit cannot be decoded from it. `Code-Commit` is
+    therefore always `none` for now. Recording the observed HEAD would need a
+    new field in the observation, which is left to a later milestone.
 - If the tree equals the previous commit's tree, no commit is made, and only
   `mirror.sqlite`'s epoch advances. Export is idempotent.
 
@@ -661,6 +682,17 @@ Backups are listed by `ctx mirror status` and kept until `ctx mirror prune
 **No write-back** (SPEC P8). No code path reads mirror content into the
 op_log. Proposals go through the agent's own supersede call, under its own
 session, checks and certificates.
+
+*Implementation notes, milestone 6:*
+- Trees are written with one `git mktree --batch` call per directory depth,
+  after the single `fast-import` blob stream. Commits use `commit-tree
+  --no-gpg-sign` with a fixed `ContextDB <contextdb@localhost>` identity, so
+  a user's signing configuration never prompts.
+- The parent of a forced export is the last commit, at most 64 first-parent
+  steps below the found tip, that validates (none after `MirrorStale`).
+  `proposals` diffs against that same commit.
+- `mirror.every_epochs`, the automatic export, is not implemented. Export
+  runs only on `ctx mirror export`.
 
 ### 8.5 Privacy
 

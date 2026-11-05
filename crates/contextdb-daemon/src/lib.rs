@@ -18,6 +18,9 @@ pub mod index_health;
 pub mod jobs;
 #[cfg(not(loom))]
 pub mod lease;
+/// The git mirror (P8, ADR 0016 §8).
+#[cfg(not(loom))]
+pub mod mirror;
 /// Recall packing (P8, ADR 0016 §5).
 #[cfg(not(loom))]
 pub mod packing;

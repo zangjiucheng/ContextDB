@@ -47,6 +47,14 @@ Usage (via a running ctxd, admin socket):
   ctx conflicts resolve <dir> <artifact>... [--note T] [--branch B]
                                        contradictions and validator reviews (SD20)
   ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N] [--follow]
+  ctx reindex <dir> [--fts|--vectors|--all]
+                                       rebuild a retrieval projection in the background
+  ctx mirror export <dir> [--branch B] [--project <repo>] [--force] [--adopt]
+                                       render the branch into refs/contextdb/b<id> of the
+                                       project repository (never pushed; never read back)
+  ctx mirror proposals <dir> [--branch B] [--project <repo>]
+                                       hand edits of the mirror as supersede proposals
+  ctx mirror status <dir> [--project <repo>] | prune <dir> --older-than <days>d
                                        status changes per epoch (P7); --follow waits
                                        for new epochs and keeps printing
   ctx validators status|reload|check <dir> | retry <dir> <job-key>|--failed
@@ -235,6 +243,10 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         Some("changes") => daemon::changes(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
         Some("reindex") => daemon::reindex(dir(1)?, &args[2.min(args.len())..]).map(|()| 0),
+        Some("mirror") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            daemon::mirror(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)
+        }
         Some("validators") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             daemon::validators(&sub, dir(2)?, &args[3.min(args.len())..]).map(|()| 0)

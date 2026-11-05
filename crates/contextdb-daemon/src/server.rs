@@ -118,6 +118,7 @@ impl Daemon {
                 .map_err(|e| io::Error::other(format!("session log: {e:?}")))?,
         );
         service.set_anchor_routes(dir.join("anchors.routes"));
+        service.set_data_dir(dir.clone());
         if let Some(timeout) = options.anchor_live_timeout {
             service.set_anchor_live_timeout(timeout);
         }

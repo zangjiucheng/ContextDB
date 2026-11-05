@@ -225,6 +225,120 @@ wire_struct!(RecallOpts {
     level,
     budget_tokens
 });
+/// `ctx mirror` (admin, ADR 0016 §8). `project` is the git work tree whose
+/// `refs/contextdb/*` the mirror writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MirrorAction {
+    /// Export the branch (default `main`). `force` moves a modified ref
+    /// after backing it up; `adopt` accepts an unknown tip that validates.
+    Export {
+        branch: Option<String>,
+        project: String,
+        force: bool,
+        adopt: bool,
+    },
+    /// List hand edits of the branch's mirror as supersede proposals.
+    Proposals {
+        branch: Option<String>,
+        project: String,
+    },
+    /// Mirror refs, cached tips and backups.
+    Status { project: String },
+    /// Delete backup refs older than `older_than_secs`.
+    Prune {
+        project: String,
+        older_than_secs: u64,
+    },
+}
+impl Wire for MirrorAction {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Export {
+                branch,
+                project,
+                force,
+                adopt,
+            } => {
+                0u8.encode(o);
+                branch.encode(o);
+                project.encode(o);
+                force.encode(o);
+                adopt.encode(o);
+            }
+            Self::Proposals { branch, project } => {
+                1u8.encode(o);
+                branch.encode(o);
+                project.encode(o);
+            }
+            Self::Status { project } => {
+                2u8.encode(o);
+                project.encode(o);
+            }
+            Self::Prune {
+                project,
+                older_than_secs,
+            } => {
+                3u8.encode(o);
+                project.encode(o);
+                older_than_secs.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Export {
+                branch: Wire::decode(i)?,
+                project: Wire::decode(i)?,
+                force: Wire::decode(i)?,
+                adopt: Wire::decode(i)?,
+            },
+            1 => Self::Proposals {
+                branch: Wire::decode(i)?,
+                project: Wire::decode(i)?,
+            },
+            2 => Self::Status {
+                project: Wire::decode(i)?,
+            },
+            3 => Self::Prune {
+                project: Wire::decode(i)?,
+                older_than_secs: Wire::decode(i)?,
+            },
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// A hand edit of a mirror file, as a supersede proposal (ADR 0016 §8.4).
+/// `base_rev` comes from the valid render, never from the edited file;
+/// `new_body` is untrusted text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MirrorProposal {
+    pub key: String,
+    pub base_rev: RevisionId,
+    pub kind: String,
+    pub new_body: String,
+}
+wire_struct!(MirrorProposal {
+    key,
+    base_rev,
+    kind,
+    new_body
+});
+/// What a `ctx mirror` action did or found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MirrorReport {
+    /// Human-readable lines: the ref, the commit, the range, warnings.
+    pub lines: Vec<String>,
+    pub proposals: Vec<MirrorProposal>,
+    /// Files added or deleted by hand (paths, and keys where known).
+    pub added: Vec<String>,
+    pub deleted: Vec<String>,
+}
+wire_struct!(MirrorReport {
+    lines,
+    proposals,
+    added,
+    deleted
+});
 /// Which projection `ctx reindex` rebuilds (ADR 0016 §2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReindexTarget {
@@ -541,6 +655,10 @@ pub enum Request {
     /// projection from the current snapshot, in the background.
     Reindex {
         target: ReindexTarget,
+    },
+    /// `ctx mirror` (admin, ADR 0016 §8).
+    Mirror {
+        action: MirrorAction,
     },
 }
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
@@ -1018,6 +1136,10 @@ pub enum Response {
     /// committed.
     AlreadyOpen {
         artifacts: Vec<ArtifactId>,
+    },
+    /// `ctx mirror` done (ADR 0016 §8).
+    Mirror {
+        report: MirrorReport,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -1735,6 +1857,10 @@ impl Wire for Request {
                 39u8.encode(o);
                 target.encode(o);
             }
+            Self::Mirror { action } => {
+                40u8.encode(o);
+                action.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -1963,6 +2089,9 @@ impl Wire for Request {
             39 => Self::Reindex {
                 target: Wire::decode(i)?,
             },
+            40 => Self::Mirror {
+                action: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -2189,6 +2318,10 @@ impl Wire for Response {
                 33u8.encode(o);
                 artifacts.encode(o);
             }
+            Self::Mirror { report } => {
+                34u8.encode(o);
+                report.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2332,6 +2465,9 @@ impl Wire for Response {
             },
             33 => Self::AlreadyOpen {
                 artifacts: Wire::decode(i)?,
+            },
+            34 => Self::Mirror {
+                report: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2606,6 +2742,31 @@ mod tests {
             Request::Reindex {
                 target: ReindexTarget::All,
             },
+            Request::Mirror {
+                action: MirrorAction::Export {
+                    branch: Some("dev".into()),
+                    project: "/p".into(),
+                    force: true,
+                    adopt: false,
+                },
+            },
+            Request::Mirror {
+                action: MirrorAction::Proposals {
+                    branch: None,
+                    project: "/p".into(),
+                },
+            },
+            Request::Mirror {
+                action: MirrorAction::Status {
+                    project: "/p".into(),
+                },
+            },
+            Request::Mirror {
+                action: MirrorAction::Prune {
+                    project: "/p".into(),
+                    older_than_secs: 86_400,
+                },
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -2879,6 +3040,19 @@ mod tests {
             },
             Response::AlreadyOpen {
                 artifacts: vec![ArtifactId(4), ArtifactId(5)],
+            },
+            Response::Mirror {
+                report: MirrorReport {
+                    lines: vec!["exported".into()],
+                    proposals: vec![MirrorProposal {
+                        key: "db/engine".into(),
+                        base_rev: RevisionId(3),
+                        kind: "Decision".into(),
+                        new_body: "use sqlite".into(),
+                    }],
+                    added: vec!["repo/Fact/x.md".into()],
+                    deleted: vec!["old".into()],
+                },
             },
             Response::Handoffs {
                 items: vec![HandoffInfo {

@@ -7,6 +7,15 @@
   - **Graph** can show only the records within 1–3 hops of the selection, and nodes show the full last key segment.
   - The header shows only the statuses that occur ("all heads certified" instead of a row of zeros), the number of superseded revisions, and a filter for Summaries with changed premises.
   - The detail panel shows the body as abstract, outline or full.
+- **P8 milestone 6: the git mirror** (ADR 0016 §8; T57, T91, T92, T96, T97).
+  - `ctx mirror export <dir> [--branch B] [--project <repo>] [--force] [--adopt]` (admin) renders the branch's live heads into `refs/contextdb/b<branch id>` of the project repository. The project defaults to the git work tree holding the data directory.
+    - Each record is a file `<lane>/<kind>/<key>.md`: front matter (key, logical, rev, kind, label, rev_epoch, premises), then the full body. A root `README.md` says the ref is generated.
+    - Path segments are percent-encoded, so paths are injective and never `.`, `..` or `.git`.
+    - One commit covers an epoch range, with `Ctx-*` trailers. An unchanged tree makes no commit.
+    - The ref moves only by compare-and-swap; a concurrent export gets `MirrorRaced`.
+  - A tip ContextDB did not write is `MirrorModified`, and export changes nothing. A tip from another log is `MirrorStale`. A lost `mirror.sqlite` or a crash before the cache write is not mistaken for an edit: the tip is validated by re-rendering.
+  - `ctx mirror proposals` lists hand edits as supersede proposals, with `base_rev` from the valid render, and applies nothing. `--force` moves the ref after a backup under `refs/contextdb-backup/`. `ctx mirror status` and `ctx mirror prune --older-than <days>d` manage the refs and backups.
+  - ContextDB never pushes the mirror. It holds every live record's full body, and `git push --mirror` or backup tools would send it.
 - **P8 milestone 5b: embeddings** (ADR 0016 §7; T89).
   - **Optional embedder:** `<data>/embeddings.toml` configures an external command (JSON lines in and out), off by default. The command runs in its own process group with a deadline, a minimal environment and an empty private working directory. A wrong dimension, a non-finite value, a missing or repeated id, or output over 4 MiB fails the batch.
   - **Vector projection:** `vectors.sqlite` maps `(content, model)` to a unit `f32` vector, with an in-memory cache bounded by `max_cache_mb`. A background thread, separate from the writer and the text indexer, fills it and retries failed batches with back-off. `ctx status` and `ctx_recall` report `vectors` as Ready, Lagging, Rebuilding, Failed or Disabled. `ctx reindex --vectors` prunes other models and fills in what is missing.
