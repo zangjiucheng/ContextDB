@@ -96,7 +96,7 @@ fn index_json(r: &IndexReport) -> Value {
     json!({"fts": state(&r.fts), "vectors": state(&r.vectors)})
 }
 fn item(i: &Item) -> Value {
-    json!({
+    let mut v = json!({
         "handle": i.handle,
         "key": i.key,
         "logical": i.logical.0,
@@ -105,7 +105,26 @@ fn item(i: &Item) -> Value {
         "kind": format!("{:?}", i.kind),
         "summary": summary_text(&i.summary),
         "status": status(&i.state),
-    })
+    });
+    // ADR 0016 §4.1: a rendered item names its level and whether anything
+    // was cut, even when nothing was.
+    if let (Some(b), Some(o)) = (&i.body, v.as_object_mut()) {
+        o.insert("level".into(), json!(b.level.name()));
+        o.insert("cut".into(), json!(b.cut));
+        if b.level != levels::Level::Header {
+            o.insert("text".into(), json!(b.text));
+        }
+    }
+    v
+}
+fn level_arg(args: &Value) -> Result<Option<levels::Level>, String> {
+    match args.get("level") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => levels::Level::parse(s)
+            .map(Some)
+            .ok_or_else(|| format!("InvalidArgument: unknown level {s}")),
+        Some(_) => Err("InvalidArgument: level must be a string".into()),
+    }
 }
 fn diff(d: &CertDiff) -> Value {
     json!({
@@ -205,7 +224,15 @@ fn recall_scope(v: Option<&Value>) -> Result<(String, RecallOpts), String> {
                 Some(Value::String(s)) => Some(s.clone()),
                 Some(_) => return Err("InvalidArgument: scope.dir must be a string".into()),
             };
-            Ok((lane, RecallOpts { kinds, dir }))
+            Ok((
+                lane,
+                RecallOpts {
+                    kinds,
+                    dir,
+                    budget_tokens: None,
+                    level: None,
+                },
+            ))
         }
         Some(_) => Err("InvalidArgument: scope must be a string or an object".into()),
     }
@@ -236,10 +263,13 @@ fn tools() -> Value {
                                         "dir": { "type": "string" } } } ] },
               "mode": { "enum": ["certified", "advisory"] },
               "limit": { "type": "integer", "description": "default 10; above 100 is clamped (limit_clamped: true)" },
+              "level": { "enum": ["header", "abstract", "outline", "full"], "description": "render items at this level (default: headers only; outline when budget_tokens is given)" },
+              "budget_tokens": { "type": "integer", "description": "pack items in rank order within this many estimated tokens (bytes/4); items whose header no longer fits are counted in omitted" },
               "index_wait_ms": { "type": "integer", "description": "wait up to this long (default 200, max 2000) for the text index to catch up; the response's index state says if it did not" } },
             "required": ["query"] } },
         { "name": "ctx_read", "description": "Read one record. certified mode fails closed unless the current head is CERTIFIED.",
-          "inputSchema": { "type": "object", "properties": { "target": target, "mode": { "enum": ["certified", "advisory"] } }, "required": ["target"] } },
+          "inputSchema": { "type": "object", "properties": { "target": target, "mode": { "enum": ["certified", "advisory"] },
+              "level": { "enum": ["header", "abstract", "outline", "full"], "description": "default full; abstract and outline are cut deterministically and say so (cut: true)" } }, "required": ["target"] } },
         { "name": "ctx_record", "description": "Write a record. Exactly one of create_only (with key) or expected_head (key@rev) is required. Each dep names one revision (a handle from ctx_recall, or key@rev; a bare key is refused). Dep kinds: cur = this record holds only while that revision is its record's current head; pin = that exact revision; sem = re-validated whenever that record's head changes (the only premise kind a Summary accepts); ref = a reference that never changes status (any kind, Summary included). Deps that are all ref support nothing: such a record holds only with adopt_as_base=true.",
           "inputSchema": { "type": "object", "properties": {
               "kind": { "enum": ["decision", "plan", "fact", "evidence", "summary"] },
@@ -668,7 +698,16 @@ impl<B: Backend> Server<B> {
         };
         match name {
             "ctx_recall" => {
-                let (scope, opts) = recall_scope(args.get("scope"))?;
+                let (scope, mut opts) = recall_scope(args.get("scope"))?;
+                opts.level = level_arg(args)?;
+                opts.budget_tokens = match args.get("budget_tokens") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .ok_or("InvalidArgument: budget_tokens must be a non-negative integer")?
+                            .min(u32::MAX as u64) as u32,
+                    ),
+                };
                 let env = self.call(Request::Recall {
                     binding: binding.clone(),
                     query: arg(args, "query").unwrap_or("").into(),
@@ -690,6 +729,8 @@ impl<B: Backend> Server<B> {
                     cert_id,
                     index,
                     limit_clamped,
+                    omitted,
+                    estimate,
                 } = env.response
                 else {
                     return Err("unexpected response".into());
@@ -701,6 +742,8 @@ impl<B: Backend> Server<B> {
                     "cert_id": cert_id.map(|c| hex(&c)),
                     "index": index_json(&index),
                     "limit_clamped": limit_clamped,
+                    "omitted": omitted,
+                    "estimate": estimate,
                 }))
             }
             "ctx_read" => {
@@ -709,13 +752,21 @@ impl<B: Backend> Server<B> {
                     binding: binding.clone(),
                     target,
                     mode: mode(args),
+                    level: level_arg(args)?,
                 })?;
                 let Response::Read { item: i, payload } = env.response else {
                     return Err("unexpected response".into());
                 };
+                // Below `full` the text is in the item; a full read keeps
+                // `body` and says so.
+                let mut it = item(&i);
+                if let (Some(o), true) = (it.as_object_mut(), payload.is_some()) {
+                    o.insert("level".into(), json!("full"));
+                    o.insert("cut".into(), json!(false));
+                }
                 Ok(json!({
                     "epoch": env.epoch.0,
-                    "item": item(&i),
+                    "item": it,
                     "body": payload.map(|p| String::from_utf8_lossy(&p).into_owned()),
                 }))
             }
@@ -1222,6 +1273,7 @@ impl<B: Backend> Server<B> {
             binding: binding.clone(),
             target: Target::KeyRev { key, rev },
             mode: Mode::Advisory,
+            level: None,
         })?;
         let Response::Read { item, .. } = env.response else {
             return Err("unexpected response".into());
@@ -1247,6 +1299,19 @@ fn committed(env: Envelope) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn level_arg_parses_the_four_levels_only() {
+        assert_eq!(level_arg(&json!({})).unwrap(), None);
+        for l in ["header", "abstract", "outline", "full"] {
+            assert_eq!(
+                level_arg(&json!({ "level": l })).unwrap().unwrap().name(),
+                l
+            );
+        }
+        assert!(level_arg(&json!({"level": "summary"})).is_err());
+        assert!(level_arg(&json!({"level": 2})).is_err());
+    }
+
     /// T95: a plain string is a lane; an object adds kinds and dir; bad
     /// shapes are refused, never guessed.
     #[test]
@@ -1269,6 +1334,8 @@ mod tests {
                 RecallOpts {
                     kinds: vec![RecordKind::Decision, RecordKind::Plan],
                     dir: Some("src/".into()),
+                    budget_tokens: None,
+                    level: None,
                 }
             )
         );

@@ -138,6 +138,7 @@ fn ctx_check_exit_codes_dry_run_and_unavailable() {
             binding: Binding::root(me),
             target: Target::Key("db".into()),
             mode: Mode::Certified,
+            level: None,
         })
         .unwrap()
         .response

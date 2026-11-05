@@ -706,6 +706,7 @@ fn briefing_items_and_unapplied_gating_file() {
         },
         summary: Summary::Certified,
         handle: None,
+        body: None,
     };
     fake.set(|s| {
         s.briefing = Response::Briefing {

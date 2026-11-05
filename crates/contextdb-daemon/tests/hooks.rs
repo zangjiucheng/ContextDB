@@ -89,6 +89,7 @@ fn read(s: &Service<SimDisk>, b: Binding, key: &str) -> Response {
             binding: b,
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         },
     )
 }

@@ -339,6 +339,7 @@ fn actor_part(reads: usize, samples: usize) {
                 binding: Binding::root(session),
                 target: Target::Key(format!("read{n}")),
                 mode: Mode::Certified,
+                level: None,
             },
         ) {
             Response::Read { item, .. } => assert_eq!(item.summary, Summary::Certified),

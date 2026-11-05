@@ -179,6 +179,7 @@ fn read(c: &mut Client, s: SessionId, key: &str) -> (LogicalId, RevisionId) {
             binding: Binding::root(s),
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         })
         .unwrap()
         .response
@@ -379,6 +380,7 @@ fn claude_claims_bind_mcp_reads_and_updates_are_injected_once_acked() {
             },
             target: Target::Key("db".into()),
             mode: Mode::Certified,
+            level: None,
         })
         .unwrap();
     let Response::Read { item, .. } = r.response else {

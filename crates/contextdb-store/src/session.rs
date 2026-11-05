@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 
 /// 3 (P7): handoff events (ADR 0015 §7); a build that knows only 2 refuses
 /// to open a log holding them.
-pub const SESSION_FORMAT: u32 = 3;
+/// 4 (P8): read events below `full` carry their level (ADR 0016 §4.2).
+/// A full read keeps format 3's encoding, and every format-3 read
+/// decodes as `full`: format 3 cannot tell a recall from a read.
+pub const SESSION_FORMAT: u32 = 4;
 
 /// Original per-root proof, independent of the session aggregate certificate.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +75,9 @@ pub enum SessionEvent {
         layer: Layer,
         epoch: Epoch,
         required: bool,
+        /// The level shown (ADR 0016 §4.2); `Full` for every read logged
+        /// before format 4.
+        level: levels::Level,
     },
     CertIssued {
         cert: Box<Certificate>,
@@ -228,8 +234,14 @@ impl Wire for SessionEvent {
                 layer,
                 epoch,
                 required,
+                level,
             } => {
-                15u8.encode(o);
+                // A full read keeps the format-3 encoding (tag 15).
+                if *level == levels::Level::Full {
+                    15u8.encode(o);
+                } else {
+                    22u8.encode(o);
+                }
                 session_id.encode(o);
                 agent.encode(o);
                 logical.encode(o);
@@ -237,6 +249,9 @@ impl Wire for SessionEvent {
                 layer.encode(o);
                 epoch.encode(o);
                 required.encode(o);
+                if *level != levels::Level::Full {
+                    level.encode(o);
+                }
             }
             Self::CertIssued { cert } => {
                 2u8.encode(o);
@@ -417,6 +432,7 @@ impl Wire for SessionEvent {
                 layer: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
                 required: Wire::decode(i)?,
+                level: levels::Level::Full,
             },
             2 => Self::CertIssued {
                 cert: Box::new(Wire::decode(i)?),
@@ -487,6 +503,21 @@ impl Wire for SessionEvent {
                 layer: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
                 required: Wire::decode(i)?,
+                level: levels::Level::Full,
+            },
+            22 => Self::Read {
+                session_id: Wire::decode(i)?,
+                agent: Wire::decode(i)?,
+                logical: Wire::decode(i)?,
+                rev: Wire::decode(i)?,
+                layer: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+                required: Wire::decode(i)?,
+                level: match Wire::decode(i)? {
+                    // Tag 22 is only for levels below full.
+                    levels::Level::Full => return Err(WireError::InvalidEncoding),
+                    l => l,
+                },
             },
             16 => Self::Write {
                 session_id: Wire::decode(i)?,
@@ -550,6 +581,11 @@ impl Record for SessionRecord {
                 r.event,
                 SessionEvent::HandoffBegin { .. } | SessionEvent::HandoffAccept { .. }
             )
+        {
+            return Err(WireError::UnknownVersion);
+        }
+        if format < 4
+            && matches!(r.event, SessionEvent::Read { level, .. } if level != levels::Level::Full)
         {
             return Err(WireError::UnknownVersion);
         }

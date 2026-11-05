@@ -117,6 +117,7 @@ fn read(s: &Svc, b: Binding, key: &str) {
             binding: b,
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         },
     ) {
         Response::Read { .. } => {}

@@ -70,6 +70,7 @@ fn read(c: &mut Client, s: SessionId, key: &str) -> Option<(Epoch, Item)> {
             binding: Binding::root(s),
             target: Target::Key(key.into()),
             mode: Mode::Advisory,
+            level: None,
         })
         .ok()?;
     match env.response {

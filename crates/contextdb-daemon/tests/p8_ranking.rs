@@ -197,6 +197,7 @@ fn t54_filtering_happens_before_the_cut() {
                     binding: a.clone(),
                     target: Target::Key(i.key.clone()),
                     mode: Mode::Advisory,
+                    level: None,
                 },
             )
             .response;
@@ -276,7 +277,12 @@ fn t85_fusion_order_and_structured_scope() {
     );
     let _ = both;
     // kinds.
-    let only = |kinds: Vec<RecordKind>| RecallOpts { kinds, dir: None };
+    let only = |kinds: Vec<RecordKind>| RecallOpts {
+        kinds,
+        dir: None,
+        budget_tokens: None,
+        level: None,
+    };
     let plans = recall(
         &s,
         &a,
@@ -318,6 +324,8 @@ fn t85_fusion_order_and_structured_scope() {
     let dir = |d: &str| RecallOpts {
         kinds: Vec::new(),
         dir: Some(d.into()),
+        budget_tokens: None,
+        level: None,
     };
     for (d, want) in [
         ("src", vec!["net-rule"]),

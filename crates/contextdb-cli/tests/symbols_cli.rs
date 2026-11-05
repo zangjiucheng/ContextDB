@@ -101,6 +101,7 @@ impl Rig {
                 binding: Binding::root(session),
                 target: Target::Key(key.into()),
                 mode: Mode::Certified,
+                level: None,
             })
             .unwrap()
             .response

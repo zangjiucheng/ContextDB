@@ -187,6 +187,7 @@ fn g6_two_agents_two_harnesses_one_decision() {
         binding: b_key.clone(),
         target: Target::Key("db".into()),
         mode: Mode::Certified,
+        level: None,
     });
     let patch = ev(
         "B",
@@ -258,6 +259,7 @@ fn g6_two_agents_two_harnesses_one_decision() {
         },
         target: Target::Key("plan".into()),
         mode: Mode::Certified,
+        level: None,
     });
     let a_edit = ev(
         "A",

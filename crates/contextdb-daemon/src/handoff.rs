@@ -261,6 +261,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             rev: e.rev,
                             required: true,
                             epoch: e.since_epoch,
+                            // A handoff copies the entry, not what was shown.
+                            level: contextdb_model::levels::Level::Header,
                         };
                         events.push(read_event(session, &agent, &entry));
                         s.agent(&agent).record(entry);

@@ -152,6 +152,7 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                             binding: b(&agent),
                             target: Target::Key(format!("k{l}")),
                             mode: Mode::Certified,
+                            level: None,
                         },
                     )
                     .response);

@@ -213,8 +213,18 @@ wire_struct!(IndexReport { fts, vectors });
 pub struct RecallOpts {
     pub kinds: Vec<RecordKind>,
     pub dir: Option<String>,
+    /// The highest level to render (ADR 0016 §5.2); `outline` when only a
+    /// budget is given.
+    pub level: Option<levels::Level>,
+    /// Pack within this many estimated tokens (`bytes/4`, §5.1).
+    pub budget_tokens: Option<u32>,
 }
-wire_struct!(RecallOpts { kinds, dir });
+wire_struct!(RecallOpts {
+    kinds,
+    dir,
+    level,
+    budget_tokens
+});
 /// Which projection `ctx reindex` rebuilds (ADR 0016 §2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReindexTarget {
@@ -283,6 +293,8 @@ pub enum Request {
         binding: Binding,
         target: Target,
         mode: Mode,
+        /// `None` is `full` (ADR 0016 §4.2).
+        level: Option<levels::Level>,
     },
     Record {
         binding: Binding,
@@ -813,7 +825,20 @@ pub struct Item {
     pub state: NodeState,
     pub summary: Summary,
     pub handle: Option<String>,
+    /// The rendering shown (ADR 0016 §4–§5): present when the request
+    /// asked for a level or a budget; `None` is the pre-P8 header-only
+    /// shape (and a full `ctx_read`, whose body is the payload).
+    pub body: Option<Rendering>,
 }
+/// An item's text at one level, and whether anything was left out
+/// (ADR 0016 §4.1). `Header` has empty text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rendering {
+    pub level: levels::Level,
+    pub cut: bool,
+    pub text: String,
+}
+wire_struct!(Rendering { level, cut, text });
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     /// Stable code (SPEC §6.2 name) plus human detail.
@@ -832,6 +857,11 @@ pub enum Response {
         index: IndexReport,
         /// `limit` was above 100 and was clamped (ADR 0016 §3.1).
         limit_clamped: bool,
+        /// Eligible items left out because their header no longer fit the
+        /// budget (§5.2): no handle, no text, no ledger entry.
+        omitted: u32,
+        /// The token estimate used, when a budget was given (§5.1).
+        estimate: Option<String>,
     },
     Read {
         item: Item,
@@ -1043,7 +1073,8 @@ wire_struct!(Item {
     rev,
     state,
     summary,
-    handle
+    handle,
+    body
 });
 wire_struct!(Envelope { epoch, response });
 wire_struct!(NamedRead {
@@ -1335,11 +1366,13 @@ impl Wire for Request {
                 binding,
                 target,
                 mode,
+                level,
             } => {
                 3u8.encode(o);
                 binding.encode(o);
                 target.encode(o);
                 mode.encode(o);
+                level.encode(o);
             }
             Self::Record {
                 binding,
@@ -1709,6 +1742,7 @@ impl Wire for Request {
                 binding: Wire::decode(i)?,
                 target: Wire::decode(i)?,
                 mode: Wire::decode(i)?,
+                level: Wire::decode(i)?,
             },
             4 => Self::Record {
                 binding: Wire::decode(i)?,
@@ -1931,6 +1965,8 @@ impl Wire for Response {
                 cert_id,
                 index,
                 limit_clamped,
+                omitted,
+                estimate,
             } => {
                 3u8.encode(o);
                 items.encode(o);
@@ -1938,6 +1974,8 @@ impl Wire for Response {
                 cert_id.encode(o);
                 index.encode(o);
                 limit_clamped.encode(o);
+                omitted.encode(o);
+                estimate.encode(o);
             }
             Self::Read { item, payload } => {
                 4u8.encode(o);
@@ -2142,6 +2180,8 @@ impl Wire for Response {
                 cert_id: Wire::decode(i)?,
                 index: Wire::decode(i)?,
                 limit_clamped: Wire::decode(i)?,
+                omitted: Wire::decode(i)?,
+                estimate: Wire::decode(i)?,
             },
             4 => Self::Read {
                 item: Wire::decode(i)?,
@@ -2376,6 +2416,8 @@ mod tests {
                 opts: RecallOpts {
                     kinds: vec![RecordKind::Decision],
                     dir: Some("src/".into()),
+                    level: Some(levels::Level::Abstract),
+                    budget_tokens: Some(800),
                 },
             },
             Request::Read {
@@ -2384,6 +2426,7 @@ mod tests {
                 },
                 target: Target::Handle("0123456789ab.2".into()),
                 mode: Mode::Advisory,
+                level: Some(levels::Level::Outline),
             },
             Request::Record {
                 binding: Binding::Key {
@@ -2799,6 +2842,8 @@ mod tests {
                     vectors: IndexState::Disabled,
                 },
                 limit_clamped: true,
+                omitted: 3,
+                estimate: Some("bytes/4 v1".into()),
             },
             Response::Handoffs {
                 items: vec![HandoffInfo {

@@ -166,6 +166,7 @@ fn main() {
                         binding: Binding::root(session),
                         target: Target::Key(format!("{}/{path}#{symbol}", rig.repo.scope())),
                         mode: Mode::Certified,
+                        level: None,
                     })
                     .unwrap()
                     .response;
@@ -193,6 +194,7 @@ fn main() {
                             binding: Binding::root(session),
                             target: Target::Key(key),
                             mode: Mode::Certified,
+                            level: None,
                         })
                         .unwrap()
                         .response;

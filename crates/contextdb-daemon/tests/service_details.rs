@@ -141,6 +141,7 @@ fn read(s: &Service<SimDisk>, b: Binding, target: Target, mode: Mode) -> Respons
             binding: b,
             target,
             mode,
+            level: None,
         },
     )
 }
@@ -1195,6 +1196,7 @@ fn briefing_counts_pending_heads_and_stop_writer_syncs_lazy_events() {
             binding: Binding::root(session),
             target: Target::Key("x".into()),
             mode: Mode::Certified,
+            level: None,
         },
     );
     assert!(matches!(read.response, Response::Read { .. }), "{read:?}");

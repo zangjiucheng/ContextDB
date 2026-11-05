@@ -235,6 +235,7 @@ fn read(s: &Service<SimDisk>, session: SessionId, key: &str) -> Response {
             binding: Binding::root(session),
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         },
     )
     .response
@@ -347,6 +348,8 @@ fn t85_recall_dir_scope_follows_anchor_premises() {
                     opts: RecallOpts {
                         kinds: Vec::new(),
                         dir: dir.map(Into::into),
+                        budget_tokens: None,
+                        level: None,
                     },
                 },
             )
@@ -746,7 +749,8 @@ fn child_check_uses_the_owner_of_inherited_root_proofs() {
             Request::Read {
                 binding: binding.clone(),
                 target: Target::Key("root-a".into()),
-                mode: Mode::Certified
+                mode: Mode::Certified,
+                level: None,
             }
         )
         .response,

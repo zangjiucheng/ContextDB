@@ -260,6 +260,7 @@ fn t07e_certified_read_never_returns_a_superseded_revision() {
                 binding: Binding::root(a),
                 target,
                 mode,
+                level: None,
             },
         )
     };
@@ -453,6 +454,7 @@ fn g6_stale_plan_is_invalid_with_diffs_then_recovers() {
         binding: Binding::root(planner),
         target: Target::Key("plan".into()),
         mode: Mode::Certified,
+        level: None,
     };
     assert_eq!(code(&call(&s, AGENT, read_plan)), "ok");
     let check = || {
@@ -545,6 +547,7 @@ fn sessions_and_handles_survive_a_daemon_restart() {
         binding: Binding::root(session),
         target: Target::Handle(handle),
         mode: Mode::Certified,
+        level: None,
     };
     assert_eq!(
         code(&call(&s, AGENT, read)),
@@ -713,6 +716,7 @@ fn a_cut_session_without_a_certificate_stays_broken_across_restarts() {
             binding: Binding::root(a),
             target: Target::Key("db".into()),
             mode: Mode::Certified,
+            level: None,
         };
         assert_eq!(code(&call(&s, AGENT, read)), "ok");
         call(&s, ADMIN, Request::Shutdown);
@@ -755,6 +759,7 @@ fn a_cut_that_cannot_be_marked_durably_refuses_to_serve() {
             binding: Binding::root(a),
             target: Target::Key("db".into()),
             mode: Mode::Certified,
+            level: None,
         };
         assert_eq!(code(&call(&s, AGENT, read)), "ok");
         call(&s, ADMIN, Request::Shutdown);
@@ -820,6 +825,7 @@ fn steady_reads_are_synced_within_the_lazy_bound() {
                     binding: Binding::root(a),
                     target: Target::Key("db".into()),
                     mode: Mode::Advisory,
+                    level: None,
                 };
                 call(&s, AGENT, read);
             }

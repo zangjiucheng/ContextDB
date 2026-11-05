@@ -89,6 +89,7 @@ fn read(s: &Service<SimDisk>, session: SessionId, key: &str, mode: Mode) -> Item
             binding: Binding::root(session),
             target: Target::Key(key.into()),
             mode,
+            level: None,
         },
     ) {
         Response::Read { item, .. } => item,

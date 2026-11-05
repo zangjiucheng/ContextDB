@@ -89,6 +89,7 @@ fn read(s: &Service<SimDisk>, session: SessionId, key: &str) -> Response {
             binding: Binding::root(session),
             target: Target::Key(key.into()),
             mode: Mode::Advisory,
+            level: None,
         },
     )
 }
@@ -180,6 +181,7 @@ fn checks_and_certificates_use_the_session_branch() {
             binding: Binding::root(on_b),
             target: Target::Key("a".into()),
             mode: Mode::Certified,
+            level: None,
         },
     );
     assert_eq!(code(&certified), "ok");
@@ -275,6 +277,7 @@ fn certified_read(s: &Service<SimDisk>, session: SessionId, key: &str) -> Item {
             binding: Binding::root(session),
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         },
     ) {
         Response::Read { item, .. } => item,

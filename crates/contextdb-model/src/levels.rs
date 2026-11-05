@@ -51,6 +51,21 @@ impl Level {
     }
 }
 
+impl crate::wire::Wire for Level {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o)
+    }
+    fn decode(i: &mut crate::wire::Decoder<'_>) -> Result<Self, crate::wire::WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Level::Header,
+            1 => Level::Abstract,
+            2 => Level::Outline,
+            3 => Level::Full,
+            _ => return Err(crate::wire::WireError::InvalidEncoding),
+        })
+    }
+}
+
 /// A rendering and whether anything was left out of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendered {
@@ -210,6 +225,7 @@ pub fn outline_of(body: &[u8]) -> Rendered {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::Wire;
 
     #[test]
     fn abstract_skips_front_matter_and_heading() {
@@ -265,5 +281,9 @@ mod tests {
         }
         assert_eq!(render(b"x", Level::Header).text, "");
         assert_eq!(render(b"x\n", Level::Full).text, "x\n");
+        for l in [Level::Header, Level::Abstract, Level::Outline, Level::Full] {
+            assert_eq!(Level::from_bytes(&l.canonical_bytes()), Ok(l));
+        }
+        assert!(Level::from_bytes(&[4]).is_err());
     }
 }

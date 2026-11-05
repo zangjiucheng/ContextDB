@@ -15,6 +15,9 @@ pub mod index_health;
 pub mod jobs;
 #[cfg(not(loom))]
 pub mod lease;
+/// Recall packing (P8, ADR 0016 §5).
+#[cfg(not(loom))]
+pub mod packing;
 /// Recall rank fusion (P8, ADR 0016 §3.2).
 pub mod ranking;
 #[cfg(not(loom))]

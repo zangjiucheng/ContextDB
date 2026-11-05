@@ -104,6 +104,7 @@ fn live_read(
             rev: RevisionId(rev),
         },
         mode: Mode::Advisory,
+        level: None,
     })? {
         Response::Read { item, payload } => Ok((payload, item)),
         other => Err(format!("unexpected {other:?}")),

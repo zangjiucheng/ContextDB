@@ -111,6 +111,7 @@ fn read(c: &mut Client, s: SessionId, key: &str) {
             binding: Binding::root(s),
             target: Target::Key(key.into()),
             mode: Mode::Certified,
+            level: None,
         },
     );
 }

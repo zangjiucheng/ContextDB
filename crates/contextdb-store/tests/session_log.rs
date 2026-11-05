@@ -91,6 +91,7 @@ fn read(n: u32) -> SessionEvent {
         layer: Layer::L2,
         epoch: Epoch(u64::from(n)),
         required: n.is_multiple_of(2),
+        level: levels::Level::Full,
     }
 }
 fn open(disk: &SimDisk, target: usize) -> (SessionLog<SimDisk>, Vec<SessionEvent>) {
@@ -231,6 +232,7 @@ fn p3_events_decode_as_the_root_agent() {
             layer: Layer::L2,
             epoch: Epoch(5),
             required: true,
+            level: levels::Level::Full,
         }
     );
     assert_eq!(e.canonical_bytes()[0], 15);
@@ -440,7 +442,10 @@ fn p7_handoff_events_need_format_3() {
     assert_eq!(events, vec![read(1), begin.clone(), accept]);
     let old =
         log::scan_with_formats::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, 1, 2).unwrap();
-    assert_eq!(old.newer_format, Some(3));
+    assert_eq!(
+        old.newer_format,
+        Some(contextdb_store::session::SESSION_FORMAT)
+    );
     // A handoff event framed in a format-2 segment is refused.
     let row = SessionRecord {
         event: begin,
@@ -453,4 +458,85 @@ fn p7_handoff_events_need_format_3() {
     };
     assert!(SessionRecord::decode(&row.encode(), 2).is_err());
     assert!(SessionRecord::decode(&row.encode(), 3).is_ok());
+}
+
+/// P8 (ADR 0016 §4.2): a read below `full` needs format 4; a full read keeps
+/// format 3's bytes; a format-3 tail rolls to a new segment before a
+/// leveled read, and a format-3 reader refuses the log.
+#[test]
+fn p8_leveled_reads_need_format_4() {
+    use contextdb_store::log::{self, GroupPos, Record};
+    use contextdb_store::session::SessionRecord;
+    let disk = SimDisk::new();
+    let dir = Path::new(DIR).join("sessions");
+    disk.create_dir_all(&dir).unwrap();
+    let row = |event: SessionEvent| SessionRecord {
+        event,
+        prev: log::GENESIS,
+        group: GroupPos {
+            seq: 1,
+            idx: 0,
+            count: 1,
+        },
+    };
+    let (frame, _) = log::frame_with(&log::SESSION_LOG, &row(read(1)).encode());
+    let mut bytes = log::segment_header_with(&log::SESSION_LOG, 1, log::GENESIS, 3);
+    bytes.extend(frame);
+    let first = dir.join(log::segment_name(Epoch(1)));
+    disk.write_new(&first, &bytes).unwrap();
+    disk.sync(&first).unwrap();
+    disk.sync_dir(&dir).unwrap();
+    let leveled = |level| match read(2) {
+        SessionEvent::Read {
+            session_id,
+            agent,
+            logical,
+            rev,
+            layer,
+            epoch,
+            required,
+            ..
+        } => SessionEvent::Read {
+            session_id,
+            agent,
+            logical,
+            rev,
+            layer,
+            epoch,
+            required,
+            level,
+        },
+        _ => unreachable!(),
+    };
+    let (mut opened, events) = open(&disk, usize::MAX);
+    assert_eq!(events, vec![read(1)]);
+    let new = [
+        leveled(levels::Level::Header),
+        leveled(levels::Level::Abstract),
+        leveled(levels::Level::Outline),
+        read(3),
+    ];
+    opened.append_group(&new).unwrap();
+    drop(opened);
+    assert_eq!(disk.read(&first).unwrap(), bytes, "format-3 segment kept");
+    let (_, events) = open(&disk, usize::MAX);
+    let mut want = vec![read(1)];
+    want.extend(new.iter().cloned());
+    assert_eq!(events, want);
+    let old =
+        log::scan_with_formats::<SessionRecord>(&log::SESSION_LOG, &disk, &dir, 1, 3).unwrap();
+    assert_eq!(old.newer_format, Some(4));
+    // A leveled read inside a format-3 segment is refused; a full one is
+    // the same bytes in both formats.
+    let enc = row(leveled(levels::Level::Outline)).encode();
+    assert!(SessionRecord::decode(&enc, 3).is_err());
+    assert!(SessionRecord::decode(&enc, 4).is_ok());
+    let full = row(read(5)).encode();
+    assert!(SessionRecord::decode(&full, 3).is_ok());
+    assert_eq!(full[0], 15, "full reads keep tag 15");
+    // Tag 22 never carries `full` (the level is the event's last byte).
+    let mut forged = leveled(levels::Level::Outline).canonical_bytes();
+    assert_eq!(forged[0], 22);
+    *forged.last_mut().unwrap() = 3;
+    assert!(SessionEvent::from_bytes(&forged).is_err());
 }

@@ -5,6 +5,7 @@
 #![allow(clippy::result_large_err)]
 use crate::{
     actor::{ActorHandle, Message, Snapshot, SubmitError},
+    packing,
     proto::*,
     ranking,
 };
@@ -126,6 +127,8 @@ struct LedgerEntry {
     rev: RevisionId,
     required: bool,
     epoch: Epoch,
+    /// The highest level of `rev` shown to this agent (ADR 0016 §4.2).
+    level: levels::Level,
 }
 /// The root agent is `None`; subagents are keyed by their harness agent id
 /// (ADR 0010 §7).
@@ -608,6 +611,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     rev,
                     epoch,
                     required,
+                    level,
                     ..
                 } => {
                     if epoch > tail {
@@ -622,6 +626,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                                 rev,
                                 required,
                                 epoch,
+                                level,
                             });
                     }
                 }
@@ -983,8 +988,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 binding,
                 target,
                 mode,
+                level,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.read(b, &target, mode, &snap),
+                Ok(b) => self.read(b, &target, mode, level, &snap),
                 Err(r) => r,
             },
             Request::Record {
@@ -1870,6 +1876,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             state,
             summary,
             handle,
+            body: None,
         }
     }
     /// Target → (logical, revision) without session context (no handles).
@@ -2018,6 +2025,22 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .filter_map(|l| decided.remove(&l).flatten())
             .take(limit)
             .collect();
+        // Packing (ADR 0016 §5.2). Without a level or a budget the
+        // response keeps the header-only shape.
+        let (mut omitted, mut estimate) = (0, None);
+        if opts.level.is_some() || opts.budget_tokens.is_some() {
+            let want = opts.level.unwrap_or(levels::Level::Outline);
+            let texts: Vec<packing::Texts> = (items.iter())
+                .map(|i| self.texts(snap, db, i, want))
+                .collect();
+            let (rendered, left_out) = packing::pack(&texts, want, opts.budget_tokens);
+            items.truncate(rendered.len());
+            for (item, r) in items.iter_mut().zip(rendered) {
+                item.body = Some(r);
+            }
+            omitted = left_out as u32;
+            estimate = opts.budget_tokens.map(|_| packing::ESTIMATE.to_string());
+        }
         let mut s = s.lock().expect("session");
         let required = mode == Mode::Certified;
         let mut events = Vec::new();
@@ -2027,6 +2050,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 rev: item.rev,
                 required,
                 epoch: snap.epoch,
+                level: item
+                    .body
+                    .as_ref()
+                    .map_or(levels::Level::Header, |b| b.level),
             };
             events.push(read_event(session, &agent, &entry));
             s.agent(&agent).record(entry);
@@ -2082,10 +2109,81 @@ impl<D: Durability + Clone + 'static> Service<D> {
             cert_id,
             index: self.index_health.report(snap.epoch),
             limit_clamped,
+            omitted,
+            estimate,
+        }
+    }
+    /// An item's renderings for packing: abstract and outline from the
+    /// recall projection when it holds this revision, else recomputed from
+    /// the payload; the full text only when `full` is wanted.
+    fn texts(
+        &self,
+        snap: &Arc<Snapshot<D>>,
+        db: &BranchView<'_>,
+        item: &Item,
+        want: levels::Level,
+    ) -> packing::Texts {
+        let payload = || match db
+            .revision_content(item.rev)
+            .map(|c| snap.log.read_blob(&c))
+        {
+            Ok(Payload::Available(bytes)) => bytes,
+            _ => Vec::new(),
+        };
+        let stored = (want < levels::Level::Full)
+            .then(|| {
+                (self.recall.lock().expect("recall"))
+                    .levels(item.logical, item.rev)
+                    .ok()
+                    .flatten()
+            })
+            .flatten();
+        let empty = levels::Rendered {
+            text: String::new(),
+            cut: false,
+        };
+        match stored {
+            Some(l) => packing::Texts {
+                key: item.key.clone(),
+                abstract_: l.abstract_,
+                outline: l.outline,
+                full: empty,
+            },
+            None => {
+                let body = payload();
+                packing::Texts {
+                    key: item.key.clone(),
+                    abstract_: levels::abstract_of(&body),
+                    outline: levels::outline_of(&body),
+                    full: if want == levels::Level::Full {
+                        levels::render(&body, levels::Level::Full)
+                    } else {
+                        empty
+                    },
+                }
+            }
         }
     }
     /// The recall projection's stored renderings of `rev` (T87: equal to
     /// recomputing them from the payload).
+    /// The level a session's root agent holds for `logical` in its ledger
+    /// (T88), and the revision.
+    #[doc(hidden)]
+    pub fn ledger_level(
+        &self,
+        session: SessionId,
+        logical: LogicalId,
+    ) -> Option<(RevisionId, levels::Level)> {
+        let s = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .get(&session)?
+            .clone();
+        let mut s = s.lock().expect("session");
+        let e = s.agent(&None).required.get(&logical)?;
+        Some((e.rev, e.level))
+    }
     #[doc(hidden)]
     pub fn recall_levels(
         &self,
@@ -2120,8 +2218,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
         (session, s, agent, _): Bound,
         target: &Target,
         mode: Mode,
+        level: Option<levels::Level>,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
+        let level = level.unwrap_or(levels::Level::Full);
         let db = &snap.view(s.lock().expect("session").branch);
         let resolved = match target {
             Target::Handle(h) => {
@@ -2149,6 +2249,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             rev: r,
             required,
             epoch: snap.epoch,
+            level,
         };
         {
             let mut s = s.lock().expect("session");
@@ -2192,7 +2293,28 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Payload::Available(bytes) => Some(bytes),
             Payload::Unavailable(_) => None,
         };
-        Response::Read { item, payload }
+        if level == levels::Level::Full {
+            return Response::Read { item, payload };
+        }
+        // Below `full`: recomputed from the payload, so a stale projection
+        // never serves a wrong rendering (ADR 0016 §4.1).
+        let mut item = item;
+        item.body = payload.map(|bytes| {
+            let r = levels::render(&bytes, level);
+            Rendering {
+                level,
+                cut: if level == levels::Level::Header {
+                    !bytes.is_empty()
+                } else {
+                    r.cut
+                },
+                text: r.text,
+            }
+        });
+        Response::Read {
+            item,
+            payload: None,
+        }
     }
     /// Deps: handles of this session's certificates (required entries) or
     /// explicit `logical@rev` (ADR 0008 §6.1, T36).
@@ -3107,12 +3229,16 @@ impl AgentState {
         if !e.required {
             return;
         }
-        if let Some(old) = self.required.get(&e.logical)
-            && old.rev != e.rev
-        {
-            self.superseded.push((e.logical, old.rev, e.rev));
-            // A re-read restarts what this agent was told about the logical.
-            self.reported.remove(&e.logical);
+        let mut e = e;
+        if let Some(old) = self.required.get(&e.logical) {
+            if old.rev != e.rev {
+                self.superseded.push((e.logical, old.rev, e.rev));
+                // A re-read restarts what this agent was told about the logical.
+                self.reported.remove(&e.logical);
+            } else {
+                // A re-read of the same revision never lowers its level.
+                e.level = e.level.max(old.level);
+            }
         }
         self.required.insert(e.logical, e);
     }
@@ -3318,6 +3444,7 @@ fn read_event(session: SessionId, agent: &Agent, e: &LedgerEntry) -> SessionEven
         layer: Layer::L2,
         epoch: e.epoch,
         required: e.required,
+        level: e.level,
     }
 }
 /// The session-log writer: one FIFO queue, one synced group per drain, so at

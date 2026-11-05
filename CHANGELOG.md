@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **P8 milestone 3: read levels and packing** (ADR 0016 §4–§5). Session log format 4.
+  - `ctx_recall{level?, budget_tokens?}` renders items as `header`, `abstract`, `outline` or `full`.
+    - With a budget, items are packed greedily in rank order with a `bytes/4` token estimate (`estimate: "bytes/4 v1"`). Each item gets the highest level that fits.
+    - Packing stops when an item's header no longer fits. The rest are counted in `omitted` and get no handle, certificate or ledger entry.
+    - Labels and order are the same as without a budget (T55).
+    - Without `level` and `budget_tokens`, responses keep the header-only shape.
+  - `ctx_read{level?}` (default `full`) returns a rendering recomputed from the payload; below `full` there is no `body`. Every rendered item says its `level` and whether it was `cut`.
+  - Every expansion is a read event with its level. The ledger keeps the highest level read of a revision, and it survives a restart (T88).
+  - **Session log format 4.** A full read is encoded as before; a read below `full` needs format 4. A format-3 tail rolls to a new segment. **Downgrading needs the session log removed.**
+
 - **P8 milestone 2: ranking** (ADR 0016 §3).
   - **Fix: a certified recall can no longer come back empty because uncertified matches filled the page.** Recall used to cut to `limit` first and sort uncertified items into `withheld` afterwards. Eligibility (current head, scope, certification) is now decided inside each ranker before any cut. Withheld entries are capped at `limit` and never take an item slot. A page holds fewer than `limit` items only when every ranker ran out (T54).
   - The text ranker pages through bm25 hits (the AND query, then the OR query) until it holds `limit` eligible candidates.

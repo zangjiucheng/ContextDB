@@ -319,7 +319,11 @@ the stored copy equals the recomputed one.
   Abstract | Outline | Full` is the highest level read of that revision in
   the session; a re-read merges by max and never lowers it. This is session
   log format 4; format-3 segments read as `Full` for reads and `Header` for
-  recall entries.
+  recall entries. *(Implementation note, milestone 3: a format-3 read event
+  does not say whether a recall or a read produced it, so every format-3
+  read event decodes as `Full`. A `Full` read keeps format 3's encoding,
+  tag 15; only levels below `full` use the new tag 22, which a format-3
+  segment refuses. The level is informational: no check depends on it.)*
 - **Certification is per revision, not per level.** A certified abstract
   read of a CERTIFIED head is a certified read of that revision (SPEC §6.3).
   A level is a rendering of an immutable revision: if the revision is current
