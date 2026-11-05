@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`ctx ui` redesign.**
+  - A new **Records** tab is the default. It lists every head grouped by key path, with its status, kind, stored abstract (read-only from `recall.sqlite`), changed Summary premises, and the latest head moves. Search covers keys and abstracts.
+  - **Graph** can show only the records within 1–3 hops of the selection, and nodes show the full last key segment.
+  - The header shows only the statuses that occur ("all heads certified" instead of a row of zeros), the number of superseded revisions, and a filter for Summaries with changed premises.
+  - The detail panel shows the body as abstract, outline or full.
 - **P8 milestone 5a: P7 follow-ups m4, m6, m7** (ADR 0016 §7.1, §7.3).
   - **Fix (m7): one open Conflict per pair.** Opening a pair that already has an open two-sided Conflict returns it (`already_open: true` in MCP, `already open` in `ctx conflicts open`), whatever the reason or evidence. Concurrent opens give one Conflict. A one-sided Conflict on a side does not block the pair (T93).
   - **Fix (m4):** a pair review's commit expects both sides as heads, so a side that moves during the validator call supersedes the pair instead of reviewing an old revision. A pair no validator takes is postponed without a claim, so it never counts an attempt (T93).

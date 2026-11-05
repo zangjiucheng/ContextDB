@@ -1,18 +1,19 @@
-// ctx ui front end: a layered view of the justification DAG (premises above
-// their conclusions), coloured by derived state, refreshed when the op_log
-// changes. Read-only: every request is a GET.
+// ctx ui front end. Records: every head grouped by key path, with its
+// status and abstract. Graph: the justification DAG (premises above their
+// conclusions), whole or around the selection. Timeline: the commits.
+// Refreshed when the op_log changes. Read-only: every request is a GET.
 "use strict";
 
 const SVGNS = "http://www.w3.org/2000/svg";
-const NODE_W = 196, NODE_H = 46, GAP_X = 36, GAP_Y = 78;
+const NODE_W = 236, NODE_H = 60, GAP_X = 32, GAP_Y = 74;
 const CLASSES = ["certified", "stale", "pending", "conflicted", "unavailable"];
 const KINDS = ["pin", "cur", "sem", "ref"];
 
 const state = {
   graph: null, timeline: null, fingerprint: null,
   selected: null, allRevs: false, search: "", hidden: new Set(),
-  view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "graph", laidOut: false,
-  branch: 0,
+  view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "records", laidOut: false,
+  branch: 0, focus: 0, collapsed: new Set(), changedSummaries: false, level: "abstract",
 };
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, parent) => {
@@ -82,7 +83,25 @@ function build(g) {
       for (let i = 1; i < ids.length; i++) edges.push({ from: `r${ids[i - 1]}`, to: `r${ids[i]}`, kind: "chain" });
     }
   }
-  return { nodes, edges };
+  return focusOn({ nodes, edges }, nodeOf);
+}
+/// With a focus of N hops and a selection: only the nodes within N edges of
+/// the selected one, either direction, and the edges between them.
+function focusOn(model, nodeOf) {
+  if (!state.focus || state.selected === null) return model;
+  const start = nodeOf(state.selected);
+  if (!model.nodes.has(start)) return model;
+  const near = new Map([...model.nodes.keys()].map((id) => [id, []]));
+  for (const e of model.edges) { near.get(e.from)?.push(e.to); near.get(e.to)?.push(e.from); }
+  const keep = new Set([start]);
+  let frontier = [start];
+  for (let hop = 0; hop < state.focus; hop++) {
+    const next = [];
+    for (const id of frontier) for (const n of near.get(id) || []) if (!keep.has(n)) { keep.add(n); next.push(n); }
+    frontier = next;
+  }
+  const nodes = new Map([...model.nodes].filter(([id]) => keep.has(id)));
+  return { nodes, edges: model.edges.filter((e) => keep.has(e.from) && keep.has(e.to)) };
 }
 
 /// Longest-path layering (back edges ignored), then barycenter sweeps to
@@ -135,6 +154,16 @@ function layout(model) {
   return xy;
 }
 const keyOf = (model, id) => model.nodes.get(id)?.logical?.key || "";
+/// `a/b/c` → [`a/b/`, `c`]; a key without `/` has no path.
+const splitKey = (k) => { const i = k.lastIndexOf("/"); return i < 0 ? ["", k] : [k.slice(0, i + 1), k.slice(i + 1)]; };
+/// Cuts to `n` characters, keeping the end (`tail`) or the start.
+const clip = (s, n, tail) => (s.length <= n ? s : tail ? "…" + s.slice(-(n - 1)) : s.slice(0, n - 1) + "…");
+/// A Summary's changed premises (ADR 0016 §6).
+const premiseNote = (r, short) => {
+  const p = r.premises;
+  if (!p || !p.moved) return "";
+  return short ? ` · ${p.moved}/${p.total} changed` : `summary; ${p.moved} of ${p.total} premises changed`;
+};
 /// A code anchor shows its path (and symbol), not `code:<repo id>/…`.
 const label = (l) => l.anchor ?? l.key;
 const kindLabel = (l) => (l.kind === "CodeAnchor" ? (l.anchor?.includes("#") ? "symbol anchor" : "file anchor") : l.kind);
@@ -185,12 +214,14 @@ function render() {
       width: NODE_W, height: NODE_H, rx: 7,
       fill: `var(--${n.rev.class}-bg)`, stroke: `var(--${n.rev.class})`,
     }, grp);
-    const name = label(n.logical);
-    const key = name.length > 28 ? "…" + name.slice(-27) : name;
-    el("text", { x: 10, y: 19 }, grp).textContent = key;
-    el("text", { x: 10, y: 36, class: "sub" }, grp).textContent =
-      `${kindLabel(n.logical)} · r${n.rev.id}${n.rev.head ? "" : " (old)"} · ${n.rev.summary.split("(")[0]}${n.rev.branch_only ? " · branch" : ""}`;
-    el("title", {}, grp).textContent = `${n.logical.key}\nr${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}`;
+    // Path above, the last segment below: the part that tells records apart
+    // is never the one cut.
+    const [dir, leaf] = splitKey(label(n.logical));
+    el("text", { x: 10, y: 16, class: "sub" }, grp).textContent = clip(dir, 38, true);
+    el("text", { x: 10, y: 33 }, grp).textContent = clip(leaf, 34, false);
+    el("text", { x: 10, y: 50, class: "sub" }, grp).textContent =
+      `${kindLabel(n.logical)} · r${n.rev.id}${n.rev.head ? "" : " (old)"} · ${n.rev.summary.split("(")[0]}${n.rev.branch_only ? " · branch" : ""}${premiseNote(n.rev, true)}`;
+    el("title", {}, grp).textContent = `${n.logical.key}\nr${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}${n.rev.abstract ? `\n\n${n.rev.abstract}` : ""}`;
     grp.addEventListener("click", (ev) => { ev.stopPropagation(); select(n.rev.id); });
     grp.addEventListener("mouseenter", () => hover(model, id, true));
     grp.addEventListener("mouseleave", () => hover(model, id, false));
@@ -211,8 +242,11 @@ function fit(xy) {
   const svg = $("graph").getBoundingClientRect();
   const xs = [...xy.values()];
   const w = Math.max(...xs.map((p) => p.x)) + NODE_W, h = Math.max(...xs.map((p) => p.y)) + NODE_H;
-  const k = Math.min(1.2, Math.max(0.2, Math.min((svg.width - 60) / w, (svg.height - 60) / h)));
-  state.view = { k, x: (svg.width - w * k) / 2, y: 30 };
+  // A focused view stays readable (pan for the rest); the whole graph may
+  // shrink further.
+  const floor = state.focus && state.selected !== null ? 0.6 : 0.2;
+  const k = Math.min(1.2, Math.max(floor, Math.min((svg.width - 60) / w, (svg.height - 110) / h)));
+  state.view = { k, x: Math.max(20, (svg.width - w * k) / 2), y: 70 };
   applyView();
 }
 function applyView() {
@@ -223,9 +257,11 @@ function applyView() {
 // ---- detail panel ------------------------------------------------------
 
 async function select(rev) {
+  const moved = state.selected !== rev;
   state.selected = rev;
   state.highlight = null;
-  render();
+  if (state.tab === "graph" && state.focus && moved) state.laidOut = false;
+  renderView();
   const g = state.graph;
   const r = g.revisions.find((x) => x.id === rev);
   const l = g.logicals.find((x) => x.id === r.logical);
@@ -245,7 +281,13 @@ async function select(rev) {
   row("base", r.base ? "yes" : "no");
   row("layers", `L0 ${r.l0 ? "✓" : "✗"} · L1 ${r.l1 ? "✓" : "✗"} · L2 ${r.l2 ? "✓" : "✗"}`);
   row("support", String(r.support));
+  if (r.premises) row("premises", r.premises.moved ? premiseNote(r, false) : `${r.premises.total} Sem premises, none changed`);
   box.append(kv);
+  const actions = html("div", "list");
+  const around = html("span", "link", "show in graph");
+  around.addEventListener("click", () => { state.focus ||= 2; $("focus").value = String(state.focus); state.laidOut = false; setTab("graph"); });
+  actions.append(around);
+  box.append(actions);
   const conflicts = (g.conflicts || []).filter((c) => c.target === rev);
   if (conflicts.length) {
     box.append(html("h3", "", "Conflicts"));
@@ -272,8 +314,32 @@ async function select(rev) {
     if (d.anchor.normaliser) arow("normaliser", d.anchor.normaliser);
     arow(d.anchor.oid ? "blob" : "hash", d.anchor.oid ?? d.anchor.hash);
     box.append(html("h3", "", "Observed code"), a);
+  } else if (d.body === undefined) {
+    box.append(html("h3", "", "Body"), html("pre", "muted", `(${d.body_error || "unavailable"})`));
   } else {
-    box.append(html("h3", "", "Body"), html("pre", d.body === undefined ? "muted" : "", d.body ?? `(${d.body_error || "unavailable"})`));
+    // ADR 0016 §4: abstract and outline are the pure renderings ctx_read
+    // serves; each says whether it left something out.
+    const head = html("h3", "levels");
+    head.append(document.createTextNode("Body "));
+    const pre = html("pre");
+    const show = (lv) => {
+      state.level = lv;
+      const r = lv === "full" ? { text: d.body, cut: false } : d.levels[lv];
+      pre.textContent = r.text || "(empty)";
+      for (const b of head.querySelectorAll("button")) b.classList.toggle("active", b.dataset.level === lv);
+      cut.hidden = !r.cut;
+    };
+    for (const lv of ["abstract", "outline", "full"]) {
+      const b = html("button", "seg", lv);
+      b.type = "button";
+      b.dataset.level = lv;
+      b.addEventListener("click", () => show(lv));
+      head.append(b);
+    }
+    const cut = html("div", "muted", "cut: the full body has more");
+    box.append(head, pre, cut);
+    show(d.levels ? state.level : "full");
+    if (!d.levels) for (const b of head.querySelectorAll("button")) b.hidden = b.dataset.level !== "full";
   }
   const own = g.rules.filter((x) => x.conclusion === rev);
   box.append(html("h3", "", `Depends on (${own.length} rule${own.length === 1 ? "" : "s"})`));
@@ -374,7 +440,134 @@ function highlightRevs(revs) {
     set.add(state.allRevs ? `r${rev}` : `l${r.logical}`);
   }
   state.highlight = set;
-  render();
+  // A highlight is shown on the whole graph.
+  state.focus = 0;
+  $("focus").value = "0";
+  state.laidOut = false;
+  if (state.tab !== "graph") setTab("graph"); else render();
+}
+
+// ---- records -----------------------------------------------------------
+
+const SEVERITY = { conflicted: 0, stale: 1, pending: 2, unavailable: 3, certified: 4 };
+/// The heads shown under the current search and filters.
+function shownHeads() {
+  const g = state.graph;
+  const q = state.search.trim().toLowerCase();
+  const logicals = new Map(g.logicals.map((l) => [l.id, l]));
+  return g.revisions
+    .filter((r) => r.head && !state.hidden.has(r.class))
+    .filter((r) => !state.changedSummaries || (r.premises && r.premises.moved))
+    .map((r) => ({ r, l: logicals.get(r.logical) }))
+    .filter(({ r, l }) => !q || l.key.toLowerCase().includes(q) || (r.abstract || "").toLowerCase().includes(q));
+}
+/// A tree of key path segments; chains of single-child groups are merged
+/// so `quant-engine/research/` is one level, not two.
+function pathTree(items) {
+  const root = { name: "", path: "", groups: new Map(), leaves: [] };
+  for (const it of items) {
+    const parts = label(it.l).split("/");
+    let node = root;
+    for (const seg of parts.slice(0, -1)) {
+      if (!node.groups.has(seg)) node.groups.set(seg, { name: seg, path: `${node.path}${seg}/`, groups: new Map(), leaves: [] });
+      node = node.groups.get(seg);
+    }
+    node.leaves.push({ ...it, leaf: parts[parts.length - 1] });
+  }
+  const merge = (n) => {
+    for (const [k, c] of [...n.groups]) {
+      let m = c;
+      while (!m.leaves.length && m.groups.size === 1) {
+        const [only] = m.groups.values();
+        m = { ...only, name: `${m.name}/${only.name}` };
+      }
+      merge(m);
+      n.groups.set(k, m);
+    }
+    return n;
+  };
+  return merge(root);
+}
+function countTree(n) {
+  const c = { total: n.leaves.length, bad: 0 };
+  for (const x of n.leaves) if (x.r.class !== "certified") c.bad++;
+  for (const g of n.groups.values()) { const s = countTree(g); c.total += s.total; c.bad += s.bad; }
+  return c;
+}
+function renderRecords() {
+  const g = state.graph;
+  const box = $("records");
+  box.replaceChildren();
+  if (!g) return;
+  renderRecent();
+  const items = shownHeads();
+  if (!items.length) {
+    box.append(html("div", "muted pad", g.logicals.length ? "Nothing matches the search and filters." : "No records yet. Agents add them with ctx_record."));
+    return;
+  }
+  const tree = pathTree(items);
+  const searching = state.search.trim() !== "";
+  const walk = (n, depth, parent) => {
+    const groups = [...n.groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+    for (const grp of groups) {
+      const c = countTree(grp);
+      const open = searching || !state.collapsed.has(grp.path);
+      const head = html("div", "group");
+      head.style.paddingLeft = `${8 + depth * 16}px`;
+      head.append(html("span", "caret", open ? "▾" : "▸"), html("span", "gname", `${grp.name}/`),
+        html("span", "muted", ` ${c.total}`));
+      if (c.bad) head.append(html("span", "badge stale small", `${c.bad} not certified`));
+      head.addEventListener("click", () => { open ? state.collapsed.add(grp.path) : state.collapsed.delete(grp.path); renderRecords(); });
+      parent.append(head);
+      if (open) walk(grp, depth + 1, parent);
+    }
+    const leaves = [...n.leaves].sort((a, b) => SEVERITY[a.r.class] - SEVERITY[b.r.class] || a.leaf.localeCompare(b.leaf));
+    for (const it of leaves) parent.append(recordRow(it, depth));
+  };
+  walk(tree, 0, box);
+}
+function recordRow({ r, l, leaf }, depth) {
+  const row = html("div", `rec${state.selected === r.id ? " selected" : ""}`);
+  row.style.paddingLeft = `${8 + depth * 16}px`;
+  const top = html("div", "rec-top");
+  const dot = html("span", "dot");
+  dot.style.background = `var(--${r.class})`;
+  top.append(dot, html("span", "rec-key", leaf), html("span", "tag", kindLabel(l)), html("span", "muted", `r${r.id}`));
+  if (r.class !== "certified") top.append(html("span", `badge ${r.class} small`, r.summary));
+  const note = premiseNote(r, false);
+  if (note) top.append(html("span", "badge pending small", note));
+  if (r.branch_only) top.append(html("span", "tag", "branch only"));
+  row.append(top);
+  if (r.abstract) row.append(html("div", "rec-abstract", r.abstract));
+  row.title = l.key;
+  row.addEventListener("click", () => select(r.id));
+  return row;
+}
+/// The latest head moves on this branch, newest first.
+function renderRecent() {
+  const box = $("recent");
+  box.replaceChildren();
+  const t = state.timeline, g = state.graph;
+  if (!t || !g) return;
+  const logicals = new Map(g.logicals.map((l) => [l.id, l]));
+  const moves = [];
+  for (const c of t.commits) {
+    if (c.branch !== state.branch) continue;
+    for (const m of c.head_moves) moves.push({ ...m, epoch: c.epoch });
+    if (moves.length >= 8) break;
+  }
+  if (!moves.length) return;
+  box.append(html("h3", "", "Recently changed"));
+  const list = html("div", "recent-list");
+  for (const m of moves.slice(0, 8)) {
+    const l = logicals.get(m.logical);
+    const item = html("div", "recent-item");
+    item.append(html("span", "muted", `epoch ${m.epoch}`), revLink(m.to, ""),
+      html("span", "muted", m.from === null ? "created" : `from r${m.from}`));
+    if (!l) continue;
+    list.append(item);
+  }
+  box.append(list);
 }
 
 // ---- timeline ----------------------------------------------------------
@@ -401,7 +594,7 @@ function renderTimeline() {
     }
     if (c.status_diff.length) {
       const s = html("span", "link", "show changed nodes");
-      s.addEventListener("click", () => { setTab("graph"); highlightRevs(c.status_diff); });
+      s.addEventListener("click", () => highlightRevs(c.status_diff));
       card.append(s);
     }
     box.append(card);
@@ -425,16 +618,31 @@ function renderChrome() {
     sel.append(o);
   }
   sel.hidden = g.branches.length < 2;
+  // Status of the heads: the classes present are filters; when every head
+  // is certified that is said once rather than as a row of zeros.
   const chips = $("chips");
   chips.replaceChildren();
+  const heads = g.revisions.filter((r) => r.head).length;
+  const chip = (cls, text, on, toggle) => {
+    const c = html("button", `chip${on ? "" : " off"}`);
+    c.type = "button";
+    if (cls) { const dot = html("span", "dot"); dot.style.background = `var(--${cls})`; c.append(dot); }
+    c.append(document.createTextNode(text));
+    c.addEventListener("click", toggle);
+    chips.append(c);
+  };
+  const flip = (c) => () => { state.hidden.has(c) ? state.hidden.delete(c) : state.hidden.add(c); renderChrome(); renderView(); };
   for (const c of CLASSES) {
-    const chip = html("button", `chip${state.hidden.has(c) ? " off" : ""}`);
-    chip.type = "button";
-    const dot = html("span", "dot");
-    dot.style.background = `var(--${c})`;
-    chip.append(dot, document.createTextNode(`${c} ${counts[c]}`));
-    chip.addEventListener("click", () => { state.hidden.has(c) ? state.hidden.delete(c) : state.hidden.add(c); renderChrome(); render(); });
-    chips.append(chip);
+    if (!counts[c] && !state.hidden.has(c)) continue;
+    chip(c, `${c} ${counts[c]}`, !state.hidden.has(c), flip(c));
+  }
+  if (heads && counts.certified === heads) chips.append(html("span", "ok", "all heads certified"));
+  const superseded = g.revisions.length - heads;
+  if (superseded) chips.append(html("span", "muted", `${superseded} superseded revision${superseded === 1 ? "" : "s"}`));
+  const changed = g.revisions.filter((r) => r.head && r.premises && r.premises.moved).length;
+  if (changed || state.changedSummaries) {
+    chip("pending", `summaries with changed premises ${changed}`, state.changedSummaries,
+      () => { state.changedSummaries = !state.changedSummaries; renderChrome(); renderView(); });
   }
   const legend = $("legend");
   legend.replaceChildren();
@@ -452,11 +660,17 @@ function renderChrome() {
 }
 function setTab(tab) {
   state.tab = tab;
-  $("tab-graph").classList.toggle("active", tab === "graph");
-  $("tab-timeline").classList.toggle("active", tab === "timeline");
+  for (const t of ["records", "graph", "timeline"]) $(`tab-${t}`).classList.toggle("active", tab === t);
+  $("records-view").hidden = tab !== "records";
   $("graph-view").hidden = tab !== "graph";
   $("timeline-pane").hidden = tab !== "timeline";
-  if (tab === "timeline") renderTimeline();
+  renderView();
+}
+/// Renders the active tab.
+function renderView() {
+  if (state.tab === "records") renderRecords();
+  else if (state.tab === "graph") render();
+  else renderTimeline();
 }
 
 async function refresh(force) {
@@ -469,8 +683,7 @@ async function refresh(force) {
     state.timeline = timeline;
     showError(null);
     renderChrome();
-    render();
-    if (state.tab === "timeline") renderTimeline();
+    renderView();
     if (state.selected !== null && graph.revisions.some((r) => r.id === state.selected)) select(state.selected);
   } catch (e) {
     showError(e);
@@ -499,10 +712,13 @@ function wire() {
     applyView();
   }, { passive: false });
   svg.addEventListener("click", () => { if (state.highlight) { state.highlight = null; render(); } });
-  $("search").addEventListener("input", (e) => { state.search = e.target.value; render(); });
+  $("search").addEventListener("input", (e) => { state.search = e.target.value; renderView(); });
   $("all-revs").addEventListener("change", (e) => { state.allRevs = e.target.checked; state.laidOut = false; state.highlight = null; render(); });
-  $("close").addEventListener("click", () => { $("panel").hidden = true; state.selected = null; render(); });
+  $("close").addEventListener("click", () => { $("panel").hidden = true; state.selected = null; renderView(); });
+  $("tab-records").addEventListener("click", () => setTab("records"));
   $("tab-graph").addEventListener("click", () => setTab("graph"));
+  $("focus").addEventListener("change", (e) => { state.focus = Number(e.target.value); state.laidOut = false; render(); });
+  $("fit").addEventListener("click", () => { state.laidOut = false; render(); });
   $("tab-timeline").addEventListener("click", () => setTab("timeline"));
   $("timeline-here").addEventListener("change", renderTimeline);
   $("branch").addEventListener("change", (e) => {
@@ -512,7 +728,7 @@ function wire() {
     refresh(true);
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { state.highlight = null; $("panel").hidden = true; state.selected = null; render(); }
+    if (e.key === "Escape") { state.highlight = null; $("panel").hidden = true; state.selected = null; renderView(); }
   });
 }
 

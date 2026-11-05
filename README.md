@@ -78,7 +78,12 @@ flowchart LR
 | `contextdb-cli` | `ctx`: operations, checks, anchors, gating, setup and hook installation |
 | `contextdb-testkit` / `-harness` / `-workload` / `-bench` | Goldens, property tests, replay, workload generation and benchmarks |
 
-Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph) and `fuzz/`. `ctx ui` serves a local, read-only context graph viewer: one branch at a time (selector when there are several), `ref` edges, open Conflict artifacts, code anchors by path and symbol with their decoded descriptors, structured WHY / WHY-NOT, and the live status from `ctxd` next to the replayed one.
+Separate workspaces: `crates/contextdb-dd` (research baseline, outside the product dependency graph) and `fuzz/`. `ctx ui` serves a local, read-only viewer with three tabs:
+- **Records** (the default) lists every head grouped by key path, with its status, kind and stored abstract, any changed Summary premises, and the latest head moves. Search covers keys and abstracts.
+- **Graph** shows the justification DAG, whole or 1–3 hops around the selected record, with `ref` edges and open Conflict artifacts.
+- **Timeline** lists the commits.
+
+It shows one branch at a time, with a selector when there are several. The header shows only the statuses that occur and says so when every head is certified. The detail panel shows the body as abstract, outline or full, code anchors by path and symbol with their decoded descriptors, structured WHY / WHY-NOT, and the live status from `ctxd` next to the replayed one.
 
 ![ctx ui: this repository's own dogfood context graph, with one plan selected](docs/images/ctx-ui-detail.png)
 

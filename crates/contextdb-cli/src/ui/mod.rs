@@ -125,6 +125,29 @@ fn descriptor(bytes: &[u8]) -> Option<Value> {
         },
     )
 }
+/// Adds each revision's stored abstract from `recall.sqlite`, read-only
+/// (ADR 0016 §4.1). A projection `ctxd` has not filled yet, or one from
+/// another version, adds nothing; the panel still reads the body live.
+fn with_abstracts(dir: &Path, g: &mut Value) {
+    let Ok(map) = contextdb_store::recall::read_abstracts(&dir.join("recall.sqlite")) else {
+        return;
+    };
+    if map.is_empty() {
+        return;
+    }
+    if let Some(revs) = g["revisions"].as_array_mut() {
+        for r in revs {
+            let key = (
+                LogicalId(r["logical"].as_u64().unwrap_or_default() as u32),
+                RevisionId(r["id"].as_u64().unwrap_or_default() as u32),
+            );
+            if let Some(a) = map.get(&key) {
+                r["abstract"] = json!(a.text);
+                r["abstract_cut"] = json!(a.cut);
+            }
+        }
+    }
+}
 fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\
@@ -238,7 +261,13 @@ fn handle(state: &State, mut stream: TcpStream) {
         ),
         "/api/graph" => json_response(
             &mut stream,
-            state.snapshot().and_then(|s| s.graph(branch_param(target))),
+            state
+                .snapshot()
+                .and_then(|s| s.graph(branch_param(target)))
+                .map(|mut g| {
+                    with_abstracts(&state.dir, &mut g);
+                    g
+                }),
         ),
         "/api/timeline" => {
             let limit = param(target, "limit")
@@ -265,7 +294,19 @@ fn handle(state: &State, mut stream: TcpStream) {
                                 Some(p) if item.kind == RecordKind::CodeAnchor => {
                                     v["anchor"] = descriptor(&p).unwrap_or(Value::Null);
                                 }
-                                Some(p) => v["body"] = json!(String::from_utf8_lossy(&p)),
+                                Some(p) => {
+                                    v["body"] = json!(String::from_utf8_lossy(&p));
+                                    // ADR 0016 §4.1: the same pure renderings
+                                    // ctx_read serves.
+                                    let level = |l| {
+                                        let r = contextdb_model::levels::render(&p, l);
+                                        json!({ "text": r.text, "cut": r.cut })
+                                    };
+                                    v["levels"] = json!({
+                                        "abstract": level(contextdb_model::levels::Level::Abstract),
+                                        "outline": level(contextdb_model::levels::Level::Outline),
+                                    });
+                                }
                                 None => v["body_error"] = json!("payload unavailable"),
                             }
                         }

@@ -236,9 +236,14 @@ impl Snapshot {
                         "references": references.iter().map(|x| x.0).collect::<Vec<_>>(),
                     }));
                 }
+                let premises = (v.logical_info(l).map(|(_, k, _)| k) == Some(RecordKind::Summary))
+                    .then(|| premise_count(&v, r))
+                    .flatten()
+                    .map(|(moved, total)| json!({ "moved": moved, "total": total }));
                 Some(json!({
                     "id": r.0, "logical": l.0,
                     "head": v.head(l) == Some(r),
+                    "premises": premises,
                     "base": v.is_base(r).unwrap_or(false),
                     "summary": label, "class": class,
                     "l0": node.l0, "l1": node.l1, "l2": node.l2,
@@ -335,6 +340,30 @@ impl Snapshot {
         json!({ "epoch": self.epoch.0, "commits": items })
     }
 }
+/// A Summary revision's pending count (ADR 0016 §6), as `ctxd` reports it:
+/// of its witness rule's Sem premises (the first enabled rule concluding
+/// `r` with one, in rule-id order), how many differ from the nearest
+/// Verified vector, or from the asserted vector when none is Verified.
+fn premise_count(v: &BranchView<'_>, r: RevisionId) -> Option<(usize, usize)> {
+    let mut rules = v.rules_concluding(r);
+    rules.sort_by_key(|(j, ..)| *j);
+    let (j, ..) = rules.into_iter().find(|(_, enabled, premises, _)| {
+        *enabled && premises.iter().any(|p| p.kind == EdgeKind::Sem)
+    })?;
+    let sem = v.rule_semantic(j)?;
+    let mut bases: Vec<HeadVector> = (v.rule_validations(j).into_iter())
+        .filter(|(_, rec)| rec.verdict == Verdict::Verified)
+        .map(|(vec, _)| vec)
+        .collect();
+    if bases.is_empty() {
+        bases.push(sem.asserted.clone());
+    }
+    let moved = |base: &HeadVector| (sem.current.iter()).filter(|x| !base.contains(x)).count();
+    Some((
+        bases.iter().map(moved).min().unwrap_or(0),
+        sem.current.len(),
+    ))
+}
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -415,6 +444,71 @@ mod tests {
         let t = snap.timeline(10);
         assert_eq!(t["commits"][0]["epoch"], 3);
         assert_eq!(t["commits"][2]["ops"], json!(["CreateLogical"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A Summary head carries its changed-premise count (ADR 0016 §6);
+    /// other kinds carry none.
+    #[test]
+    fn summaries_carry_their_changed_premise_count() {
+        let dir = std::env::temp_dir().join(format!("ctx-ui-summary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let (mut store, _) =
+                Store::open(StdDisk::default(), &dir, &OpenOptions::default()).unwrap();
+            let f1 = store.put_blob(b"fact v1").unwrap();
+            let f2 = store.put_blob(b"fact v2").unwrap();
+            let sum = store.put_blob(b"digest").unwrap();
+            store
+                .commit(&Batch::new(vec![
+                    Op::CreateLogical {
+                        key: "f".into(),
+                        kind: RecordKind::Fact,
+                        scope_lane: "repo".into(),
+                        content: f1,
+                        adopt_as_base: true,
+                    },
+                    Op::CreateLogical {
+                        key: "s".into(),
+                        kind: RecordKind::Summary,
+                        scope_lane: "repo".into(),
+                        content: sum,
+                        adopt_as_base: false,
+                    },
+                    Op::AddRule {
+                        conclusion: RevRef::New(1),
+                        incidences: vec![(RevRef::New(0), EdgeKind::Sem)],
+                        enabled: true,
+                    },
+                ]))
+                .unwrap();
+            store
+                .commit(&Batch::new(vec![
+                    Op::AddRevision {
+                        logical: LogicalId(0).into(),
+                        content: f2,
+                        adopt_as_base: true,
+                    },
+                    Op::SetHead {
+                        logical: LogicalId(0).into(),
+                        expected: RevisionId(0).into(),
+                        new: RevRef::New(0),
+                    },
+                ]))
+                .unwrap();
+        }
+        let g = load(&dir).unwrap().graph(MAIN).unwrap();
+        let rev = |id: u64| {
+            g["revisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(rev(1)["premises"], json!({ "moved": 1, "total": 1 }));
+        assert_eq!(rev(1)["class"], "pending");
+        assert_eq!(rev(2)["premises"], Value::Null);
         let _ = std::fs::remove_dir_all(&dir);
     }
     /// A log with branch ops replays (a single-branch `Db` refuses them):

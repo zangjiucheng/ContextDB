@@ -76,6 +76,47 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS recall_map(rid INTEGER PRIMARY KEY, logical INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS recall_map_logical ON recall_map(logical);
     CREATE TABLE IF NOT EXISTS recall_watermark(id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL);";
+/// Every stored abstract, by `(logical, revision)`, for a read-only viewer
+/// (`ctx ui`). The file is opened read-only and never migrated: a missing
+/// file, a projection from before P8, or one from another
+/// `LEVELS_VERSION` gives an empty map, never a wrong rendering.
+pub fn read_abstracts(
+    path: &std::path::Path,
+) -> Sql<std::collections::BTreeMap<(LogicalId, RevisionId), levels::Rendered>> {
+    use rusqlite::OpenFlags;
+    let mut out = std::collections::BTreeMap::new();
+    if !path.exists() {
+        return Ok(out);
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let version: Option<i64> = conn
+        .query_row("SELECT version FROM recall_levels WHERE id = 0", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .unwrap_or(None);
+    if version != Some(levels::LEVELS_VERSION as i64) {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare("SELECT logical, rev, abstract, abstract_cut FROM recall")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            (LogicalId(r.get(0)?), RevisionId(r.get(1)?)),
+            levels::Rendered {
+                text: r.get(2)?,
+                cut: r.get::<_, i64>(3)? != 0,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (k, v) = row?;
+        out.insert(k, v);
+    }
+    Ok(out)
+}
 impl RecallIndex {
     pub fn open(path: Option<&std::path::Path>) -> Sql<Self> {
         let conn = match path {
@@ -347,6 +388,44 @@ mod tests {
     }
     fn logicals(hits: Vec<Hit>) -> Vec<LogicalId> {
         hits.into_iter().map(|h| h.logical).collect()
+    }
+    /// `ctx ui` reads abstracts without writing: a missing file or one
+    /// without current levels gives nothing.
+    #[test]
+    fn read_abstracts_is_read_only_and_versioned() {
+        let path = std::env::temp_dir().join(format!("ctx-recall-ro-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(read_abstracts(&path).unwrap().is_empty());
+        assert!(!path.exists(), "nothing created");
+        {
+            let mut idx = RecallIndex::open(Some(&path)).unwrap();
+            idx.update(
+                Epoch(1),
+                &[(
+                    LogicalId(3),
+                    vec![row(
+                        0,
+                        7,
+                        "k",
+                        RecordKind::Decision,
+                        "repo",
+                        "# T\n\nfirst para\n\nmore",
+                    )],
+                )],
+            )
+            .unwrap();
+        }
+        let got = read_abstracts(&path).unwrap();
+        let r = &got[&(LogicalId(3), RevisionId(7))];
+        assert_eq!((r.text.as_str(), r.cut), ("first para", true));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("UPDATE recall_levels SET version = 999", [])
+            .unwrap();
+        drop(conn);
+        assert!(read_abstracts(&path).unwrap().is_empty(), "other version");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
     }
     #[test]
     fn indexes_text_replaces_rows_and_never_fails_on_odd_queries() {

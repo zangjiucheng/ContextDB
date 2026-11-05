@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ContextDB Graph</title>
+<title>ContextDB</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,15 +12,31 @@
   <select id="branch" aria-label="Branch" hidden></select>
   <span id="epoch" class="muted"></span>
   <nav>
-    <button id="tab-graph" class="tab active" type="button">Graph</button>
+    <button id="tab-records" class="tab active" type="button">Records</button>
+    <button id="tab-graph" class="tab" type="button">Graph</button>
     <button id="tab-timeline" class="tab" type="button">Timeline</button>
   </nav>
-  <input id="search" type="search" placeholder="Search keys…" autocomplete="off">
-  <label class="toggle"><input id="all-revs" type="checkbox"> all revisions</label>
+  <input id="search" type="search" placeholder="Search keys and abstracts…" autocomplete="off">
   <div id="chips"></div>
 </header>
 <main>
-  <section id="graph-view">
+  <section id="records-view">
+    <div id="recent"></div>
+    <div id="records"></div>
+  </section>
+  <section id="graph-view" hidden>
+    <div id="graph-tools">
+      <label class="toggle">show
+        <select id="focus" aria-label="Graph scope">
+          <option value="0">the whole graph</option>
+          <option value="1">1 hop around the selection</option>
+          <option value="2">2 hops around the selection</option>
+          <option value="3">3 hops around the selection</option>
+        </select>
+      </label>
+      <label class="toggle"><input id="all-revs" type="checkbox"> all revisions</label>
+      <button id="fit" class="tab" type="button">fit</button>
+    </div>
     <svg id="graph" role="img" aria-label="Context graph">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
