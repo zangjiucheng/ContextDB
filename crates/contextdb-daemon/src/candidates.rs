@@ -383,6 +383,15 @@ impl Candidates {
             params![id as i64, token as i64, next_at_ms],
         )? == 1)
     }
+    /// Puts a pending pair no validator takes back to `next_at_ms`, in one
+    /// statement and without a claim, so no lease can lapse and count an
+    /// attempt in between (P7 m4).
+    pub fn judge_postpone(&self, id: u64, next_at_ms: i64) -> Sql<bool> {
+        Ok(self.db().execute(
+            "UPDATE candidates SET next_at = ?2 WHERE id = ?1 AND judge = 0",
+            params![id as i64, next_at_ms],
+        )? == 1)
+    }
     /// Marks a pending pair `Skipped` (no claim needed).
     pub fn judge_skip(&self, id: u64) -> Sql<()> {
         self.db().execute(

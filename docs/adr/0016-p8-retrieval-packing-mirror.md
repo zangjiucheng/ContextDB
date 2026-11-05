@@ -483,6 +483,7 @@ timeout_secs = 30
     other commit interleaves. Two concurrent opens therefore give one
     Conflict.
   - A one-sided merge Conflict on `a` does not count as the pair's Conflict.
+  - *Implementation note, milestone 5a:* the check is a daemon lock held across `ctx_conflicts open`, re-checked on a fresh snapshot taken under the lock, not a check on the actor thread. Every open the daemon accepts is serialised, so concurrent opens still give one Conflict (T93). A raw admin batch with its own `OpenArtifact` ops is not checked.
 - **m4.**
   - A pair review's batch carries `ExpectHeads` for both sides, so a side
     that moved during the call gives a superseded pair, never a review on an

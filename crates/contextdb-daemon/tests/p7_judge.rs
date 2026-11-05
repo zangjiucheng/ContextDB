@@ -212,11 +212,20 @@ fn llm_conflict_opens_a_non_gating_review_on_the_newer_side() {
     let row = snap.log.read_row(Epoch(epoch.0 + 1)).unwrap();
     let batch = row.batch().unwrap();
     assert_eq!(batch.principal, LLM_PRINCIPAL);
+    // The review, plus (P7 m4) both sides as expected heads.
     assert!(
-        (batch.ops.iter()).all(|op| matches!(op, Op::OpenArtifact { .. })),
+        (batch.ops.iter()).all(|op| matches!(op, Op::OpenArtifact { .. } | Op::ExpectHeads { .. })),
         "{:?}",
         batch.ops
     );
+    let expected: Vec<RevisionId> = (batch.ops.iter())
+        .flat_map(|op| match op {
+            Op::ExpectHeads { entries, .. } => entries.iter().map(|(_, r)| *r).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(expected.len(), 2);
+    assert!(expected.contains(&a) && expected.contains(&b));
     assert_eq!(snap.epoch, Epoch(epoch.0 + 1));
     // Non-gating.
     assert_eq!(view.status(a).unwrap(), Summary::Certified);
@@ -405,4 +414,92 @@ fn filters_match_the_newer_side() {
     assert!(
         (s.candidates.all().unwrap().iter()).all(|x| x.judge == Judge::Pending && x.attempts == 0)
     );
+}
+
+/// T93 (P7 m4): a side that moves while the validator runs supersedes the
+/// pair; no review lands on the old revision.
+#[test]
+fn t93_a_side_moving_during_the_call_supersedes_the_pair() {
+    let s = service();
+    let (a, b) = setup(&s);
+    let c = the_pair(&s, a, b);
+    let mock = Arc::new(Mock::new("judge", ValidatorKind::Llm));
+    // After the delay the mock replies with its default: a conflict.
+    mock.set_default(conflict_on(&format!("uploads-fact@{}", b.0)));
+    mock.script(
+        pair_txn(&c),
+        vec![Script::Delay(Duration::from_millis(400))],
+    );
+    let sch = scheduler(&s, mock.clone(), true, limits(200));
+    let ran = std::thread::scope(|sc| {
+        let judge = sc.spawn(|| sch.judge_once().unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        // Move `a` (logical "uploads") while the call runs.
+        let l = s.actor.snapshot().view(MAIN).revision_logical(a).unwrap();
+        let body = b"user uploads go to the new object store";
+        raw(
+            &s,
+            vec![body.to_vec()],
+            vec![
+                Op::AddRevision {
+                    logical: l.into(),
+                    content: h(body),
+                    adopt_as_base: true,
+                },
+                Op::SetHead {
+                    logical: l.into(),
+                    expected: a.into(),
+                    new: RevRef::New(0),
+                },
+            ],
+        );
+        judge.join().unwrap()
+    });
+    assert_eq!(ran, Some(Ran::Superseded));
+    assert_eq!(mock.calls(), 1);
+    let snap = s.actor.snapshot();
+    assert!(
+        (snap.view(MAIN).artifacts()).all(|(_, x)| x.ty != ArtifactType::PendingReview),
+        "no review on the old revision"
+    );
+    let pair = the_pair(&s, a, b);
+    assert_eq!((pair.judge, pair.attempts), (Judge::Skipped, 0));
+}
+
+/// T93 (P7 m4): a pair no validator takes is postponed without a claim,
+/// so an expiry sweep can never count an attempt for it.
+#[test]
+fn t93_a_skipped_pair_never_counts_an_attempt() {
+    let s = service();
+    let (a, b) = setup(&s);
+    let mock = Arc::new(Mock::new("judge", ValidatorKind::Llm));
+    let dir = temp("skip");
+    let sch = Scheduler::new(
+        s.actor.clone(),
+        JobTable::open(&dir.join(jobs::FILE)).unwrap(),
+        None,
+        Loaded {
+            limits: limits(200),
+            candidates: Default::default(),
+            validators: vec![Configured {
+                filter: Filter {
+                    kinds: vec![RecordKind::Plan],
+                    ..Filter::default()
+                },
+                validator: mock.clone(),
+                note: "test".into(),
+                pairs: true,
+            }],
+            error: None,
+        },
+    );
+    sch.link_candidates(s.candidates.clone());
+    assert!(sch.judge_once().unwrap().is_none());
+    // An expiry sweep far in the future: nothing was ever claimed.
+    let expired = s.candidates.judge_expire(i64::MAX, 3).unwrap();
+    assert_eq!(expired, 0);
+    let pair = the_pair(&s, a, b);
+    assert_eq!((pair.judge, pair.attempts), (Judge::Pending, 0));
+    // Postponed: not claimable again right away.
+    assert!(sch.judge_once().unwrap().is_none());
 }

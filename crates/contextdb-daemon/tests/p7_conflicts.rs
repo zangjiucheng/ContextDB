@@ -356,7 +356,8 @@ fn t78_open_refusals() {
         AGENT,
         open(bind(), None, key_rev("a", 0), Some(key_rev("b", 1))),
     );
-    assert_eq!(code(&again), "InvalidArgument", "{again:?}");
+    // P7 m7: answered with the open Conflict, not refused.
+    assert!(matches!(again, Response::AlreadyOpen { .. }), "{again:?}");
     // Empty reason, candidate source.
     let mut r = open(bind(), None, key_rev("b", 1), None);
     if let Request::ConflictOpen { reason, .. } = &mut r {
@@ -580,4 +581,87 @@ fn expect_cert_valid_goes_through_the_session() {
     }
     assert_eq!(code(&call(&s, ADMIN, r)), "InvalidArgument");
     assert!(list(&s, ADMIN, None, None, ConflictState::All).is_empty());
+}
+
+fn with_reason(mut r: Request, why: &str) -> Request {
+    if let Request::ConflictOpen { reason, .. } = &mut r {
+        *reason = why.into();
+    }
+    r
+}
+
+/// T93 (P7 m7): a pair with an open two-sided Conflict is answered with
+/// that Conflict whatever the reason, evidence or side order; a one-sided
+/// Conflict on a side does not count as the pair's; concurrent opens give
+/// one Conflict.
+#[test]
+fn t93_one_open_conflict_per_pair() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    setup(&s);
+    // One side first: it does not block the pair.
+    let one = committed(call(&s, ADMIN, open(None, None, key_rev("a", 0), None)));
+    let pair = committed(call(
+        &s,
+        ADMIN,
+        open(None, None, key_rev("a", 0), Some(key_rev("b", 1))),
+    ));
+    let mut ids = pair.allocations.new_artifacts.clone();
+    ids.sort_unstable();
+    assert_eq!(ids.len(), 2);
+    assert!(!ids.contains(&one.allocations.new_artifacts[0]));
+    for r in [
+        with_reason(
+            open(None, None, key_rev("a", 0), Some(key_rev("b", 1))),
+            "other words",
+        ),
+        open(None, None, key_rev("b", 1), Some(key_rev("a", 0))),
+    ] {
+        match call(&s, ADMIN, r) {
+            Response::AlreadyOpen { artifacts } => assert_eq!(artifacts, ids),
+            other => panic!("{other:?}"),
+        }
+    }
+    // Resolved, the pair can be opened again.
+    committed(call(&s, ADMIN, resolve(None, ids.clone(), "settled")));
+    committed(call(
+        &s,
+        ADMIN,
+        open(None, None, key_rev("a", 0), Some(key_rev("b", 1))),
+    ));
+}
+
+/// T93 (P7 m7): eight concurrent opens of one pair, each with its own
+/// reason, commit exactly one Conflict.
+#[test]
+fn t93_concurrent_opens_give_one_conflict() {
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    setup(&s);
+    let results: Vec<Response> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..8)
+            .map(|n| {
+                let s = &s;
+                sc.spawn(move || {
+                    call(
+                        s,
+                        ADMIN,
+                        with_reason(
+                            open(None, None, key_rev("a", 0), Some(key_rev("b", 1))),
+                            &format!("reason {n}"),
+                        ),
+                    )
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let committed = (results.iter())
+        .filter(|r| matches!(r, Response::Committed { .. }))
+        .count();
+    let already = (results.iter())
+        .filter(|r| matches!(r, Response::AlreadyOpen { .. }))
+        .count();
+    assert_eq!((committed, already), (1, 7), "{results:?}");
+    assert_eq!(list(&s, ADMIN, None, None, ConflictState::Open).len(), 1);
 }

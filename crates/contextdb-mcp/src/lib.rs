@@ -1228,10 +1228,19 @@ impl<B: Backend> Server<B> {
                     .unwrap_or(false),
                 client_txn_id: txn(o)?,
             })?;
+            // P7 m7: the pair's open Conflict, nothing committed.
+            if let Response::AlreadyOpen { artifacts } = &env.response {
+                return Ok(json!({
+                    "epoch": env.epoch.0,
+                    "already_open": true,
+                    "artifacts": artifacts.iter().map(|a| a.0).collect::<Vec<_>>(),
+                }));
+            }
             let Response::Committed { result } = &env.response else {
                 return Err("unexpected response".into());
             };
             return Ok(json!({
+                "already_open": false,
                 "epoch": result.epoch.0,
                 "artifacts": result.allocations.new_artifacts.iter().map(|a| a.0).collect::<Vec<_>>(),
                 "status_diff": result.status_diff.iter().map(|r| r.0).collect::<Vec<_>>(),

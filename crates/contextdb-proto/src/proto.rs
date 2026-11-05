@@ -1013,6 +1013,12 @@ pub enum Response {
     Reindexed {
         index: IndexReport,
     },
+    /// `ctx_conflicts open` for a pair that already has an open two-sided
+    /// Conflict on the branch (P7 m7): that Conflict's artifacts, nothing
+    /// committed.
+    AlreadyOpen {
+        artifacts: Vec<ArtifactId>,
+    },
     Conflicts {
         items: Vec<ConflictItem>,
         /// More items than `limit` matched.
@@ -2179,6 +2185,10 @@ impl Wire for Response {
                 32u8.encode(o);
                 index.encode(o);
             }
+            Self::AlreadyOpen { artifacts } => {
+                33u8.encode(o);
+                artifacts.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2319,6 +2329,9 @@ impl Wire for Response {
             },
             32 => Self::Reindexed {
                 index: Wire::decode(i)?,
+            },
+            33 => Self::AlreadyOpen {
+                artifacts: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2863,6 +2876,9 @@ mod tests {
                 limit_clamped: true,
                 omitted: 3,
                 estimate: Some("bytes/4 v1".into()),
+            },
+            Response::AlreadyOpen {
+                artifacts: vec![ArtifactId(4), ArtifactId(5)],
             },
             Response::Handoffs {
                 items: vec![HandoffInfo {

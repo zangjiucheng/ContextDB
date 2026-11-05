@@ -427,6 +427,10 @@ pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 }
             );
         }
+        R::AlreadyOpen { artifacts } => {
+            let ids: Vec<String> = artifacts.iter().map(|a| a.0.to_string()).collect();
+            println!("already open: artifacts {}", ids.join(","));
+        }
         other => return Err(format!("unexpected response {other:?}")),
     }
     Ok(())

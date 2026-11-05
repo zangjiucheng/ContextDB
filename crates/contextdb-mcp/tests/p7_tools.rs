@@ -86,16 +86,17 @@ fn conflicts_open_list_and_resolve_through_mcp() {
         )
         .is_err()
     );
-    // Refused: the same pair again.
-    assert!(
-        tool(
-            &mut server,
-            "ctx_conflicts",
-            json!({ "open": { "a": "db/engine@0", "b": "db/plan@1", "reason": "different engines",
-                              "evidence": ["db/engine@0", "db/plan@1"] } }),
-        )
-        .is_err()
-    );
+    // The same pair again: the open Conflict is named, nothing committed
+    // (P8 m7, ADR 0016 §7.3).
+    let again = tool(
+        &mut server,
+        "ctx_conflicts",
+        json!({ "open": { "a": "db/engine@0", "b": "db/plan@1", "reason": "different engines",
+                          "evidence": ["db/engine@0", "db/plan@1"] } }),
+    )
+    .unwrap();
+    assert_eq!(again["already_open"], true);
+    assert_eq!(again["artifacts"], json!(ids));
     tool(
         &mut server,
         "ctx_resolve",

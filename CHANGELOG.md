@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **P8 milestone 5a: P7 follow-ups m4, m6, m7** (ADR 0016 §7.1, §7.3).
+  - **Fix (m7): one open Conflict per pair.** Opening a pair that already has an open two-sided Conflict returns it (`already_open: true` in MCP, `already open` in `ctx conflicts open`), whatever the reason or evidence. Concurrent opens give one Conflict. A one-sided Conflict on a side does not block the pair (T93).
+  - **Fix (m4):** a pair review's commit expects both sides as heads, so a side that moves during the validator call supersedes the pair instead of reviewing an old revision. A pair no validator takes is postponed without a claim, so it never counts an attempt (T93).
+  - **Fix (m6):** a validator process that leaves its group and keeps a pipe open no longer hangs a worker; the call fails after a 500 ms grace. Output over the cap fails at once as malformed instead of timing out.
+
 - **P8 milestone 4: Summary pending counts** (ADR 0016 §6).
   - A Summary item now carries `premises: {moved, total}`: how many of its witness rule's Sem premises have moved since the nearest Verified vector. MCP adds `note: "summary; 2 of 7 premises changed"` when any have moved.
   - The SessionStart briefing lists Summaries with changed premises.

@@ -451,12 +451,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(x) => x,
             Err(e) => return err("InvalidArgument", e),
         };
-        // The same pair is not opened twice (same type, target and payload).
-        if view.artifacts().any(|(_, x)| {
-            x.open
-                && x.ty == ArtifactType::Conflict
-                && x.payload_hash == hash
-                && sides.contains(&x.target)
+        // P7 m7: opens are serialised, and checked on a fresh snapshot, so
+        // two concurrent opens of one pair give one Conflict.
+        let _serial = self.conflict_opens.lock().expect("conflict opens");
+        drop(snap);
+        let snap = self.actor.snapshot();
+        let Some(view) = snap.kernel.branch(branch) else {
+            return err("UnknownBranch", "no such branch");
+        };
+        if let [a, b] = sides[..] {
+            // A pair with an open two-sided Conflict, whatever its reason
+            // or evidence: answer with it. A one-sided Conflict on a side
+            // is not the pair's.
+            if let Some(found) = open_pair(&view, a, b) {
+                return Response::AlreadyOpen { artifacts: found };
+            }
+        } else if view.artifacts().any(|(_, x)| {
+            // One side: the same document on the same revision.
+            x.open && x.ty == ArtifactType::Conflict && x.payload_hash == hash && x.target == side_a
         }) {
             return err("InvalidArgument", "this Conflict is already open");
         }
@@ -599,4 +611,22 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
     }
+}
+
+/// The artifacts of an open two-sided Conflict between `a` and `b`: two
+/// open Conflict artifacts sharing one document, one on each side.
+fn open_pair(view: &BranchView<'_>, a: RevisionId, b: RevisionId) -> Option<Vec<ArtifactId>> {
+    let open: Vec<(ArtifactId, Artifact)> = (view.artifacts())
+        .filter(|(_, x)| x.open && x.ty == ArtifactType::Conflict)
+        .collect();
+    open.iter()
+        .filter(|(_, x)| x.target == a)
+        .find_map(|(ia, xa)| {
+            let (ib, _) = open
+                .iter()
+                .find(|(_, xb)| xb.target == b && xb.payload_hash == xa.payload_hash)?;
+            let mut ids = vec![*ia, *ib];
+            ids.sort_unstable();
+            Some(ids)
+        })
 }

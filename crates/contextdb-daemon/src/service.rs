@@ -237,6 +237,8 @@ pub struct Service<D: Durability> {
     recall: Arc<Mutex<RecallIndex>>,
     /// The retrieval projections' health and progress signal (P8, ADR 0016 §2).
     pub index_health: Arc<crate::index_health::IndexHealth>,
+    /// Serialises `ctx_conflicts open` (P7 m7: one Conflict per pair).
+    pub(crate) conflict_opens: Mutex<()>,
     /// Lexical contradiction candidates (P7, ADR 0015 §5).
     pub candidates: Arc<crate::candidates::Candidates>,
     stop: Arc<AtomicBool>,
@@ -528,6 +530,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
             index_health,
+            conflict_opens: Mutex::new(()),
             candidates,
             stop,
             indexer_thread: Mutex::new(Some(indexer_thread)),

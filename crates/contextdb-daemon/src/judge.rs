@@ -86,13 +86,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 PairChoice::Stale => table.judge_skip(c.id).map_err(sql)?,
                 PairChoice::Skip => {
                     // Not ours now; look again later rather than block the
-                    // queue's head.
-                    let t = token();
-                    if table.judge_claim(c.id, t, now_ms()).map_err(sql)? {
-                        table
-                            .judge_release(c.id, t, now_ms() + UNTAKEN_RETRY_MS)
-                            .map_err(sql)?;
-                    }
+                    // queue's head. One statement, no claim: a claim with
+                    // a lapsed lease could count an attempt (P7 m4).
+                    table
+                        .judge_postpone(c.id, now_ms() + UNTAKEN_RETRY_MS)
+                        .map_err(sql)?;
                 }
                 PairChoice::Run(n) => {
                     let t = token();
@@ -221,6 +219,15 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             (Ok(a), Ok(b)) => Task::pair(txn, c.branch, a, b),
             (Err(e), _) | (_, Err(e)) => return self.pair_fail(loaded, table, c, e),
         };
+        // Both sides must still be the heads when the review commits (P7
+        // m4): a side that moves during the call supersedes the pair.
+        let heads: Vec<(LogicalRef, RevisionId)> = [c.a, c.b]
+            .into_iter()
+            .filter_map(|r| {
+                view.revision_logical(r)
+                    .map(|l| (LogicalRef::Existing(l), r))
+            })
+            .collect();
         drop(snap);
         let kind = v.kind();
         // A task over the size cap fails before it takes an LLM permit
@@ -297,6 +304,10 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             target: c.a.into(),
             payload_hash: review_hash,
         }]);
+        batch.ops.push(Op::ExpectHeads {
+            entries: heads,
+            source: ReadSource::Client,
+        });
         batch.branch = c.branch;
         batch.channel = Channel::Admin;
         batch.principal = if kind == ValidatorKind::Llm {
@@ -324,6 +335,16 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     Ran::Reviewed(Suggestion::Reject),
                 )
             }
+            Ok(Err(StoreError::Tx(TxError::ReadSetConflict { .. }))) => self.pair_end(
+                table,
+                c,
+                Judge::Skipped,
+                None,
+                Some(v.name()),
+                None,
+                None,
+                Ran::Superseded,
+            ),
             Ok(Err(StoreError::Tx(TxError::TxnIdReuse { .. }))) => self.pair_end(
                 table,
                 c,

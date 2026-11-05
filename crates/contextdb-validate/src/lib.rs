@@ -273,7 +273,33 @@ pub(crate) fn run_process_raw(
     stdin: &[u8],
     deadline: Instant,
 ) -> Result<(bool, Vec<u8>, Vec<u8>), ValidatorError> {
+    run_capped(cmd, stdin, deadline, MAX_STDOUT_BYTES)
+}
+/// How long the pipe readers may take after the process group is gone. A
+/// process that left the group can hold the pipes open forever; past this
+/// the readers are abandoned, not joined (P7 m6, ADR 0016 §7.1).
+const READER_GRACE: Duration = Duration::from_millis(500);
+/// Runs `cmd` in its own process group, feeding it `stdin`, and returns
+/// (zero exit, stdout, stderr). Used by validators and the embedder.
+///
+/// - At the deadline the whole group is killed: [`ValidatorError::Timeout`].
+/// - Stdout over `max_stdout` kills the group at once and is
+///   [`ValidatorError::Malformed`], not a timeout.
+/// - The group is killed however the process ends, and the pipe readers
+///   are waited for at most [`READER_GRACE`]: a stray process that keeps a
+///   pipe open gives [`ValidatorError::Failed`] instead of a hung worker.
+pub fn run_capped(
+    cmd: &mut Command,
+    stdin: &[u8],
+    deadline: Instant,
+    max_stdout: usize,
+) -> Result<(bool, Vec<u8>, Vec<u8>), ValidatorError> {
     use std::os::unix::process::CommandExt;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -282,44 +308,74 @@ pub(crate) fn run_process_raw(
         .spawn()
         .map_err(|e| ValidatorError::Failed(format!("spawn: {e}")))?;
     let pgid = nix::unistd::Pid::from_raw(child.id() as i32);
+    let kill = || {
+        let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL);
+    };
     let mut input = child.stdin.take().expect("piped");
     let data = stdin.to_vec();
-    let writer = std::thread::spawn(move || {
+    // Never joined: a write blocked on a pipe a stray process holds must
+    // not hold the worker.
+    std::thread::spawn(move || {
         let _ = input.write_all(&data);
     });
+    let overflow = Arc::new(AtomicBool::new(false));
+    let (out_tx, out_rx) = mpsc::channel();
     let mut out = child.stdout.take().expect("piped");
-    let reader = std::thread::spawn(move || {
+    let over = overflow.clone();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = (&mut out)
-            .take(MAX_STDOUT_BYTES as u64 + 1)
-            .read_to_end(&mut buf);
-        buf
+        let _ = (&mut out).take(max_stdout as u64 + 1).read_to_end(&mut buf);
+        if buf.len() > max_stdout {
+            over.store(true, Ordering::Release);
+        }
+        // Dropping `out` here closes the read end: a writer past the cap
+        // gets EPIPE instead of blocking.
+        drop(out);
+        let _ = out_tx.send(buf);
     });
+    let (err_tx, err_rx) = mpsc::channel();
     let mut err = child.stderr.take().expect("piped");
-    let err_reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = (&mut err).take(64 * 1024).read_to_end(&mut buf);
-        buf
+        let _ = err_tx.send(buf);
     });
     let status = loop {
+        if overflow.load(Ordering::Acquire) {
+            kill();
+            let _ = child.wait();
+            return Err(ValidatorError::Malformed(format!(
+                "stdout over {max_stdout} bytes"
+            )));
+        }
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
             Ok(None) if Instant::now() >= deadline => break None,
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => return Err(ValidatorError::Failed(format!("wait: {e}"))),
+            Err(e) => {
+                kill();
+                return Err(ValidatorError::Failed(format!("wait: {e}")));
+            }
         }
     };
     // The group goes either way: a validator must leave nothing behind.
-    let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL);
+    kill();
     let Some(status) = status else {
         let _ = child.wait();
         return Err(ValidatorError::Timeout);
     };
-    let _ = writer.join();
-    let stdout = reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
-    if stdout.len() > MAX_STDOUT_BYTES {
-        return Err(ValidatorError::Malformed("stdout over 1 MiB".into()));
+    let grace = Instant::now() + READER_GRACE;
+    let left = || grace.saturating_duration_since(Instant::now());
+    let (Ok(stdout), Ok(stderr)) = (out_rx.recv_timeout(left()), err_rx.recv_timeout(left()))
+    else {
+        return Err(ValidatorError::Failed(
+            "a process outside the group kept the output pipes open".into(),
+        ));
+    };
+    if overflow.load(Ordering::Acquire) {
+        return Err(ValidatorError::Malformed(format!(
+            "stdout over {max_stdout} bytes"
+        )));
     }
     Ok((status.success(), stdout, stderr))
 }
@@ -342,6 +398,56 @@ pub fn program_version(program: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P7 m6: a process that leaves the group and keeps stdout open does
+    /// not hang the caller; the call fails within the reader grace.
+    #[test]
+    fn a_stray_process_holding_the_pipe_does_not_hang() {
+        let mut cmd = Command::new("/usr/bin/perl");
+        cmd.args([
+            "-e",
+            "use POSIX; if (fork() == 0) { POSIX::setsid(); sleep 5; exit 0 } print qq(ok\n);",
+        ]);
+        let t = Instant::now();
+        let r = run_capped(
+            &mut cmd,
+            &[],
+            Instant::now() + Duration::from_secs(20),
+            1 << 20,
+        );
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(
+            matches!(r, Err(ValidatorError::Failed(ref m)) if m.contains("outside the group")),
+            "{r:?}"
+        );
+    }
+
+    /// P7 m6: output over the cap is malformed at once, not a timeout.
+    #[test]
+    fn output_over_the_cap_is_malformed_not_a_timeout() {
+        let mut cmd = Command::new("/usr/bin/yes");
+        let t = Instant::now();
+        let r = run_capped(
+            &mut cmd,
+            &[],
+            Instant::now() + Duration::from_secs(20),
+            1 << 20,
+        );
+        assert!(matches!(r, Err(ValidatorError::Malformed(_))), "{r:?}");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // Under the cap and on time: the output and exit status.
+        let mut cmd = Command::new("/bin/echo");
+        cmd.arg("hi");
+        let (ok, out, _) = run_capped(
+            &mut cmd,
+            &[],
+            Instant::now() + Duration::from_secs(20),
+            1 << 20,
+        )
+        .unwrap();
+        assert!(ok);
+        assert_eq!(out, b"hi\n");
+    }
 
     pub(crate) fn task() -> Task {
         let item = |h: &str, body: &str| Item {
