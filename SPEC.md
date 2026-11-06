@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.8.3 · Date: 2026-11-06 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.9.0 · Date: 2026-11-06 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -183,6 +183,8 @@ L2(r) = ¬Conflicted(r) ∧ (base(r) ∨ ∃j: concl(j)=r, g2(j), ∀i lit2(j,i)
 - PENDING 沿 L2 传递；REJECTED 阻断 L1/L2 下游但不改变 S。
 - **Sem-head 条件**：Sem 依赖对新 head h 验证通过，只说明“内容仍适用”，不说明 h 本身仍受支持。h 被撤回（例如代码锚点文件被删除：observer 对当前 revision RetractBase）、失去支持或 PENDING 时，Sem 下游在对应层失败。旧 revision p 的 base 不会因 head 移动而撤销（SD1），所以只检查 p 不够。`curvec == A(j)` 时 `head(l(p)) = p`，条件退化为原式。
 
+**SD11 授权（v1.9.0，P9 G0，完整定义见 ADR 0017 §4.3–§4.5）。** `Authorized(p, l, b)` 按顺序判定：(1) owner（store owner，或 `owner(l) = p`）；(2) membership，lane 条目由同一个 `entry(lane)` 查找：访问文档列出的 lane → 合成的 `personal:<name>`（members = writers = curators = 该主体，egress 取 `[personal]`）→ 未知 personal 名为空条目 → `code:*` 用 `code_lanes` → `default_lane`（默认 `*owner`，fail-closed）；(3) visibility（personal）；(4) role，dir 授权只作用于 logical 的 `dirs`（`dirs` 按 branch 存储，故授权依赖 branch）；(5) ACL deny 前缀。授权**不传递**：读 r 不意味着可读 r 的 premise。派生快照与主体无关：L0/L1/L2、计数器与 digest 都不含授权；P0–P8 的 `Authorized ≡ true` 自 P9 起在渲染响应时计算（SD13）。
+
 **SD12 head 可回退（ABA 允许）与不可变 kind。** `SetHead` 可指向同一 logical 下任意已提交 revision；v1→v2→v1 后，Sem 状态因 `curvec == A(j)` 恢复 Verified。certificate 提供可选 `strict_no_aba`（§6.4）。**Evidence logical 只有一个 revision**：对 Evidence 的 `AddRevision` / `SetHead` 返回 `ImmutableKind`；因此 `Pin`→Evidence 在 main 上恒为 current，SD11 的 Evidence 豁免只在 branch 视角下才有实际差别。CodeAnchor 的写入规则见 SD18。
 
 **SD13 汇总 precedence**（参数：branch、epoch、principal；读取时另有 observation 维度）：
@@ -210,6 +212,8 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - visibility `AUTHORIZED / DENIED`
 - observation `FRESH / LAGGING / N_A`（**只在读取时计算**，不进入派生快照，见 SD14b）
 
+**SD13 补充（v1.9.0，ADR 0017 §4.5、§5.1）。** UNAVAILABLE（denied）在渲染响应时由唯一的 `redact()` 点计算；快照中 `Dimensions.authorized` 恒为 true，快照与 digest 不随读者变化。store owner 的响应不过滤。
+
 **SD14 UNKNOWN 的两种来源。**
 - (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P10 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
 - (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest（P5b：symbol 锚点由其宿主文件的原始 OID 代表，`CTXPOS02` 头部记录生效（base 已断言）symbol 锚点所属各语言的 normaliser 版本（v1.6.10）；daemon 实时采样从不解析，宿主文件任何字节变化在 observer 下次扫描前为 lag，ADR 0012 §6）；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
@@ -218,7 +222,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 多个 PENDING 原因同时成立时，汇总原因依次为 ObservationLag、StructuralUnknown、Semantic；仍服从 SD13 的 UNAVAILABLE / CONFLICTED / STALE 优先级。P0 的 observation 恒为 N_A；未来维度只在纯函数 golden 中合成。
 
-**SD15 WHY / WHY_NOT 与 witness。** WHY 返回 base 标记与**全部** active 规则；`Ref` 单独列为 non-supporting references。canonical witness：base 优先，否则 RuleId 最小的 active 规则；L1/L2 各用对应层 active 集。WHY_NOT 对每条规则列出：disabled、gate（附 A(j) 与 curvec）、每个失败 incidence（`Unsupported(p)`、`NotCurrent{p, head}`、`SupersededPinned{p, head}`），按深度上限递归。对 principal 未授权的 premise / 规则，仅输出 `Redacted{count}`，不输出 id、payload、witness。
+**SD15 WHY / WHY_NOT 与 witness。** WHY 返回 base 标记与**全部** active 规则；`Ref` 单独列为 non-supporting references。canonical witness：base 优先，否则 RuleId 最小的 active 规则；L1/L2 各用对应层 active 集。WHY_NOT 对每条规则列出：disabled、gate（附 A(j) 与 curvec）、每个失败 incidence（`Unsupported(p)`、`NotCurrent{p, head}`、`SupersededPinned{p, head}`），按深度上限递归。对 principal 未授权的 premise / 规则，仅输出 `Redacted{count}`，不输出 id、payload、witness。v1.9.0（ADR 0017 §5.2–§5.5）：条目按 key 读取而 logical 不可见时只回显调用者给出的 key，状态 UNAVAILABLE（不区分“不存在”）；WHY / WHY_NOT / IMPACT 另报告 `redacted_rules`；diff 形响应（commit 结果、WhatIf、Diff、changes、merge 报告）删去隐藏条目并附 `redacted: count`；证书响应不含 vector，只给 `vector_size`；错误只回显调用者自己的引用。
 
 **SD16 epoch 与时间。** 全局 u64，跨 branch 共用，成功提交才 +1。certificate 依赖版本向量，**从不依赖 epoch 相等**。只建模 transaction time；valid time 仅作 metadata（非目标）。
 
@@ -254,6 +258,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - **observer 域与 merge**：对 T 中已可见的 logical，merge 不取仅 observer 通道可写的状态（CodeAnchor 的 head / base、AnchorBroken、ObserverWatermark），因此 agent 通道可执行 merge。新可见的 CodeAnchor logical 以 S 的 head / base 作为初始观察，并置 `anchor_unobserved`：期间无论 watermark 如何都读作 `PENDING(ObservationLag)`（**SD14b 扩展**）；T 上提交覆盖该 scope 的 `ObserverWatermark` 时清除。
 - **跨 branch 规则去重（SD6 例外）**：`AddRule` 的 canonical 去重跨 branch 进行，命中不可见的同 canonical 规则时复用其 RuleId、引入当前 branch 可见集合并按 Op 设置本 branch 的 enabled；仍占用 `New(k)` 序号、计入 new_rules、进入本 branch cycle 图（可 `CycleDetected`）；`Rebind` 同理。
 - **session 与 git（D1）**：session 起始时绑定显式给出的 branch，否则绑定与当前 git branch 同名且 open 的 branch，否则 main；整个 session 固定。observer 按其 worktree 当前 git branch 的同名 branch 提交，否则 main。git merge 后由显式 `ctx_merge` / `ctx merge` 认定。agent 可创建、提交与合并（含合并进 main）。
+- **P9 补充（v1.9.0，ADR 0017 §4.1、§6.2、§8.3）**：再加两个全局、不参与 merge、独占 batch、只接受 admin 的 Op：`SetAccess{AccessDoc}` 与 `ShredContent{content}`，帧都在 main 上。`CreateBranch` 记录创建者（batch 的 principal）；`ArchiveBranch` 只接受创建者或 store owner；session 自动绑定只选本主体或 store owner 创建的 open branch；在他人 branch 上提交 → `BranchOfAnotherPrincipal`（main 与 store owner 建的 branch 对所有 writer 开放）。**merge 授权（F14，owner 确认）**：合并进合并者自己创建的 branch，搬运所有可合并的变更，读取仍按 SD11 判定；合并进 main 或 store owner 建的 branch，每个被应用的变更须是合并者能在目标上直接执行的操作——实际改变目标 Policy 只能由 store owner 执行；ValidationRecord 原样搬运（精确 `(rule, curvec)`、原 `validator` 与 `meta`）；CodeAnchor 以非 base、`anchor_unobserved` 搬运，不带 base 权威；base 需 curator，规则需对结论与每个 premise 可读，artifact 需对每个目标可读并可写其一的 lane；任一失败整体拒绝 `MergeUnauthorized{count}`。检查在 merge 事务中、应用之前执行，dry run 与真实 merge 结果一致。
 
 **SD20 Conflict 的形式定义（v1.7.0，P7 G0，回答 O4；完整定义见 ADR 0015 §2）。**
 - revision `a` 与 `b` 在 branch β 上的*矛盾*是输入层断言（SD7）“a 与 b 不能同时成立”，表示为在 β 上同一 batch 中开启的一对 open Conflict artifact（target 分别为 a、b，`payload_hash` 相同）；单边 Conflict（merge 冲突，或与库外事物的矛盾）只有一个 artifact。artifact 按 branch 存储，merge 按 P6 规则携带。
@@ -406,7 +411,7 @@ commit(batch):
 4. 无前置条件的先读后写编辑（必须 CAS）。
 5. 无 fencing（epoch / token）的租约作为写入互斥。
 6. 丢失任一来源即硬删派生项（必须 OR 计数，失去全部支持时标记而不删除）。
-7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集、证书以及 P4 起的会话事实与遥测（行动、门控决定、drift、基线、增量确认、流标记、会话键；ADR 0010 A8）以及 P7 起的 handoff 事件（`HandoffBegin` / `HandoffAccept`，ADR 0015 §7）这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。
+7. 多存储各自容错的双写（只能有 op_log 一个真相源，其余可重建）。唯一例外是 P3 起的 session log（ADR 0008）：它只保存 session、读集、证书以及 P4 起的会话事实与遥测（行动、门控决定、drift、基线、增量确认、流标记、会话键；ADR 0010 A8）以及 P7 起的 handoff 事件（`HandoffBegin` / `HandoffAccept`，ADR 0015 §7）这一互不相交的领域，从不参与内核状态，内核输入与派生状态仍只以 op_log 为准。P9 起的 key log（`keys/`，ADR 0017 §8.2）属于 blob store：与 pack 一样是不可重建的真相存储，只保存 payload 的解密 key，不参与内核状态，不构成第二个真相源。
 8. mtime 漂移扫描作为锚点或失效信号。
 9. 可被调用方忽略错误的“否决 hook”（否决必须在提交事务内生效）。
 10. 嵌入 Dolt / prolly tree 作为内核存储。
@@ -701,11 +706,24 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - WHY / WHY_NOT / IMPACT 的 `Redacted{count}`（SD15）。
 - provenance 门控的 AssertBase（晋升到 shared lane 需可信 provenance；dry-run 与真实共用谓词）。
 - blob crypto-shred（payload 可清除而拓扑保留）；文档化边界：明文 `content_hash` 仍可被用于确认攻击（已知内容可验证），需要时改用 keyed hash。
-- 可选：certificate / op log 的 Ed25519 签名。
+- 可选：certificate / op log 的 Ed25519 签名（v1.9.0：推迟到独立 ADR，F4）。
+- v1.9.0（ADR 0017 r0.5，P9 G0；owner 2026-11-06 确认 F1–F14）细化：
+  - **主体（F1）**：一个 OS 用户一个主体，由已提交的访问文档把对端 uid（`getpeereid` / `SO_PEERCRED`）映射到主体；请求内容不改变身份。主体 id 0–15 与 `0x5641_xxxx` 保留，文档 id 从 16 起。daemon 的 uid 是 store owner，看见全部（F12）；同 uid 进程即 store owner，硬隔离只存在于 OS 用户之间。非 owner 主体只用 MCP（F8），无 hook、outbox、observer；admin 与 observer socket 拒绝其他 uid。
+  - **文件系统（G-FS）**：多用户模式下 `<data>` 内每个条目归 daemon uid 所有且不带任何 ACL（只含 deny 的也拒绝）；文件 0600、目录 0700，`<data>`、`run`、`run/shared` 0711，`endpoint` 0644 与共享 socket 例外；所有二进制 `umask(077)`，launchd / systemd 设 umask 077；启动、`ctx migrate`、`doctor --fix-modes` 后逐项检查。上级目录须归 root 或 owner 且他人不可写（sticky 目录例外，规则同 ssh `StrictModes`）；客户端核对 socket 对端 uid 与 `endpoint` 记录的 owner（`ServerNotOwner`）。
+  - **访问文档**：TOML，经 `SetAccess` 提交，含 principals、groups、lanes（members / writers / curators，可为 `*writers`）、dir 授权、deny、`[personal]`、`[code_lanes]`、`[default_lane]`；校验失败 `InvalidAccess`。默认 lane 不变（F2）。personal lane 默认不外发（F6），`validators.toml` 中 `local = true` 的 validator 豁免。
+  - **写入**：在内核事务中检查，dry run 同一谓词；AssertBase 需 curator（provenance 门控）；非 owner 的顺序为 proof of possession → shred 集合 → staging。**proof of possession（F10）**：非 owner 的 batch 必须携带其引入的每个 content hash 的字节，除非该 hash 已属于其可读的 logical，否则 `MissingBlob`（与不存在的 hash 无法区分）。
+  - **egress**：按 lane；非 egress lane 的正文不进入非 local validator、judge、embedder 与镜像，作业为 `Skipped{egress}`；镜像只导出完全可读的 egress lane。
+  - **crypto-shred（F3）**：pack 记录为 `CXBE`（XChaCha20-Poly1305，每个内容一个随机 key，aad = content_hash）；key 存于 append-only 的 key log `keys/`，与 pack 同序 sync。`ShredContent` 不改变任何派生状态；shred 在 writer 线程上重写 key log（`.tmp` → sync → rename → sync_dir → 删除所有旧代与 `.tmp` → 再次 sync_dir），各投影 `secure_delete`、FTS5 optimize、`wal_checkpoint(TRUNCATE)`，进度记于 `purged_through`。**purge 完成**指 key log 与每个投影都已持久覆盖该 epoch；此后 `ctx shred` 才报告 `purged`，G-SHRED 自完成起成立。持有原文者能得知已 shred（F13，`ContentShredded`）。
+  - **迁移**：op_log 格式 5（op tag 20 `SetAccess`、21 `ShredContent`）。`ctx migrate` 4 → 5 写持久标记 `MIGRATING-5` 后依次升级日志头、重新加密 pack、重建投影、施加权限，按磁盘实际状态校验（含日志为格式 5 且无交换进行）后才删除标记并报告成功；有标记或校验失败的存储拒绝打开（`MigrationIncomplete{step}`）；重跑按日志与各步检查续做，从不凭日志版本判定成功。
+  - **协议 7**：必需；新增脱敏形状、`redacted`、`vector_size`、新错误、`SetAccess` / `AccessCheck` / `Shred` 请求、`handoff_begin{to}`、`ctx ui` token（F9）。
+  - G6 在 macOS 上以两个本地用户进行（F5）。
 
 **Gate P9**
-- G2：T17、T17b、T58、T59、T60、S13-rows-e2e（UNAVAILABLE 行）。
-- G4：安全评审（独立 reviewer 按 §10 威胁模型逐条检查）；IPC fuzz ≥ 24h 无崩溃。
+- G2：T17、T17b、T58、T59、T60、S13-rows-e2e（UNAVAILABLE 行）、T98–T108（ADR 0017 §11）。
+- G3：PROP15、PROP16 各 10,000 seed；PROP14 按主体；PROP13 与 T14 含全局 Op。
+- G4：安全评审（独立 reviewer 按 §10 威胁模型与 ADR 0017 §2 逐条检查）；IPC fuzz ≥ 24h 无崩溃（来自非 owner uid，含 AccessDoc、`CXBE`、`CXKY` 解析）；shred、purge、迁移的 kill point；key log 重写时磁盘满。
+- G5：ADR 0017 §11 的预算（初始值，可经 ADR 校准）。
+- G6：macOS 双用户真实运行（F5）。
 
 ---
 
@@ -798,6 +816,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 12. **Read set（P6）**：`ExpectHeads{entries, source: Client|Certificate(cert_id)}` 在 batch 末尾检查（A5 `PolicyViolation` 之后），逐项与**该 batch 之前**本 branch 已提交的 head 比较，不等 → `ReadSetConflict{logical, read, now}`；同一 logical 多个不同值或 `New` 引用 → `InvalidReadSet`；`source: Certificate` 只能由 daemon actor 追加（客户端提交 → `ChannelRestricted`）。`ctx_commit(expect_cert_valid=true)`：actor 在同组前序 batch 之后、本 batch 之前按完整证书判定校验（非 Valid/ValidRecertified 即拒绝；ValidRecertified 用新 vector），再追加 `ExpectHeads{Certificate}`；幂等以客户端 hash（客户端 ops + flag + batch 的 branch、channel、principal；不含 cert_id 与追加项，证书被 `ctx_check` 重新签发后重试仍返回原结果）判定并持久化于 op_log 帧；无会话证书时 `expect_cert_valid` 以 `Empty` 判定拒绝。
 13. **Branch Op（P6）**：`CreateBranch`、`ArchiveBranch` 须独占 batch，`Merge` 只能与 `ExpectHeads` 同 batch，否则 `SoleOpRequired`；`Merge` 不分配新 revision，A5 对其为空检查；merge 结果以 `CommitResult` 的版本化尾部返回（op_log 格式 3，ADR 0013 §8）。
 14. **验证元数据与格式 4（P7，ADR 0015 §3、§9）**：`RecordValidation` 增加 `meta`、`if_absent`，`ResolveArtifact` 增加 `note: Option<ContentHash>`。新字段都未设置时仍按原 tag（8、13）编码，用到新字段才用新 tag 18 `RecordValidation4`、19 `ResolveArtifact4`，因此格式 3 的 batch 在格式 4 下字节相同、`batch_hash` 不变。`MissingBlob` 扩展到 `meta` 与 `note`（随 batch 经 `Commit.blobs` 提交）；`OpenArtifact.payload_hash` 仍不检查。merge 比较 ValidationRecord 时不含 `meta`（只有 verdict 不同才冲突，仅 `meta` 改变视为未变，取自 source 的记录保留其 `meta`）。daemon 层（协议 5）：`RecordValidation` 只接受 Admin 通道与 validator worker 的进程内身份，agent 的 `Commit` / `WhatIf` / `ctx_commit` 携带它 → `ChannelRestricted`；内核通道规则不变。
+15. **主体与授权（P9，ADR 0017；op_log 格式 5）**：`SetAccess{doc: AccessDoc}` 与 `ShredContent{content}` 为 op tag 20、21，只接受 admin、全局、独占 batch（否则 `SoleOpRequired`），不能出现在 WHAT_IF 中；输入契约 8 的规范 JSON 与 hash 规则同样适用于 `AccessDoc`（非法 → `InvalidAccess`）。主体 id 0–15 与 `0x5641_xxxx` 保留。写入授权在内核事务中按 ADR 0017 §6.2 检查（缺权限 → `Unauthorized{op_index, ref, need}`），dry run（`WhatIf`、`ImpactBatch`）与提交同一谓词。非 owner 主体的 batch 须携带其引入的每个 content hash 字段（`content`、`note`、`payload_hash`、`meta`）的字节，除非该 hash 已属于其可读的 logical（ADR 0017 §6.3）；被 shred 的内容 → `ContentShredded{content}`。
 
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
@@ -818,6 +837,13 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ValidationExists{rule, curvec, verdict}` | `if_absent` 的 RecordValidation 遇到已有记录（P7，SD10） | 同名 |
 | `HandoffTaken{by}` / `HandoffNotAddressed` / `BranchMismatch` | handoff 已被他人接受；`to_agent` 不符；接受方不在 handoff 的 branch（P7，daemon 错误，ADR 0015 §7） | 同名 |
 | `UnknownRef` | 引用不存在的 id / handle | `InvalidArgument` |
+| `Unauthorized{op_index, ref, need}` | P9：主体缺少该 Op 所需权限（ADR 0017 §6.2）；紧接 `UnknownRef` 检查，`ref` 只回显调用者自己的引用，不随 revision 是否存在而变化 | 同名 |
+| `ContentShredded{content}` | P9：Op 或 blob 指向已 shred 的内容（F13） | 同名 |
+| `MergeUnauthorized{count}` | P9：merge 中有变更不满足 SD19 P9 补充的逐类规则；只给数量 | 同名 |
+| `BranchOfAnotherPrincipal` | P9：在他人创建的 branch 上提交或归档（F11） | 同名 |
+| `InvalidAccess` / `AccessRevoked` / `SessionOfAnotherPrincipal` | P9：访问文档非法；连接的 uid 已被移除；绑定他人 session（daemon 错误） | 同名 |
+| `MigrationIncomplete{step}` | P9：存储处于迁移中途或未通过格式 5 校验（ADR 0017 §10，store 错误） | 同名 |
+| `ServerNotOwner` | P9：socket 对端 uid 与 `endpoint` 记录的 owner 不符（客户端侧） | 同名 |
 | `InvalidDep` | deps 引用非本会话证书中 required 条目的 handle，且不是显式 `logical@rev`（P3；daemon 在构造 batch 之前检查） | 同名 |
 | `NotCertified{logical, summary}` | `CertifiedCurrent` 读取的目标不是 CERTIFIED head（P3，读错误） | 同名 |
 | `OutcomeUnknown` | 组提交在 durable 之前失败或进程 poison；客户端重启后用 `txn_status` 查询（P3，daemon 错误） | 同名 |
@@ -869,6 +895,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ctx_changes` | `(since_epoch, scope?, branch?, max_items, wait_ms? ≤ 30 s)` → 持久化 `diff_log` 中逐 epoch 的 status_diff；`Truncated{earliest}` 仅在投影重建或无法追上时出现 | P7 |
 
 所有工具返回逐维度状态，汇总遵守 SD13。
+
+**P9（v1.9.0，ADR 0017 §5）**：所有工具响应经唯一的 `redact()` 点脱敏（SD15 补充）；`ctx_recall` 的资格含授权，每个主体返回 `min(limit, |可读的合格项|)` 项；`ctx_read` 对不可读的 key 返回 UNAVAILABLE 且不给 payload，被 shred 的 payload 为 `payload: null, unavailable: "shredded"`；`ctx_handoff_begin` 增加 `to`，接受方读不到的条目只计入 `dropped_unauthorized`。证书响应不含 vector（`vector_size`）；访问文档撤销授权后，此前签发的证书与账本读取校验为 `Denied`。
 
 ### 6.4 Certificate
 
@@ -976,7 +1004,7 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 -- client side outbox/<stream>.{log,seq,ack,state}: self-verifying records (seq, agent_id, event); packet_id = (stream, seq)（ADR 0010 §5）
 ```
 
-- **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围（blobs、快照中的 payload 缓存、git 镜像、导出物）在 P9 定义；镜像与导出物需要重新生成。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
+- **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围在 P9 定义（v1.9.0，ADR 0017 §8）：pack 记录为加密的 `CXBE`，key 存于 `keys/keylog-NNNNNNNN`（`"CXKY" | content_hash | key | blake3 check`），shred 重写 key log 并清理投影；投影（recall、vectors、jobs、candidates）增加 `purged_through`，jobs 与 candidates 增加 `Skipped{egress | shredded}`；镜像经 `ctx mirror export --rebuild` 重新生成；备份、快照、swap、SSD 残留与已释放的文件系统块不在保证范围内。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
 - 内存内核是 op_log 的物化视图；除 op_log、blobs 与 session log 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。`sessions`、`read_ledger`、`certificates` 是 session log（ADR 0008 §4）的投影；session log 不参与内核状态。
 - EventLog（JSONL / bincode，带 version）是 op_log 的可移植导出；研究 track 的所有 baseline 消费同一份 EventLog。
 - 格式变更必须版本化并提供迁移，迁移有测试（T68）。
@@ -1027,7 +1055,7 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 | T10 | P0 | A→B 后 B→A：`CycleDetected{path}`；self-loop 被拒 |
 | T11 | P0 | 含环 batch 整体拒绝，digest/epoch 不变；oracle 对强制有环输入给出 lfp（无 base 时全 false）。Motik et al. 2019 Example 5 的 ground 形式作为 oracle golden：规则 `R(a,b)→R(b,a)`、`R(b,a)→R(a,b)`，base={R(a,b)}；撤销 base 后两者 lfp 均为 false（naive counting 会自支持）；oracle 通过 `jacobi(raw_rules)` 绕过 InputModel 的环检查 |
 | T12 | P0/P3 | 两个 writer 都期望 v1：恰好一个提交，另一个 `HeadConflict{actual}` |
-| T13 | P2 | HISTORICAL(e) 与 (e+1) 不可变，重复读取逐字节一致 |
+| T13 | P2 | HISTORICAL(e) 与 (e+1) 不可变，重复读取逐字节一致；P9 起按主体：同一主体、同一访问文档下逐字节一致（v1.9.0） |
 | T14 | P6 | WHAT_IF（含 AddRule、SetRuleEnabled、RecordValidation）执行后：目标 branch 的 digest 与 op_log 长度不变，epoch 不变，arena 长度不变 |
 | T47 | P6 | branch 隔离：在 branch b 中 AddRule / disable 规则 / RecordValidation / OpenArtifact / SetPolicy 后，main 的 digest 逐字节不变；main 引用 b 中新建的 rule 或 revision → `UnknownRef` |
 | T15/b/c | P0/P3 | Sem 无记录 → PENDING；传递：下游也 PENDING；Rejected：下游 STALE，S 不变 |
@@ -1117,6 +1145,17 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 | T58 | P9 | principal 参数伪造无效 |
 | T59 | P9 | shred 后 payload 不可读、拓扑与状态不变、WHY 不泄露内容 |
 | T60 | P9 | 跨 lane 引用的授权检查 |
+| T98 | P9 | uid 映射与文件系统：已映射 / 未映射 uid；admin、observer 拒绝其他 uid；文件与目录权限（含 `-wal`、`-shm` 及 migrate、export、doctor、hook 写的文件）；带 ACL、可继承 ACE、他人所有的条目被拒；上级目录规则；客户端拒绝 owner 不符的服务端（ADR 0017 §11） |
+| T99 | P9 | 绑定他人 session（id、call id、harness key）被拒；`ctx-mcp` 的请求都在非 owner 允许列表中；handoff 按 `to` 寻址，`dropped_unauthorized` |
+| T100 | P9 | 每种响应类型中，同一 epoch 触及的隐藏 logical 只以 §2.3 允许的计数出现，从不出现 key、id、revision 或 rule |
+| T101 | P9 | 撤销授权后，此前的证书与账本读取校验为 `Denied`；被移除的 uid 得 `AccessRevoked` |
+| T102 | P9 | ADR 0017 §6.2 每条写入规则；`what_if` 与 `ImpactBatch` 恰好拒绝提交会拒绝的内容；`Unauthorized` 不随 revision 是否存在而变化；observer 豁免 |
+| T103 | P9 | shred：提交后、key log rename 前后、rename 与删除之间、删除与最后 sync_dir 之间、各投影 purge 中的 kill point 与模拟断电；断电后先不打开存储检查磁盘，报告 purged 之后 `keys/` 中无该 key；恢复后 `strings` 找不到正文；重发字节被拒；镜像 `PayloadGone` |
+| T104 | P9 | 迁移 4 → 5：hash 与帧校验和不变、证书仍有效、无明文残留；每个步骤边界及步骤 3、4 内部的 kill 与断电，P8 / P9 二进制行为、重跑结果等于一次跑完；“标记已落盘、步骤 2 未开始”固定用例；有标记或有明文的格式 5 存储都被拒，从不凭日志版本报告成功 |
+| T105 | P9 | 非 egress lane 的正文从不到达非 local validator、judge、embedder 与镜像；egress 打开后 `Skipped{egress}` 重新排队 |
+| T106 | P9 | 无访问文档时 P8 测试全部通过；store owner 的响应与 P8 语义相同 |
+| T107 | P9 | 非 owner 用已知 hash 不带字节与用未知 hash 得到同样的 `MissingBlob`（所有 hash 字段、dry run 与提交）；被 shred 的字节 → `ContentShredded`；可读 logical 上的 hash 无需字节 |
+| T108 | P9 | branch 与 merge：SD19 P9 补充每一类各一例（合并进 main 时 Policy 变更、未 curate 的 base、隐藏目标的 artifact、隐藏 premise 的规则 → `MergeUnauthorized`；ValidationRecord 与锚点搬运并保留来源）；合并进自己的 branch 可追上 main；非创建者归档被拒；`BranchOfAnotherPrincipal` |
 | T61 | P10 | lazy 节点 STRICT 读不返回缓存 CERTIFIED |
 | T62 | P0/P3 | P0（oracle 版）：两个独立 InputModel 共用一个 epoch 计数器；oracle 的纯函数 `cert_verdict(vector, inputs, live_pos)` 签名不含 epoch，对 epoch 不同但 vector 与输入相同的两个状态给出相同判定。P3（引擎版）：同 branch 的无关提交推进 epoch 后证书仍 Valid，且 `validate` 的签名不含 epoch 参数（只以 issued_epoch 作 strict 区间下界）；跨 branch 部分随多 branch 在 P6 补齐 |
 | T63 | P0 | WHY 返回全部 active 规则，witness 与 oracle 一致，Ref 单列为 non-supporting |
@@ -1153,6 +1192,8 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 - **PROP12** anchors observer 输出 == 由 git 历史全量重算（P5a/P5b）。
 - **PROP13** branch 派生状态 == 在 branch 输入上运行 oracle（P6）。
 - **PROP14** 检索（P8）：随机存储、查询、模式、预算与 level 下，certified 项在该 epoch 都是 CERTIFIED；advisory 标签等于 oracle summary；页面只在合格集耗尽时不足；packing 保持标签与顺序；重建后结果（集合与状态）相同。10,000 seed。
+- **PROP15** 授权（P9，ADR 0017 §11）：随机 `generate_p7` 历史与随机访问文档（2–5 个主体、组、shared 与 personal lane、dir 授权、deny、`curators = *writers`、`code_lanes`，中途撤销与 `SetMetadata`）。检查：`Authorized` 等于 `contextdb-oracle` 中独立的决策表参考；§5 的每种响应经 `redact` 后无隐藏 key、id、revision、rule 或 witness，计数等于参考；派生快照与 digest 与主体无关；每个主体的 recall 返回 `min(limit, |可读合格项|)` 项；写入拒绝（含 merge）等于参考；主体 id 不落在保留区间。10,000 seed。
+- **PROP16** shred（P9）：随机含 shred 的历史，与去掉 shred batch 并重编 epoch 的同一历史比较：拓扑、状态与 digest 在重编下相等；恰好被 shred 的内容为 `Shredded`；重放与 `doctor` 一致。10,000 seed。
 
 **Coverage 门槛**（PROP1 suite 结束时断言）：≥5% tx 在同一 revision 上混合 head 与 base 翻转；≥5% 含 alternative-support save；≥3% cycle 拒绝；≥3% CAS 冲突；≥3% 同 tx 插入规则及其 premise；≥2% 触发 PK 慢路径（P1 起）。
 
@@ -1238,8 +1279,13 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | Bash 副作用绕过 PreToolUse 的路径解析 | 只能经 PostToolUse git diff 与 drift 事后检测；文档化 | P4 |
 | retry escape（知情覆盖） | CAS 只防 lost update；文档化限制（T32） | P3 |
 | LLM validator 被诱导误判 | 从不写 ValidationRecord（只写不 gate 的 PendingReview）；handle allowlist；`claude -p` 沙箱（无工具 / MCP / 设置 / hook，nonce 包裹正文，进程组超时终止；用户 CLAUDE.md、记忆与托管设置可能仍加载，除非隔离配置目录可用——如实报告）；`Command` 的 `trusted` 由数据目录写入者自行声明；去重与上限；可审计（prompt_sha256、ValidationMeta） | P7（ADR 0015 §4.1–§4.3） |
-| 篡改 op log | hash 链 + doctor 校验；可选签名 | P2 / P9 |
-| 敏感内容需删除 | blob crypto-shred；`content_hash` 确认攻击边界文档化，必要时 keyed hash；P9 前文档化“不支持 erasure” | P9 |
+| 篡改 op log | hash 链 + doctor 校验；签名推迟到独立 ADR（ADR 0017 §9，F4） | P2 |
+| 同一 OS 用户的进程 | 即 store owner（F12），可读全部文件；需要隔离的 agent 须以另一个 OS 用户运行（ADR 0017 §2.3） | P9 文档化 |
+| 其他 OS 用户读取数据文件或冒充 daemon | G-FS：条目归 daemon uid、无 ACL、0600/0700、umask 077，上级目录 `StrictModes` 规则，客户端核对对端 uid（`ServerNotOwner`） | P9 |
+| 非 owner 用已知 hash 冒取内容 | proof of possession（F10），`MissingBlob` 与不存在不可区分 | P9 |
+| 计数与时序侧信道 | `Redacted{count}`、`redacted`、`vector_size`、`MergeUnauthorized{count}`、全局 epoch 与稠密 id、recall 延迟与 bm25 分数等可被观察，文档化（ADR 0017 §2.3、§5.9） | P9 文档化 |
+| 已映射主体的拒绝服务 | 不在 P9 范围（无按主体配额）；store owner 移除该主体（`AccessRevoked`） | P9 文档化 |
+| 敏感内容需删除 | crypto-shred（ADR 0017 §8）：每内容一个 key，shred 重写 key log 并清理投影，purge 完成后 G-SHRED 成立；session log、outbox、他人复制的文本、已外发数据、备份 / 快照 / swap / SSD 与已释放块不在范围内；`content_hash` 确认攻击对 op_log 与投影的持有者成立，经 socket 由 proof of possession 关闭，需要时再引入 keyed hash | P9 |
 | 检索索引滞后绕过认证 | status 是排序前硬过滤（每个 ranker 内判定资格）；索引只用于候选发现；滞后只会漏项并报告 `Lagging` | P8 |
 | embedding 命令收到记录正文 | 默认关闭，由 owner 配置；最小环境、空工作目录、进程组与输出上限 | P8 |
 | 镜像 ref 含全部正文并被推送 | ContextDB 从不推送；普通 `git push` 不带 `refs/contextdb/*`，但 `--mirror` 与备份 / 镜像工具会带上——README 与导出输出说明；导出不写临时文件 | P8 |
@@ -1357,6 +1403,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.9.0 | 2026-11-06 | P9 G0（ADR 0017 r0.5；独立复核 r0.1 8 blocker / 9 major / 9 minor，r0.2 闭环余 7 major / 12 minor（N1–N19）在 r0.3 关闭，再经两轮聚焦复核与三轮 owner 复核：merge 逐类授权、macOS ACL 与上级目录、personal lane 合成条目、key log 删除后的目录同步、迁移完成状态与重跑）；owner 确认 F1–F13 推荐项，F14 采用收窄的搬运规则。SD11 授权定义与 `entry(lane)`；SD13 渲染时脱敏；SD15 脱敏形状；SD19 两个全局 Op、branch 创建者、merge 授权；§5 P9 细化与 Gate；§6.1 输入契约 15；§6.2 新错误；§6.3 脱敏与撤销；§3.5 #7 与 §7 key log、`CXBE`、`purged_through`；§8.1 T13 按主体、T98–T108；§8.2 PROP15、PROP16；§10 威胁表。op_log 格式 5，协议 7。 |
 | 1.8.3 | 2026-11-06 | P8 milestone 7（G5 与实现复核，非语义变更）：§5 P8 bm25 排序窗口（2,048 行、按行 id、重建不变、分页在同一读快照内），使含高频词的查询不再随存储规模线性增长；资格、排序前过滤、`exhausted` 与短页规则不变。G5 基准的记录与查询词改为 Zipf 分布（s = 1，20,000 词），40 词均匀分布的密集词表只报告不作门槛（ADR 0016 §10 预算为初始值，可经 ADR 校准）。 |
 | 1.8.2 | 2026-11-04 | P8 milestone 4（ADR 0016 §6 实现说明）：§6.3 `ctx_supersede` 同内容回复由 T90 固定（`Committed`、head 自身、空 delta，消耗一个 epoch）。Summary 待验证计数的基准由“最近一次 Verified 记录”实现为“差异最少的 Verified 向量”：内核按向量而非时间保存 ValidationRecord，无法得知“最近”；两者在常见情形下相同，且当前向量已验证时计数恰为 0。witness 规则取结论为该 revision、含 Sem 前提的第一条 enabled 规则（按规则 id，即规范 witness 顺序）。 |
 | 1.8.1 | 2026-11-04 | P8 milestone 3 更正（非语义变更）：ADR 0016 §4.2 原写格式 3 的 recall 条目读作 `header`；格式 3 的读事件不记录来源，无法区分 recall 与 read，因此一律读作 `full`。level 只供参考，没有检查依赖它。 |

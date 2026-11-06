@@ -1,5 +1,16 @@
 # Implementation status
 
+**P9 G0 passed** (2026-11-06) ([P9 gate](gates/P9.md), [ADR 0017](adr/0017-p9-principals-permissions-security.md) r0.5, SPEC v1.9.0). The independent review found 8 blockers, 9 majors and 9 minors in r0.1. Closure rounds, two focused checks and three owner reviews followed. The owner confirmed F1–F13 as recommended and F14 in a narrowed form. P9 covers:
+- one principal per OS user, mapped from the peer uid;
+- per-lane authorisation with a single redaction point;
+- authorised writes and merges, and proof of possession;
+- file-system isolation (owner, modes and no ACLs);
+- per-lane egress;
+- crypto-shred through a key log;
+- op_log format 5 and protocol 7.
+
+Implementation has not started.
+
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;
 - index health and `ctx reindex`;

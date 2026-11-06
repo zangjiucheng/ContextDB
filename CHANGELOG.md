@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **P9 G0** (ADR 0017 r0.5, SPEC v1.9.0): the design for principals, permissions and security was accepted after independent review rounds and three owner reviews. No code changes yet.
 - **P8 milestone 7: verification fixes** (ADR 0016 §10; found by G4 and G5).
   - **Fix: the text ranker no longer scores every match.** bm25 ranks matches in windows of 2,048 rows, by row id (latest created logical first); paging walks every window, so every match is still reached. A query with at most 2,048 matches keeps the plain bm25 order. Row ids are now `(logical << 16) | branch`, so windows and results are the same after a rebuild; an older `recall.sqlite` is rebuilt on open. Before, a query on a term most records hold took time linear in the store (at 10⁵ records, 152 ms idle p99 and up to 370 ms under a commit stream), and lexical candidate generation became quadratic in a backfill.
   - **Fix: recall pages agree with each other.** One recall reads every bm25 page in one read snapshot, on its own read-only connection to `recall.sqlite` (WAL), so a concurrent index write can neither delay recall nor shift a row past a page boundary.
