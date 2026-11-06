@@ -1,0 +1,2059 @@
+rustc 1.95.0 (59807616e 2026-04-14)
+== gate-regression.sh (P0-P5b G2/G3/G4 at gate counts)
+== paranoid testkit (P0 goldens, P1/P2/P3 properties at 10,000 seeds)
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_testkit-3ba7b66c095556fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/exhaustive.rs (<remote>/target/release/deps/exhaustive-3875b4827ced94d8)
+
+running 1 test
+test bounded_depth6 ... ignored, nightly bounded exhaustive gate; run --release --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/memory_accounting.rs (<remote>/target/release/deps/memory_accounting-6c278fb5c2957f0e)
+
+running 1 test
+test accounting_is_a_tight_lower_bound_of_live_heap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s
+
+     Running tests/metamorphic.rs (<remote>/target/release/deps/metamorphic-3af397c7e288f3ff)
+
+running 1 test
+test prop7_identity_renaming_permutation_split_merge_1000_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/p0.rs (<remote>/target/release/deps/p0-d7e35fc8b6a8b49d)
+
+running 54 tests
+test counting::cases::s13_rows_fn_summary_precedence_and_semantic_witness ... ok
+test counting::cases::t01_t02_t03_conjunction_alternatives_and_canonical_witness ... ok
+test counting::cases::s13_failed_incidence_order_and_sem_head_pending ... ok
+test counting::cases::t04_chain_exact_flips_and_alternative_save ... ok
+test counting::cases::t07ac_t63_refs_are_non_supporting_and_why_lists_all ... ok
+test counting::cases::t09abcd_canonical_strength_versions_and_duplicate_disabled ... ok
+test counting::cases::t09i_evidence_immutable_before_cas_and_dedup ... ok
+test counting::cases::t06abc_cur_sem_and_alternative_why_not ... ok
+test counting::cases::t09j_summary_sem_only ... ok
+test counting::cases::t09kl_metadata_and_import_artifact_do_not_change_derivation ... ok
+test counting::cases::t09n_rebind_errors_atomicity_and_enabled_preservation ... ok
+test counting::cases::t09mv_policy_final_batch_enabled_and_no_base ... ok
+test counting::cases::t09n_t29_successful_rebind_and_mutable_column_undo ... ok
+test counting::cases::t09pq_local_refs_dedup_and_id_rollback ... ok
+test counting::cases::t09t_observer_anchor_delete_and_watermark_cas ... ok
+test counting::cases::t09rs_keys_policy_hash_and_channel_errors ... ok
+test counting::cases::t09w_reference_only_rules_never_support ... ok
+test counting::cases::t09u_artifact_local_binding_and_resolve ... ok
+test counting::cases::t10_cycle_path_and_csr_index_ids_are_exact ... ok
+test counting::cases::t10_t11_t25_cycle_disabled_rollback_and_motik_lfp ... ok
+test counting::cases::t12_t64_sequential_cas_heads_do_not_retract_base ... ok
+test counting::cases::t24_pin_strict_cur_and_evidence ... ok
+test counting::cases::t29_epoch_overflow_and_watermark_capacity_are_atomic ... ok
+test counting::cases::t15e_t26_virtual_sem_cycles_and_revision_dag ... ok
+test counting::cases::t15bc_t15d_t16b_sem_transitivity_validation_sem_head_and_aba ... ok
+test counting::cases::t62_cert_oracle_does_not_observe_epoch ... ok
+test full::cases::s13_failed_incidence_order_and_sem_head_pending ... ok
+test full::cases::s13_rows_fn_summary_precedence_and_semantic_witness ... ok
+test full::cases::t01_t02_t03_conjunction_alternatives_and_canonical_witness ... ok
+test full::cases::t04_chain_exact_flips_and_alternative_save ... ok
+test full::cases::t07ac_t63_refs_are_non_supporting_and_why_lists_all ... ok
+test full::cases::t06abc_cur_sem_and_alternative_why_not ... ok
+test full::cases::t09abcd_canonical_strength_versions_and_duplicate_disabled ... ok
+test full::cases::t09i_evidence_immutable_before_cas_and_dedup ... ok
+test full::cases::t09j_summary_sem_only ... ok
+test full::cases::t09kl_metadata_and_import_artifact_do_not_change_derivation ... ok
+test full::cases::t09mv_policy_final_batch_enabled_and_no_base ... ok
+test full::cases::t09n_rebind_errors_atomicity_and_enabled_preservation ... ok
+test full::cases::t09n_t29_successful_rebind_and_mutable_column_undo ... ok
+test full::cases::t09rs_keys_policy_hash_and_channel_errors ... ok
+test full::cases::t09pq_local_refs_dedup_and_id_rollback ... ok
+test full::cases::t09t_observer_anchor_delete_and_watermark_cas ... ok
+test full::cases::t09u_artifact_local_binding_and_resolve ... ok
+test full::cases::t10_cycle_path_and_csr_index_ids_are_exact ... ok
+test full::cases::t09w_reference_only_rules_never_support ... ok
+test full::cases::t12_t64_sequential_cas_heads_do_not_retract_base ... ok
+test full::cases::t10_t11_t25_cycle_disabled_rollback_and_motik_lfp ... ok
+test full::cases::t15e_t26_virtual_sem_cycles_and_revision_dag ... ok
+test full::cases::t29_epoch_overflow_and_watermark_capacity_are_atomic ... ok
+test full::cases::t24_pin_strict_cur_and_evidence ... ok
+test full::cases::t62_cert_oracle_does_not_observe_epoch ... ok
+test full::cases::t15bc_t15d_t16b_sem_transitivity_validation_sem_head_and_aba ... ok
+test counting::cases::t09efgho_rule_admission_and_error_precedence ... ok
+test full::cases::t09efgho_rule_admission_and_error_precedence ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/p1.rs (<remote>/target/release/deps/p1-7c11423925dd82f2)
+
+running 24 tests
+test counting::cases::observer_scope_position_and_anchor_update_channels ... ok
+test counting::cases::artifact_nonzero_id_and_observer_resolve ... ok
+test counting::cases::history_cancellation_and_node_created_between_epochs ... ok
+test counting::cases::mongodb_postgresql_scenario_and_stale_reason_with_alternative ... ok
+test counting::cases::metamorphic_disjoint_writes_and_idempotent_ops ... ok
+test counting::cases::t08_multiple_related_heads_only_publish_final_state ... ok
+test counting::cases::t08_t08b_t22_net_batch_and_head_base_mixed ... ok
+test counting::cases::t06d_cur_rebind_and_t07d_impact_undo_diff ... ok
+test counting::cases::t23_t27_insert_rule_assert_premise_disabled_updates ... ok
+test counting::cases::t31_hu_motik_horrocks_example3_dag ... ok
+test full::cases::artifact_nonzero_id_and_observer_resolve ... ok
+test full::cases::history_cancellation_and_node_created_between_epochs ... ok
+test full::cases::metamorphic_disjoint_writes_and_idempotent_ops ... ok
+test full::cases::mongodb_postgresql_scenario_and_stale_reason_with_alternative ... ok
+test full::cases::observer_scope_position_and_anchor_update_channels ... ok
+test full::cases::t06d_cur_rebind_and_t07d_impact_undo_diff ... ok
+test full::cases::t23_t27_insert_rule_assert_premise_disabled_updates ... ok
+test full::cases::t08_multiple_related_heads_only_publish_final_state ... ok
+test full::cases::t08_t08b_t22_net_batch_and_head_base_mixed ... ok
+test full::cases::t31_hu_motik_horrocks_example3_dag ... ok
+test t05_t30_locality_and_no_downstream_visit_after_alternative_insert ... ok
+test counting::cases::admission_inclusive_boundaries_and_metadata_errors ... ok
+test full::cases::admission_inclusive_boundaries_and_metadata_errors ... ok
+test early_witness_change_stops_status_propagation ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/p1_properties.rs (<remote>/target/release/deps/p1_properties-1d8716f4979514ef)
+
+running 1 test
+test prop1_through_prop9_10000_chacha8_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.31s
+
+     Running tests/p2_blobs.rs (<remote>/target/release/deps/p2_blobs-54613350862afe95)
+
+running 1 test
+test missing_blob_follows_per_op_check_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/p2_rebuild.rs (<remote>/target/release/deps/p2_rebuild-6857ba2f70eb929c)
+
+running 2 tests
+test read_modes_reproduce_past_states_1000_seeds ... ok
+test rebuild_from_inputs_equals_incremental_10000_seeds ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s
+
+     Running tests/p3.rs (<remote>/target/release/deps/p3-79802ba3d77a0e8f)
+
+running 9 tests
+test issuance_rejects_a_revision_of_another_logical ... ok
+test stale_reason_is_inherited_through_a_current_pin ... ok
+test sem_premise_not_l1_with_a_supported_head_inherits_the_premise_reason ... ok
+test t06d_sem_validation_or_rebind_restores_without_new_revision ... ok
+test t16_certificate_bound_to_old_head_is_invalid ... ok
+test t21_two_effective_versions_of_one_logical_is_ambiguous ... ok
+test t62_p3_unrelated_commits_keep_certificate_valid_and_validate_has_no_epoch ... ok
+test t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid ... ok
+test t65_verdict_priority ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/p3_certificates.rs (<remote>/target/release/deps/p3_certificates-ebee5e89f06061b6)
+
+running 1 test
+test prop11_certificates_equal_oracle_10000_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.48s
+
+     Running tests/p6_branch_fuzz.rs (<remote>/target/release/deps/p6_branch_fuzz-00ba5032bd3e8742)
+
+running 1 test
+test random_branch_histories ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
+
+     Running tests/p6_branches.rs (<remote>/target/release/deps/p6_branches-13da29b630fe1822)
+
+running 9 tests
+test branch_table ... ok
+test t75_global_key_namespace ... ok
+test global_ids_are_unique_across_branches ... ok
+test read_sets_through_the_kernel ... ok
+test fork_shares_state_until_a_write ... ok
+test t47_branch_isolation ... ok
+test t72_cycle_graphs_are_per_branch ... ok
+test lone_branch_equals_db ... ok
+test main_only_kernel_equals_db ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/p6_conflict_gate.rs (<remote>/target/release/deps/p6_conflict_gate-368b05b8c744362e)
+
+running 2 tests
+test t51_open_conflict_blocks_certified_only ... ok
+test gate_matches_the_oracles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/p6_g3_properties.rs (<remote>/target/release/deps/p6_g3_properties-9940cba2522153d1)
+
+running 3 tests
+test prop7_expect_heads_reads_the_listed_heads ... ok
+test prop7_branch_ops_commute_on_disjoint_resources ... ok
+test prop11_certificates_per_branch_equal_the_oracle ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.28s
+
+     Running tests/p6_kernel_edges.rs (<remote>/target/release/deps/p6_kernel_edges-2a2b786ba86f3275)
+
+running 17 tests
+test conflicting_versions_names_the_global_logical ... ok
+test dry_run_drops_metadata_of_new_logicals ... ok
+test dry_run_of_a_retried_batch ... ok
+test branch_digests_cover_the_branch_table_and_sync_points ... ok
+test import_refuses_inconsistent_ids ... ok
+test invisible_required_entry_is_changed ... ok
+test main_identity_until_renumbered ... ok
+test late_invalid_read_set_in_a_merge_names_the_global_logical ... ok
+test merge_read_set_duplicates ... ok
+test state_diff_detects_differences ... ok
+test merge_not_certified_names_the_first_failing_logical_by_id ... ok
+test require_certified_refuses_conflicts_off_the_head ... ok
+test view_accessors_on_a_renumbered_branch ... ok
+test view_observation_support_and_unobserved_anchors ... ok
+test validation_records_conflict_or_converge ... ok
+test superseded_sync_points_are_pruned ... ok
+test dry_run_rolls_back_colliding_keys ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/p6_merge.rs (<remote>/target/release/deps/p6_merge-63e8dd6ed45f1dcd)
+
+running 15 tests
+test criss_cross_fails_closed ... ok
+test merge_checks_policy_on_the_merged_state ... ok
+test observer_domain ... ok
+test merge_checks_read_sets_and_dry_runs ... ok
+test head_conflict_and_convergence ... ok
+test merge_takes_source_changes_and_keeps_target_changes ... ok
+test policy_and_metadata ... ok
+test r1_every_sync_point_is_kept ... ok
+test r3_criss_cross_policy_refuses ... ok
+test r3_criss_cross_on_enabled_and_policy ... ok
+test repeated_merges_both_ways ... ok
+test read_set_errors_follow_op_order ... ok
+test t72_merge_rechecks_the_cycle_graph ... ok
+test t20_merge_and_certification ... ok
+test revert_through_a_third_branch ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/p6_prop13.rs (<remote>/target/release/deps/p6_prop13-f40085d487e4b00c)
+
+running 1 test
+test prop13_branches_equal_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.93s
+
+     Running tests/p6_read_set.rs (<remote>/target/release/deps/p6_read_set-3c3b835a3623ca44)
+
+running 7 tests
+test branch_ops_need_the_multi_branch_kernel ... ok
+test policy_violation_precedes_read_set_conflict ... ok
+test read_then_supersede_in_one_batch_commits ... ok
+test invalid_read_sets ... ok
+test references_resolve_or_are_unknown ... ok
+test stale_read_rejects_the_whole_batch ... ok
+test t19_write_skew_second_plan_fails ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/p6_views.rs (<remote>/target/release/deps/p6_views-1623642e4853b688)
+
+running 4 tests
+test s13_branch_only_on_main ... ok
+test branch_reads_use_global_ids ... ok
+test t62_certificates_are_per_branch ... ok
+test main_view_equals_db ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/p6_visibility.rs (<remote>/target/release/deps/p6_visibility-cb9fdb2f2bad4ed0)
+
+running 8 tests
+test archived_branches ... ok
+test imports_are_inherited_and_local_dedup_records_nothing ... ok
+test fork_boundary_and_inheritance ... ok
+test cross_branch_rule_dedup ... ok
+test t73_cross_branch_revision_dedup ... ok
+test t48_multi_head_atomicity_on_a_branch ... ok
+test staged_imports_are_named_by_global_id ... ok
+test sibling_replay_imports_match_a_standalone_db ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running tests/p6_what_if.rs (<remote>/target/release/deps/p6_what_if-bff51704b9046141)
+
+running 5 tests
+test kernel_what_if_on_a_branch ... ok
+test rejected_what_if ... ok
+test t14_what_if_changes_nothing ... ok
+test dry_runs_leave_no_trace ... ok
+test what_if_equals_commit_and_restores_everything ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+     Running tests/p7_g3_properties.rs (<remote>/target/release/deps/p7_g3_properties-ecef14df635058cb)
+
+running 3 tests
+test prop7_meta_and_notes_change_no_derived_state ... ok
+test prop7_meta_and_notes_through_forks_and_merges ... ok
+test prop1_with_artifacts_meta_and_if_absent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.05s
+
+     Running tests/p7_validation.rs (<remote>/target/release/deps/p7_validation-ea655d59fb3682cd)
+
+running 6 tests
+test eventlog_v2_carries_format4_ops ... ok
+test format4_tags_are_canonical ... ok
+test missing_blob_covers_meta_and_note ... ok
+test t81_if_absent_never_overwrites_an_existing_verdict ... ok
+test meta_never_changes_derived_state ... ok
+test merge_classifies_validations_without_meta ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/properties.rs (<remote>/target/release/deps/properties-399901f9a1d3d2e1)
+
+running 1 test
+test prop8_i1_error_equivalence_1000_chacha8_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/shapes.rs (<remote>/target/release/deps/shapes-0ed45bdc66d1524b)
+
+running 1 test
+test shape_stats_and_replay_are_exact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests contextdb_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== exhaustive depth 6 (gate)
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/exhaustive.rs (<remote>/target/release/deps/exhaustive-3875b4827ced94d8)
+
+running 1 test
+semantic_pending_transitions=2562 semantic_rejected_transitions=284
+bounded exhaustive: depth=6 alphabet=25 states=770 transitions=11275 accepted=6155 rejected=5120 violations=0
+test bounded_depth6 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+== exhaustive depth 8 (report)
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/exhaustive.rs (<remote>/target/release/deps/exhaustive-3875b4827ced94d8)
+
+running 1 test
+semantic_pending_transitions=9174 semantic_rejected_transitions=2818
+bounded exhaustive: depth=8 alphabet=25 states=1711 transitions=30350 accepted=18104 rejected=12246 violations=0
+test bounded_depth6 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+== store and daemon crash injection (1,000 per point), PROP10 (10,000 seeds)
+   Compiling contextdb-store v0.2.0 (<remote>/src/crates/contextdb-store)
+   Compiling contextdb-daemon v0.2.0 (<remote>/src/crates/contextdb-daemon)
+    Finished `release` profile [optimized] target(s) in 20.41s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_daemon-46b9f5070828076e)
+
+running 14 tests
+test mirror::tests::quoting_round_trips ... ok
+test mirror::tests::segments_are_injective_and_never_dot_names ... ok
+test index_health::tests::states_follow_the_indexer ... ok
+test packing::tests::no_budget_renders_every_item_at_the_wanted_level ... ok
+test mirror::tests::trailers_round_trip ... ok
+test packing::tests::levels_step_down_then_headers_then_stop ... ok
+test packing::tests::tokens_are_bytes_over_four_rounded_up ... ok
+test ranking::tests::dir_covers_whole_segments ... ok
+test ranking::tests::exact_key_first_then_fused_score_then_key_rank_then_id ... ok
+test ranking::tests::fusion_is_deterministic_and_order_free_in_ties ... ok
+test ranking::tests::ties_break_by_key_rank_then_logical ... ok
+test candidates::tests::a_milestone_6_table_gains_the_judging_columns ... ok
+test mirror::tests::t97_encoding_is_injective_over_random_keys ... ok
+test index_health::tests::the_wait_wakes_on_progress_and_times_out_otherwise ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/bin/ctxd.rs (<remote>/target/release/deps/ctxd-a8fd83d2e4a1d7df)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-branch-stress.rs (<remote>/target/release/deps/ctxd_branch_stress-be2cda603474ad20)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-stress.rs (<remote>/target/release/deps/ctxd_stress-e2eef1cfa72924c4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-validate-stress.rs (<remote>/target/release/deps/ctxd_validate_stress-c4aa1e09fee12d69)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/actor.rs (<remote>/target/release/deps/actor-501d1b56123f45d1)
+
+running 6 tests
+test timed_out_write_is_resolved_through_txn_status ... ok
+test queued_exact_impacts_are_paced_and_all_answered ... ok
+test sequential_writes_reclaim_replicas_without_clones ... ok
+test writes_publish_epochs_and_old_snapshots_never_change ... ok
+test concurrent_writers_group_and_lose_nothing ... ok
+test rejected_batches_publish_nothing_and_shutdown_stops_the_actor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/anchors.rs (<remote>/target/release/deps/anchors-9a5105aa22134b80)
+
+running 20 tests
+test announce_record_gates_live_evidence ... ok
+test aggregate_explicit_certificate_retains_read_epoch_and_complete_diffs ... ok
+test child_check_uses_the_owner_of_inherited_root_proofs ... ok
+test failed_full_strict_check_reports_supersession_once_without_filtered_consumption ... ok
+test filtered_strict_proof_keeps_aba_window_across_restart_until_explicit_reread ... ok
+test g4_concurrent_wakeups_commit_once_and_converge ... ok
+test g4_corrupt_descriptor_makes_the_scope_unknown ... ok
+test g4_interrupted_observer_batch_is_atomic_and_rescan_converges ... ok
+test range_is_bound_to_exact_manifest_and_head_and_excludes_ref_only_roots ... ok
+test legacy_missing_original_proof_cannot_be_filtered_out_by_current_support ... ok
+test racing_restore_of_a_broken_anchor_loses_on_the_watermark ... ok
+test nested_repository_target_falls_back_to_full_check ... ok
+test reread_replaces_baseline_without_losing_strict_mode_on_restart ... ok
+test successful_full_strict_check_is_durable_and_sticky_after_restart ... ok
+test t19_expect_cert_valid_with_only_a_watermark_change_in_the_window ... ok
+test strict_full_check_on_a_branch_issues_from_the_branch ... ok
+test t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_failure ... ok
+test t46c_indirect_path_filter_preserves_full_read_set_and_aliases_fall_back ... ok
+test t85_recall_dir_scope_follows_anchor_premises ... ok
+test unanchored_reads_remain_required_and_briefing_uses_fresh_evidence ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.55s
+
+     Running tests/branches.rs (<remote>/target/release/deps/branches-17ae666ad158ec0c)
+
+running 5 tests
+test anchor_state_follows_the_observer_branch ... ok
+test t19_expect_cert_valid_first_committer_wins ... ok
+test branch_requests ... ok
+test checks_and_certificates_use_the_session_branch ... ok
+test sessions_bind_to_branches_and_keep_them_across_restart ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/hooks.rs (<remote>/target/release/deps/hooks-f342b83713ab8814)
+
+running 11 tests
+test drift_subtracts_declared_paths_of_this_and_concurrent_sessions ... ok
+test attach_is_idempotent_per_key_and_restarts_after_session_end ... ok
+test updates_peek_until_acknowledged_per_agent ... ok
+test briefing_is_advisory_and_records_writes_for_coverage ... ok
+test t66_child_reads_are_covered_by_the_root_and_root_reads_govern_its_view ... ok
+test claimed_calls_bind_to_their_session_and_unclaimed_calls_are_counted ... ok
+test harness_keys_attach_on_first_use_and_unknown_agents_are_the_root ... ok
+test check_applies_the_gate_and_logs_it ... ok
+test facts_apply_in_order_once_with_gaps_and_skips_and_survive_restart ... ok
+test facts_survive_a_daemon_crash_at_either_side_of_the_sync ... ok
+test concurrent_attach_end_facts_and_check_neither_deadlock_nor_split ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+
+     Running tests/lease_env.rs (<remote>/target/release/deps/lease_env-34bbcaca7d021b77)
+
+running 1 test
+test lease_is_verifiable_when_path_has_no_ps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.22s
+
+     Running tests/p4_props.rs (<remote>/target/release/deps/p4_props-66a6a45d41aca413)
+
+running 1 test
+test d_e_updates_and_agent_views_equal_the_oracle has been running for over 60 seconds
+test d_e_updates_and_agent_views_equal_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 248.06s
+
+     Running tests/p6_protocol.rs (<remote>/target/release/deps/p6_protocol-512f58528fce07f8)
+
+running 8 tests
+test commit_txn_ids_are_bound_to_branch_and_principal ... ok
+test branch_requests_take_txn_ids_and_errors_follow_the_order ... ok
+test ctx_commit_is_a_session_write ... ok
+test commit_retry_survives_a_reissued_certificate ... ok
+test t19_plans_on_other_branches_do_not_conflict ... ok
+test t19_window_changes_other_than_head_moves ... ok
+test s13_conflicted_after_a_merge ... ok
+test t19_concurrent_plans_one_commits ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/p7_candidates.rs (<remote>/target/release/deps/p7_candidates-222422f38c9df5b5)
+
+running 4 tests
+test recall_reads_the_branch_rows ... ok
+test similar_heads_pair_neighbours_and_other_kinds_do_not ... ok
+test open_from_a_candidate ... ok
+test t84_candidates_never_pair_a_revision_invisible_on_the_branch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/p7_changes.rs (<remote>/target/release/deps/p7_changes-8cc26a34d718cca6)
+
+running 4 tests
+test t76_truncated_and_refusals ... ok
+test t76_pages_equal_the_replayed_status_diffs ... ok
+test wait_epoch_blocks_until_a_publication ... ok
+test long_poll_wakes_times_out_and_is_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+     Running tests/p7_conflicts.rs (<remote>/target/release/deps/p7_conflicts-13ab541d9723eee8)
+
+running 8 tests
+test expect_cert_valid_goes_through_the_session ... ok
+test reviews_listed_stale_curvec_and_converted ... ok
+test t78_open_refusals ... ok
+test t78_pair_one_side_superseded_then_resolved ... ok
+test t93_one_open_conflict_per_pair ... ok
+test t78_conflicts_are_per_branch ... ok
+test t93_concurrent_opens_give_one_conflict ... ok
+test resolve_accepts_conflicts_and_reviews_only ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/p7_daemon.rs (<remote>/target/release/deps/p7_daemon-2b7b192ab4fe935d)
+
+running 4 tests
+test ctxd_without_validators_toml_calls_nothing ... ok
+test ctxd_judges_candidate_pairs_with_a_pairs_validator ... ok
+test ctxd_validates_pending_rules_in_the_background ... ok
+test ctxd_candidates_backfill_persist_and_obey_the_config ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/p7_g4.rs (<remote>/target/release/deps/p7_g4-0c00d3289c088d31)
+
+running 3 tests
+test kill_at_each_job_step_ends_with_one_outcome ... ok
+test blob_store_full_during_a_worker_commit ... ok
+test job_table_full_loses_and_duplicates_nothing ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running tests/p7_handoff.rs (<remote>/target/release/deps/p7_handoff-b58fa4f4fd268843)
+
+running 4 tests
+test t79_reads_are_copied_and_the_acceptor_turns_invalid_when_one_changes ... ok
+test t79_refusals ... ok
+test t52_accepted_once_under_concurrency_and_after_restart ... ok
+test t83_a_crash_between_claim_and_flush_never_lets_two_accepts_succeed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+     Running tests/p7_jobs.rs (<remote>/target/release/deps/p7_jobs-48ef097262ba82db)
+
+running 21 tests
+test t50_property_llm_batches_never_carry_a_record ... ok
+test declined_rows_never_hide_a_claimable_one ... ok
+test t50_llm_conflict_opens_a_review_only ... ok
+test no_validator_no_call ... ok
+test t53_crash_after_claim_requeues ... ok
+test t90_reverting_to_validated_content_queues_nothing ... ok
+test trusted_conflict_records_rejected_with_metadata ... ok
+test t53_crash_after_commit_before_finish ... ok
+test trusted_boundary_change_is_kept_in_the_row ... ok
+test filters_route_jobs ... ok
+test superseded_key_is_requeued_after_aba ... ok
+test llm_call_cap_defers_jobs ... ok
+test t84_validator_reviews_dedup_by_curvec ... ok
+test discovery_scans_at_start_then_follows_head_moves ... ok
+test t84_two_branches_two_jobs_two_records ... ok
+test failed_after_attempts_then_retry_bumps_the_generation ... ok
+test rediscovered_job_is_answered_by_its_txn_status ... ok
+test t53_exactly_one_of_concurrent_claimers_wins ... ok
+test discovery_quiescence_property ... ok
+test t49_curvec_moved_during_validation_supersedes_and_requeues ... ok
+test t53_lease_expiry_late_result_commits_once ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.15s
+
+     Running tests/p7_judge.rs (<remote>/target/release/deps/p7_judge-8c89112d5bd309a3)
+
+running 6 tests
+test t93_a_skipped_pair_never_counts_an_attempt ... ok
+test llm_conflict_opens_a_non_gating_review_on_the_newer_side ... ok
+test none_commits_nothing_and_a_committed_review_is_not_judged_again ... ok
+test filters_match_the_newer_side ... ok
+test opt_in_staleness_cap_and_failures ... ok
+test t93_a_side_moving_during_the_call_supersedes_the_pair ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/p7_validate.rs (<remote>/target/release/deps/p7_validate-70469be4a9eefebe)
+
+running 3 tests
+test admin_validate_stores_metadata ... ok
+test validate_from_review_converts_and_resolves_it ... ok
+test t80_agent_batches_with_record_validation_are_refused ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/p8_g4.rs (<remote>/target/release/deps/p8_g4-557d4a0ea1aaed70)
+
+running 7 tests
+test kill_between_commit_tree_and_update_ref ... ok
+test kill_during_reindex ... ok
+test kill_during_an_embedding_batch ... ok
+test kill_between_update_ref_and_the_cache_write ... ok
+test disk_full_in_recall_and_vectors ... ok
+test a_truncated_log_is_stale_not_modified ... ok
+test git_lock_contention ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.75s
+
+     Running tests/p8_index.rs (<remote>/target/release/deps/p8_index-3e76b68a5f1cd126)
+
+running 4 tests
+test t87_stored_renderings_equal_recomputation ... ok
+test t94_index_state_in_recall_status_and_reindex ... ok
+test t56_results_and_labels_survive_reindex_and_a_deleted_projection ... ok
+test t86_lag_never_returns_a_non_current_revision ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests/p8_levels.rs (<remote>/target/release/deps/p8_levels-ddbfe6f02ecd9efc)
+
+running 3 tests
+test levels_render_like_the_pure_functions ... ok
+test t88_ledger_keeps_the_highest_level_across_restart ... ok
+test t55_packing_keeps_labels_and_order_for_every_budget ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/p8_mirror.rs (<remote>/target/release/deps/p8_mirror-b1adcd4b1455ec6a)
+
+running 6 tests
+test t97_an_unavailable_payload_renders_as_a_placeholder ... ok
+test t97_paths_and_refs_are_valid_and_distinct ... ok
+test t96_cache_loss_is_not_a_hand_edit ... ok
+test t91_export_is_deterministic_idempotent_and_contiguous ... ok
+test t92_concurrent_exports_compare_and_swap ... ok
+test t57_hand_edits_are_refused_proposed_and_forced_with_a_backup ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.57s
+
+     Running tests/p8_prop14.rs (<remote>/target/release/deps/p8_prop14-eb733546c9d8ce03)
+
+running 1 test
+test prop14_retrieval_against_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.78s
+
+     Running tests/p8_ranking.rs (<remote>/target/release/deps/p8_ranking-063a1ff23a3d0301)
+
+running 4 tests
+test t85_fusion_order_and_structured_scope ... ok
+test t54_the_text_ranker_pages_past_ineligible_hits ... ok
+test t54_filtering_happens_before_the_cut ... ok
+test t95_compatibility ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/p8_summaries.rs (<remote>/target/release/deps/p8_summaries-e14d64f04093f682)
+
+running 1 test
+test t90_pending_count_and_the_digest_early_stop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/p8_vectors.rs (<remote>/target/release/deps/p8_vectors-b008c76de2899d56)
+
+running 5 tests
+test the_vector_ranker_finds_what_keys_and_text_cannot ... ok
+test t89_embedding_candidates_are_per_branch ... ok
+test reindex_and_reuse_by_content ... ok
+test ctxd_reads_embeddings_toml_and_keeps_vectors_across_restart ... ok
+test t89_a_hung_or_failing_embedder_never_blocks ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.15s
+
+     Running tests/server.rs (<remote>/target/release/deps/server-d72d209ad1f52c60)
+
+running 6 tests
+test wrong_protocol_version_gets_an_error_and_a_closed_connection ... ok
+test channel_is_bound_by_socket_and_shutdown_cleans_up ... ok
+test the_sweeper_delivers_leftover_outbox_streams_at_start ... ok
+test t12_concurrent_writers_expecting_the_same_head_one_wins ... ok
+test t08_readers_never_see_coupled_heads_out_of_step ... ok
+test t37_second_daemon_on_the_same_directory_is_refused ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running tests/service.rs (<remote>/target/release/deps/service-a3767974fc1b6847)
+
+running 14 tests
+test t46a_agent_cannot_write_anchors_raw_batches_or_validations ... ok
+test t32_retry_after_conflict_references_exactly_what_was_read ... ok
+test t36_deps_must_be_this_sessions_required_handles_or_explicit_revisions ... ok
+test t07e_certified_read_never_returns_a_superseded_revision ... ok
+test carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin ... ok
+test g6_stale_plan_is_invalid_with_diffs_then_recovers ... ok
+test clean_shutdown_writes_lazy_session_events ... ok
+test recall_is_capped ... ok
+test recall_finds_records_by_payload_text_after_indexing ... ok
+test a_cut_that_cannot_be_marked_durably_refuses_to_serve ... ok
+test sessions_and_handles_survive_a_daemon_restart ... ok
+test a_cut_session_without_a_certificate_stays_broken_across_restarts ... ok
+test restart_restores_the_session_certificate_and_a_cut_log_breaks_the_session ... ok
+test steady_reads_are_synced_within_the_lazy_bound ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running tests/service_details.rs (<remote>/target/release/deps/service_details-33490560047906a3)
+
+running 25 tests
+test gate_telemetry_is_stamped_with_the_wall_clock ... ok
+test ended_sessions_are_kept_for_drift_up_to_the_bound ... ok
+test explicit_revisions_must_belong_to_the_named_logical ... ok
+test only_the_owning_principal_ends_a_session ... ok
+test briefing_counts_pending_heads_and_stop_writer_syncs_lazy_events ... ok
+test updates_page_by_max_items_and_keep_eight_peeks ... ok
+test attach_fills_an_empty_repository_once ... ok
+test drift_counts_only_concurrent_sessions_of_the_same_repository ... ok
+test briefing_items_fit_the_budget_exactly ... ok
+test certified_reads_fail_closed_with_the_heads_own_summary ... ok
+test recall_fuses_key_matches_and_text_hits_without_duplicates ... ok
+test recall_withholds_uncertified_items_only_in_certified_mode ... ok
+test only_a_read_of_another_revision_supersedes ... ok
+test diff_before_the_snapshot_replays_the_log ... ok
+test recall_indexes_long_payloads ... ok
+test facts_skips_gaps_partial_batches_and_unavailable_gates ... ok
+test late_facts_reach_the_ended_session_and_its_resumption_live_and_replayed ... ok
+test claims_are_bounded_oldest_first ... ok
+test check_by_certificate_id_strict_and_steady_session_certificate ... ok
+test writes_are_replayed_once_into_telemetry_and_drift ... ok
+test a_certificate_over_a_reallocated_epoch_breaks_handles_and_its_log_link ... ok
+test restart_restores_the_named_session_certificate ... ok
+test replay_checks_the_start_epoch_and_checksum_and_marks_only_broken_sessions ... ok
+test a_recall_projection_ahead_of_the_log_is_rebuilt ... ok
+test update_tokens_start_in_the_lower_half ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_store-44e7f01307e59172)
+
+running 14 tests
+test pack::tests::parse_skips_damage_and_resyncs ... ok
+test vectors::tests::vectors_round_trip_by_model_and_dims ... ok
+test recall::tests::branch_rows_are_read_with_main_and_carry_their_revision ... ok
+test recall::tests::indexes_text_replaces_rows_and_never_fails_on_odd_queries ... ok
+test recall::tests::top_terms_prefer_rare_shared_terms_and_any_of_scores_them ... ok
+test recall::tests::read_abstracts_is_read_only_and_versioned ... ok
+test projection::tests::branch_keyed_rows_and_schema_rebuild ... ok
+test recall::tests::a_projection_with_ordinal_rowids_is_rebuilt ... ok
+test recall::tests::an_index_without_the_row_map_is_rebuilt_and_updates_replace_rows ... ok
+test recall::tests::a_pre_p7_projection_is_dropped_and_rebuilt ... ok
+test recall::tests::a_projection_without_current_levels_is_rebuilt ... ok
+test recall::tests::pages_in_one_snapshot_ignore_a_concurrent_write ... ok
+test recall::tests::ranking_windows_survive_a_rebuild_in_another_order ... ok
+test recall::tests::ranking_windows_page_through_every_match ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.30s
+
+     Running tests/migration.rs (<remote>/target/release/deps/migration-79e0fcf9c053aef9)
+
+running 7 tests
+test corrupt_legacy_log_aborts_migration_untouched ... ok
+test branches_are_durable_and_replayed ... ok
+test format2_log_migrates_to_the_current_format_and_reports_changed_results ... ok
+test t77_format3_log_migrates_to_format4_byte_identical ... ok
+test format0_log_migrates_with_identical_state_t68 ... ok
+test multi_branch_snapshot_round_trip ... ok
+test format1_log_migrates_to_group_framing_t68 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/p6_crash.rs (<remote>/target/release/deps/p6_crash-2bb3faf85b680872)
+
+running 4 tests
+test g4_migrate_2_to_3_interrupted_and_resumed ... ok
+test g4_branch_ops_post_sync_pre_publish ... ok
+test g4_branch_ops_pre_wal ... ok
+test g4_branch_ops_post_wal_pre_sync ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.87s
+
+     Running tests/p6_prop10.rs (<remote>/target/release/deps/p6_prop10-2b4e93d13b50845d)
+
+running 1 test
+test prop10_every_branch_rebuilds_from_the_op_log ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+
+     Running tests/p6_review.rs (<remote>/target/release/deps/p6_review-c2f3c4fb2a231394)
+
+running 3 tests
+test format0_descended_stores_list_only_real_changes ... ok
+test interrupted_migration_still_reports_changed_epochs ... ok
+test group_commit_projections_equal_a_rebuild ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/recovery.rs (<remote>/target/release/deps/recovery-835e4099595aac3b)
+
+running 46 tests
+test review12_operator_open_does_not_create_a_store ... ok
+test weak_sync_is_ordered_and_durable_after_a_full_sync ... ok
+test log_reader_is_bounded_by_its_tail_and_replays_exactly ... ok
+test watermark_history_projection_records_net_advances ... ok
+test review5_poisoned_store_serves_nothing ... ok
+test review3_interrupted_migration_is_refused_then_resumed ... ok
+test review1_corrupt_final_segment_header_with_frames_fails_closed ... ok
+test corrupt_earlier_frame_fails_closed_t33 ... ok
+test group_tail_semantic_fault_at_a_boundary_fails_closed ... ok
+test review7_valid_checksum_with_wrong_chain_fails_closed_even_at_the_tail ... ok
+test group_tail_torn_frame_inside_last_group_truncates_the_group ... ok
+test lock_poison_and_restart ... ok
+test group_commit_held_replies_idempotency_and_one_sync ... ok
+test review9_poison_is_per_store_directory ... ok
+test historical_reads_survive_restart_t07b_t13 ... ok
+test g4_harness_detects_missing_fsync ... ok
+test doctor_cut_inside_a_group_moves_to_the_group_start ... ok
+test review4_offline_tools_respect_the_store_lock ... ok
+test idempotent_retry_and_txn_status_t18b ... ok
+test group_tail_short_final_group_is_truncated ... ok
+test group_tail_damage_followed_by_a_later_group_fails_closed ... ok
+test reopen_replays_to_identical_state_t18 ... ok
+test doctor_truncate_before_repairs_broken_chain_t33 ... ok
+test corrupt_final_frame_truncates_and_reports_t34 ... ok
+test review1_header_only_tail_segment_is_removed_unless_strict ... ok
+test review8_unbuildable_snapshot_is_ignored ... ok
+test blobs_are_idempotent_verified_and_required_t35 ... ok
+test review2_truncation_plan_lists_every_dropped_frame_across_segments ... ok
+test snapshot_accelerates_open_and_matches_full_replay ... ok
+test group_tail_junk_after_a_complete_group_is_truncated ... ok
+test put_blobs_is_durable_on_return_and_poisons_on_failed_barrier ... ok
+test review_n6_failed_catch_up_rolls_back_to_the_old_watermark ... ok
+test projections_roll_forward_rebuild_and_agree_with_replay ... ok
+test g4_dedup_on_a_payload_of_a_rejected_group ... ok
+test g4_kill_restart_makes_page_cache_frames_durable ... ok
+test g4_kill_restart_retry_never_loses_a_deduplicated_payload ... ok
+test g4_staged_harness_detects_a_missing_barrier ... ok
+test g4_group_commit ... ok
+test g4_mid_snapshot ... ok
+test g4_blob_write ... ok
+test g4_post_wal_pre_sync ... ok
+test g4_staged_blobs_never_trail_their_frame ... ok
+test g4_pre_wal ... ok
+test g4_post_sync_pre_publish ... ok
+test g4_projection_write ... ok
+test prop10_rebuild_from_op_log_equals_incremental ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.62s
+
+     Running tests/session_log.rs (<remote>/target/release/deps/session_log-581a0b7da7eb7a23)
+
+running 10 tests
+test open_syncs_groups_a_killed_process_left_unsynced ... ok
+test open_syncs_the_name_of_a_segment_whose_rollover_was_killed ... ok
+test legacy_header_only_rollover_is_recovered_before_format_upgrade ... ok
+test p3_events_decode_as_the_root_agent ... ok
+test p5a_legacy_tail_rolls_before_new_event_and_old_reader_refuses_without_repair ... ok
+test p7_handoff_events_need_format_3 ... ok
+test p8_leveled_reads_need_format_4 ... ok
+test session_log_round_trip_with_rollover ... ok
+test g4_session_log_groups_are_all_or_nothing ... ok
+test oversized_drain_is_split_into_synced_groups ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+   Doc-tests contextdb_daemon
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== P4 suites (release)
+   Compiling contextdb-cli v0.2.0 (<remote>/src/crates/contextdb-cli)
+   Compiling contextdb-mcp v0.2.0 (<remote>/src/crates/contextdb-mcp)
+   Compiling contextdb-hooks v0.2.0 (<remote>/src/crates/contextdb-hooks)
+    Finished `release` profile [optimized] target(s) in 10.88s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_cli-9df98dd691aa9be0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (<remote>/target/release/deps/ctx-b68c00655be1cfc1)
+
+running 14 tests
+test p4::tests::drift_paths_count_once_per_session ... ok
+test p4::tests::policy_and_gating_files_parse_strictly ... ok
+test p4::tests::report_counts_and_thresholds ... ok
+test p4::tests::hooks_merge_idempotently_and_keep_other_hooks ... ok
+test p4::tests::upgrading_from_another_install_path_replaces_the_old_entries ... ok
+test setup::tests::service_unit_restarts_only_after_failures ... ok
+test setup::tests::claude_mcp_adds_updates_and_keeps_other_servers ... ok
+test setup::tests::codex_mcp_rewrites_only_its_table_and_keeps_comments ... ok
+test setup::tests::opencode_mcp_adds_a_local_server_and_leaves_jsonc_alone ... ok
+test setup::tests::exclude_adds_the_data_dir_once_and_only_inside_the_repo ... ok
+test ui::graph::tests::summaries_carry_their_changed_premise_count ... ok
+test ui::graph::tests::the_op_log_replays_into_the_graph ... ok
+test ui::graph::tests::branches_conflicts_and_references_replay ... ok
+test setup::tests::generated_files_are_excluded_unless_tracked ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/anchors_cli.rs (<remote>/target/release/deps/anchors_cli-4cc292af1ddf8145)
+
+running 2 tests
+test pre_push_refuses_annotated_tag_oid_even_when_it_peels_to_head ... ok
+anchors unchanged
+test concurrent_routes_watch_restart_unavailable_and_preserved_hooks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.76s
+
+     Running tests/cli.rs (<remote>/target/release/deps/cli-467bb20773b68e1f)
+
+running 1 test
+test replay_snapshot_doctor_on_a_real_store ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/daemon_cli.rs (<remote>/target/release/deps/daemon_cli-c88d8e2b72f23056)
+
+running 2 tests
+test ctx_status_validate_and_shutdown_through_the_admin_socket ... ok
+test ctx_branches_and_merge ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.07s
+
+     Running tests/opencode_plugin.rs (<remote>/target/release/deps/opencode_plugin-0111ff36b1f9444e)
+
+running 2 tests
+test install_uninstall_and_foreign_files ... ok
+test plugin_maps_hooks_both_ways ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.30s
+
+     Running tests/p4_cli.rs (<remote>/target/release/deps/p4_cli-880d839cc6512238)
+
+running 3 tests
+test hooks_install_is_idempotent_and_uninstall_removes_only_ours ... ok
+test t41_policy_violations_are_rejected_on_every_channel ... ok
+test ctx_check_exit_codes_dry_run_and_unavailable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+
+     Running tests/p6_observer_cli.rs (<remote>/target/release/deps/p6_observer_cli-ca41ecdb87d19a67)
+
+running 1 test
+test observer_follows_the_worktree_branch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.85s
+
+     Running tests/symbols_cli.rs (<remote>/target/release/deps/symbols_cli-85e8d1bb4d89edcf)
+
+running 6 tests
+test legacy_hash_file_uses_descriptor_path_and_rejects_symbol_key_collision ... ok
+test normaliser_version_mismatch_needs_migrate ... ok
+test migrate_with_a_missing_anchor_leaves_scans_and_positions_working ... ok
+test symbol_anchors_end_to_end ... ok
+test parse_byte_budget_end_to_end ... ok
+test observer_killed_mid_scan_publishes_all_or_nothing ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.26s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_hooks-461c7ca520c440ae)
+
+running 15 tests
+test adapter::tests::opencode_tools ... ok
+test adapter::tests::unparsed_inputs ... ok
+test adapter::tests::tools_of_both_harnesses ... ok
+test hook::tests::root_cache_lives_under_home ... ok
+test hook::tests::summaries_and_update_lines ... ok
+test hook::tests::unavailable_output_denies_with_a_reason_or_notices ... ok
+test patch::tests::headers_in_patches_and_heredocs ... ok
+test paths::tests::relative_inside_absolute_outside_and_idempotent ... ok
+test render::tests::allow_renders_nothing_and_deny_has_a_reason ... ok
+test render::tests::cuts_respect_boundaries ... ok
+test hook::tests::session_end_starts_the_next_stream_generation ... ok
+test hook::tests::still_innermost_requires_git_containment_and_no_nested_repo ... ok
+test paths::tests::prop_f_normalisation_is_idempotent_and_bounded ... ok
+test hook::tests::git_is_killed_at_its_limit ... ok
+test hook::tests::repo_roots_of_plain_separate_git_dir_and_submodule_checkouts ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running unittests src/bin/ctx-hook.rs (<remote>/target/release/deps/ctx_hook-ff3908e0828ef299)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/e2e.rs (<remote>/target/release/deps/e2e-c0354b1827ba3743)
+
+running 9 tests
+test deny_names_the_stale_read_after_the_update_was_acknowledged ... ok
+test claude_claims_bind_mcp_reads_and_updates_are_injected_once_acked ... ok
+test drift_and_outbox_recovery_after_the_daemon_was_down ... ok
+test linked_worktrees_share_the_data_directory_and_use_their_own_paths ... ok
+test compaction_keeps_the_baseline_and_streams_without_session_start_are_swept ... ok
+test drift_includes_files_committed_after_session_start ... ok
+test session_end_and_resume_make_no_phantom_and_keep_earlier_edits_declared ... ok
+test t38_stale_plan_warns_or_denies_with_a_short_reason ... ok
+test t39_unavailable_daemon_fails_open_or_closed ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.31s
+
+     Running tests/g6.rs (<remote>/target/release/deps/g6-65ec5e2aa422b0f7)
+
+running 1 test
+test g6_two_agents_two_harnesses_one_decision ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+
+     Running tests/hook_details.rs (<remote>/target/release/deps/hook_details-a76447f496f8a4f2)
+
+running 13 tests
+test harness_versions_go_with_each_check ... ok
+test daemon_errors_are_reported_with_code_and_detail ... ok
+test action_paths_are_normalised_against_the_checkout ... ok
+test claude_version_comes_from_the_transcript ... ok
+test only_claudes_contextdb_tool_calls_are_claimed ... ok
+test context_updates_keep_each_agents_token ... ok
+test empty_warnings_are_rendered_once_per_agent ... ok
+test reasons_name_reads_revisions_and_the_reading_agent ... ok
+test briefing_items_and_unapplied_gating_file ... ok
+test stop_delivers_other_dirty_streams_under_their_own_sessions ... ok
+test baseline_and_drift_facts_follow_git ... ok
+test invalid_warnings_are_said_once_per_read_set ... ok
+test drift_notices_list_truncate_and_name_unrealised_edits ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/t41b.rs (<remote>/target/release/deps/t41b-9519dca0d33e879b)
+
+running 4 tests
+test claude_inputs_parse ... ok
+test every_rendered_output_validates_against_the_codex_output_schema ... ok
+test the_validator_rejects_what_codex_rejects ... ok
+test codex_inputs_match_the_vendored_schemas_and_parse ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_mcp-d971b696ca30b0ac)
+
+running 2 tests
+test tests::level_arg_parses_the_four_levels_only ... ok
+test tests::recall_scope_accepts_a_string_or_an_object ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctx-mcp.rs (<remote>/target/release/deps/ctx_mcp-7f41cb623b9f9a34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/binding.rs (<remote>/target/release/deps/binding-2bb3b88f013ca2eb)
+
+running 3 tests
+test meta_keys_of_both_harnesses_map_to_bindings ... ok
+test codex_thread_ids_bind_directly_and_ctx_check_peeks_updates ... ok
+test one_server_keeps_claimed_sessions_apart_and_falls_back_when_unclaimed ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/deps.rs (<remote>/target/release/deps/deps-2dd3736f58f10f84)
+
+running 1 test
+test reference_only_and_summary_deps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/g6.rs (<remote>/target/release/deps/g6-312756187d96ba28)
+
+running 2 tests
+test json_rpc_errors_and_argument_validation ... ok
+test g6_three_agents_stale_plan_invalid_and_semantic_plan_recertified ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/p7_tools.rs (<remote>/target/release/deps/p7_tools-5f8ac5acf75b8014)
+
+running 3 tests
+test conflicts_open_list_and_resolve_through_mcp ... ok
+test changes_through_mcp ... ok
+test handoff_through_mcp ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_proto-1986f2b749fce94c)
+
+running 28 tests
+test gate::tests::decision_table ... ok
+test gate::tests::gate_is_monotone_in_severity ... ok
+test gate::tests::globs ... ok
+test gate::tests::modes_resolve_per_path_and_take_the_most_severe ... ok
+test lease::tests::long_data_directories_get_short_socket_paths ... ok
+test lease::tests::network_and_virtual_filesystems_are_refused_unless_allowed ... ok
+test docs::tests::documents_round_trip_and_cap ... ok
+test git::tests::reads_branches_of_checkouts_and_worktrees ... ok
+test outbox::tests::scan_skips_damage_and_resyncs ... ok
+test outbox::tests::state_from_0_2_0_still_reads ... ok
+test proto::tests::framing_rejects_version_kind_size_and_trailing_bytes ... ok
+test proto::tests::every_request_round_trips_through_a_frame ... ok
+test proto::tests::on_branch_does_not_nest ... ok
+test proto::tests::new_responses_round_trip ... ok
+test proto::tests::decoding_garbage_never_panics ... ok
+test outbox::tests::a_gap_the_log_still_holds_is_resent_not_skipped ... ok
+test outbox::tests::an_unresolved_gap_fails_after_four_replies ... ok
+test outbox::tests::delivery_is_busy_under_another_holder_and_stops_at_the_budget ... ok
+test outbox::tests::records_missing_after_the_mark_are_skipped_up_front ... ok
+test outbox::tests::state_round_trips_and_dirty_lists_streams ... ok
+test outbox::tests::pending_filters_by_the_mark_and_reports_io_errors ... ok
+test outbox::tests::gaps_resend_or_skip_and_failures_lose_nothing ... ok
+test outbox::tests::seqs_survive_truncation_and_a_kill_before_the_seq_write ... ok
+test outbox::tests::seqs_are_bounded_by_seq_log_and_ack ... ok
+test client::tests::a_stalled_daemon_times_out ... ok
+test outbox::tests::a_full_log_drops_and_counts_facts ... ok
+test outbox::tests::batches_are_bounded_by_bytes_but_always_carry_one_packet ... ok
+test lease::tests::lease_round_trips_and_detects_dead_or_reused_pids ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+
+     Running tests/announce.rs (<remote>/target/release/deps/announce-7389112eac41f12a)
+
+running 7 tests
+test failed_announce_unlinks_and_still_appends ... ok
+test both_fail_residual_appends_unannounced ... ok
+test marker_sentinel_and_repair ... ok
+test missing_corrupt_or_recreated_records_are_never_fresh ... ok
+test a_dropped_edit_is_announced ... ok
+test no_sample_overlapping_an_edit_append_sees_equal_records ... ok
+test edits_are_announced_other_facts_are_not_and_streams_do_not_matter ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.99s
+
+     Running tests/outbox_props.rs (<remote>/target/release/deps/outbox_props-61ee7d77b53bc538)
+
+running 2 tests
+test a_scan_returns_exactly_the_intact_records ... ok
+test b_seqs_are_never_reused_and_every_fact_is_applied_once_or_skipped has been running for over 60 seconds
+test b_seqs_are_never_reused_and_every_fact_is_applied_once_or_skipped ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 119.73s
+
+   Doc-tests contextdb_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_hooks
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_proto
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== P5a suites (release; PROP12 at 10,000 fixed seeds)
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_anchors-9c0c2ef546aa467c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/anchors.rs (<remote>/target/release/deps/anchors-8294450605882dc9)
+
+running 12 tests
+test descriptor_canonical_bytes_bounds_and_git_oid_are_distinct_from_payload_hash ... ok
+test classifier_rejects_partial_or_misrouted_manifest_and_suggests_only_equal_raw_oid ... ok
+test classifier_restores_identical_retracted_head_and_handles_broken_paths ... ok
+test symbol_keys_round_trip_and_hash_markers_are_unambiguous ... ok
+test strict_watermark_window_belongs_only_to_roots_that_originally_reached_it ... ok
+test strict_hidden_scope_survives_a_rebind_without_any_head_move ... ok
+test strict_hidden_scope_uses_original_premises_after_rebind ... ok
+test t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effective_vector ... ok
+test t42_t43_t46_cur_sem_pin_deletion_restore_old_head_and_exact_oracle_counters ... ok
+test symlinks_fifo_and_limits_never_follow_or_hang ... ok
+test gitlinks_and_corrupt_head_are_not_certified_as_regular_or_unborn ... ok
+test raw_hashes_match_git_sha1_and_sha256_at_binary_crlf_and_block_boundaries ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/prop12.rs (<remote>/target/release/deps/prop12-c7b54fb35f3ca0e5)
+
+running 1 test
+test prop12_10000_fixed_seeds_observer_matches_git_history_reconstruction ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.36s
+
+   Doc-tests contextdb_anchors
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== P5b suites (release; PROP12 for symbols at 10,000 fixed seeds)
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_symbols-57ef0996067b1042)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/context.rs (<remote>/target/release/deps/context-41f6e8b3a72eb75b)
+
+running 7 tests
+test one_element_tuple_with_comments ... ok
+test go_imports ... ok
+test mentions_are_identifiers ... ok
+test rust_use_binds_names_to_paths ... ok
+test overlapping_items_never_count ... ok
+test script_imports ... ok
+test python_imports_and_assignments ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prop12_symbols.rs (<remote>/target/release/deps/prop12_symbols-444317412df9e783)
+
+running 1 test
+test prop12_symbols_two_oracles_10000_fixed_seeds has been running for over 60 seconds
+test prop12_symbols_two_oracles_10000_fixed_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 361.36s
+
+     Running tests/prop12_symbols_model.rs (<remote>/target/release/deps/prop12_symbols_model-21db0a03db9e4bf5)
+
+running 4 tests
+test model_injected_errors_are_inside_the_span ... ok
+test model_renderer_premise ... ok
+test model_prop12_symbols_smoke ... ok
+test model_prop12_symbols_10000_fixed_seeds has been running for over 60 seconds
+test model_prop12_symbols_10000_fixed_seeds ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 96.72s
+
+     Running tests/robustness.rs (<remote>/target/release/deps/robustness-1088c02214c782ba)
+
+running 10 tests
+test declarations_under_an_error_root_are_errors ... ok
+test declarations_under_an_error_ancestor_alone_are_errors ... ok
+test passed_deadline_is_unavailable_for_every_language ... ok
+test unavailable_displays_its_reason ... ok
+test missing_names_are_not_symbols ... ok
+test sibling_containers_are_not_nesting ... ok
+test large_files_within_the_deadline ... ok
+test walk_is_cancelled_at_the_deadline ... ok
+test deep_expressions_stay_linear ... ok
+test deep_containers_stop_at_the_nesting_bound has been running for over 60 seconds
+test deep_containers_stop_at_the_nesting_bound ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 81.77s
+
+     Running tests/symbols.rs (<remote>/target/release/deps/symbols-825ba45812dff331)
+
+running 16 tests
+test comment_range_api_excludes_directives_and_code ... ok
+test masked_hash_finds_renames ... ok
+test javascript_jsdoc_counts ... ok
+test parse_errors_are_local ... ok
+test extraction_boundaries ... ok
+test rust_formatting_is_neutral_meaning_is_not ... ok
+test python_rules ... ok
+test rust_symbol_table ... ok
+test go_rules ... ok
+test trailing_comma_without_closing_bracket ... ok
+test normalisation_boundaries ... ok
+test t45b_directives_attributes_docstrings_strings ... ok
+test deadline_cancels ... ok
+test walk2_keeps_required_stream_shape ... ok
+test typescript_rules ... ok
+test walk2_formatter_equivalences ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/walk4.rs (<remote>/target/release/deps/walk4-a54b06f3e841d3c4)
+
+running 9 tests
+test normaliser_versions_match_the_lockfile ... ok
+test go_grouped_vars_are_symbols ... ok
+test go_for_clause_positions ... ok
+test context_name_spellings ... ok
+test python_block_statements_are_their_own_items ... ok
+test script_forms ... ok
+test context_errors_are_symbol_errors ... ok
+test uncovered_text_is_hashed ... ok
+test deep_context_binders_do_not_overflow ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+   Doc-tests contextdb_symbols
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+G7 PASS
+== g3-p6.sh (P6 properties at gate counts)
+rustc 1.95.0 (59807616e 2026-04-14)
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running tests/p6_prop13.rs (<remote>/target/release/deps/p6_prop13-60d323d140206065)
+
+running 1 test
+PROP13: 10000 seeds, 206310 commits, 33690 rejections, 28466 merges, 627 conflicts, 48141 visibility rows; rejections {"ArtifactNotOpen": 773, "BranchArchived": 3753, "ChannelRestricted": 791, "CurvecMoved": 21, "CycleDetected": 2788, "DuplicateRule": 2218, "HeadConflict": 2939, "InvalidBranchName": 3569, "InvalidMerge": 1328, "InvalidMetadata": 91, "InvalidReadSet": 12, "InvalidRule(SelfPremise)": 5279, "LogicalExists": 668, "MergeConflict": 1, "MergeNotCertified": 2508, "NoSemIncidence": 4592, "PolicyViolation": 770, "ReadSetConflict": 559, "UnknownRef": 1030}
+test prop13_branches_equal_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.22s
+
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running tests/p6_g3_properties.rs (<remote>/target/release/deps/p6_g3_properties-ac0309541d7894d4)
+
+running 3 tests
+ExpectHeads/SetHead pairs distinguished: 1163 of 2500 seeds
+test prop7_expect_heads_reads_the_listed_heads ... ok
+PROP7 branch cases with both batches committed: [1213, 1399, 987, 1134, 1128]
+test prop7_branch_ops_commute_on_disjoint_resources ... ok
+PROP11 per branch: issue [ok,not-certified,ambiguous,empty]=[47379, 78177, 2396, 12120] verdicts [denied,changed,strict,log,branch,conflicted,ambiguous,unknown,pending,empty,valid,recert]=[0, 33529, 75098, 24187, 504441, 20722, 0, 10128, 955, 0, 320429, 2448]
+test prop11_certificates_per_branch_equal_the_oracle ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.73s
+
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/p6_branch_fuzz.rs (<remote>/target/release/deps/p6_branch_fuzz-db4f961cd612ba95)
+
+running 1 test
+merges 1624, conflicts 108, revision rows 3947
+test random_branch_histories ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+
+     Running tests/p6_conflict_gate.rs (<remote>/target/release/deps/p6_conflict_gate-05b56c94402a6696)
+
+running 2 tests
+test t51_open_conflict_blocks_certified_only ... ok
+test gate_matches_the_oracles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+   Compiling contextdb-store v0.2.0 (<remote>/src/crates/contextdb-store)
+    Finished `release` profile [optimized] target(s) in 9.12s
+     Running tests/p6_prop10.rs (<remote>/target/release/deps/p6_prop10-27633fd78962df27)
+
+running 1 test
+test prop10_every_branch_rebuilds_from_the_op_log ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.68s
+
+== P7 properties (10,000 seeds) and suites (release)
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running tests/p7_g3_properties.rs (<remote>/target/release/deps/p7_g3_properties-0b0756d5480cda83)
+
+running 3 tests
+test prop7_meta_and_notes_change_no_derived_state ... ok
+P7 PROP7 committed merges 5372, records 6314, resolves 2120
+test prop7_meta_and_notes_through_forks_and_merges ... ok
+P7 PROP1 committed ops {"AddRevision": 16104, "AddRule": 43672, "AssertBase": 15181, "CreateLogical": 53722, "OpenArtifact": 4434, "Rebind": 769, "RecordValidation": 7926, "ResolveArtifact": 1083, "RetractBase": 25088, "SetHead": 26474, "SetRuleEnabled": 14128}
+P7 PROP1 rejections {"ArtifactNotOpen": 206, "CurvecMoved": 292, "CycleDetected": 11255, "DuplicateRule": 220, "HeadConflict": 10584, "ImmutableKind": 3620, "InvalidRebind": 3449, "InvalidRule": 7136, "NoSemIncidence": 6256, "UnknownRef": 3730, "ValidationExists": 2527}
+P7 PROP1 records with meta 5547, resolves with a note 548, ValidationExists 2527
+test prop1_with_artifacts_meta_and_if_absent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.72s
+
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_cli-9df98dd691aa9be0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (<remote>/target/release/deps/ctx-b68c00655be1cfc1)
+
+running 14 tests
+test p4::tests::drift_paths_count_once_per_session ... ok
+test p4::tests::policy_and_gating_files_parse_strictly ... ok
+test p4::tests::hooks_merge_idempotently_and_keep_other_hooks ... ok
+test p4::tests::report_counts_and_thresholds ... ok
+test p4::tests::upgrading_from_another_install_path_replaces_the_old_entries ... ok
+test setup::tests::service_unit_restarts_only_after_failures ... ok
+test setup::tests::claude_mcp_adds_updates_and_keeps_other_servers ... ok
+test setup::tests::opencode_mcp_adds_a_local_server_and_leaves_jsonc_alone ... ok
+test setup::tests::codex_mcp_rewrites_only_its_table_and_keeps_comments ... ok
+test setup::tests::exclude_adds_the_data_dir_once_and_only_inside_the_repo ... ok
+test ui::graph::tests::summaries_carry_their_changed_premise_count ... ok
+test ui::graph::tests::the_op_log_replays_into_the_graph ... ok
+test ui::graph::tests::branches_conflicts_and_references_replay ... ok
+test setup::tests::generated_files_are_excluded_unless_tracked ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/anchors_cli.rs (<remote>/target/release/deps/anchors_cli-4cc292af1ddf8145)
+
+running 2 tests
+test pre_push_refuses_annotated_tag_oid_even_when_it_peels_to_head ... ok
+anchors unchanged
+test concurrent_routes_watch_restart_unavailable_and_preserved_hooks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.82s
+
+     Running tests/cli.rs (<remote>/target/release/deps/cli-467bb20773b68e1f)
+
+running 1 test
+test replay_snapshot_doctor_on_a_real_store ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/daemon_cli.rs (<remote>/target/release/deps/daemon_cli-c88d8e2b72f23056)
+
+running 2 tests
+test ctx_status_validate_and_shutdown_through_the_admin_socket ... ok
+test ctx_branches_and_merge ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.96s
+
+     Running tests/opencode_plugin.rs (<remote>/target/release/deps/opencode_plugin-0111ff36b1f9444e)
+
+running 2 tests
+test install_uninstall_and_foreign_files ... ok
+test plugin_maps_hooks_both_ways ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.31s
+
+     Running tests/p4_cli.rs (<remote>/target/release/deps/p4_cli-880d839cc6512238)
+
+running 3 tests
+test hooks_install_is_idempotent_and_uninstall_removes_only_ours ... ok
+test t41_policy_violations_are_rejected_on_every_channel ... ok
+test ctx_check_exit_codes_dry_run_and_unavailable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.60s
+
+     Running tests/p6_observer_cli.rs (<remote>/target/release/deps/p6_observer_cli-ca41ecdb87d19a67)
+
+running 1 test
+test observer_follows_the_worktree_branch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+
+     Running tests/symbols_cli.rs (<remote>/target/release/deps/symbols_cli-85e8d1bb4d89edcf)
+
+running 6 tests
+test legacy_hash_file_uses_descriptor_path_and_rejects_symbol_key_collision ... ok
+test normaliser_version_mismatch_needs_migrate ... ok
+test migrate_with_a_missing_anchor_leaves_scans_and_positions_working ... ok
+test symbol_anchors_end_to_end ... ok
+test parse_byte_budget_end_to_end ... ok
+test observer_killed_mid_scan_publishes_all_or_nothing ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.05s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_daemon-46b9f5070828076e)
+
+running 14 tests
+test mirror::tests::segments_are_injective_and_never_dot_names ... ok
+test index_health::tests::states_follow_the_indexer ... ok
+test mirror::tests::quoting_round_trips ... ok
+test mirror::tests::trailers_round_trip ... ok
+test packing::tests::tokens_are_bytes_over_four_rounded_up ... ok
+test packing::tests::no_budget_renders_every_item_at_the_wanted_level ... ok
+test ranking::tests::dir_covers_whole_segments ... ok
+test ranking::tests::exact_key_first_then_fused_score_then_key_rank_then_id ... ok
+test ranking::tests::ties_break_by_key_rank_then_logical ... ok
+test packing::tests::levels_step_down_then_headers_then_stop ... ok
+test ranking::tests::fusion_is_deterministic_and_order_free_in_ties ... ok
+test candidates::tests::a_milestone_6_table_gains_the_judging_columns ... ok
+test mirror::tests::t97_encoding_is_injective_over_random_keys ... ok
+test index_health::tests::the_wait_wakes_on_progress_and_times_out_otherwise ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/bin/ctxd.rs (<remote>/target/release/deps/ctxd-a8fd83d2e4a1d7df)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-branch-stress.rs (<remote>/target/release/deps/ctxd_branch_stress-be2cda603474ad20)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-stress.rs (<remote>/target/release/deps/ctxd_stress-e2eef1cfa72924c4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctxd-validate-stress.rs (<remote>/target/release/deps/ctxd_validate_stress-c4aa1e09fee12d69)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/actor.rs (<remote>/target/release/deps/actor-501d1b56123f45d1)
+
+running 6 tests
+test timed_out_write_is_resolved_through_txn_status ... ok
+test queued_exact_impacts_are_paced_and_all_answered ... ok
+test sequential_writes_reclaim_replicas_without_clones ... ok
+test writes_publish_epochs_and_old_snapshots_never_change ... ok
+test concurrent_writers_group_and_lose_nothing ... ok
+test rejected_batches_publish_nothing_and_shutdown_stops_the_actor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/anchors.rs (<remote>/target/release/deps/anchors-9a5105aa22134b80)
+
+running 20 tests
+test aggregate_explicit_certificate_retains_read_epoch_and_complete_diffs ... ok
+test announce_record_gates_live_evidence ... ok
+test child_check_uses_the_owner_of_inherited_root_proofs ... ok
+test failed_full_strict_check_reports_supersession_once_without_filtered_consumption ... ok
+test filtered_strict_proof_keeps_aba_window_across_restart_until_explicit_reread ... ok
+test g4_corrupt_descriptor_makes_the_scope_unknown ... ok
+test g4_concurrent_wakeups_commit_once_and_converge ... ok
+test legacy_missing_original_proof_cannot_be_filtered_out_by_current_support ... ok
+test g4_interrupted_observer_batch_is_atomic_and_rescan_converges ... ok
+test nested_repository_target_falls_back_to_full_check ... ok
+test range_is_bound_to_exact_manifest_and_head_and_excludes_ref_only_roots ... ok
+test racing_restore_of_a_broken_anchor_loses_on_the_watermark ... ok
+test reread_replaces_baseline_without_losing_strict_mode_on_restart ... ok
+test strict_full_check_on_a_branch_issues_from_the_branch ... ok
+test t19_expect_cert_valid_with_only_a_watermark_change_in_the_window ... ok
+test t44_freshness_is_sampled_for_read_recall_check_and_client_cannot_override_failure ... ok
+test successful_full_strict_check_is_durable_and_sticky_after_restart ... ok
+test t46c_indirect_path_filter_preserves_full_read_set_and_aliases_fall_back ... ok
+test t85_recall_dir_scope_follows_anchor_premises ... ok
+test unanchored_reads_remain_required_and_briefing_uses_fresh_evidence ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.39s
+
+     Running tests/branches.rs (<remote>/target/release/deps/branches-17ae666ad158ec0c)
+
+running 5 tests
+test anchor_state_follows_the_observer_branch ... ok
+test branch_requests ... ok
+test t19_expect_cert_valid_first_committer_wins ... ok
+test checks_and_certificates_use_the_session_branch ... ok
+test sessions_bind_to_branches_and_keep_them_across_restart ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/hooks.rs (<remote>/target/release/deps/hooks-f342b83713ab8814)
+
+running 11 tests
+test drift_subtracts_declared_paths_of_this_and_concurrent_sessions ... ok
+test check_applies_the_gate_and_logs_it ... ok
+test harness_keys_attach_on_first_use_and_unknown_agents_are_the_root ... ok
+test briefing_is_advisory_and_records_writes_for_coverage ... ok
+test attach_is_idempotent_per_key_and_restarts_after_session_end ... ok
+test claimed_calls_bind_to_their_session_and_unclaimed_calls_are_counted ... ok
+test updates_peek_until_acknowledged_per_agent ... ok
+test t66_child_reads_are_covered_by_the_root_and_root_reads_govern_its_view ... ok
+test facts_apply_in_order_once_with_gaps_and_skips_and_survive_restart ... ok
+test facts_survive_a_daemon_crash_at_either_side_of_the_sync ... ok
+test concurrent_attach_end_facts_and_check_neither_deadlock_nor_split ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+
+     Running tests/lease_env.rs (<remote>/target/release/deps/lease_env-34bbcaca7d021b77)
+
+running 1 test
+test lease_is_verifiable_when_path_has_no_ps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
+
+     Running tests/p4_props.rs (<remote>/target/release/deps/p4_props-66a6a45d41aca413)
+
+running 1 test
+test d_e_updates_and_agent_views_equal_the_oracle has been running for over 60 seconds
+test d_e_updates_and_agent_views_equal_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 250.63s
+
+     Running tests/p6_protocol.rs (<remote>/target/release/deps/p6_protocol-512f58528fce07f8)
+
+running 8 tests
+test s13_conflicted_after_a_merge ... ok
+test commit_txn_ids_are_bound_to_branch_and_principal ... ok
+test branch_requests_take_txn_ids_and_errors_follow_the_order ... ok
+test t19_plans_on_other_branches_do_not_conflict ... ok
+test ctx_commit_is_a_session_write ... ok
+test t19_window_changes_other_than_head_moves ... ok
+test commit_retry_survives_a_reissued_certificate ... ok
+test t19_concurrent_plans_one_commits ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/p7_candidates.rs (<remote>/target/release/deps/p7_candidates-222422f38c9df5b5)
+
+running 4 tests
+test recall_reads_the_branch_rows ... ok
+test open_from_a_candidate ... ok
+test similar_heads_pair_neighbours_and_other_kinds_do_not ... ok
+test t84_candidates_never_pair_a_revision_invisible_on_the_branch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/p7_changes.rs (<remote>/target/release/deps/p7_changes-8cc26a34d718cca6)
+
+running 4 tests
+test t76_pages_equal_the_replayed_status_diffs ... ok
+test t76_truncated_and_refusals ... ok
+test wait_epoch_blocks_until_a_publication ... ok
+test long_poll_wakes_times_out_and_is_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/p7_conflicts.rs (<remote>/target/release/deps/p7_conflicts-13ab541d9723eee8)
+
+running 8 tests
+test t78_open_refusals ... ok
+test expect_cert_valid_goes_through_the_session ... ok
+test reviews_listed_stale_curvec_and_converted ... ok
+test resolve_accepts_conflicts_and_reviews_only ... ok
+test t93_concurrent_opens_give_one_conflict ... ok
+test t93_one_open_conflict_per_pair ... ok
+test t78_conflicts_are_per_branch ... ok
+test t78_pair_one_side_superseded_then_resolved ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/p7_daemon.rs (<remote>/target/release/deps/p7_daemon-2b7b192ab4fe935d)
+
+running 4 tests
+test ctxd_without_validators_toml_calls_nothing ... ok
+test ctxd_validates_pending_rules_in_the_background ... ok
+test ctxd_judges_candidate_pairs_with_a_pairs_validator ... ok
+test ctxd_candidates_backfill_persist_and_obey_the_config ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests/p7_g4.rs (<remote>/target/release/deps/p7_g4-0c00d3289c088d31)
+
+running 3 tests
+test kill_at_each_job_step_ends_with_one_outcome ... ok
+test blob_store_full_during_a_worker_commit ... ok
+test job_table_full_loses_and_duplicates_nothing ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.26s
+
+     Running tests/p7_handoff.rs (<remote>/target/release/deps/p7_handoff-b58fa4f4fd268843)
+
+running 4 tests
+test t79_refusals ... ok
+test t79_reads_are_copied_and_the_acceptor_turns_invalid_when_one_changes ... ok
+test t52_accepted_once_under_concurrency_and_after_restart ... ok
+test t83_a_crash_between_claim_and_flush_never_lets_two_accepts_succeed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests/p7_jobs.rs (<remote>/target/release/deps/p7_jobs-48ef097262ba82db)
+
+running 21 tests
+test t50_property_llm_batches_never_carry_a_record ... ok
+test declined_rows_never_hide_a_claimable_one ... ok
+test trusted_boundary_change_is_kept_in_the_row ... ok
+test llm_call_cap_defers_jobs ... ok
+test trusted_conflict_records_rejected_with_metadata ... ok
+test t53_crash_after_claim_requeues ... ok
+test no_validator_no_call ... ok
+test t50_llm_conflict_opens_a_review_only ... ok
+test t84_two_branches_two_jobs_two_records ... ok
+test t90_reverting_to_validated_content_queues_nothing ... ok
+test discovery_scans_at_start_then_follows_head_moves ... ok
+test t84_validator_reviews_dedup_by_curvec ... ok
+test filters_route_jobs ... ok
+test failed_after_attempts_then_retry_bumps_the_generation ... ok
+test superseded_key_is_requeued_after_aba ... ok
+test rediscovered_job_is_answered_by_its_txn_status ... ok
+test t53_crash_after_commit_before_finish ... ok
+test discovery_quiescence_property ... ok
+test t53_exactly_one_of_concurrent_claimers_wins ... ok
+test t49_curvec_moved_during_validation_supersedes_and_requeues ... ok
+test t53_lease_expiry_late_result_commits_once ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.15s
+
+     Running tests/p7_judge.rs (<remote>/target/release/deps/p7_judge-8c89112d5bd309a3)
+
+running 6 tests
+test t93_a_skipped_pair_never_counts_an_attempt ... ok
+test llm_conflict_opens_a_non_gating_review_on_the_newer_side ... ok
+test none_commits_nothing_and_a_committed_review_is_not_judged_again ... ok
+test filters_match_the_newer_side ... ok
+test opt_in_staleness_cap_and_failures ... ok
+test t93_a_side_moving_during_the_call_supersedes_the_pair ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+     Running tests/p7_validate.rs (<remote>/target/release/deps/p7_validate-70469be4a9eefebe)
+
+running 3 tests
+test admin_validate_stores_metadata ... ok
+test t80_agent_batches_with_record_validation_are_refused ... ok
+test validate_from_review_converts_and_resolves_it ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/p8_g4.rs (<remote>/target/release/deps/p8_g4-557d4a0ea1aaed70)
+
+running 7 tests
+test kill_between_commit_tree_and_update_ref ... ok
+test kill_between_update_ref_and_the_cache_write ... ok
+test kill_during_reindex ... ok
+test kill_during_an_embedding_batch ... ok
+test disk_full_in_recall_and_vectors ... ok
+test a_truncated_log_is_stale_not_modified ... ok
+test git_lock_contention ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.68s
+
+     Running tests/p8_index.rs (<remote>/target/release/deps/p8_index-3e76b68a5f1cd126)
+
+running 4 tests
+test t87_stored_renderings_equal_recomputation ... ok
+test t94_index_state_in_recall_status_and_reindex ... ok
+test t56_results_and_labels_survive_reindex_and_a_deleted_projection ... ok
+test t86_lag_never_returns_a_non_current_revision ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests/p8_levels.rs (<remote>/target/release/deps/p8_levels-ddbfe6f02ecd9efc)
+
+running 3 tests
+test levels_render_like_the_pure_functions ... ok
+test t88_ledger_keeps_the_highest_level_across_restart ... ok
+test t55_packing_keeps_labels_and_order_for_every_budget ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/p8_mirror.rs (<remote>/target/release/deps/p8_mirror-b1adcd4b1455ec6a)
+
+running 6 tests
+test t97_an_unavailable_payload_renders_as_a_placeholder ... ok
+test t97_paths_and_refs_are_valid_and_distinct ... ok
+test t96_cache_loss_is_not_a_hand_edit ... ok
+test t91_export_is_deterministic_idempotent_and_contiguous ... ok
+test t92_concurrent_exports_compare_and_swap ... ok
+test t57_hand_edits_are_refused_proposed_and_forced_with_a_backup ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.56s
+
+     Running tests/p8_prop14.rs (<remote>/target/release/deps/p8_prop14-eb733546c9d8ce03)
+
+running 1 test
+test prop14_retrieval_against_the_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.62s
+
+     Running tests/p8_ranking.rs (<remote>/target/release/deps/p8_ranking-063a1ff23a3d0301)
+
+running 4 tests
+test t85_fusion_order_and_structured_scope ... ok
+test t54_the_text_ranker_pages_past_ineligible_hits ... ok
+test t95_compatibility ... ok
+test t54_filtering_happens_before_the_cut ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/p8_summaries.rs (<remote>/target/release/deps/p8_summaries-e14d64f04093f682)
+
+running 1 test
+test t90_pending_count_and_the_digest_early_stop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/p8_vectors.rs (<remote>/target/release/deps/p8_vectors-b008c76de2899d56)
+
+running 5 tests
+test the_vector_ranker_finds_what_keys_and_text_cannot ... ok
+test t89_embedding_candidates_are_per_branch ... ok
+test reindex_and_reuse_by_content ... ok
+test ctxd_reads_embeddings_toml_and_keeps_vectors_across_restart ... ok
+test t89_a_hung_or_failing_embedder_never_blocks ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.18s
+
+     Running tests/server.rs (<remote>/target/release/deps/server-d72d209ad1f52c60)
+
+running 6 tests
+test channel_is_bound_by_socket_and_shutdown_cleans_up ... ok
+test wrong_protocol_version_gets_an_error_and_a_closed_connection ... ok
+test the_sweeper_delivers_leftover_outbox_streams_at_start ... ok
+test t12_concurrent_writers_expecting_the_same_head_one_wins ... ok
+test t08_readers_never_see_coupled_heads_out_of_step ... ok
+test t37_second_daemon_on_the_same_directory_is_refused ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/service.rs (<remote>/target/release/deps/service-a3767974fc1b6847)
+
+running 14 tests
+test carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin ... ok
+test g6_stale_plan_is_invalid_with_diffs_then_recovers ... ok
+test t46a_agent_cannot_write_anchors_raw_batches_or_validations ... ok
+test t36_deps_must_be_this_sessions_required_handles_or_explicit_revisions ... ok
+test clean_shutdown_writes_lazy_session_events ... ok
+test t07e_certified_read_never_returns_a_superseded_revision ... ok
+test t32_retry_after_conflict_references_exactly_what_was_read ... ok
+test a_cut_session_without_a_certificate_stays_broken_across_restarts ... ok
+test recall_is_capped ... ok
+test a_cut_that_cannot_be_marked_durably_refuses_to_serve ... ok
+test restart_restores_the_session_certificate_and_a_cut_log_breaks_the_session ... ok
+test recall_finds_records_by_payload_text_after_indexing ... ok
+test sessions_and_handles_survive_a_daemon_restart ... ok
+test steady_reads_are_synced_within_the_lazy_bound ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/service_details.rs (<remote>/target/release/deps/service_details-33490560047906a3)
+
+running 25 tests
+test only_the_owning_principal_ends_a_session ... ok
+test gate_telemetry_is_stamped_with_the_wall_clock ... ok
+test updates_page_by_max_items_and_keep_eight_peeks ... ok
+test briefing_items_fit_the_budget_exactly ... ok
+test certified_reads_fail_closed_with_the_heads_own_summary ... ok
+test briefing_counts_pending_heads_and_stop_writer_syncs_lazy_events ... ok
+test explicit_revisions_must_belong_to_the_named_logical ... ok
+test recall_withholds_uncertified_items_only_in_certified_mode ... ok
+test only_a_read_of_another_revision_supersedes ... ok
+test attach_fills_an_empty_repository_once ... ok
+test drift_counts_only_concurrent_sessions_of_the_same_repository ... ok
+test recall_fuses_key_matches_and_text_hits_without_duplicates ... ok
+test claims_are_bounded_oldest_first ... ok
+test diff_before_the_snapshot_replays_the_log ... ok
+test ended_sessions_are_kept_for_drift_up_to_the_bound ... ok
+test recall_indexes_long_payloads ... ok
+test check_by_certificate_id_strict_and_steady_session_certificate ... ok
+test late_facts_reach_the_ended_session_and_its_resumption_live_and_replayed ... ok
+test restart_restores_the_named_session_certificate ... ok
+test facts_skips_gaps_partial_batches_and_unavailable_gates ... ok
+test writes_are_replayed_once_into_telemetry_and_drift ... ok
+test a_certificate_over_a_reallocated_epoch_breaks_handles_and_its_log_link ... ok
+test replay_checks_the_start_epoch_and_checksum_and_marks_only_broken_sessions ... ok
+test a_recall_projection_ahead_of_the_log_is_rebuilt ... ok
+test update_tokens_start_in_the_lower_half ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_mcp-d971b696ca30b0ac)
+
+running 2 tests
+test tests::level_arg_parses_the_four_levels_only ... ok
+test tests::recall_scope_accepts_a_string_or_an_object ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ctx-mcp.rs (<remote>/target/release/deps/ctx_mcp-7f41cb623b9f9a34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/binding.rs (<remote>/target/release/deps/binding-2bb3b88f013ca2eb)
+
+running 3 tests
+test meta_keys_of_both_harnesses_map_to_bindings ... ok
+test one_server_keeps_claimed_sessions_apart_and_falls_back_when_unclaimed ... ok
+test codex_thread_ids_bind_directly_and_ctx_check_peeks_updates ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/deps.rs (<remote>/target/release/deps/deps-2dd3736f58f10f84)
+
+running 1 test
+test reference_only_and_summary_deps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/g6.rs (<remote>/target/release/deps/g6-312756187d96ba28)
+
+running 2 tests
+test json_rpc_errors_and_argument_validation ... ok
+test g6_three_agents_stale_plan_invalid_and_semantic_plan_recertified ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/p7_tools.rs (<remote>/target/release/deps/p7_tools-5f8ac5acf75b8014)
+
+running 3 tests
+test changes_through_mcp ... ok
+test handoff_through_mcp ... ok
+test conflicts_open_list_and_resolve_through_mcp ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (<remote>/target/release/deps/contextdb_validate-bfffd199a587a7c5)
+
+running 15 tests
+test config::tests::empty_file_is_no_validator_and_default_limits ... ok
+test config::tests::parses_candidate_limits ... ok
+test config::tests::parses_both_adapters_and_filters ... ok
+test config::tests::rejects_unknown_fields_and_bad_values ... ok
+test embed::tests::record_text_is_cut_on_a_char_boundary ... ok
+test embed::tests::config_parses_and_rejects ... ok
+test embed::tests::the_mock_is_deterministic_normalised_and_word_based ... ok
+test tests::outcome_parsing_is_strict_and_evidence_is_allowlisted ... ok
+test tests::oversize_tasks_fail_before_the_validator_runs ... ok
+test tests::pair_tasks_show_both_sides_and_take_two_labels ... ok
+test embed::tests::the_embedder_gets_a_minimal_environment ... ok
+test tests::output_over_the_cap_is_malformed_not_a_timeout ... ok
+test embed::tests::a_command_embedder_round_trips_and_normalises ... ok
+test tests::a_stray_process_holding_the_pipe_does_not_hang ... ok
+test embed::tests::failures_fail_the_batch ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests/t82_sandbox.rs (<remote>/target/release/deps/t82_sandbox-d281d5e87d2459b4)
+
+running 7 tests
+test command_validator_protocol_and_trust ... ok
+test t82_token_file_is_private_and_passed_by_environment ... ok
+test t82_argv_environment_and_directories ... ok
+test t82_isolated_login_is_private_and_removed ... ok
+test t82_pair_task_uses_the_pair_template ... ok
+test t82_only_one_turn_with_one_outcome_object_is_accepted ... ok
+test t82_deadline_kills_the_process_group ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+   Doc-tests contextdb_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_daemon
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests contextdb_validate
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== P7 G4 (kill at each job step, 25 runs; debug)
+   Compiling contextdb-store v0.2.0 (<remote>/src/crates/contextdb-store)
+   Compiling contextdb-daemon v0.2.0 (<remote>/src/crates/contextdb-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.45s
+     Running tests/p7_g4.rs (<remote>/target/debug/deps/p7_g4-d04c1f60514cb3bd)
+
+running 3 tests
+test blob_store_full_during_a_worker_commit ... ok
+test job_table_full_loses_and_duplicates_nothing ... ok
+test kill_at_each_job_step_ends_with_one_outcome ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 465.41s
+
+== P7 stress
+    Finished `release` profile [optimized] target(s) in 0.07s
+moves 9315 jobs [("queued", 14), ("running", 4), ("done", 2961), ("failed", 0), ("superseded", 8998)] calls 3623
+moves 16397 jobs [("queued", 7), ("running", 2), ("done", 5206), ("failed", 0), ("superseded", 17131)] calls 6317
+moves 22658 jobs [("queued", 10), ("running", 3), ("done", 7144), ("failed", 0), ("superseded", 24685)] calls 8676
+moves 27842 jobs [("queued", 11), ("running", 3), ("done", 8705), ("failed", 0), ("superseded", 31582)] calls 10547
+moves 32486 jobs [("queued", 3), ("running", 4), ("done", 10084), ("failed", 0), ("superseded", 38025)] calls 12206
+moves 36819 jobs [("queued", 5), ("running", 3), ("done", 11358), ("failed", 0), ("superseded", 44104)] calls 13757
+moves 40778 jobs [("queued", 14), ("running", 3), ("done", 12594), ("failed", 0), ("superseded", 49795)] calls 15221
+moves 44590 jobs [("queued", 13), ("running", 4), ("done", 13754), ("failed", 0), ("superseded", 55342)] calls 16612
+moves 48262 jobs [("queued", 7), ("running", 4), ("done", 14878), ("failed", 0), ("superseded", 60765)] calls 17952
+moves 51730 jobs [("queued", 11), ("running", 4), ("done", 15981), ("failed", 0), ("superseded", 65911)] calls 19237
+moves 54919 jobs [("queued", 8), ("running", 4), ("done", 16952), ("failed", 0), ("superseded", 70755)] calls 20401
+moves 58012 jobs [("queued", 13), ("running", 3), ("done", 17920), ("failed", 0), ("superseded", 75401)] calls 21545
+moves 60978 jobs [("queued", 22), ("running", 4), ("done", 18834), ("failed", 0), ("superseded", 79957)] calls 22640
+moves 63705 jobs [("queued", 10), ("running", 3), ("done", 19658), ("failed", 0), ("superseded", 84210)] calls 23635
+moves 66527 jobs [("queued", 5), ("running", 3), ("done", 20531), ("failed", 0), ("superseded", 88540)] calls 24683
+moves 69173 jobs [("queued", 13), ("running", 3), ("done", 21363), ("failed", 0), ("superseded", 92600)] calls 25681
+moves 71559 jobs [("queued", 20), ("running", 4), ("done", 22095), ("failed", 0), ("superseded", 96330)] calls 26553
+moves 73986 jobs [("queued", 11), ("running", 4), ("done", 22831), ("failed", 0), ("superseded", 100142)] calls 27447
+moves 76449 jobs [("queued", 9), ("running", 3), ("done", 23611), ("failed", 0), ("superseded", 103915)] calls 28370
+moves 78820 jobs [("queued", 7), ("running", 3), ("done", 24365), ("failed", 0), ("superseded", 107609)] calls 29264
+moves 81245 jobs [("queued", 10), ("running", 3), ("done", 25108), ("failed", 0), ("superseded", 111378)] calls 30173
+moves 83528 jobs [("queued", 16), ("running", 3), ("done", 25796), ("failed", 0), ("superseded", 114979)] calls 31020
+moves 85653 jobs [("queued", 10), ("running", 4), ("done", 26435), ("failed", 0), ("superseded", 118340)] calls 31795
+moves 87692 jobs [("queued", 19), ("running", 4), ("done", 27077), ("failed", 0), ("superseded", 121565)] calls 32535
+moves 89753 jobs [("queued", 13), ("running", 3), ("done", 27721), ("failed", 0), ("superseded", 124801)] calls 33316
+moves 91636 jobs [("queued", 16), ("running", 4), ("done", 28304), ("failed", 0), ("superseded", 127751)] calls 34003
+moves 93573 jobs [("queued", 15), ("running", 2), ("done", 28903), ("failed", 0), ("superseded", 130818)] calls 34696
+moves 95482 jobs [("queued", 19), ("running", 4), ("done", 29494), ("failed", 0), ("superseded", 133830)] calls 35397
+moves 97496 jobs [("queued", 14), ("running", 3), ("done", 30127), ("failed", 0), ("superseded", 137004)] calls 36137
+validate-stress 1800s: moves 99280 (cas conflicts 8287), epoch 129987, records 12343 on {BranchId(0)}, worker reviews 18361, jobs done 30704 superseded 139814, calls 36807, store errors 0, violations 0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/p7_g4.rs (<remote>/target/debug/deps/p7_g4-d04c1f60514cb3bd)
+
+running 3 tests
+test blob_store_full_during_a_worker_commit ... ok
+test job_table_full_loses_and_duplicates_nothing ... job table full: 0 records before space returned, 0 table errors, 400 jobs after
+ok
+test kill_at_each_job_step_ends_with_one_outcome ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 459.15s
+
+== P8 G4 (kill points, disk full, git locks, truncation; debug)
+   Compiling contextdb-daemon v0.2.0 (<remote>/src/crates/contextdb-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.54s
+     Running tests/p8_g4.rs (<remote>/target/debug/deps/p8_g4-aeb0bb0b9150bfd1)
+
+running 7 tests
+test disk_full_in_recall_and_vectors ... ok
+test a_truncated_log_is_stale_not_modified ... ok
+test git_lock_contention ... ok
+test kill_between_commit_tree_and_update_ref ... ok
+test kill_between_update_ref_and_the_cache_write ... ok
+test kill_during_an_embedding_batch ... ok
+test kill_during_reindex ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.32s
+
+G7 PASS

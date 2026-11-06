@@ -1,0 +1,47 @@
+# p8_g6 eval, 2026-11-06 (final tree; Ollama nomic-embed-text 768 dims; claude-haiku-5-5). Aggregates only: queries, labels and bodies stay private.
+ContextDB: 21 queries
+btcflow-starter: 54 queries
+quant-engine: 45 queries
+
+## Relevance (labellers agreed exactly on 68 queries, differed on 52; 0 with no agreed relevant record)
+
+### agreed (both labellers)
+hybrid       n=120  recall@5 0.710  recall@10 0.820  MRR 0.770
+key          n=120  recall@5 0.000  recall@10 0.000  MRR 0.000
+key+fts      n=120  recall@5 0.706  recall@10 0.805  MRR 0.769
+
+### lenient (either labeller)
+hybrid       n=120  recall@5 0.657  recall@10 0.771  MRR 0.822
+key          n=120  recall@5 0.000  recall@10 0.000  MRR 0.000
+key+fts      n=120  recall@5 0.644  recall@10 0.749  MRR 0.801
+
+## Token cost (packed recall, outline, bytes/4)
+budget 1000: 110870 tokens returned vs 271333 for the relevant full bodies; 237 of 349 relevant records included
+budget 2000: 117552 tokens returned vs 271333 for the relevant full bodies; 237 of 349 relevant records included
+budget 4000: 117552 tokens returned vs 271333 for the relevant full bodies; 237 of 349 relevant records included
+
+## bytes/4 vs claude -p (input tokens over an empty-body baseline of 833)
+443 bytes: estimate 111, claude 167 (ratio 0.66)
+473 bytes: estimate 119, claude 152 (ratio 0.78)
+361 bytes: estimate 91, claude 130 (ratio 0.70)
+412 bytes: estimate 103, claude 145 (ratio 0.71)
+1248 bytes: estimate 312, claude 542 (ratio 0.58)
+3657 bytes: estimate 915, claude 1498 (ratio 0.61)
+2187 bytes: estimate 547, claude 901 (ratio 0.61)
+2360 bytes: estimate 590, claude 1035 (ratio 0.57)
+1184 bytes: estimate 296, claude 513 (ratio 0.58)
+938 bytes: estimate 235, claude 396 (ratio 0.59)
+ratio estimate/claude: min 0.57, median 0.61, max 0.78
+
+## min_cosine calibration: 130 agreed pairs (6 conflict), 2 disputed
+min_cosine 0.55: 130 pairs kept, precision 0.05, recall 1.00, F1 0.09
+min_cosine 0.60: 125 pairs kept, precision 0.04, recall 0.83, F1 0.08
+min_cosine 0.65: 112 pairs kept, precision 0.04, recall 0.83, F1 0.08
+min_cosine 0.70: 64 pairs kept, precision 0.06, recall 0.67, F1 0.11
+min_cosine 0.75: 43 pairs kept, precision 0.09, recall 0.67, F1 0.16
+min_cosine 0.80: 14 pairs kept, precision 0.07, recall 0.17, F1 0.10
+min_cosine 0.82: 7 pairs kept, precision 0.14, recall 0.17, F1 0.15
+min_cosine 0.85: 3 pairs kept, precision 0.00, recall 0.00, F1 0.00
+min_cosine 0.90: 0 pairs kept, precision 0.00, recall 0.00, F1 0.00
+min_cosine 0.95: 0 pairs kept, precision 0.00, recall 0.00, F1 0.00
+best F1 0.17 at min_cosine 0.77

@@ -934,6 +934,15 @@ impl<'a, D: Durability> Mirror<'a, D> {
         // The parent: `(commit, its last epoch)`.
         let parent: Option<(String, Epoch)> = match &found {
             None => match cached {
+                // A cached commit from a log that was since truncated is not
+                // a parent: new commits would follow history the log no
+                // longer has. With no ref to overwrite, start fresh.
+                Some((c, _)) if self.repo.has_commit(&c)? && !self.log_matches(&c)? => {
+                    report.lines.push(format!(
+                        "{reference} was deleted and its cached commit {c} names a log that no longer matches: created fresh"
+                    ));
+                    None
+                }
                 Some((c, e)) if self.repo.has_commit(&c)? => {
                     report.lines.push(format!(
                         "{reference} was deleted: recreated on the cached commit {c}"
@@ -949,6 +958,23 @@ impl<'a, D: Durability> Mirror<'a, D> {
                 }
                 None => None,
             },
+            // The cached tip: accepted if the log it names still exists
+            // (one frame checksum; a truncated and regrown log is
+            // `MirrorStale`, G4).
+            Some(t) if cached.as_ref().is_some_and(|(c, _)| c == t) && !self.log_matches(t)? => {
+                let err = MirrorError::Stale {
+                    reference: reference.clone(),
+                    found: t.clone(),
+                };
+                if !force {
+                    return Err(err);
+                }
+                let saved = self.backup(branch, t)?;
+                report
+                    .lines
+                    .push(format!("{}: saved as {saved}", err.code()));
+                None
+            }
             Some(t) if cached.as_ref().is_some_and(|(c, _)| c == t) => {
                 let e = cached.as_ref().map(|(_, e)| *e).expect("cached");
                 Some((t.clone(), self.trailer_epoch_or(t, e)?))
@@ -1016,9 +1042,18 @@ impl<'a, D: Durability> Mirror<'a, D> {
             parent.as_ref().map(|(p, _)| p.as_str()),
             &message(&info, a, b, &sum),
         )?;
+        crate::p8_crash_point("mirror-commit-tree");
         if !self.repo.cas(&reference, &commit, found.as_deref())? {
-            return Err(MirrorError::Raced { reference });
+            // Raced only if the ref really moved; otherwise git refused
+            // (a held lock such as `<ref>.lock`, or a full disk).
+            if self.repo.resolve(&reference)? != found {
+                return Err(MirrorError::Raced { reference });
+            }
+            return Err(failed(format!(
+                "git update-ref {reference} failed with the ref unchanged (a held lock, or the disk?)"
+            )));
         }
+        crate::p8_crash_point("mirror-update-ref");
         self.cache.set_tip(&self.key(), branch, &commit, b)?;
         report.lines.push(format!(
             "{reference} -> {commit} (branch {}, epochs {}..{})",
@@ -1029,6 +1064,23 @@ impl<'a, D: Durability> Mirror<'a, D> {
                 .into(),
         );
         Ok(report)
+    }
+    /// Whether the log a commit's trailers name is still this log: its last
+    /// epoch exists and has the recorded frame checksum.
+    fn log_matches(&self, id: &str) -> Result<bool> {
+        let Some(t) = self
+            .repo
+            .commit(id)?
+            .and_then(|(_, _, m)| parse_trailers(&m))
+        else {
+            return Ok(false);
+        };
+        Ok(t.range.1 <= self.snap.log.tail()
+            && self
+                .snap
+                .log
+                .checksum_at(t.range.1)
+                .is_ok_and(|sum| hex(&sum) == t.checksum))
     }
     fn trailer_epoch_or(&self, id: &str, cached: Epoch) -> Result<Epoch> {
         Ok(self.trailer_epoch(id)?.unwrap_or(cached))

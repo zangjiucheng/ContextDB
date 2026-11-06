@@ -68,6 +68,10 @@ impl IndexHealth {
         drop(g);
         self.progress.notify_all();
     }
+    /// Whether a reindex is requested (the request stays).
+    pub fn reindex_requested(&self) -> bool {
+        self.lock().reindex
+    }
     /// Whether a reindex was requested (and clears the request).
     pub fn take_reindex(&self) -> bool {
         std::mem::take(&mut self.lock().reindex)

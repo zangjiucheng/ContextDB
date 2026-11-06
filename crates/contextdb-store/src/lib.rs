@@ -9,11 +9,11 @@ pub mod migrate;
 mod pack;
 pub mod projection;
 pub mod recall;
-pub mod vectors;
 pub mod session;
 #[doc(hidden)]
 pub mod snapshot;
 mod store;
+pub mod vectors;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::{PROJECTIONS_FILE, ProjectionFile};
 pub use store::{

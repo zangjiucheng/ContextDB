@@ -246,6 +246,18 @@ ctx_recall {
      (`any_of`). It pages through hits (pages of `limit × 4 + 16`), dropping
      ineligible ones, until it holds `limit` eligible candidates or the
      source is exhausted.
+     *M7 amendment (G5, implementation review):* bm25 scores every row a
+     query matches, so a term most records hold cost time linear in the
+     store. Matches are ranked in windows of 2,048 rows, in bm25 order
+     within a window. Windows follow the row id `(logical << 16) | branch`,
+     highest first (latest created logical first), which depends only on
+     the rows, so a rebuild gives the same windows and the same results. A
+     query with at most 2,048 matches has one window: the plain bm25
+     order. Paging walks every window, so `exhausted` and the short-page
+     rule are unchanged; one recall reads every page in one read snapshot
+     of the index, so a concurrent index write cannot shift rows past a
+     page boundary. P7's `any_of` for lexical candidates uses the same
+     windows.
    - **Vectors** (when enabled, §7) page through cosine order the same way.
 
    Each ranker reports `exhausted: bool`. For bm25, `exhausted` means
@@ -880,3 +892,4 @@ that is acceptable.
 | r0.2 closure check | M1, M2, M3, M6, M7 closed; M4, M5 partly closed; new N1 (major: replay on every export), N2, N3 (major: path encoding not injective), N4, N5; m2/m4/m7 partly; T90 gap | acceptable after text fixes |
 | r0.3 (author) | N1 fast path on the cached commit id, replay only on a miss, its own G5 budget; N2 `Ctx-Log-Checksum`, `MirrorStale{LogRewritten}`, P9/P10 constraint; N3 one injective encoder with tests; N4 `fast-import` from memory; N5 `exhausted` covers AND and OR; m2 daemon check on the actor thread; m4 scope of the target repository; m7 `dir` as a union; T90 Summary re-record and supersede reply | |
 | r0.3 check | every item closed; the encoder is injective and gives valid tree entries; 3 minor text points (the case-fold suffix and long names, the `ctx_supersede` row, this table), fixed in place | **G0 acceptable** |
+| M7 implementation review (2026-11-06) | 0 blockers; M1 bm25 pages on separate snapshots, M2 windows depended on indexing history (both fixed: one read snapshot, row ids by logical and branch); m3–m5 fixed; m6 G6 caveats disclosed; m7 window bounds by `OFFSET` open (gate P8 §3) | **Gate P8 passed** |

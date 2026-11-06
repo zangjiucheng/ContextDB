@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P8 milestone 7: verification fixes** (ADR 0016 §10; found by G4 and G5).
+  - **Fix: the text ranker no longer scores every match.** bm25 ranks matches in windows of 2,048 rows, by row id (latest created logical first); paging walks every window, so every match is still reached. A query with at most 2,048 matches keeps the plain bm25 order. Row ids are now `(logical << 16) | branch`, so windows and results are the same after a rebuild; an older `recall.sqlite` is rebuilt on open. Before, a query on a term most records hold took time linear in the store (at 10⁵ records, 152 ms idle p99 and up to 370 ms under a commit stream), and lexical candidate generation became quadratic in a backfill.
+  - **Fix: recall pages agree with each other.** One recall reads every bm25 page in one read snapshot, on its own read-only connection to `recall.sqlite` (WAL), so a concurrent index write can neither delay recall nor shift a row past a page boundary.
+  - **Fix: a long candidate pass no longer holds the text index back.** The pass lets the index catch up every 50 ms (incremental updates only; a full rebuild waits for the pass to end), so after a burst of commits recall sees new records within the bounded wait.
+  - **Fix: a mirror export after a log truncation is `MirrorStale`.** The cache-hit fast path accepted a cached tip without checking that the log still matched it, and a new commit would follow history the log no longer had. If the ref was also deleted, the export now starts fresh instead of recreating it on that commit.
+  - **Fix: a failed ref update is `MirrorRaced` only when the ref moved.** A held `.lock` file or another git error is `MirrorFailed`, and the export can be retried.
 - **`ctx ui` redesign.**
   - A new **Records** tab is the default. It lists every head grouped by key path, with its status, kind, stored abstract (read-only from `recall.sqlite`), changed Summary premises, and the latest head moves. Search covers keys and abstracts.
   - **Graph** can show only the records within 1–3 hops of the selection, and nodes show the full last key segment.

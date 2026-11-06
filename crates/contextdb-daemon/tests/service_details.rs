@@ -985,8 +985,10 @@ fn recall_withholds_uncertified_items_only_in_certified_mode() {
     assert_eq!(keys(&items), vec!["rw-good", "rw-weak"]);
     assert!(withheld.is_empty());
     assert_eq!(cert_id, None);
-    // Not even when everything found is certified.
-    let (items, _, cert_id) = recall_full(&s, at(a), "rw-good", Mode::Advisory);
+    // Not even when everything found is certified. ("good" matches only
+    // rw-good by key and by text, whether or not the index has caught up;
+    // "rw-good" would also reach rw-weak through bm25's OR query on "rw".)
+    let (items, _, cert_id) = recall_full(&s, at(a), "good", Mode::Advisory);
     assert_eq!(keys(&items), vec!["rw-good"]);
     assert_eq!(cert_id, None);
     assert!(items[0].handle.is_none());

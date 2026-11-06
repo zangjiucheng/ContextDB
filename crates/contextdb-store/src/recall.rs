@@ -12,6 +12,15 @@ use contextdb_model::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 type Sql<T> = rusqlite::Result<T>;
+/// Matches ranked together by bm25 (see `RecallIndex::hits`).
+pub const RANK_WINDOW: usize = 2_048;
+/// A row's FTS rowid: `(logical << 16) | branch`. Rows are per `(branch,
+/// logical)`, so this is unique, and it depends only on the row, never on
+/// the order rows were indexed in: bm25 windows (`RecallIndex::hits`) are
+/// the same after any rebuild.
+fn row_id(l: LogicalId, b: BranchId) -> i64 {
+    (i64::from(l.0) << 16) | i64::from(b.0)
+}
 pub struct RecallIndex {
     conn: Connection,
 }
@@ -118,6 +127,18 @@ pub fn read_abstracts(
     Ok(out)
 }
 impl RecallIndex {
+    /// A read-only connection to an index another connection maintains
+    /// (WAL: its queries never wait for the writer's transactions). Only
+    /// the query methods may be used on it.
+    pub fn open_reader(path: &std::path::Path) -> Sql<Self> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Self { conn })
+    }
     pub fn open(path: Option<&std::path::Path>) -> Sql<Self> {
         let conn = match path {
             Some(p) => Connection::open(p)?,
@@ -151,7 +172,16 @@ impl RecallIndex {
                 .prepare("SELECT branch, rev, abstract, outline_cut FROM recall LIMIT 0")
                 .is_err()
                 || !exists("recall_map")?
-                || version != Some(levels::LEVELS_VERSION as i64));
+                || version != Some(levels::LEVELS_VERSION as i64)
+                // Rowids from before P8 M7 followed indexing order.
+                || conn
+                    .query_row(
+                        "SELECT 1 FROM recall_map WHERE (rid >> 16) != logical LIMIT 1",
+                        [],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some());
         if old {
             conn.execute_batch(
                 "DROP TABLE IF EXISTS recall_vocab; DROP TABLE recall; DROP TABLE IF EXISTS recall_watermark;
@@ -165,6 +195,21 @@ impl RecallIndex {
             params![levels::LEVELS_VERSION as i64],
         )?;
         Ok(Self { conn })
+    }
+    /// G4 fault injection: caps the file at `pages` pages, so writes past
+    /// it fail as SQLite's "database or disk is full" (`None` lifts it).
+    #[doc(hidden)]
+    pub fn limit_pages(&self, pages: Option<u64>) -> Sql<()> {
+        let n = pages.unwrap_or(4_294_967_294);
+        self.conn
+            .query_row(&format!("PRAGMA max_page_count = {n}"), [], |_| Ok(()))
+    }
+    /// Pages the file uses now.
+    #[doc(hidden)]
+    pub fn page_count(&self) -> Sql<u64> {
+        self.conn
+            .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
+            .map(|n| n as u64)
     }
     pub fn watermark(&self) -> Sql<Epoch> {
         Ok(Epoch(
@@ -196,10 +241,11 @@ impl RecallIndex {
             tx.prepare_cached("DELETE FROM recall_map WHERE logical = ?1")?
                 .execute(params![l.0])?;
             for row in rows {
+                let rid = row_id(*l, row.branch);
                 tx.prepare_cached(
-                    "INSERT INTO recall(key, kind, scope, body, logical, branch, rev,
+                    "INSERT INTO recall(rowid, key, kind, scope, body, logical, branch, rev,
                          abstract, abstract_cut, outline, outline_cut)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     VALUES (?12, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )?
                 .execute(params![
                     row.key,
@@ -212,9 +258,9 @@ impl RecallIndex {
                     row.abstract_.text,
                     row.abstract_.cut,
                     row.outline.text,
-                    row.outline.cut
+                    row.outline.cut,
+                    rid
                 ])?;
-                let rid = tx.last_insert_rowid();
                 tx.prepare_cached("INSERT INTO recall_map(rid, logical) VALUES (?1, ?2)")?
                     .execute(params![rid, l.0])?;
             }
@@ -264,6 +310,29 @@ impl RecallIndex {
             "DELETE FROM recall; DELETE FROM recall_map; DELETE FROM recall_watermark;",
         )
     }
+    /// Runs `f` inside one read transaction, so every query in it sees the
+    /// same index state (WAL: the writer is never blocked). Paging through
+    /// [`Self::search_page`] or [`Self::any_of_page`] is consistent only
+    /// inside one snapshot; outside one, a write between pages can shift
+    /// rows past a page boundary.
+    pub fn read_snapshot<T>(&self, f: impl FnOnce(&Self) -> T) -> T {
+        let began = self.conn.execute_batch("BEGIN").is_ok();
+        let out = f(self);
+        if began {
+            let _ = self.conn.execute_batch("COMMIT");
+        }
+        out
+    }
+    /// The matching rows, best bm25 first, from the `offset`-th on.
+    ///
+    /// bm25 scores every row a query matches, so a term most rows hold
+    /// would cost time linear in the store (P8 G5). Matches are therefore
+    /// ranked in windows of [`RANK_WINDOW`] rows, highest rowid (latest
+    /// created logical) first: window 0 is those `RANK_WINDOW` matches in
+    /// bm25 order, window 1 the next ones, and so on. A query with at most
+    /// `RANK_WINDOW` matches has one window, the plain bm25 order. Paging
+    /// walks every window, so every match is still reached; the pages agree
+    /// only within one read snapshot ([`RecallIndex::read_snapshot`]).
     fn hits(
         &self,
         q: &str,
@@ -272,22 +341,75 @@ impl RecallIndex {
         limit: usize,
         offset: usize,
     ) -> Sql<Vec<Hit>> {
-        let mut stmt = self.conn.prepare_cached(
+        // The window bounds and the ranked query must see one state.
+        self.read_snapshot(|s| s.hits_in(q, scope, branch, limit, offset))
+    }
+    fn hits_in(
+        &self,
+        q: &str,
+        scope: &str,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
+        let mut out = Vec::new();
+        let (mut k, mut skip) = (offset / RANK_WINDOW, offset % RANK_WINDOW);
+        let mut ranked = self.conn.prepare_cached(
             "SELECT logical, rev, bm25(recall) FROM recall
              WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
+               AND rowid <= ?6 AND rowid >= ?7
              ORDER BY rank, rowid LIMIT ?4 OFFSET ?5",
         )?;
-        let rows = stmt.query_map(
-            params![q, scope, branch.0, limit as i64, offset as i64],
-            |r| {
-                Ok(Hit {
-                    logical: LogicalId(r.get(0)?),
-                    rev: RevisionId(r.get(1)?),
-                    score: -r.get::<_, f64>(2)?,
-                })
-            },
-        )?;
-        rows.collect()
+        while out.len() < limit {
+            // Window k holds the matches from the (k·W)-th highest rowid to the
+            // ((k+1)·W − 1)-th; no k·W-th match means no window k.
+            let hi = match k {
+                0 => i64::MAX,
+                _ => match self.nth_highest(q, scope, branch, k * RANK_WINDOW)? {
+                    Some(r) => r,
+                    None => break,
+                },
+            };
+            let lo = self.nth_highest(q, scope, branch, (k + 1) * RANK_WINDOW - 1)?;
+            let rows = ranked.query_map(
+                params![
+                    q,
+                    scope,
+                    branch.0,
+                    (limit - out.len()) as i64,
+                    skip as i64,
+                    hi,
+                    lo.unwrap_or(i64::MIN)
+                ],
+                |r| {
+                    Ok(Hit {
+                        logical: LogicalId(r.get(0)?),
+                        rev: RevisionId(r.get(1)?),
+                        score: -r.get::<_, f64>(2)?,
+                    })
+                },
+            )?;
+            for h in rows {
+                out.push(h?);
+            }
+            if lo.is_none() {
+                break;
+            }
+            (k, skip) = (k + 1, 0);
+        }
+        Ok(out)
+    }
+    /// The `n`-th highest rowid among the matching rows (from 0), without
+    /// scoring: FTS5 walks its doclists in rowid order.
+    fn nth_highest(&self, q: &str, scope: &str, branch: BranchId, n: usize) -> Sql<Option<i64>> {
+        self.conn
+            .prepare_cached(
+                "SELECT rowid FROM recall
+                 WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
+                 ORDER BY rowid DESC LIMIT 1 OFFSET ?4",
+            )?
+            .query_row(params![q, scope, branch.0, n as i64], |r| r.get(0))
+            .optional()
     }
     /// Best-ranked rows matching every term of `text` among `main`'s and
     /// `branch`'s rows, optionally within one scope lane. The caller keeps a
@@ -388,6 +510,208 @@ mod tests {
     }
     fn logicals(hits: Vec<Hit>) -> Vec<LogicalId> {
         hits.into_iter().map(|h| h.logical).collect()
+    }
+    /// P8 G5: more matches than one bm25 window. Paging reaches every
+    /// match exactly once, window 0 is the highest-rowid `RANK_WINDOW` rows in
+    /// bm25 order, and scope filters count within the windows.
+    #[test]
+    fn ranking_windows_page_through_every_match() {
+        let mut idx = RecallIndex::open(None).unwrap();
+        let n = RANK_WINDOW * 2 + 300;
+        let entries: Vec<(LogicalId, Vec<Row>)> = (0..n as u32)
+            .map(|i| {
+                // Every row holds "common"; every 7th repeats it (higher
+                // bm25). Odd rows are in another lane.
+                let body = if i % 7 == 0 {
+                    "common common common x"
+                } else {
+                    "common y z w v"
+                };
+                let scope = if i % 2 == 0 { "repo" } else { "other" };
+                (
+                    LogicalId(i),
+                    vec![row(
+                        0,
+                        i,
+                        &format!("k{i}"),
+                        RecordKind::Decision,
+                        scope,
+                        body,
+                    )],
+                )
+            })
+            .collect();
+        idx.update(Epoch(1), &entries).unwrap();
+        for (scope, total) in [("", n), ("repo", n.div_ceil(2))] {
+            let mut seen = Vec::new();
+            for page in [7usize, 100, 1000] {
+                let mut got = Vec::new();
+                let mut offset = 0;
+                loop {
+                    let hits = idx
+                        .search_page("common", scope, BranchId(0), page, offset)
+                        .unwrap();
+                    let len = hits.len();
+                    got.extend(logicals(hits));
+                    if len < page {
+                        break;
+                    }
+                    offset += page;
+                }
+                assert_eq!(got.len(), total, "{scope} {page}");
+                let mut sorted = got.clone();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(sorted.len(), total, "no repeats");
+                seen.push(got);
+            }
+            assert!(
+                seen.windows(2).all(|w| w[0] == w[1]),
+                "page size never changes the order"
+            );
+            // Window 0: the RANK_WINDOW matches with the highest logical
+            // ids, repeated bodies first.
+            let first = &seen[0][..RANK_WINDOW];
+            let mut newest: Vec<u32> = seen[0].iter().map(|l| l.0).collect();
+            newest.sort_unstable_by(|a, b| b.cmp(a));
+            let mut w0: Vec<u32> = first.iter().map(|l| l.0).collect();
+            w0.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(w0, newest[..RANK_WINDOW]);
+            let boosted = first.iter().take_while(|l| l.0 % 7 == 0).count();
+            assert!(boosted > 0 && first[boosted..].iter().all(|l| l.0 % 7 != 0));
+        }
+        // Under one window the order is the plain bm25 order.
+        let small = idx.search_page("x", "", BranchId(0), 10_000, 0).unwrap();
+        assert!(small.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+    fn common_rows(n: u32) -> Vec<(LogicalId, Vec<Row>)> {
+        (0..n)
+            .map(|i| {
+                let body = if i % 7 == 0 {
+                    "common common common x"
+                } else {
+                    "common y z w v"
+                };
+                (
+                    LogicalId(i),
+                    vec![row(
+                        0,
+                        i,
+                        &format!("k{i}"),
+                        RecordKind::Decision,
+                        "repo",
+                        body,
+                    )],
+                )
+            })
+            .collect()
+    }
+    fn all_pages(idx: &RecallIndex, page: usize) -> Vec<LogicalId> {
+        idx.read_snapshot(|idx| {
+            let mut got = Vec::new();
+            let mut offset = 0;
+            loop {
+                let hits = idx
+                    .search_page("common", "", BranchId(0), page, offset)
+                    .unwrap();
+                let len = hits.len();
+                got.extend(logicals(hits));
+                if len < page {
+                    return got;
+                }
+                offset += page;
+            }
+        })
+    }
+    /// Review M2: windows depend only on the rows, not on the order they
+    /// were indexed in, so a rebuild returns the same pages.
+    #[test]
+    fn ranking_windows_survive_a_rebuild_in_another_order() {
+        let n = RANK_WINDOW as u32 * 2 + 100;
+        let mut a = RecallIndex::open(None).unwrap();
+        a.update(Epoch(1), &common_rows(n)).unwrap();
+        // Indexed in reverse, then some rows rewritten (as head moves do).
+        let mut b = RecallIndex::open(None).unwrap();
+        let mut rows = common_rows(n);
+        rows.reverse();
+        b.update(Epoch(1), &rows).unwrap();
+        let again: Vec<_> = common_rows(n).into_iter().step_by(5).collect();
+        b.update(Epoch(2), &again).unwrap();
+        assert_eq!(all_pages(&a, 100), all_pages(&b, 100));
+    }
+    /// Review M1: pages read inside one snapshot agree while another
+    /// connection writes between them.
+    #[test]
+    fn pages_in_one_snapshot_ignore_a_concurrent_write() {
+        let path = std::env::temp_dir().join(format!("ctx-recall-snap-{}.db", std::process::id()));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+        let mut w = RecallIndex::open(Some(&path)).unwrap();
+        w.update(Epoch(1), &common_rows(300)).unwrap();
+        let r = RecallIndex::open_reader(&path).unwrap();
+        let before = all_pages(&r, 50);
+        let during = r.read_snapshot(|r| {
+            let first = logicals(r.search_page("common", "", BranchId(0), 50, 0).unwrap());
+            // The writer drops the first page's rows from the matches.
+            let gone: Vec<(LogicalId, Vec<Row>)> = (first.iter())
+                .map(|l| {
+                    (
+                        *l,
+                        vec![row(0, l.0, "k", RecordKind::Decision, "repo", "other")],
+                    )
+                })
+                .collect();
+            w.update(Epoch(2), &gone).unwrap();
+            let mut all = first;
+            let mut offset = 50;
+            loop {
+                let hits = r
+                    .search_page("common", "", BranchId(0), 50, offset)
+                    .unwrap();
+                let len = hits.len();
+                all.extend(logicals(hits));
+                if len < 50 {
+                    return all;
+                }
+                offset += 50;
+            }
+        });
+        assert_eq!(during, before, "the snapshot saw no part of the write");
+        assert_eq!(all_pages(&r, 50).len(), 250, "a new snapshot sees it");
+        drop((w, r));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+    }
+    /// A projection whose rowids followed indexing order (before P8 M7) is
+    /// dropped and rebuilt (its watermark goes with it).
+    #[test]
+    fn a_projection_with_ordinal_rowids_is_rebuilt() {
+        let path = std::env::temp_dir().join(format!("ctx-recall-rid-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut idx = RecallIndex::open(Some(&path)).unwrap();
+            idx.update(Epoch(4), &common_rows(3)).unwrap();
+            assert_eq!(idx.watermark().unwrap(), Epoch(4));
+        }
+        assert_eq!(
+            RecallIndex::open(Some(&path)).unwrap().watermark().unwrap(),
+            Epoch(4)
+        );
+        {
+            let idx = RecallIndex::open(Some(&path)).unwrap();
+            idx.conn
+                .execute("UPDATE recall_map SET rid = 2 WHERE logical = 1", [])
+                .unwrap();
+        }
+        let idx = RecallIndex::open(Some(&path)).unwrap();
+        assert_eq!(
+            (idx.watermark().unwrap(), idx.rows().unwrap()),
+            (Epoch(0), 0)
+        );
+        drop(idx);
+        let _ = std::fs::remove_file(&path);
     }
     /// `ctx ui` reads abstracts without writing: a missing file or one
     /// without current levels gives nothing.

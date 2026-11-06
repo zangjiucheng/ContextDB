@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.8.2 · Date: 2026-11-04 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.8.3 · Date: 2026-11-06 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -674,7 +674,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - 派生 Summary 的 digest 早停 + pending 计数，PENDING 在读取时可见。
 - git 镜像导出：`refs/contextdb/<branch>`，每个镜像 commit 合并一段 epoch 区间（可配置间隔），每 logical 一个 markdown，trailer `Code-Commit:` / `Ctx-Epoch-Range:`；**只导出不回写**，手改被检测并拒绝或转为 supersede 提案。
 - v1.8.0（ADR 0016 r0.3，P8 G0）细化：
-  - **排序前过滤**：资格（snapshot 中是 head、scope、P9 授权、certified 模式下 CERTIFIED）在每个 ranker 内判定，ranker 分页直到凑够 `limit` 个合格项或耗尽（`exhausted`）；withheld 不占 `limit`。融合用 RRF k=60，精确 key 排第一。
+  - **排序前过滤**：资格（snapshot 中是 head、scope、P9 授权、certified 模式下 CERTIFIED）在每个 ranker 内判定，ranker 分页直到凑够 `limit` 个合格项或耗尽（`exhausted`）；withheld 不占 `limit`。融合用 RRF k=60，精确 key 排第一。v1.8.3（P8 M7）：bm25 按 2,048 行一个窗口排序（窗口按行 id `(logical << 16) | branch` 从高到低，窗口内按 bm25），分页遍历所有窗口，`exhausted` 与短页规则不变；匹配不超过 2,048 行时即普通 bm25 顺序；行 id 只取决于行本身，重建后窗口与结果相同；一次 recall 的所有分页在同一个索引读快照内读取。
   - **IndexState** `Ready | Lagging | Rebuilding | Failed | Disabled`；recall 最多等待 `index_wait_ms`（默认 200 ms）让索引追上，超时照常检索并报告 `Lagging`。滞后只会漏项，不会把非当前 revision 当作当前。`ctx reindex` 重建投影。
   - **分层读取**：`header | abstract | outline | full`；abstract/outline 是 payload 的纯函数（`LEVELS_VERSION`），每项头部带 `level` 与 `cut`。每次展开追加一个带 level 的读事件；read_ledger 保留最高 level（max 合并）。**认证按 revision，不按 level**。session log 格式 4（新段滚动，旧段可读，降级需删除 session log）。格式 3 的读事件无法区分 recall 与 read，一律读作 `full`；`full` 读取保持格式 3 编码（tag 15），低于 full 的级别才用 tag 22。
   - **packing**：token 估计 `ceil(bytes/4)`（响应中写明）；先计头部，不截断标签；装不下的项只计数 `omitted`，不给 handle、证书条目或账本条目；withheld 以头部形式在预算外列出。无 `budget_tokens` 与 `level` 时响应与 P7 相同（只有头部）。
@@ -1357,6 +1357,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.8.3 | 2026-11-06 | P8 milestone 7（G5 与实现复核，非语义变更）：§5 P8 bm25 排序窗口（2,048 行、按行 id、重建不变、分页在同一读快照内），使含高频词的查询不再随存储规模线性增长；资格、排序前过滤、`exhausted` 与短页规则不变。G5 基准的记录与查询词改为 Zipf 分布（s = 1，20,000 词），40 词均匀分布的密集词表只报告不作门槛（ADR 0016 §10 预算为初始值，可经 ADR 校准）。 |
 | 1.8.2 | 2026-11-04 | P8 milestone 4（ADR 0016 §6 实现说明）：§6.3 `ctx_supersede` 同内容回复由 T90 固定（`Committed`、head 自身、空 delta，消耗一个 epoch）。Summary 待验证计数的基准由“最近一次 Verified 记录”实现为“差异最少的 Verified 向量”：内核按向量而非时间保存 ValidationRecord，无法得知“最近”；两者在常见情形下相同，且当前向量已验证时计数恰为 0。witness 规则取结论为该 revision、含 Sem 前提的第一条 enabled 规则（按规则 id，即规范 witness 顺序）。 |
 | 1.8.1 | 2026-11-04 | P8 milestone 3 更正（非语义变更）：ADR 0016 §4.2 原写格式 3 的 recall 条目读作 `header`；格式 3 的读事件不记录来源，无法区分 recall 与 read，因此一律读作 `full`。level 只供参考，没有检查依赖它。 |
 | 1.8.0 | 2026-11-04 | P8 G0（ADR 0016 r0.3，独立复核三轮：r0.1 0 blocker / 7 major / 12 minor，r0.2 闭环余 2 major，r0.3 全部关闭）：§5 P8 细化（排序前过滤与 ranker 分页、IndexState 与有界等待、分层读取与按 revision 认证、session log 格式 4、packing 与 bytes/4 估计、Summary 待验证计数与“digest 早停 = revision 去重”、embedding 适配器、git 镜像的 ref 命名 / CAS / tip 校验 / proposals）；§6.3 recall、read 行；§6.6 `ctx mirror`；§7 新投影；§8.1 T54–T57 重述、T85–T97；§8.2 PROP14；§10 三条威胁。默认决定 E1–E4（owner 2026-11-04 要求继续，采用推荐项，G0 前仍可推翻）。op_log 格式不变。 |

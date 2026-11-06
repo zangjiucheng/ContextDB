@@ -232,9 +232,17 @@ pub struct Service<D: Durability> {
     /// `attach_lock`, then `sessions` or `hooks` one at a time, then a session.
     attach_lock: Mutex<()>,
     tokens: AtomicU64,
+    /// bm25 hits the text ranker examined, and items recall returned
+    /// (ADR 0016 §10 G5: hits scanned per returned item, reported).
+    pub text_hits_scanned: AtomicU64,
+    pub recall_items: AtomicU64,
     writer: Mutex<mpsc::Sender<Writer>>,
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     recall: Arc<Mutex<RecallIndex>>,
+    /// A read-only connection for recall queries when the index is a file,
+    /// so queries never wait for the indexer's writes (P8 G5); else the
+    /// queries share `recall`.
+    recall_reader: Option<Mutex<RecallIndex>>,
     /// The retrieval projections' health and progress signal (P8, ADR 0016 §2).
     pub index_health: Arc<crate::index_health::IndexHealth>,
     /// Serialises `ctx_conflicts open` (P7 m7: one Conflict per pair).
@@ -477,6 +485,22 @@ impl<D: Durability + Clone + 'static> Service<D> {
         *self.embedding_thread.lock().expect("indexer") = Some(t);
         Ok(())
     }
+    /// G4 fault injection: caps `recall.sqlite` at its current size plus
+    /// `extra` pages, so index writes fail as on a full disk (`None`
+    /// lifts the cap).
+    #[doc(hidden)]
+    pub fn limit_recall(&self, extra: Option<u64>) {
+        let r = self.recall.lock().expect("recall");
+        let pages = extra.map(|e| r.page_count().unwrap_or(0) + e);
+        let _ = r.limit_pages(pages);
+    }
+    /// The connection recall queries use.
+    fn recall_query(&self) -> std::sync::MutexGuard<'_, RecallIndex> {
+        match &self.recall_reader {
+            Some(r) => r.lock().expect("recall reader"),
+            None => self.recall.lock().expect("recall"),
+        }
+    }
     /// The data directory, where `mirror.sqlite` lives.
     pub fn set_data_dir(&self, dir: std::path::PathBuf) {
         *self.data_dir.lock().expect("data dir") = Some(dir);
@@ -570,11 +594,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
         events: Vec<SessionEvent>,
         recall_path: Option<&std::path::Path>,
     ) -> Result<Self, Response> {
-        let recall = Arc::new(Mutex::new(
-            RecallIndex::open(recall_path)
-                .or_else(|_| RecallIndex::open(None))
-                .expect("recall index"),
-        ));
+        let (recall, on_disk) = match recall_path.map(|p| RecallIndex::open(Some(p))) {
+            Some(Ok(r)) => (r, true),
+            _ => (RecallIndex::open(None).expect("recall index"), false),
+        };
+        let recall = Arc::new(Mutex::new(recall));
+        let recall_reader = recall_path
+            .filter(|_| on_disk)
+            .and_then(|p| RecallIndex::open_reader(p).ok())
+            .map(Mutex::new);
         // Contradiction candidates sit next to the recall projection.
         let cand_path = recall_path.map(|p| p.with_file_name(crate::candidates::FILE));
         let candidates = Arc::new(
@@ -619,12 +647,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
             facts_lock: Mutex::new(()),
             attach_lock: Mutex::new(()),
             // Random start: a token from before a restart never matches.
+            text_hits_scanned: AtomicU64::new(0),
+            recall_items: AtomicU64::new(0),
             tokens: AtomicU64::new(
                 u64::from_le_bytes(random_id()[..8].try_into().expect("8")) >> 1,
             ),
             writer: Mutex::new(tx),
             writer_thread: Mutex::new(Some(writer_thread)),
             recall,
+            recall_reader,
             index_health,
             conflict_opens: Mutex::new(()),
             candidates,
@@ -2105,8 +2136,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let branch = db.info().id;
         let page = limit * 4 + 16;
         let mut by_text: Vec<LogicalId> = Vec::new();
-        {
-            let index = self.recall.lock().expect("recall");
+        // One read snapshot for every page (P8 M7 review M1): a write
+        // between pages would shift rows past a page boundary.
+        self.recall_query().read_snapshot(|index| {
             let any = contextdb_store::recall::terms(query);
             'phases: for phase in 0..2 {
                 let mut offset = 0;
@@ -2119,6 +2151,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     // An index error ends this ranker; its state is in
                     // the response's `index` report.
                     let Ok(hits) = hits else { break };
+                    (self.text_hits_scanned).fetch_add(hits.len() as u64, Ordering::Relaxed);
                     for h in &hits {
                         if !by_text.contains(&h.logical) && elig.admit(h.logical, Some(h.rev)) {
                             by_text.push(h.logical);
@@ -2133,7 +2166,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     offset += page;
                 }
             }
-        }
+        });
         // Vectors (ADR 0016 §7.2), when an embedder is configured: cosine
         // order over the heads visible on the branch, paged through
         // eligibility like the others.
@@ -2160,6 +2193,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .filter_map(|l| decided.remove(&l).flatten())
             .take(limit)
             .collect();
+        (self.recall_items).fetch_add(items.len() as u64, Ordering::Relaxed);
         // Packing (ADR 0016 §5.2). Without a level or a budget the
         // response keeps the header-only shape.
         let (mut omitted, mut estimate) = (0, None);
@@ -2267,7 +2301,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         };
         let stored = (want < levels::Level::Full)
             .then(|| {
-                (self.recall.lock().expect("recall"))
+                (self.recall_query())
                     .levels(item.logical, item.rev)
                     .ok()
                     .flatten()

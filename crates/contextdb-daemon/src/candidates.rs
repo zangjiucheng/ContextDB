@@ -680,6 +680,23 @@ pub fn index<D: Durability>(
     recall: &Mutex<RecallIndex>,
     health: &IndexHealth,
 ) -> bool {
+    index_with(snap, recall, health, true)
+}
+/// [`index`] when `full` is false only applies an incremental update and
+/// does nothing if a full rebuild is due. A candidate pass refreshes the
+/// index this way (P8 M7 review m3): an incremental update only rewrites
+/// heads that moved after the pass's snapshot, which the next pass queries
+/// again, while a rebuild clears rows the pass still needs, and a failure
+/// part way would leave them missing under a watermark the pass then sets.
+fn index_with<D: Durability>(
+    snap: &Snapshot<D>,
+    recall: &Mutex<RecallIndex>,
+    health: &IndexHealth,
+    full: bool,
+) -> bool {
+    if !full && health.reindex_requested() {
+        return false;
+    }
     let forced = health.take_reindex();
     let indexed = recall
         .lock()
@@ -694,6 +711,9 @@ pub fn index<D: Durability>(
     } else {
         moved(snap, indexed.0 + 1, snap.epoch.0)
     };
+    if incremental.is_none() && !full {
+        return false;
+    }
     let fail = |e: rusqlite::Error| {
         health.failed(e.to_string());
         false
@@ -729,6 +749,7 @@ pub fn index<D: Durability>(
                 }
                 done += chunk.len() as u64;
                 health.rebuilding(done, total);
+                crate::p8_crash_point("reindex-chunk");
             }
             if let Err(e) = recall.lock().expect("recall").update(snap.epoch, &[]) {
                 return fail(e);
@@ -832,6 +853,22 @@ pub fn generate<D: Durability>(
     table: &Candidates,
     stop: &AtomicBool,
 ) -> usize {
+    generate_with(snap, recall, table, stop, &mut || {})
+}
+/// How often a long candidate pass lets the text index catch up.
+const REFRESH: std::time::Duration = std::time::Duration::from_millis(50);
+/// [`generate`], calling `refresh` at most every 50 ms between heads, so a
+/// long pass (a burst of commits, a backfill) never holds the text index
+/// back (P8 G5). Rows a refresh rewrites to newer heads drop out of this
+/// pass's queries (their revision is not the head in `snap`); the newer
+/// heads are queried by the next pass.
+pub fn generate_with<D: Durability>(
+    snap: &Snapshot<D>,
+    recall: &Mutex<RecallIndex>,
+    table: &Candidates,
+    stop: &AtomicBool,
+    refresh: &mut dyn FnMut(),
+) -> usize {
     let Ok(from) = table.watermark() else {
         return 0;
     };
@@ -846,9 +883,14 @@ pub fn generate<D: Durability>(
     };
     let limits = table.limits();
     let mut inserted = 0;
+    let mut last = std::time::Instant::now();
     for (b, l) in &heads {
         if stop.load(Ordering::Acquire) {
             return inserted;
+        }
+        if last.elapsed() >= REFRESH {
+            refresh();
+            last = std::time::Instant::now();
         }
         inserted += pairs_for(snap, recall, table, limits, *b, *l);
     }
@@ -879,7 +921,9 @@ pub(crate) fn indexer<D: Durability>(
         // Candidates need the index at this snapshot (it may have failed).
         let ready = recall.lock().expect("recall").watermark().ok() == Some(snap.epoch);
         if ready && before != Some(snap.epoch) {
-            generate(&snap, &recall, &candidates, &stop);
+            generate_with(&snap, &recall, &candidates, &stop, &mut || {
+                index_with(&actor.snapshot(), &recall, &health, false);
+            });
         }
         // Idle, or the table cannot advance: wait for the next epoch.
         if !indexed && candidates.watermark().ok().flatten() == before {

@@ -18,6 +18,18 @@ pub mod index_health;
 pub mod jobs;
 #[cfg(not(loom))]
 pub mod lease;
+/// P8 G4 crash points (ADR 0016 §10): with `CTX_P8_CRASH=<name>` in a
+/// debug build the process aborts there (no destructors, as SIGKILL).
+/// Compiled out of release builds.
+#[inline]
+pub fn p8_crash_point(name: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("CTX_P8_CRASH").is_ok_and(|v| v == name) {
+        std::process::abort();
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = name;
+}
 /// The git mirror (P8, ADR 0016 §8).
 #[cfg(not(loom))]
 pub mod mirror;

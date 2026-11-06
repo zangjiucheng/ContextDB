@@ -178,23 +178,31 @@ fn similar_heads_pair_neighbours_and_other_kinds_do_not() {
         RecordKind::Fact,
         "the kubernetes cluster runs the ingress gateway",
     );
-    let c = create(
+    // The conclusion and its rule in one batch: had the rule come later,
+    // the indexer could pair the two before they were neighbours (a race
+    // a fast release build hit on the gate host).
+    let plan = "move the ingress gateway to the kubernetes cluster";
+    let c = raw_on(
         &s,
         MAIN,
-        "deploy-plan",
-        RecordKind::Plan,
-        "move the ingress gateway to the kubernetes cluster",
-    );
-    raw_on(
-        &s,
-        MAIN,
-        Vec::new(),
-        vec![Op::AddRule {
-            conclusion: c.into(),
-            incidences: vec![(p.into(), EdgeKind::Sem)],
-            enabled: true,
-        }],
-    );
+        vec![plan.as_bytes().to_vec()],
+        vec![
+            Op::CreateLogical {
+                key: "deploy-plan".into(),
+                kind: RecordKind::Plan,
+                scope_lane: "repo".into(),
+                content: h(plan.as_bytes()),
+                adopt_as_base: true,
+            },
+            Op::AddRule {
+                conclusion: RevRef::New(0),
+                incidences: vec![(p.into(), EdgeKind::Sem)],
+                enabled: true,
+            },
+        ],
+    )
+    .allocations
+    .new_revisions[0];
     let e = create(
         &s,
         MAIN,

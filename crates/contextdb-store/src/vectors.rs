@@ -40,6 +40,19 @@ impl VectorStore {
         )?;
         Ok(Self { conn })
     }
+    /// G4 fault injection: as `RecallIndex::limit_pages`.
+    #[doc(hidden)]
+    pub fn limit_pages(&self, pages: Option<u64>) -> Sql<()> {
+        let n = pages.unwrap_or(4_294_967_294);
+        self.conn
+            .query_row(&format!("PRAGMA max_page_count = {n}"), [], |_| Ok(()))
+    }
+    #[doc(hidden)]
+    pub fn page_count(&self) -> Sql<u64> {
+        self.conn
+            .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
+            .map(|n| n as u64)
+    }
     /// Whether `content` has a vector of `dims` for `model`.
     pub fn has(&self, model: &str, dims: usize, content: &ContentHash) -> Sql<bool> {
         Ok(self

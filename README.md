@@ -141,7 +141,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P5b | Symbol-level code anchors | ✅ passed |
 | P6 | Versioned transactions, branches and WHAT_IF | ✅ passed |
 | P7 | Semantic validation and conflicts | ✅ passed |
-| P8 | Retrieval, packing and git mirroring | G0 passed; in progress |
+| P8 | Retrieval, packing and git mirroring | ✅ passed |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | planned |
 | P10 | Mixed eager / lazy maintenance and scale | planned |
 | P11 | Recursive support and replication (research) | planned |
@@ -386,6 +386,14 @@ per_head = 5
 - **Certification is unchanged.** The vector ranker, like the others, yields only eligible heads, so certified recall still returns only CERTIFIED records.
 - **Candidates.** New Decision, Plan and Fact heads are also paired with their nearest neighbours on the branch (cosine ≥ `min_cosine`). A pair found by both sources is listed once, as "lexical and embedding similarity".
 - `type = "mock"` (with `dims`, no `command`) is a hashed bag of words for trials. It is not a real embedder.
+- **A local model.** `scripts/ollama-embed.py` (Python standard library only) adapts a local [Ollama](https://ollama.com) so bodies never leave the machine:
+  ```toml
+  [embedder]
+  command = ["/usr/bin/env", "python3", "-I", "/path/to/ContextDB/scripts/ollama-embed.py", "--model", "nomic-embed-text"]
+  model = "nomic-embed-text"
+  dims = 768
+  ```
+  On this project's three dogfood stores (P8 G6, 120 queries labelled by two independent agents) hybrid ranking found slightly more of the relevant records than keys and bm25 alone (recall@10 0.82 vs 0.81). Cosine similarity is a weak contradiction signal: of 130 labelled neighbour pairs only 6 were contradictions, and no `min_cosine` separated them well, so the default stays 0.82.
 
 ### Git mirror (P8)
 

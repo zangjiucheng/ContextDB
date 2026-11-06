@@ -1,0 +1,21 @@
+# p8_bench small=10000 large=100000 epochs=100000 vocabulary=Zipf s=1 over 20,000 words (SimDisk op_log, SQLite projections on disk)
+## 10000 records (filled and indexed in 33.2 s)
+recall idle (key + FTS, certified, limit 10): p50 2.59 ms, p99 10.68 ms
+packing overhead (budget 2000, outline): p50 2.58 ms vs 2.26 ms header-only (+0.33 ms)
+indexer lag after a commit: p50 2.98 ms, p99 8.18 ms (budget p99 < 500 ms)
+recall under a commit stream (2325 commits, one per 2 ms), no wait: p50 4.00 ms, p99 13.41 ms, index lagging in 510 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.3; indexer lag p50 24.30 ms, p99 57.46 ms
+recall under a commit stream (72 commits, one per 50 ms), no wait: p50 4.29 ms, p99 11.36 ms, index lagging in 263 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.2; indexer lag p50 27.57 ms, p99 57.46 ms
+## 100000 records (filled and indexed in 2193.8 s)
+recall idle (key + FTS, certified, limit 10): p50 16.28 ms, p99 59.44 ms
+packing overhead (budget 2000, outline): p50 18.91 ms vs 17.69 ms header-only (+1.22 ms)
+indexer lag after a commit: p50 22.84 ms, p99 90.81 ms (budget p99 < 500 ms)
+recall under a commit stream (4337 commits, one per 2 ms), no wait: p50 32.28 ms, p99 149.10 ms, index lagging in 336 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.4; indexer lag p50 38.29 ms, p99 142.78 ms
+recall under a commit stream (349 commits, one per 50 ms), no wait: p50 24.72 ms, p99 53.20 ms, index lagging in 136 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.4; indexer lag p50 32.69 ms, p99 90.40 ms
+hybrid, 1,024 dims, 10000 records, cache 256 MB: p50 24.18 ms, p99 41.31 ms (vectors filled in 1.0 s; cache hits 7953591, misses 0)
+hybrid, 1,024 dims, 10000 records, cache 0 MB: p50 364.91 ms, p99 624.60 ms (vectors filled in 1.0 s; cache hits 0, misses 6172429)
+hybrid, 1,024 dims, 100000 records, cache 1024 MB: p50 210.17 ms, p99 241.43 ms (vectors filled in 13.4 s; cache hits 72743019, misses 0)
+## mirror: 10000 records, 100000 epochs (built in 109.7 s)
+first export: 0.59 s (budget < 10 s); refs/contextdb/b0 -> 0f472c778d97a009ff9ea614f8636f8a0b7ce54c (branch main, epochs 1..100000)
+unchanged re-export (cache hit): 0.188 s (budget < 1 s)
+cache-miss validation at 100000 epochs (replay included): 0.78 s (budget < 60 s); accepted 0f472c778d97a009ff9ea614f8636f8a0b7ce54c: not cached, and it validates
+exit 0

@@ -122,6 +122,22 @@ impl Vectors {
     pub fn model(&self) -> &str {
         &self.model
     }
+    /// G4 fault injection: caps `vectors.sqlite` at its current size plus
+    /// `extra` pages (`None` lifts the cap).
+    #[doc(hidden)]
+    pub fn limit_store(&self, extra: Option<u64>) {
+        let s = self.store.lock().expect("vectors");
+        let pages = extra.map(|e| s.page_count().unwrap_or(0) + e);
+        let _ = s.limit_pages(pages);
+    }
+    /// Vectors stored for the model.
+    pub fn stored(&self) -> u64 {
+        self.store
+            .lock()
+            .expect("vectors")
+            .count(&self.model)
+            .unwrap_or(0)
+    }
     /// The state relative to a snapshot at `head`.
     pub fn state(&self, head: Epoch) -> IndexState {
         self.health.state(head)
@@ -290,6 +306,7 @@ fn fill(
             v.remember(c, x.into());
         }
         any = true;
+        crate::p8_crash_point("embed-batch");
     }
     Some(Ok(any))
 }

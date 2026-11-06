@@ -1,0 +1,19 @@
+ 02:50:37  up 3 days 17:38,  5 users,  load average: 9.84, 11.09, 11.26
+# p8_bench small=1000 large=100000 epochs=0 vocabulary=Zipf s=1 over 20,000 words (SimDisk op_log, SQLite projections on disk)
+## 1000 records (filled and indexed in 1.5 s)
+recall idle (key + FTS, certified, limit 10): p50 0.32 ms, p99 1.53 ms
+packing overhead (budget 2000, outline): p50 0.55 ms vs 0.80 ms header-only (+-0.24 ms)
+indexer lag after a commit: p50 1.27 ms, p99 4.94 ms (budget p99 < 500 ms)
+recall under a commit stream (380 commits, one per 2 ms), no wait: p50 1.13 ms, p99 3.89 ms, index lagging in 466 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 4.1; indexer lag p50 5.67 ms, p99 27.83 ms
+recall under a commit stream (23 commits, one per 50 ms), no wait: p50 1.47 ms, p99 2.84 ms, index lagging in 131 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 4.1; indexer lag p50 7.23 ms, p99 29.62 ms
+## 100000 records (filled and indexed in 1869.9 s)
+recall idle (key + FTS, certified, limit 10): p50 13.23 ms, p99 17.96 ms
+packing overhead (budget 2000, outline): p50 13.27 ms vs 12.98 ms header-only (+0.29 ms)
+indexer lag after a commit: p50 15.64 ms, p99 25.11 ms (budget p99 < 500 ms)
+recall under a commit stream (3086 commits, one per 2 ms), no wait: p50 23.03 ms, p99 36.73 ms, index lagging in 389 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.4; indexer lag p50 32.81 ms, p99 73.34 ms
+recall under a commit stream (270 commits, one per 50 ms), no wait: p50 19.67 ms, p99 26.65 ms, index lagging in 188 of 600; with the 200 ms bounded wait it reached Ready in 100 of 100; bm25 hits examined per returned item 5.4; indexer lag p50 33.92 ms, p99 71.13 ms
+hybrid, 1,024 dims, 1000 records, cache 256 MB: p50 1.79 ms, p99 3.18 ms (vectors filled in 0.1 s; cache hits 881364, misses 0)
+hybrid, 1,024 dims, 1000 records, cache 0 MB: p50 21.57 ms, p99 29.96 ms (vectors filled in 0.1 s; cache hits 0, misses 653671)
+hybrid, 1,024 dims, 100000 records, cache 1024 MB: p50 207.77 ms, p99 226.88 ms (vectors filled in 12.7 s; cache hits 72798193, misses 0)
+exit 0
+ 03:55:21  up 3 days 18:43,  5 users,  load average: 3.21, 3.04, 3.28

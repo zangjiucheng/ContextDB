@@ -1,6 +1,6 @@
 # Implementation status
 
-**P8 G0 passed** (2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.0). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
+**P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;
 - index health and `ctx reindex`;
 - read levels;
@@ -9,7 +9,13 @@
 - embeddings through an external command, off by default;
 - a one-way git mirror with hand-edit detection.
 
-Implementation has not started.
+**Gate P8 passed (2026-11-06).** Milestones 1–7 are done, and G1–G8 all pass:
+- **G3:** PROP14 (retrieval against the oracle) at 10,000 seeds, 120,000 queries.
+- **G4:** kills during reindex, embedding and mirror export; disk full; git lock contention; a real log truncation.
+- **G5:** every budget passes at 10⁴ and 10⁵ records once bm25 ranks in windows of 2,048 rows. Before the windows, a term most records hold made recall linear in the store.
+- **G6:** 120 labelled queries on the three dogfood stores with a local Ollama embedder: hybrid recall@10 0.82, key + FTS 0.81. `bytes/4` undercounts real tokens by about 40%. Cosine does not separate contradictions.
+- **G7:** remote regression passes.
+- The independent implementation review found no blocker. Its two majors (paging snapshots, rebuild-dependent windows) are fixed.
 
 **P7 passed** (2026-11-03; G0 2026-11-02) ([P7 gate](gates/P7.md), [ADR 0015](adr/0015-p7-validation-conflicts.md) r0.3, SPEC v1.7.1). P7 covers semantic validation, conflicts, handoff and change feeds. The independent review found 4 blockers and 7 majors in r0.1; two closure rounds closed them. Owner decisions: the real LLM evaluation uses the local `claude -p`; op_log format 4 stores only a metadata hash; agents and admin may open gating Conflicts. An LLM validator never writes a ValidationRecord. Implementation: milestones 1–8 done:
 - op_log format 4;
