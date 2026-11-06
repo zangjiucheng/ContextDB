@@ -18,9 +18,11 @@ const AGENT: Identity = Identity {
     channel: Channel::Agent,
     principal: PrincipalId(1),
 };
+/// Another principal: since P9, ids below 16 all act for the store owner
+/// (ADR 0017 §3.1), so a stranger is a mapped id.
 const STRANGER: Identity = Identity {
     channel: Channel::Agent,
-    principal: PrincipalId(2),
+    principal: PrincipalId(16),
 };
 const ADMIN: Identity = Identity {
     channel: Channel::Admin,
@@ -482,7 +484,7 @@ fn only_the_owning_principal_ends_a_session() {
             &s.handle(STRANGER, Request::SessionEnd { session: a })
                 .response
         ),
-        "UnknownSession"
+        "SessionOfAnotherPrincipal" // ADR 0017 §3.4
     );
     assert_eq!(attach_repo(&s, "A", "/repo"), (a, false), "still live");
     end(&s, a);

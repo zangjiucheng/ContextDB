@@ -3,6 +3,7 @@
 //! linking the store (ADR 0010 §1).
 pub mod client;
 pub mod docs;
+pub mod fsguard;
 pub mod gate;
 pub mod lease;
 pub mod outbox;

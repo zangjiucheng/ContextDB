@@ -120,6 +120,58 @@ pub struct Identity {
     pub channel: Channel,
     pub principal: PrincipalId,
 }
+/// The closed list of requests a principal other than the store owner may
+/// send (ADR 0017 §3.3): the calls `ctx-mcp` makes. Hook, observer, admin
+/// and store-wide requests (`Status`, `Briefing`, `Claim`, `Facts`, …) are
+/// the store owner's.
+pub fn non_owner_allowed(req: &Request) -> bool {
+    match req {
+        Request::SessionStart { .. }
+        | Request::SessionEnd { .. }
+        | Request::SessionAttach { .. }
+        | Request::Updates { .. }
+        | Request::Recall { .. }
+        | Request::Read { .. }
+        | Request::Check { .. }
+        | Request::Why { .. }
+        | Request::WhyNot { .. }
+        | Request::Impact { .. }
+        | Request::ImpactBatch { .. }
+        | Request::Diff { .. }
+        | Request::BranchList
+        | Request::Record { .. }
+        | Request::Supersede { .. }
+        | Request::Commit { .. }
+        | Request::WhatIf { .. }
+        | Request::TxnStatus { .. }
+        | Request::Changes { .. }
+        | Request::Conflicts { .. }
+        | Request::ConflictOpen { .. }
+        | Request::Resolve { .. }
+        | Request::HandoffBegin { .. }
+        | Request::HandoffAccept { .. }
+        | Request::BranchCreate { .. }
+        | Request::BranchArchive { .. }
+        | Request::Merge { .. } => true,
+        Request::OnBranch { request, .. } => {
+            !matches!(**request, Request::OnBranch { .. }) && non_owner_allowed(request)
+        }
+        _ => false,
+    }
+}
+/// A session is bound only by its own principal (ADR 0017 §3.4); the store
+/// owner's channels are one principal.
+fn same_principal(id: Identity, s: &Mutex<Session>) -> Result<(), Response> {
+    let owner = s.lock().expect("session").principal;
+    if crate::principals::class(owner) == crate::principals::class(id.principal) {
+        Ok(())
+    } else {
+        Err(err(
+            "SessionOfAnotherPrincipal",
+            "the session belongs to another principal",
+        ))
+    }
+}
 /// One read-ledger entry (ADR 0008 §6.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LedgerEntry {
@@ -190,8 +242,9 @@ enum Writer {
 /// Hook-related daemon state (ADR 0010 §2, §5, §10).
 #[derive(Default)]
 struct Hooks {
-    /// Latest session per harness session key (live or ended).
-    keys: BTreeMap<(String, String), SessionId>,
+    /// Latest session per principal and harness session key (live or
+    /// ended); keys are looked up per principal (ADR 0017 §3.4).
+    keys: BTreeMap<(PrincipalId, String, String), SessionId>,
     /// Claude Code MCP tool-use id → (session, agent). Every request of
     /// that tool call resolves through it; dropped at session end, oldest
     /// first beyond [`CLAIMS_KEPT`].
@@ -271,6 +324,9 @@ pub struct Service<D: Durability> {
     handoffs: Mutex<Handoffs>,
     /// `ctx_changes` requests waiting for an epoch (ADR 0015 §8).
     pub(crate) change_waiters: std::sync::atomic::AtomicUsize,
+    /// The uid → principal mapping (P9, ADR 0017 §3); empty in
+    /// single-user mode.
+    principals: std::sync::RwLock<Arc<crate::principals::PrincipalMap>>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -669,6 +725,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             handoffs: Mutex::new(Handoffs::default()),
             change_waiters: std::sync::atomic::AtomicUsize::new(0),
             validators: std::sync::OnceLock::new(),
+            principals: std::sync::RwLock::new(Arc::default()),
         };
         // Persist every newly detected log cut before serving (closure N1).
         let broken = service.replay(events);
@@ -842,11 +899,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     harness,
                     harness_session,
                 } => {
+                    let mut principal = PrincipalId::STORE_OWNER;
                     if let Some(s) = map.get(&session_id) {
-                        s.lock().expect("session").key =
-                            Some((harness.clone(), harness_session.clone()));
+                        let mut s = s.lock().expect("session");
+                        s.key = Some((harness.clone(), harness_session.clone()));
+                        principal = crate::principals::class(s.principal);
                     }
-                    hooks.keys.insert((harness, harness_session), session_id);
+                    hooks
+                        .keys
+                        .insert((principal, harness, harness_session), session_id);
                 }
                 SessionEvent::Fact {
                     session_id,
@@ -979,6 +1040,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// Handles one request on the given snapshot-consistent view.
     pub fn handle(&self, id: Identity, req: Request) -> Envelope {
+        // Principals other than the store owner get MCP-level requests only
+        // (ADR 0017 §3.3, F8).
+        if !id.principal.is_store_owner() && !non_owner_allowed(&req) {
+            return Envelope {
+                epoch: self.actor.snapshot().epoch,
+                response: err(
+                    "ChannelRestricted",
+                    "this request is for the store owner only",
+                ),
+            };
+        }
         // A long-poll must not hold a snapshot while it waits (the actor
         // would have to clone a replica per group, ADR 0008 §3.3).
         if let Request::Changes {
@@ -1250,8 +1322,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 binding,
                 summary,
                 to_agent,
+                to,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.handoff_begin(b, summary, to_agent, &snap),
+                Ok(b) => self.handoff_begin(b, summary, to_agent, to, &snap),
                 Err(r) => r,
             },
             Request::HandoffAccept { binding, id: h } => match self.bind(id, &binding, &snap) {
@@ -1718,8 +1791,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
     fn end_session(&self, id: Identity, session: SessionId, epoch: Epoch) -> Result<(), Response> {
         let s = match self.session(&session) {
             None => return Err(err("UnknownSession", "unknown session")),
-            Some(s) if s.lock().expect("session").principal != id.principal => {
-                return Err(err("UnknownSession", "session of another principal"));
+            Some(s)
+                if crate::principals::class(s.lock().expect("session").principal)
+                    != crate::principals::class(id.principal) =>
+            {
+                return Err(err(
+                    "SessionOfAnotherPrincipal",
+                    "the session belongs to another principal",
+                ));
             }
             Some(s) => s,
         };
@@ -1747,7 +1826,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
         (branch, git_branch): (Option<String>, Option<String>),
         snap: &Arc<Snapshot<D>>,
     ) -> Result<Bound, Response> {
-        let key = (harness.clone(), harness_session.clone());
+        let key = (
+            crate::principals::class(id.principal),
+            harness.clone(),
+            harness_session.clone(),
+        );
         // Lock order (review B1): `sessions` and `hooks` are never held
         // together here; creation is serialised by `attach_lock` (review M1).
         let live = |this: &Self| {
@@ -1797,7 +1880,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 snap.epoch,
                 branch,
             );
-            st.key = Some(key.clone());
+            st.key = Some((harness.clone(), harness_session.clone()));
             Arc::new(Mutex::new(st))
         };
         self.sessions
@@ -1834,6 +1917,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         Ok((session_id, session, None, true))
     }
+    /// The current uid → principal mapping (ADR 0017 §3.3).
+    pub fn principals(&self) -> Arc<crate::principals::PrincipalMap> {
+        self.principals.read().expect("principals").clone()
+    }
+    /// Replaces the mapping. The daemon checks the file system before it
+    /// enters multi-user mode (`Daemon::set_principals`).
+    pub fn set_principals(&self, map: crate::principals::PrincipalMap) {
+        *self.principals.write().expect("principals") = Arc::new(map);
+    }
     /// Resolves a binding to (session, agent) (ADR 0010 §2).
     pub(crate) fn bind(
         &self,
@@ -1846,6 +1938,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 let Some(s) = self.session(session) else {
                     return Err(err("UnknownSession", "unknown session"));
                 };
+                same_principal(id, &s)?;
                 if let Some(a) = agent {
                     s.lock().expect("session").known_agents.insert(a.clone());
                 }
@@ -1876,7 +1969,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 let claimed = self.hooks.lock().expect("hooks").claims.get(call).cloned();
                 match claimed {
                     Some((sid, agent)) => match self.session(&sid) {
-                        Some(s) => Ok((sid, s, agent, false)),
+                        Some(s) => {
+                            same_principal(id, &s)?;
+                            Ok((sid, s, agent, false))
+                        }
                         None => Err(err("UnknownSession", "the claiming session ended")),
                     },
                     None => {

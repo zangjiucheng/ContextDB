@@ -135,13 +135,69 @@ pub fn write_lease(path: &Path, lease: &Lease) -> io::Result<()> {
 pub fn read_lease(path: &Path) -> Option<Lease> {
     Lease::parse(&std::fs::read_to_string(path).ok()?)
 }
+/// File name of the public discovery record in `run/shared` (ADR 0017 §3.2).
+pub const ENDPOINT: &str = "endpoint";
+/// The public discovery record `<data>/run/shared/endpoint` (0644): the
+/// protocol, the shared socket's file name and the store owner's uid. It
+/// names no pid and no other path, so non-owner clients learn nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    pub protocol: u16,
+    pub socket: String,
+    pub owner_uid: u32,
+}
+impl Endpoint {
+    pub fn render(&self) -> String {
+        format!(
+            "protocol={}\nsocket={}\nowner_uid={}\n",
+            self.protocol, self.socket, self.owner_uid
+        )
+    }
+    /// `None` unless every field is present and the socket is a bare file
+    /// name (no path separator, not `.` or `..`).
+    pub fn parse(text: &str) -> Option<Self> {
+        let (mut protocol, mut socket, mut owner) = (None, None, None);
+        for line in text.lines() {
+            let (k, v) = line.split_once('=')?;
+            match k {
+                "protocol" => protocol = v.parse().ok(),
+                "socket" => socket = Some(v.to_owned()),
+                "owner_uid" => owner = v.parse().ok(),
+                _ => {}
+            }
+        }
+        let socket =
+            socket.filter(|s| !s.is_empty() && !s.contains('/') && s != "." && s != "..")?;
+        Some(Self {
+            protocol: protocol?,
+            socket,
+            owner_uid: owner?,
+        })
+    }
+}
+/// Writes the endpoint record 0644 via a temp file and rename.
+pub fn write_endpoint(path: &Path, e: &Endpoint) -> io::Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt, os::unix::fs::PermissionsExt};
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&tmp)?;
+    f.write_all(e.render().as_bytes())?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
 /// Platform `sun_path` limit (bytes, without the NUL).
 pub const SUN_PATH_MAX: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
 /// Socket directory: `<dir>/run`, or a short per-uid directory when socket
 /// paths would exceed `sun_path` (ADR 0008 §2.6).
 pub fn socket_dir(dir: &Path, uid: u32) -> PathBuf {
     let run = dir.join("run");
-    if run.join("observer.sock").as_os_str().len() <= SUN_PATH_MAX {
+    // The longest socket path: `run/private/observer.sock` (ADR 0017 §3.2).
+    if run.join("private").join("observer.sock").as_os_str().len() <= SUN_PATH_MAX {
         return run;
     }
     let tmp = std::env::temp_dir();
@@ -211,7 +267,7 @@ mod tests {
     fn long_data_directories_get_short_socket_paths() {
         let deep = PathBuf::from(format!("/tmp/{}", "d".repeat(200)));
         let dir = socket_dir(&deep, 501);
-        assert!(dir.join("observer.sock").as_os_str().len() <= SUN_PATH_MAX);
+        assert!(dir.join("private/observer.sock").as_os_str().len() <= SUN_PATH_MAX);
         assert_eq!(
             socket_dir(Path::new("/tmp/x"), 501),
             PathBuf::from("/tmp/x/run")

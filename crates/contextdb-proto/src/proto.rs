@@ -7,7 +7,8 @@ use contextdb_core::{EpochDiff, Impact, Proof};
 use contextdb_model::*;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+/// 7 (P9, ADR 0017 §10): addressed handoffs, `dropped_unauthorized`.
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -626,11 +627,14 @@ pub enum Request {
         client_txn_id: Option<[u8; 16]>,
     },
     /// `ctx_handoff_begin` (ADR 0015 §7): hands the caller's certified
-    /// state to another session; `to_agent` limits who may accept.
+    /// state to another session; `to_agent` limits who may accept. `to`
+    /// names the accepting principal (P9, ADR 0017 §3.4); without it only
+    /// the caller's own principal may accept.
     HandoffBegin {
         binding: Binding,
         summary: String,
         to_agent: Option<String>,
+        to: Option<String>,
     },
     /// `ctx_handoff_accept`: claims a handoff once; without an id, lists
     /// the open handoffs on the caller's branch the caller may accept.
@@ -1109,6 +1113,9 @@ pub enum Response {
         validation: Validation,
         copied: u32,
         skipped: u32,
+        /// Reads of another principal's handoff the acceptor may not read:
+        /// dropped, and only counted (ADR 0017 §3.4).
+        dropped_unauthorized: u32,
     },
     /// `ctx_handoff_accept` without an id.
     Handoffs {
@@ -1826,11 +1833,13 @@ impl Wire for Request {
                 binding,
                 summary,
                 to_agent,
+                to,
             } => {
                 36u8.encode(o);
                 binding.encode(o);
                 summary.encode(o);
                 to_agent.encode(o);
+                to.encode(o);
             }
             Self::HandoffAccept { binding, id } => {
                 37u8.encode(o);
@@ -2073,6 +2082,7 @@ impl Wire for Request {
                 binding: Wire::decode(i)?,
                 summary: Wire::decode(i)?,
                 to_agent: Wire::decode(i)?,
+                to: Wire::decode(i)?,
             },
             37 => Self::HandoffAccept {
                 binding: Wire::decode(i)?,
@@ -2282,6 +2292,7 @@ impl Wire for Response {
                 validation,
                 copied,
                 skipped,
+                dropped_unauthorized,
             } => {
                 28u8.encode(o);
                 id.encode(o);
@@ -2291,6 +2302,7 @@ impl Wire for Response {
                 validation.encode(o);
                 copied.encode(o);
                 skipped.encode(o);
+                dropped_unauthorized.encode(o);
             }
             Self::Handoffs { items } => {
                 29u8.encode(o);
@@ -2448,6 +2460,7 @@ impl Wire for Response {
                 validation: Wire::decode(i)?,
                 copied: Wire::decode(i)?,
                 skipped: Wire::decode(i)?,
+                dropped_unauthorized: Wire::decode(i)?,
             },
             29 => Self::Handoffs {
                 items: Wire::decode(i)?,
@@ -2722,6 +2735,7 @@ mod tests {
                 binding: Binding::root([1; 16]),
                 summary: "half done".into(),
                 to_agent: Some("reviewer".into()),
+                to: Some("bob".into()),
             },
             Request::HandoffAccept {
                 binding: Binding::root([2; 16]),
@@ -2991,6 +3005,7 @@ mod tests {
                 validation: Validation::Valid,
                 copied: 3,
                 skipped: 1,
+                dropped_unauthorized: 2,
             },
             Response::Changes {
                 items: vec![ChangeItem {

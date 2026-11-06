@@ -9,7 +9,7 @@
 - crypto-shred through a key log;
 - op_log format 5 and protocol 7.
 
-Implementation has not started.
+Milestone 1 is done: principals and the transport (socket layout, private file modes and umask, the uid mapping with the start-up file-system checks, revocation, the non-owner allowlist, per-principal sessions and addressed handoffs, the client's server check; T58, T98, T99; protocol 7). Multi-user mode is reachable only in tests until milestone 2 maps principals from the access document.
 
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;

@@ -171,6 +171,11 @@ pub enum SessionEvent {
         summary: String,
         to_agent: Option<String>,
         epoch: Epoch,
+        /// The sending principal when it is not the store owner, and the
+        /// principal the handoff is addressed to (P9, ADR 0017 §3.4). Both
+        /// `None` encode as tag 20, byte-identical to P7; otherwise tag 23.
+        principal: Option<PrincipalId>,
+        to: Option<PrincipalId>,
     },
     /// The one accept of a handoff; on replay the first durable one wins.
     /// Durable before its reply.
@@ -381,8 +386,11 @@ impl Wire for SessionEvent {
                 summary,
                 to_agent,
                 epoch,
+                principal,
+                to,
             } => {
-                20u8.encode(o);
+                let addressed = principal.is_some() || to.is_some();
+                if addressed { 23u8 } else { 20u8 }.encode(o);
                 id.encode(o);
                 session_id.encode(o);
                 agent.encode(o);
@@ -391,6 +399,10 @@ impl Wire for SessionEvent {
                 summary.encode(o);
                 to_agent.encode(o);
                 epoch.encode(o);
+                if addressed {
+                    principal.map(|p| p.0).encode(o);
+                    to.map(|p| p.0).encode(o);
+                }
             }
             Self::HandoffAccept {
                 id,
@@ -535,16 +547,40 @@ impl Wire for SessionEvent {
             18 => Self::Unclaimed {
                 epoch: Wire::decode(i)?,
             },
-            20 => Self::HandoffBegin {
-                id: Wire::decode(i)?,
-                session_id: Wire::decode(i)?,
-                agent: Wire::decode(i)?,
-                branch: Wire::decode(i)?,
-                cert: Box::new(Wire::decode(i)?),
-                summary: Wire::decode(i)?,
-                to_agent: Wire::decode(i)?,
-                epoch: Wire::decode(i)?,
-            },
+            t @ (20 | 23) => {
+                let (id, session_id, agent, branch, cert, summary, to_agent, epoch) = (
+                    Wire::decode(i)?,
+                    Wire::decode(i)?,
+                    Wire::decode(i)?,
+                    Wire::decode(i)?,
+                    Box::new(Wire::decode(i)?),
+                    Wire::decode(i)?,
+                    Wire::decode(i)?,
+                    Wire::decode(i)?,
+                );
+                let (principal, to) = if t == 23 {
+                    let p: Option<u32> = Wire::decode(i)?;
+                    let to: Option<u32> = Wire::decode(i)?;
+                    if p.is_none() && to.is_none() {
+                        return Err(WireError::InvalidEncoding); // not canonical
+                    }
+                    (p.map(PrincipalId), to.map(PrincipalId))
+                } else {
+                    (None, None)
+                };
+                Self::HandoffBegin {
+                    id,
+                    session_id,
+                    agent,
+                    branch,
+                    cert,
+                    summary,
+                    to_agent,
+                    epoch,
+                    principal,
+                    to,
+                }
+            }
             21 => Self::HandoffAccept {
                 id: Wire::decode(i)?,
                 session_id: Wire::decode(i)?,
@@ -581,6 +617,11 @@ impl Record for SessionRecord {
                 r.event,
                 SessionEvent::HandoffBegin { .. } | SessionEvent::HandoffAccept { .. }
             )
+        {
+            return Err(WireError::UnknownVersion);
+        }
+        if format < 4
+            && matches!(r.event, SessionEvent::HandoffBegin { principal, to, .. } if principal.is_some() || to.is_some())
         {
             return Err(WireError::UnknownVersion);
         }

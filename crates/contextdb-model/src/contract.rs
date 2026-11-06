@@ -10,6 +10,28 @@ macro_rules! ids {
 ids! { LogicalId:u32, RevisionId:u32, RuleId:u32, ArtifactId:u32, IncId:u32,
 BranchId:u16, PrincipalId:u32, Epoch:u64 }
 pub const MAIN: BranchId = BranchId(0);
+/// Reserved principal ids (ADR 0017 §3.1). 0–15 and `0x5641_0000..=0x5641_FFFF`
+/// are never assigned by an access document, whose ids start at 16.
+impl PrincipalId {
+    /// The store owner: the uid the daemon runs as.
+    pub const STORE_OWNER: Self = Self(0);
+    /// The store owner's agent and observer channel principals.
+    pub const OWNER_AGENT: Self = Self(1);
+    pub const OWNER_OBSERVER: Self = Self(2);
+    /// The first id an access document assigns.
+    pub const FIRST_MAPPED: Self = Self(16);
+    /// The validator workers' range (they act for the store owner).
+    pub const VALIDATORS: std::ops::RangeInclusive<u32> = 0x5641_0000..=0x5641_FFFF;
+    /// True for ids no access document may assign.
+    pub fn is_reserved(self) -> bool {
+        self.0 < Self::FIRST_MAPPED.0 || Self::VALIDATORS.contains(&self.0)
+    }
+    /// True for the store owner and every principal acting for it (its
+    /// channels, the reserved ids, the validator workers).
+    pub fn is_store_owner(self) -> bool {
+        self.is_reserved()
+    }
+}
 pub type ContentHash = [u8; 32];
 pub type HeadVector = Vec<(LogicalId, RevisionId)>;
 

@@ -89,7 +89,12 @@ impl Durability for StdDisk {
         format!("std-{}", std::process::id())
     }
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(dir)
+        // Directories 0700 and files 0600 whatever the umask (ADR 0017 §3.2).
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
     }
     fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
@@ -114,15 +119,23 @@ impl Durability for StdDisk {
         Ok(out)
     }
     fn append(&self, path: &Path, data: &[u8]) -> io::Result<()> {
-        use std::io::Write;
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
         std::fs::OpenOptions::new()
+            .mode(0o600)
             .create(true)
             .append(true)
             .open(path)?
             .write_all(data)
     }
     fn write_new(&self, path: &Path, data: &[u8]) -> io::Result<()> {
-        std::fs::write(path, data)
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        std::fs::OpenOptions::new()
+            .mode(0o600)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?
+            .write_all(data)
     }
     fn truncate(&self, path: &Path, len: u64) -> io::Result<()> {
         std::fs::OpenOptions::new()
@@ -152,7 +165,9 @@ impl Durability for StdDisk {
         std::fs::rename(from, to)
     }
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>> {
+        use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
+            .mode(0o600)
             .create(true)
             .truncate(false)
             .write(true)

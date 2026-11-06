@@ -8,6 +8,7 @@ use contextdb_hooks::{
 use std::io::{Read, Write};
 
 fn main() {
+    contextdb_proto::fsguard::private_umask();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.first().map(String::as_str), Some("-V" | "--version")) {
         println!("ctx-hook {}", env!("CARGO_PKG_VERSION"));

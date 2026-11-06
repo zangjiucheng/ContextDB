@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **P9 milestone 1: principals and the transport** (ADR 0017 §3; T58, T98, T99). Protocol 7; clients and `ctxd` upgrade together.
+  - **The socket layout changes.** The agent socket is now in `run/shared/` and the observer and admin sockets in `run/private/`. A public `run/shared/endpoint` record holds only the protocol, the socket name and the owner's uid. Clients find sockets through the lease as before.
+  - **Files in the data directory are private.** The store and the outbox create directories 0700 and files 0600; `ctxd`, `ctx`, `ctx-hook` and `ctx-mcp` set `umask 077`; `ctx service install` writes `Umask` 077 into the launchd plist and the systemd unit.
+  - **`ctx doctor <dir> --fix-modes`** removes group and other permission bits and every ACL in the data directory. It never changes an owner.
+  - **Groundwork for other OS users.** Another OS user can be mapped to its own principal, on the agent socket only. Before that the daemon checks the data directory: owner, modes and ACLs (deny-only ACLs included), ancestors writable by others without the sticky bit, and whether each mapped user can reach the socket. A connection whose user is unmapped gets `AccessRevoked`.
+    - Such a principal may send only the requests `ctx-mcp` uses; everything else is `ChannelRestricted`.
+    - It cannot bind another principal's session, and its harness keys are its own.
+    - `ctx_handoff_begin{to}` addresses a handoff to a principal; the accept reports `reads_dropped_unauthorized`.
+    - `ctx-mcp --data <dir>` (or `CTXDB_DATA`) for a data directory the user does not own connects through the endpoint and refuses a server that is not the owner (`ServerNotOwner`).
+    - Mapping comes from the access document in milestone 2; until reads and writes are authorised (milestones 3–4) no deployment enters multi-user mode.
 - **P9 G0** (ADR 0017 r0.5, SPEC v1.9.0): the design for principals, permissions and security was accepted after independent review rounds and three owner reviews. No code changes yet.
 - **P8 milestone 7: verification fixes** (ADR 0016 §10; found by G4 and G5).
   - **Fix: the text ranker no longer scores every match.** bm25 ranks matches in windows of 2,048 rows, by row id (latest created logical first); paging walks every window, so every match is still reached. A query with at most 2,048 matches keeps the plain bm25 order. Row ids are now `(logical << 16) | branch`, so windows and results are the same after a rebuild; an older `recall.sqlite` is rebuilt on open. Before, a query on a term most records hold took time linear in the store (at 10⁵ records, 152 ms idle p99 and up to 370 ms under a commit stream), and lexical candidate generation became quadratic in a backfill.

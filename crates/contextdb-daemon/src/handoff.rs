@@ -17,6 +17,14 @@
 //   already reads; its next check is Invalid exactly when a handed-over read
 //   changed (T79).
 //
+// - Across principals (P9, ADR 0017 §3.4) the sender names the recipient
+//   (`to`); an unnamed handoff is accepted only by the sender's own
+//   principal. Listing and accept show only the handoffs the caller may
+//   accept. The accept copies only the reads the acceptor may read, counts
+//   the rest (`dropped_unauthorized`), and the verdict is the acceptor's own
+//   validation of what was copied: the sender's certificate is never
+//   validated for, or shown to, another principal.
+//
 // A handoff is not a lock, and it does not expire.
 
 /// Largest handoff summary; it lives in the event itself.
@@ -29,11 +37,16 @@ struct Handoff {
     cert: Certificate,
     summary: String,
     to_agent: Option<String>,
+    /// The sending principal (its class) and the addressed one.
+    from: PrincipalId,
+    to: Option<PrincipalId>,
     epoch: Epoch,
     accepted: Option<(SessionId, Agent)>,
-    /// Reads copied and skipped by the accept (0 after a restart).
+    /// Reads copied, skipped and dropped as unauthorised by the accept (0
+    /// after a restart).
     copied: u32,
     skipped: u32,
+    dropped: u32,
 }
 #[derive(Default)]
 struct Handoffs {
@@ -57,6 +70,8 @@ impl Handoffs {
                 summary,
                 to_agent,
                 epoch,
+                principal,
+                to,
             } => {
                 self.map.entry(*id).or_insert_with(|| Handoff {
                     owner: (*session_id, agent.clone()),
@@ -64,10 +79,13 @@ impl Handoffs {
                     cert: (**cert).clone(),
                     summary: summary.clone(),
                     to_agent: to_agent.clone(),
+                    from: principal.unwrap_or(PrincipalId::STORE_OWNER),
+                    to: *to,
                     epoch: *epoch,
                     accepted: None,
                     copied: 0,
                     skipped: 0,
+                    dropped: 0,
                 });
             }
             SessionEvent::HandoffAccept {
@@ -87,7 +105,18 @@ impl Handoffs {
         }
     }
 }
+impl Handoff {
+    /// May a session of principal `p` (its class) accept this handoff?
+    fn addressed_to(&self, p: PrincipalId) -> bool {
+        self.to.map_or(self.from == p, |t| t == p)
+    }
+}
 impl<D: Durability + Clone + 'static> Service<D> {
+    /// May principal `p` read `logical` on `branch`? Every principal may
+    /// until per-lane authorisation lands (ADR 0017 §4.4, milestone 3).
+    pub(crate) fn may_read(&self, _p: PrincipalId, _logical: LogicalId, _branch: BranchId) -> bool {
+        true
+    }
     fn handoff_unavailable(&self) -> Option<Response> {
         self.handoffs
             .lock()
@@ -105,6 +134,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         bound: Bound,
         summary: String,
         to_agent: Option<String>,
+        to: Option<String>,
         snap: &Arc<Snapshot<D>>,
     ) -> Response {
         if summary.len() > HANDOFF_SUMMARY_MAX {
@@ -117,13 +147,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return r;
         }
         let (session, s, agent, _) = bound.clone();
-        let branch = {
+        let (branch, from) = {
             let s = s.lock().expect("session");
             if s.ended_epoch.is_some() {
                 return err("InvalidArgument", "the session has ended");
             }
-            s.branch
+            (s.branch, crate::principals::class(s.principal))
         };
+        let to = match to {
+            None => None,
+            Some(name) => match self.principals().principal_of_name(&name) {
+                Some(p) => Some(p),
+                None => {
+                    return err("InvalidArgument", format!("no principal named {name}"));
+                }
+            },
+        };
+        // Addressing one's own principal is the unnamed handoff.
+        let to = to.filter(|t| *t != from);
         let live = self.anchor_live(&snap.view(branch));
         // The owner's certified state, as `ctx_check` issues it.
         let cert = match self.check(bound, None, live, false, snap) {
@@ -146,10 +187,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 cert: cert.clone(),
                 summary: summary.clone(),
                 to_agent: to_agent.clone(),
+                from,
+                to,
                 epoch: snap.epoch,
                 accepted: None,
                 copied: 0,
                 skipped: 0,
+                dropped: 0,
             },
         );
         self.log(vec![SessionEvent::HandoffBegin {
@@ -161,6 +205,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
             summary,
             to_agent,
             epoch: snap.epoch,
+            principal: (from != PrincipalId::STORE_OWNER).then_some(from),
+            to,
         }]);
         if let Err(r) = self.flush() {
             h.session_log_failed = true;
@@ -177,12 +223,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if let Some(r) = self.handoff_unavailable() {
             return r;
         }
-        let branch = {
+        let (branch, me_p) = {
             let s = s.lock().expect("session");
             if s.ended_epoch.is_some() {
                 return err("InvalidArgument", "the session has ended");
             }
-            s.branch
+            (s.branch, crate::principals::class(s.principal))
         };
         let Some(id) = id else {
             // The open handoffs on this branch the caller may accept.
@@ -190,6 +236,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             let items = (h.map.iter())
                 .filter(|(_, x)| {
                     x.accepted.is_none()
+                        && x.addressed_to(me_p)
                         && x.branch == branch
                         && x.to_agent
                             .as_ref()
@@ -209,9 +256,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         };
         let me = (session, agent.clone());
         let mut h = self.handoffs.lock().expect("handoffs");
-        let Some(x) = h.map.get_mut(&id) else {
+        // A handoff not addressed to the caller's principal does not exist
+        // for it (ADR 0017 §3.4).
+        let Some(x) = h.map.get_mut(&id).filter(|x| x.addressed_to(me_p)) else {
             return err("UnknownRef", format!("no handoff {}", hex16(&id)));
         };
+        let foreign = x.from != me_p;
         match &x.accepted {
             Some(by) if *by != me => {
                 return err(
@@ -252,6 +302,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     let mut s = s.lock().expect("session");
                     let view = s.view(&agent);
                     for e in x.cert.entries.iter().filter(|e| e.required) {
+                        if foreign && !self.may_read(me_p, e.logical, branch) {
+                            x.dropped += 1;
+                            continue;
+                        }
                         if view.contains_key(&e.logical) {
                             x.skipped += 1;
                             continue;
@@ -277,8 +331,20 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
         let x = h.map.get(&id).expect("present");
-        let cert = x.cert.clone();
-        let reply = (x.owner.clone(), x.summary.clone(), x.copied, x.skipped);
+        let mut cert = x.cert.clone();
+        if foreign {
+            // The acceptor's own validation of what it may read; the sender's
+            // certificate itself is never validated for another principal.
+            cert.entries
+                .retain(|e| self.may_read(me_p, e.logical, branch));
+        }
+        let reply = (
+            x.owner.clone(),
+            x.summary.clone(),
+            x.copied,
+            x.skipped,
+            x.dropped,
+        );
         drop(h);
         // The handoff certificate's verdict now, as `ctx_check{cert_id}`.
         let db = &snap.view(branch);
@@ -294,7 +360,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(v) => v,
             Err(e) => return err("HistoryUnavailable", format!("{e:?}")),
         };
-        let ((owner, owner_agent), summary, copied, skipped) = reply;
+        let ((owner, owner_agent), summary, copied, skipped, dropped_unauthorized) = reply;
         Response::HandoffAccepted {
             id,
             owner,
@@ -303,6 +369,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             validation,
             copied,
             skipped,
+            dropped_unauthorized,
         }
     }
 }

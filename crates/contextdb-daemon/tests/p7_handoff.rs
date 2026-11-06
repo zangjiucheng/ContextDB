@@ -148,6 +148,7 @@ fn begin(s: &Svc, b: Binding, to_agent: Option<&str>) -> Response {
             binding: b,
             summary: "schema done; migrations left".into(),
             to_agent: to_agent.map(str::to_owned),
+            to: None,
         },
     )
 }
@@ -247,6 +248,7 @@ fn t79_refusals() {
             binding: bind(owner, None),
             summary: "x".repeat(8 * 1024 + 1),
             to_agent: None,
+            to: None,
         },
     );
     assert_eq!(code(&big), "InvalidArgument");

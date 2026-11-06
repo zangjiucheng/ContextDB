@@ -36,6 +36,19 @@ pub struct Options {
     /// (`contextdb_anchors::capture::LIVE_TIMEOUT`). Tests that assert
     /// certified reads on a loaded machine set a longer one.
     pub anchor_live_timeout: Option<std::time::Duration>,
+    /// Test hook (ADR 0017 §11 T98): the peer uid a connection reports. Only
+    /// debug builds honour it; release builds always ask the kernel.
+    pub peer_uid: Option<PeerUidHook>,
+}
+/// A replacement for `getpeereid` in tests (debug builds only).
+#[derive(Clone)]
+pub struct PeerUidHook(pub Arc<PeerUidFn>);
+/// The peer uid of an accepted connection, or `None` to close it.
+pub type PeerUidFn = dyn Fn(&UnixStream) -> Option<u32> + Send + Sync;
+impl std::fmt::Debug for PeerUidHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PeerUidHook")
+    }
 }
 impl Default for Options {
     fn default() -> Self {
@@ -44,6 +57,7 @@ impl Default for Options {
             principals: [PrincipalId(1), PrincipalId(2), PrincipalId(0)],
             full_sync: true,
             anchor_live_timeout: None,
+            peer_uid: None,
         }
     }
 }
@@ -68,32 +82,43 @@ impl From<StoreError> for StartError {
         }
     }
 }
+/// Socket file names. The agent socket lives in `run/shared` (0711, others
+/// may traverse it); the observer and admin sockets in `run/private` (0700)
+/// (ADR 0017 §3.2).
 const CHANNELS: [(Channel, &str); 3] = [
     (Channel::Agent, "agent.sock"),
     (Channel::Observer, "observer.sock"),
     (Channel::Admin, "admin.sock"),
 ];
+fn channel_dir(run: &Path, channel: Channel) -> PathBuf {
+    run.join(if channel == Channel::Agent {
+        "shared"
+    } else {
+        "private"
+    })
+}
 pub struct Daemon {
     pub service: Arc<Service<StdDisk>>,
     pub sockets: Vec<PathBuf>,
     pub lease: PathBuf,
+    /// The canonical data directory and the store owner's uid.
+    pub dir: PathBuf,
+    pub owner_uid: u32,
+    /// The socket directory (`<data>/run`, or the long-path fallback).
+    run: PathBuf,
     /// Set by an admin `Shutdown` (or `stop`): the daemon should exit.
     stop: Arc<AtomicBool>,
     /// Cleanup (actor, sockets, lease) has run.
     cleaned: AtomicBool,
 }
-fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    #[cfg(target_os = "macos")]
-    {
-        let (uid, _) = nix::unistd::getpeereid(stream).map_err(io::Error::from)?;
-        Ok(uid.as_raw())
+fn peer_uid(stream: &UnixStream, hook: Option<&PeerUidHook>) -> Option<u32> {
+    #[cfg(debug_assertions)]
+    if let Some(h) = hook {
+        return (h.0)(stream);
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let cred = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
-            .map_err(io::Error::from)?;
-        Ok(cred.uid())
-    }
+    #[cfg(not(debug_assertions))]
+    let _ = hook;
+    contextdb_proto::fsguard::peer_uid(stream).ok()
 }
 impl Daemon {
     pub fn start(dir: &Path, options: &Options) -> Result<Self, StartError> {
@@ -146,17 +171,34 @@ impl Daemon {
         }
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
-        std::fs::create_dir_all(&run)?;
-        // Every directory this daemon may have created for its sockets (the
-        // run dir, and in the temp fallback also `ctxd-<uid>`) must be a real
-        // directory owned by this user and private: another user must not be
-        // able to swap the socket path (P3 review note).
-        let mut private = vec![run.clone()];
-        if !run.starts_with(&dir) {
-            private.extend(run.parent().map(Path::to_path_buf));
+        // `run` and `run/shared` are traversable by others (0711) only inside
+        // the data directory; `run/private` and the temp fallback's
+        // directories stay 0700 (ADR 0017 §3.2).
+        let inside = run.starts_with(&dir);
+        let mut dirs = Vec::new();
+        if !inside {
+            dirs.extend(run.parent().map(|p| (p.to_path_buf(), 0o700)));
         }
-        for d in &private {
-            use std::os::unix::fs::MetadataExt;
+        let open = if inside { 0o711 } else { 0o700 };
+        dirs.push((run.clone(), open));
+        dirs.push((run.join("shared"), open));
+        dirs.push((run.join("private"), 0o700));
+        for (d, mode) in &dirs {
+            use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+            match std::fs::DirBuilder::new().mode(0o700).create(d) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    std::fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o700)
+                        .create(d)?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+            // Every directory this daemon may have created for its sockets
+            // must be a real directory owned by this user: another user must
+            // not be able to swap the socket path (P3 review note).
             let m = std::fs::symlink_metadata(d)?;
             if !m.is_dir() || m.uid() != uid {
                 return Err(StartError::Io(io::Error::new(
@@ -164,26 +206,37 @@ impl Daemon {
                     format!("{} is not a directory owned by uid {uid}", d.display()),
                 )));
             }
-            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(*mode))?;
         }
         let stop = Arc::new(AtomicBool::new(false));
         let mut sockets = Vec::new();
         for (n, (channel, name)) in CHANNELS.iter().enumerate() {
-            let path = run.join(name);
-            // Stale sockets are removed only now that the flock is held.
+            let path = channel_dir(&run, *channel).join(name);
+            // Stale sockets are removed only now that the flock is held,
+            // including those of the P3–P8 layout directly in `run`.
             let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(run.join(name));
             let listener = UnixListener::bind(&path)?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             let identity = Identity {
                 channel: *channel,
                 principal: options.principals[n],
             };
-            let (service, stop) = (service.clone(), stop.clone());
+            let (service, stop, hook) = (service.clone(), stop.clone(), options.peer_uid.clone());
             std::thread::Builder::new()
                 .name(format!("ctxd-accept-{name}"))
-                .spawn(move || accept(listener, identity, uid, service, stop))?;
+                .spawn(move || accept(listener, identity, uid, service, stop, hook))?;
             sockets.push(path);
         }
+        // The public discovery record (ADR 0017 §3.2): no pid, no paths.
+        lease::write_endpoint(
+            &run.join("shared").join(lease::ENDPOINT),
+            &lease::Endpoint {
+                protocol: proto::PROTOCOL_VERSION,
+                socket: "agent.sock".into(),
+                owner_uid: uid,
+            },
+        )?;
         let lease_path = dir.join("ctxd.lease");
         let pid = std::process::id();
         lease::write_lease(
@@ -221,8 +274,53 @@ impl Daemon {
             service,
             sockets,
             lease: lease_path,
+            dir,
+            owner_uid: uid,
+            run,
             stop,
             cleaned: AtomicBool::new(false),
+        })
+    }
+    /// Enters (or leaves) multi-user mode with `map` (ADR 0017 §3.2–§3.3).
+    /// Mapping another principal first requires the file-system rules: the
+    /// sockets inside `<data>`, every entry owned by this uid with no ACL
+    /// and private modes, the ancestors owned by root or the owner, and each
+    /// mapped uid able to search down to the shared socket. Then the agent
+    /// socket opens to others (0666; unmapped uids are still refused on
+    /// accept). Without other principals it is 0600 again.
+    pub fn set_principals(
+        &self,
+        map: crate::principals::PrincipalMap,
+    ) -> Result<(), Vec<contextdb_proto::fsguard::Violation>> {
+        use contextdb_proto::fsguard::{self, Violation};
+        let agent = self.socket(Channel::Agent).to_path_buf();
+        if map.is_multi_user() {
+            if !self.run.starts_with(&self.dir) {
+                return Err(vec![Violation::SocketsOutsideData {
+                    path: self.run.clone(),
+                }]);
+            }
+            let mut v = fsguard::walk(&self.dir, self.owner_uid, 32);
+            if let Err(a) = fsguard::check_ancestors(&self.dir, self.owner_uid) {
+                v.push(a);
+            }
+            let shared = agent.parent().unwrap_or(&self.dir).to_path_buf();
+            for u in map.uids() {
+                if let Err(e) = fsguard::check_searchable(&shared, u) {
+                    v.push(e);
+                }
+            }
+            if !v.is_empty() {
+                return Err(v);
+            }
+        }
+        let mode = if map.is_multi_user() { 0o666 } else { 0o600 };
+        self.service.set_principals(map);
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(mode)).map_err(|e| {
+            vec![Violation::Io {
+                path: agent.clone(),
+                error: e.to_string(),
+            }]
         })
     }
     /// Socket path of a channel.
@@ -313,31 +411,48 @@ impl Drop for Daemon {
         self.stop();
     }
 }
+/// Accepts on one socket (ADR 0017 §3.3): the store owner's uid gets the
+/// socket's channel principal; on the agent socket a uid the current access
+/// document maps gets its principal; any other uid is closed before a byte
+/// is read.
 fn accept(
     listener: UnixListener,
     identity: Identity,
     uid: u32,
     service: Arc<Service<StdDisk>>,
     stop: Arc<AtomicBool>,
+    hook: Option<PeerUidHook>,
 ) {
     for stream in listener.incoming() {
         if stop.load(Ordering::Acquire) {
             return;
         }
         let Ok(stream) = stream else { continue };
-        // Single-principal mode: only the daemon's own uid may connect.
-        if peer_uid(&stream).ok() != Some(uid) {
+        let Some(peer) = peer_uid(&stream, hook.as_ref()) else {
             continue;
-        }
+        };
+        let identity = if peer == uid {
+            identity
+        } else if identity.channel == Channel::Agent
+            && let Some(p) = service.principals().principal_of_uid(peer)
+        {
+            Identity {
+                channel: Channel::Agent,
+                principal: p,
+            }
+        } else {
+            continue;
+        };
         let (service, stop) = (service.clone(), stop.clone());
         let _ = std::thread::Builder::new()
             .name("ctxd-conn".into())
-            .spawn(move || serve(stream, identity, service, stop));
+            .spawn(move || serve(stream, identity, peer, service, stop));
     }
 }
 fn serve(
     mut stream: UnixStream,
     identity: Identity,
+    peer: u32,
     service: Arc<Service<StdDisk>>,
     stop: Arc<AtomicBool>,
 ) {
@@ -361,6 +476,25 @@ fn serve(
             }
             Err(_) => return,
         };
+        // The mapping is checked again on every request: a uid the access
+        // document no longer maps (to this principal) is revoked, and the
+        // connection closes (ADR 0017 §3.3).
+        if !identity.principal.is_store_owner()
+            && service.principals().principal_of_uid(peer) != Some(identity.principal)
+        {
+            let _ = proto::write_response(
+                &mut stream,
+                &Envelope {
+                    epoch: service.actor.snapshot().epoch,
+                    response: Response::Error {
+                        code: "AccessRevoked".into(),
+                        detail: "this uid is no longer mapped to the principal".into(),
+                    },
+                },
+            );
+            close_after_reply(&mut stream);
+            return;
+        }
         let shutdown = matches!(request, Request::Shutdown) && identity.channel == Channel::Admin;
         let envelope = service.handle(identity, request);
         let ok = !matches!(envelope.response, Response::Error { .. });

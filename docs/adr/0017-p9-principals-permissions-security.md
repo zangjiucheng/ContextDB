@@ -1088,7 +1088,7 @@ says "optional signature: deferred, ADR 0017 §9".
     `ServerNotOwner`;
   - the requests `SetAccess`, `AccessCheck` and `Shred`;
   - `handoff_begin{to}` and `ctx ui` tokens.
-- **The session log** is unchanged (format 4).
+- **The session log** stays format 4. Implementation note (milestone 1): an addressed `HandoffBegin` (sender or recipient other than the store owner) is a new event tag 23; unaddressed ones keep tag 20's bytes (gate P9).
 
 ## 11. Verification plan
 

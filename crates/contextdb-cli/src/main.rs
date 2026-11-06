@@ -16,6 +16,8 @@ Usage (offline; refused while ctxd runs):
   ctx replay <dir>                     open the store, replay, print the open report
   ctx doctor <dir> [--rebuild]         verify chain, replay, full oracle check, blobs;
                                        --rebuild discards and rebuilds projections
+  ctx doctor <dir> --fix-modes          private modes, no ACLs in the data directory
+                                       (multi-user mode; safe while ctxd runs)
   ctx doctor <dir> --truncate-before <epoch> [--yes]
                                        repair a broken chain: drop frames from <epoch>;
                                        without --yes only prints what would be lost
@@ -305,6 +307,7 @@ fn run_p3(args: &[String]) -> Result<(), String> {
             match args.get(2).map(String::as_str) {
                 None => doctor(d, false),
                 Some("--rebuild") => doctor(d, true),
+                Some("--fix-modes") => fix_modes(d),
                 Some("--truncate-before") => {
                     let epoch = args
                         .get(3)
@@ -319,7 +322,33 @@ fn run_p3(args: &[String]) -> Result<(), String> {
         None => Err("no command".into()),
     }
 }
+/// `ctx doctor <dir> --fix-modes` (ADR 0017 §3.2): private modes and no ACL
+/// on every entry of the data directory. Safe while ctxd runs; it never
+/// changes an owner, so foreign-owned entries are only reported.
+fn fix_modes(d: &Path) -> Result<(), String> {
+    use contextdb_proto::fsguard;
+    let d = d
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", d.display()))?;
+    let (fixed, left) =
+        fsguard::fix_modes(&d, fsguard::current_uid()).map_err(|e| e.to_string())?;
+    println!("fixed {fixed} entries");
+    if let Err(v) = fsguard::check_ancestors(&d, fsguard::current_uid()) {
+        println!("ancestor: {v}");
+    }
+    if left.is_empty() {
+        return Ok(());
+    }
+    for v in &left {
+        println!("{v}");
+    }
+    Err(format!(
+        "{} entries need the store owner's attention",
+        left.len()
+    ))
+}
 fn main() -> ExitCode {
+    contextdb_proto::fsguard::private_umask();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("--help") | Some("-h") => {

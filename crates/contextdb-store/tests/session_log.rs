@@ -424,6 +424,8 @@ fn p7_handoff_events_need_format_3() {
         summary: "half done".into(),
         to_agent: None,
         epoch: Epoch(3),
+        principal: None,
+        to: None,
     };
     let accept = SessionEvent::HandoffAccept {
         id: [9; 16],
@@ -458,6 +460,23 @@ fn p7_handoff_events_need_format_3() {
     };
     assert!(SessionRecord::decode(&row.encode(), 2).is_err());
     assert!(SessionRecord::decode(&row.encode(), 3).is_ok());
+    // P9 (ADR 0017 §3.4): an unaddressed handoff keeps tag 20's bytes; an
+    // addressed one is tag 23, round-trips, and needs format 4.
+    assert_eq!(row.encode()[0], 20);
+    let SessionEvent::HandoffBegin { .. } = &row.event else {
+        unreachable!()
+    };
+    let mut addressed = row.clone();
+    if let SessionEvent::HandoffBegin { principal, to, .. } = &mut addressed.event {
+        *principal = Some(PrincipalId(16));
+        *to = Some(PrincipalId(0));
+    }
+    assert_eq!(addressed.encode()[0], 23);
+    assert_eq!(
+        SessionRecord::decode(&addressed.encode(), 4).unwrap(),
+        addressed
+    );
+    assert!(SessionRecord::decode(&addressed.encode(), 3).is_err());
 }
 
 /// P8 (ADR 0016 §4.2): a read below `full` needs format 4; a full read keeps

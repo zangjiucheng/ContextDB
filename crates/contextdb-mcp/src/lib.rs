@@ -359,7 +359,8 @@ fn tools() -> Value {
         { "name": "ctx_handoff_begin", "description": "Hand this session's certified state to another session: its certificate must be Valid (run ctx_check first if unsure) and is passed with the summary. Returns the handoff id to give the next agent. Not a lock: you may keep working.",
           "inputSchema": { "type": "object", "properties": {
               "summary": { "type": "string", "description": "what was done and what is left, at most 8 KiB" },
-              "to_agent": { "type": "string", "description": "only this agent id may accept" } },
+              "to_agent": { "type": "string", "description": "only this agent id may accept" },
+              "to": { "type": "string", "description": "the principal (OS user name in the access document) who may accept; without it only your own principal may" } },
             "required": ["summary"] } },
         { "name": "ctx_handoff_accept", "description": "Accept a handoff on this session's branch (once; another accept gets HandoffTaken). Copies the handed-over reads into this session, so your next ctx_check is Invalid exactly when one of them changed, and returns the summary and the certificate's verdict now. Without id: lists the open handoffs you may accept.",
           "inputSchema": { "type": "object", "properties": {
@@ -1139,6 +1140,7 @@ impl<B: Backend> Server<B> {
                     binding: binding.clone(),
                     summary: arg(args, "summary").ok_or("summary required")?.into(),
                     to_agent: arg(args, "to_agent").map(str::to_owned),
+                    to: arg(args, "to").map(str::to_owned),
                 })?;
                 match env.response {
                     Response::HandoffBegun { id, cert_id } => Ok(json!({
@@ -1172,12 +1174,14 @@ impl<B: Backend> Server<B> {
                         validation: v,
                         copied,
                         skipped,
+                        dropped_unauthorized,
                     } => {
                         let (verdict, diffs) = validation(&v);
                         Ok(json!({
                             "id": hex(&id), "owner": hex(&owner), "owner_agent": owner_agent,
                             "summary": summary, "validation": verdict, "diffs": diffs,
                             "reads_copied": copied, "reads_skipped": skipped,
+                            "reads_dropped_unauthorized": dropped_unauthorized,
                         }))
                     }
                     Response::Handoffs { items } => Ok(json!({

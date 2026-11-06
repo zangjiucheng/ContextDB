@@ -3,6 +3,7 @@ use contextdb_daemon::server::{Daemon, Options, StartError};
 use std::{path::PathBuf, process::ExitCode};
 
 fn main() -> ExitCode {
+    contextdb_proto::fsguard::private_umask();
     let mut args = std::env::args().skip(1);
     let mut dir = None;
     let mut options = Options::default();

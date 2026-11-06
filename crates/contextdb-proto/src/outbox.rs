@@ -188,8 +188,23 @@ pub enum Delivered {
 pub struct Outbox {
     dir: PathBuf,
 }
+/// Files in the data directory are created 0600 and directories 0700
+/// whatever the umask (ADR 0017 §3.2).
+fn private_file() -> OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = OpenOptions::new();
+    o.mode(0o600);
+    o
+}
+fn create_private(p: &Path) -> io::Result<File> {
+    private_file()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(p)
+}
 fn open_rw(p: &Path) -> io::Result<File> {
-    OpenOptions::new()
+    private_file()
         .read(true)
         .write(true)
         .create(true)
@@ -273,7 +288,7 @@ fn fresh_epoch() -> [u8; 16] {
 /// Replace `dir/name` whole: write a pid-named tmp file, then rename.
 fn replace(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
+    create_private(&tmp)?.write_all(bytes)?;
     std::fs::rename(&tmp, dir.join(name)).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
@@ -325,7 +340,7 @@ impl Outbox {
         });
         if bumped.is_err() {
             let _ = std::fs::remove_file(self.dir.join("announce"));
-            let _ = File::create(self.dir.join("announce.failed"));
+            let _ = create_private(&self.dir.join("announce.failed"));
         }
         drop(guard);
     }
@@ -378,7 +393,11 @@ impl Outbox {
         self.dir.join(format!("{}.{ext}", hex(s)))
     }
     fn ensure(&self) -> io::Result<()> {
-        std::fs::create_dir_all(&self.dir)
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.dir)
     }
     /// The stream's state (default when missing or unreadable).
     pub fn state(&self, s: &Stream) -> StreamState {
@@ -394,7 +413,7 @@ impl Outbox {
         let mut st = self.state(s);
         f(&mut st);
         let tmp = self.path(s, "state.tmp");
-        let mut file = File::create(&tmp)?;
+        let mut file = create_private(&tmp)?;
         file.write_all(&st.canonical_bytes())?;
         sync(&file)?;
         std::fs::rename(tmp, self.path(s, "state"))
@@ -409,7 +428,7 @@ impl Outbox {
             self.announce();
             crash_point("append:after-announce");
         }
-        let mut log = OpenOptions::new()
+        let mut log = private_file()
             .create(true)
             .append(true)
             .read(true)

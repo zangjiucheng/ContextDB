@@ -438,6 +438,7 @@ fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), Strin
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>
+  <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>{}</string>
   <key>StandardErrorPath</key><string>{}</string>
 </dict>
@@ -455,7 +456,7 @@ fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), Strin
     } else {
         let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
         let text = format!(
-            "[Unit]\nDescription=ContextDB daemon for {dir}\n\n[Service]\nExecStart={} {}\nRestart=on-failure\nRestartSec=30\nStandardOutput=append:{log}\nStandardError=append:{log}\n\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=ContextDB daemon for {dir}\n\n[Service]\nExecStart={} {}\nUMask=0077\nRestart=on-failure\nRestartSec=30\nStandardOutput=append:{log}\nStandardError=append:{log}\n\n[Install]\nWantedBy=default.target\n",
             quote(utf8(ctxd)?),
             quote(utf8(dir)?),
             dir = utf8(dir)?,
@@ -875,9 +876,12 @@ mod tests {
         );
         if cfg!(target_os = "macos") {
             assert!(text.contains("<key>SuccessfulExit</key><false/>"));
+            // The service log is created 0600 (ADR 0017 §3.2, N25).
+            assert!(text.contains("<key>Umask</key><integer>63</integer>"));
             assert!(text.contains("/data &lt;x&gt;"), "XML-escaped");
         } else {
             assert!(text.contains("Restart=on-failure"));
+            assert!(text.contains("UMask=0077"));
         }
         assert_ne!(
             label(Path::new("/a")).unwrap(),
