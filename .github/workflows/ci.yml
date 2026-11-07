@@ -39,7 +39,8 @@ jobs:
           - { name: Linux x86_64, os: ubuntu-24.04, arch: x86_64 }
           - { name: macOS arm64, os: macos-latest, arch: arm64 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # macOS arm64 runners took 44 minutes before P9 M4 and passed 45 after it.
+    timeout-minutes: 90
     steps:
       - name: Check the runner's architecture
         env:
