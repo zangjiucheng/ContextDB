@@ -160,6 +160,7 @@ fn export_with(
             project: env.project(),
             force,
             adopt: false,
+            readable_ok: false,
         },
     )
 }
@@ -526,6 +527,7 @@ fn t96_cache_loss_is_not_a_hand_edit() {
             project: env.project(),
             force: false,
             adopt: true,
+            readable_ok: false,
         },
     );
     assert_eq!(adopt.unwrap_err().0, "MirrorModified");

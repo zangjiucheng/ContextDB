@@ -39,6 +39,17 @@ enum PairChoice {
     Stale,
     /// No `pairs` validator matches it.
     Skip,
+    /// Only validators not marked `local` take it, and a side's lane has
+    /// egress off (ADR 0017 §7).
+    Egress,
+}
+/// The lanes of a pair's two sides.
+fn pair_lanes(view: &BranchView<'_>, c: &Candidate) -> BTreeSet<String> {
+    [c.a, c.b]
+        .into_iter()
+        .filter_map(|r| view.revision_logical(r))
+        .filter_map(|l| view.logical_info(l).map(|(_, _, s)| s))
+        .collect()
 }
 fn choose_pair<D: Durability>(loaded: &Loaded, snap: &Snapshot<D>, c: &Candidate) -> PairChoice {
     let Some(view) = snap.kernel.branch(c.branch) else {
@@ -52,9 +63,13 @@ fn choose_pair<D: Durability>(loaded: &Loaded, snap: &Snapshot<D>, c: &Candidate
         return PairChoice::Stale;
     };
     let name = &view.info().name;
-    match (loaded.validators.iter()).position(|v| v.pairs && v.filter.matches(name, kind, &scope)) {
-        Some(n) => PairChoice::Run(n),
-        None => PairChoice::Skip,
+    let open = egress_open(snap, &pair_lanes(&view, c));
+    match pick(loaded, open, |v| {
+        v.pairs && v.filter.matches(name, kind, &scope)
+    }) {
+        Pick::Run(n) => PairChoice::Run(n),
+        Pick::None => PairChoice::Skip,
+        Pick::Egress => PairChoice::Egress,
     }
 }
 fn token() -> u64 {
@@ -92,6 +107,15 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                         .judge_postpone(c.id, now_ms() + UNTAKEN_RETRY_MS)
                         .map_err(sql)?;
                 }
+                PairChoice::Egress => {
+                    // Woken by a `SetAccess` or a reload (`judge_wake`).
+                    self.stats
+                        .pair_skipped_egress
+                        .fetch_add(1, Ordering::Relaxed);
+                    table
+                        .judge_postpone(c.id, now_ms() + UNTAKEN_RETRY_MS)
+                        .map_err(sql)?;
+                }
                 PairChoice::Run(n) => {
                     let t = token();
                     // The call ends with the lease, not a full lease after
@@ -103,9 +127,10 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     }
                     drop(snap);
                     let v = loaded.validators[n].validator.clone();
+                    let local = loaded.validators[n].local;
                     let c = Candidate { token: t, ..c };
                     return self
-                        .judge(&loaded, table, &c, v.as_ref(), deadline)
+                        .judge(&loaded, table, &c, v.as_ref(), local, deadline)
                         .map(Some);
                 }
             }
@@ -165,6 +190,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         table: &Candidates,
         c: &Candidate,
         v: &dyn Validator,
+        local: bool,
         deadline: Instant,
     ) -> Result<Ran, String> {
         let txn = pair_txn(c);
@@ -204,6 +230,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             );
         }
         let view = view.expect("current implies the branch");
+        // Egress, on the snapshot the bodies come from (ADR 0017 §7).
+        if !local && !egress_open(&snap, &pair_lanes(&view, c)) {
+            let held = table.judge_release(c.id, c.token, now_ms()).map_err(sql)?;
+            return Ok(if held { Ran::SkippedEgress } else { Ran::Lost });
+        }
         let item = |r: RevisionId| -> Result<Item, String> {
             let (key, kind, _) = (view.revision_logical(r))
                 .and_then(|l| view.logical_info(l))

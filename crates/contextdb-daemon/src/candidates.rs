@@ -464,6 +464,15 @@ impl Candidates {
             params![id as i64, next_at_ms],
         )? == 1)
     }
+    /// Makes every postponed pending pair due now: after a `SetAccess`
+    /// (a lane's egress may have turned on) or a validator reload (ADR 0017
+    /// §7). Retry back-off of failed pairs is cut short too.
+    pub fn judge_wake(&self) -> Sql<usize> {
+        self.db().execute(
+            "UPDATE candidates SET next_at = 0 WHERE state = 0 AND judge = 0 AND next_at > 0",
+            [],
+        )
+    }
     /// Marks a pending pair `Skipped` (no claim needed).
     pub fn judge_skip(&self, id: u64) -> Sql<()> {
         self.db().execute(

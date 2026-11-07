@@ -299,6 +299,7 @@ fn scheduler(a: &Actor, dir: &Path, m: Arc<Mock>) -> Arc<Scheduler<SimDisk>> {
                 validator: m,
                 note: "test".into(),
                 pairs: false,
+                local: false,
             }],
             error: None,
         },

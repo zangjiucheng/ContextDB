@@ -53,8 +53,11 @@ Usage (via a running ctxd, admin socket):
   ctx reindex <dir> [--fts|--vectors|--all]
                                        rebuild a retrieval projection in the background
   ctx mirror export <dir> [--branch B] [--project <repo>] [--force] [--adopt]
-                                       render the branch into refs/contextdb/b<id> of the
-                                       project repository (never pushed; never read back)
+                    [--readable-ok]    render the branch into refs/contextdb/b<id> of the
+                                       project repository (never pushed; never read back);
+                                       multi-user stores export only egress lanes every
+                                       principal reads, into a .git others cannot read
+                                       unless --readable-ok
   ctx mirror proposals <dir> [--branch B] [--project <repo>]
                                        hand edits of the mirror as supersede proposals
   ctx mirror status <dir> [--project <repo>] | prune <dir> --older-than <days>d

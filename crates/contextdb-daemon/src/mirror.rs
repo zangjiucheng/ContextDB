@@ -19,6 +19,14 @@
 //!   checksum at its last epoch, and its tree against a replayed render at
 //!   that epoch: valid tips are accepted and cached, a different log is
 //!   `MirrorStale`, anything else `MirrorModified`.
+//! - **Egress (ADR 0017 §7).** With an access document, only lanes whose
+//!   egress is on are rendered; in multi-user mode (another principal
+//!   mapped) only those every principal may read (members `*members`, no
+//!   grants, no denies). The access document is committed state, so the
+//!   tree is still a function of the log at its epoch. A commit that drops
+//!   a lane's files for this reason carries `Ctx-Egress-Removed`. A
+//!   multi-user export refuses a repository whose `.git` others can read,
+//!   unless `readable_ok`.
 use crate::actor::Snapshot;
 use contextdb_anchors::capture;
 use contextdb_core::BranchView;
@@ -53,6 +61,8 @@ pub enum MirrorError {
     Stale { reference: String, found: String },
     /// Another export moved the ref in between.
     Raced { reference: String },
+    /// A multi-user export into a `.git` others can read (ADR 0017 §7).
+    Readable { git_dir: String, mode: u32 },
     /// Git or the cache failed.
     Failed(String),
 }
@@ -62,6 +72,7 @@ impl MirrorError {
             Self::Modified { .. } => "MirrorModified",
             Self::Stale { .. } => "MirrorStale",
             Self::Raced { .. } => "MirrorRaced",
+            Self::Readable { .. } => "MirrorReadable",
             Self::Failed(_) => "MirrorFailed",
         }
     }
@@ -78,6 +89,10 @@ impl MirrorError {
             Self::Raced { reference } => {
                 format!("{reference} was moved by another export; nothing was changed")
             }
+            Self::Readable { git_dir, mode } => format!(
+                "{git_dir} has mode {mode:o}: other users can read the repository, and so every \
+                 exported body; restrict it (chmod go-rwx) or pass --readable-ok"
+            ),
             Self::Failed(m) => m.clone(),
         }
     }
@@ -215,6 +230,8 @@ pub struct Rendered {
     pub files: BTreeMap<String, Vec<u8>>,
     /// Paths with a segment longer than most file systems allow.
     pub long: Vec<String>,
+    /// Lanes with live heads that were not rendered (egress, ADR 0017 §7).
+    pub withheld: BTreeSet<String>,
 }
 /// What the front matter of a rendered file says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,10 +298,15 @@ pub fn render<D: Durability>(
     out.files.insert("README.md".into(), readme(view.info()));
     // (path segments, logical, bytes)
     let mut items: Vec<(Vec<String>, LogicalId, Vec<u8>)> = Vec::new();
+    let access = view.access();
     for l in view.logicals() {
         let (Some(r), Some((key, kind, lane))) = (view.head(l), view.logical_info(l)) else {
             continue;
         };
+        if !contextdb_core::access::mirrored(access, &lane) {
+            out.withheld.insert(lane);
+            continue;
+        }
         let label = view
             .status(r)
             .map(|s| format!("{s:?}"))
@@ -527,6 +549,14 @@ impl Repo {
             (true, out) => String::from_utf8(out).map_err(failed),
             (false, _) => Err(failed(format!("git {} failed", args.join(" ")))),
         }
+    }
+    /// The repository's common `.git` directory.
+    pub fn git_dir(&self) -> Result<PathBuf> {
+        let out = self.run(
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            &[],
+        )?;
+        Ok(PathBuf::from(out.trim()))
     }
     /// The commit a ref points at, if any.
     pub fn resolve(&self, reference: &str) -> Result<Option<String>> {
@@ -800,6 +830,8 @@ pub struct Mirror<'a, D: Durability> {
     pub repo: Repo,
     pub cache: Cache,
     rev_epochs: Option<BTreeMap<RevisionId, Epoch>>,
+    /// A multi-user export may write into a `.git` others can read.
+    pub readable_ok: bool,
 }
 impl<'a, D: Durability> Mirror<'a, D> {
     pub fn new(snap: &'a Snapshot<D>, project: &Path, data: Option<&Path>) -> Result<Self> {
@@ -809,6 +841,7 @@ impl<'a, D: Durability> Mirror<'a, D> {
             repo: Repo::open(project, &scratch)?,
             cache: Cache::open(data.map(|d| d.join(FILE)).as_deref())?,
             rev_epochs: None,
+            readable_ok: false,
         })
     }
     fn key(&self) -> String {
@@ -929,6 +962,21 @@ impl<'a, D: Durability> Mirror<'a, D> {
             .clone();
         let reference = format!("{REF_PREFIX}{}", branch.0);
         let mut report = MirrorReport::default();
+        if snap.kernel.access().is_some_and(|a| a.multi_user()) && !self.readable_ok {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = self.repo.git_dir()?;
+            let mode = std::fs::metadata(&dir)
+                .map_err(failed)?
+                .permissions()
+                .mode()
+                & 0o7777;
+            if mode & 0o044 != 0 {
+                return Err(MirrorError::Readable {
+                    git_dir: dir.display().to_string(),
+                    mode,
+                });
+            }
+        }
         let found = self.repo.resolve(&reference)?;
         let cached = self.cache.tip(&self.key(), branch)?;
         // The parent: `(commit, its last epoch)`.
@@ -1037,11 +1085,30 @@ impl<'a, D: Durability> Mirror<'a, D> {
             .log
             .checksum_at(b)
             .map_err(|e| failed(format!("{e:?}")))?;
-        let commit = self.repo.commit_tree(
-            &tree,
-            parent.as_ref().map(|(p, _)| p.as_str()),
-            &message(&info, a, b, &sum),
-        )?;
+        let mut msg = message(&info, a, b, &sum);
+        // Lanes whose files this commit drops because egress turned off or
+        // the lane was restricted (ADR 0017 §7).
+        if let Some((p, _)) = &parent
+            && !rendered.withheld.is_empty()
+        {
+            let removed: BTreeSet<String> = (self.repo.diff(p, &tree)?.into_iter())
+                .filter(|(st, _)| *st == 'D')
+                .filter_map(|(_, path)| decode_segment(path.split('/').next()?))
+                .filter(|lane| rendered.withheld.contains(lane))
+                .collect();
+            if !removed.is_empty() {
+                let list: Vec<String> = removed.into_iter().collect();
+                msg.push_str(&format!("Ctx-Egress-Removed: {}\n", list.join(", ")));
+                report.lines.push(format!(
+                    "dropped the files of {} (egress off or restricted); their bodies remain in \
+                     older commits of {reference}",
+                    list.join(", ")
+                ));
+            }
+        }
+        let commit =
+            self.repo
+                .commit_tree(&tree, parent.as_ref().map(|(p, _)| p.as_str()), &msg)?;
         crate::p8_crash_point("mirror-commit-tree");
         if !self.repo.cas(&reference, &commit, found.as_deref())? {
             // Raced only if the ref really moved; otherwise git refused

@@ -570,6 +570,17 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
         };
         crate::access::authorized(self.k.access(), p, &facts).allowed
     }
+    /// Whether the logical's lane has egress on under the kernel's access
+    /// document (ADR 0017 §7; no document: every lane). A logical this
+    /// branch cannot see has none.
+    pub fn egress(&self, l: LogicalId) -> bool {
+        self.logical_info(l)
+            .is_some_and(|(_, _, lane)| crate::access::egress(self.k.access(), &lane))
+    }
+    /// The kernel's access document, if any (ADR 0017 §4).
+    pub fn access(&self) -> Option<&'a crate::access::AccessState> {
+        self.k.access()
+    }
     pub fn validate_certificate(
         &self,
         cert: &Certificate,

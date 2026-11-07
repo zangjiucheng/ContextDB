@@ -20,6 +20,13 @@
 //!
 //! Vectors are keyed by content, so branches share them; every scan covers
 //! only heads visible on the caller's branch (SD19).
+//!
+//! **Egress (ADR 0017 §7).** The embedder never receives a body that only
+//! heads in lanes with egress off carry: fill embeds a content only for a
+//! head in an egress lane, and checks again against the current access
+//! document before each batch. Vector ranking and embedding candidates use
+//! only heads in egress lanes, so a vector computed for another logical
+//! with the same content is never used for a non-egress head.
 use crate::actor::{ActorHandle, Snapshot};
 use crate::candidates::{self, Candidates, KINDS};
 use crate::index_health::IndexHealth;
@@ -224,26 +231,42 @@ impl Vectors {
     }
 }
 
-/// The texts of every live head whose content has no vector yet, one per
-/// content hash.
-fn missing<D: Durability>(snap: &Snapshot<D>, v: &Vectors) -> Vec<(ContentHash, String)> {
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
+/// A content to embed: its hash, its text, and the lanes of the egress
+/// heads that carry it.
+type Todo = (ContentHash, String, BTreeSet<String>);
+
+/// The texts of every live head in an egress lane whose content has no
+/// vector yet, one per content hash.
+fn missing<D: Durability>(snap: &Snapshot<D>, v: &Vectors) -> Vec<Todo> {
+    let mut seen: HashMap<ContentHash, usize> = HashMap::new();
+    let mut out: Vec<Todo> = Vec::new();
     for (b, l) in candidates::all_heads(snap) {
         let Some(view) = snap.kernel.branch(b) else {
             continue;
         };
+        let Some((_, _, lane)) = view.logical_info(l) else {
+            continue;
+        };
+        if !contextdb_core::access::egress(snap.kernel.access(), &lane) {
+            continue;
+        }
         let Some(r) = view.head(l) else { continue };
         let Ok(content) = view.revision_content(r) else {
             continue;
         };
-        if !seen.insert(content) || v.has(&content) {
+        if let Some(&n) = seen.get(&content) {
+            out[n].2.insert(lane);
+            continue;
+        }
+        if v.has(&content) {
             continue;
         }
         if let Some(t) = candidates::text(snap, &view, l, r) {
+            seen.insert(content, out.len());
             out.push((
                 content,
                 embed::record_text(&t.abstract_.text, &t.outline.text, &t.body),
+                [lane].into(),
             ));
         }
     }
@@ -279,15 +302,28 @@ fn call(
 }
 
 /// Step 1: embeds what is missing. `Ok(true)` when something was embedded,
-/// `Err` on a failed batch, `None` when stopped.
+/// `Err` on a failed batch, `None` when stopped. Before each batch, a
+/// content no egress lane carries any more under `access()` (the current
+/// document) is dropped.
 fn fill(
     v: &Vectors,
-    todo: Vec<(ContentHash, String)>,
+    todo: Vec<Todo>,
+    access: &dyn Fn() -> Option<Arc<contextdb_core::access::AccessState>>,
     stop: &AtomicBool,
 ) -> Option<Result<bool, String>> {
     let s = &v.settings;
     let mut any = false;
     for chunk in todo.chunks(s.max_batch.max(1)) {
+        let now = access();
+        let chunk: Vec<(ContentHash, String)> = (chunk.iter())
+            .filter(|(_, _, lanes)| {
+                (lanes.iter()).any(|l| contextdb_core::access::egress(now.as_deref(), l))
+            })
+            .map(|(c, t, _)| (*c, t.clone()))
+            .collect();
+        if chunk.is_empty() {
+            continue;
+        }
         let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
         let deadline = Instant::now() + s.timeout;
         let out = match call(&s.embedder, texts, deadline, stop)? {
@@ -330,7 +366,9 @@ fn pairs_for<D: Durability>(
     let Some((_, kind, scope)) = view.logical_info(l) else {
         return 0;
     };
-    if !KINDS.contains(&kind) {
+    // Every other side shares the lane (`s == scope` below), so one check
+    // keeps both sides of every pair in egress lanes.
+    if !KINDS.contains(&kind) || !view.egress(l) {
         return 0;
     }
     let Some(mine) = view.revision_content(rev).ok().and_then(|c| v.vector(&c)) else {
@@ -449,7 +487,8 @@ pub(crate) fn run<D: Durability>(
         }
         // Never hold a snapshot across embedder calls (ADR 0008 §3.3).
         drop(snap);
-        match fill(&v, todo, &stop) {
+        let access = || actor.snapshot().kernel.access().cloned().map(Arc::new);
+        match fill(&v, todo, &access, &stop) {
             None => return,
             Some(Ok(_)) => {}
             Some(Err(e)) => {
@@ -463,16 +502,20 @@ pub(crate) fn run<D: Durability>(
 }
 
 /// Fused-ranking input from the vector ranker (ADR 0016 §3.2): the heads of
-/// `view` with a vector, by descending cosine to `q`, ties by logical id.
-/// Heads without a vector yet are skipped (the projection lags; status
-/// never comes from here).
+/// `view` in egress lanes with a vector, by descending cosine to `q`, ties
+/// by logical id. Heads without a vector yet are skipped (the projection
+/// lags; status never comes from here), as are heads in lanes with egress
+/// off (ADR 0017 §7).
 pub fn ranked(
     v: &Vectors,
     view: &contextdb_core::BranchView<'_>,
     q: &[f32],
 ) -> Vec<(LogicalId, RevisionId)> {
+    // Without an access document every lane egresses: no lane lookups.
+    let gated = view.access().is_some();
     let mut scored: Vec<(f32, LogicalId, RevisionId)> = view
         .logicals()
+        .filter(|l| !gated || view.egress(*l))
         .filter_map(|l| {
             let r = view.head(l)?;
             let x = v.vector(&view.revision_content(r).ok()?)?;

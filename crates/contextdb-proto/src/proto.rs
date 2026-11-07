@@ -232,11 +232,14 @@ wire_struct!(RecallOpts {
 pub enum MirrorAction {
     /// Export the branch (default `main`). `force` moves a modified ref
     /// after backing it up; `adopt` accepts an unknown tip that validates.
+    /// `readable_ok` lets a multi-user store export into a repository whose
+    /// `.git` directory others can read (ADR 0017 §7).
     Export {
         branch: Option<String>,
         project: String,
         force: bool,
         adopt: bool,
+        readable_ok: bool,
     },
     /// List hand edits of the branch's mirror as supersede proposals.
     Proposals {
@@ -259,12 +262,14 @@ impl Wire for MirrorAction {
                 project,
                 force,
                 adopt,
+                readable_ok,
             } => {
                 0u8.encode(o);
                 branch.encode(o);
                 project.encode(o);
                 force.encode(o);
                 adopt.encode(o);
+                readable_ok.encode(o);
             }
             Self::Proposals { branch, project } => {
                 1u8.encode(o);
@@ -292,6 +297,7 @@ impl Wire for MirrorAction {
                 project: Wire::decode(i)?,
                 force: Wire::decode(i)?,
                 adopt: Wire::decode(i)?,
+                readable_ok: Wire::decode(i)?,
             },
             1 => Self::Proposals {
                 branch: Wire::decode(i)?,
@@ -2932,6 +2938,7 @@ mod tests {
                     project: "/p".into(),
                     force: true,
                     adopt: false,
+                    readable_ok: false,
                 },
             },
             Request::Mirror {

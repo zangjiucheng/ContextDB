@@ -524,6 +524,7 @@ fn mirror_section(n: usize, epochs: usize, out: &mut Vec<String>) {
                         project: repo.display().to_string(),
                         force: false,
                         adopt: false,
+                        readable_ok: false,
                     },
                 },
             )

@@ -873,6 +873,13 @@ than in a commit (F13).
   - Single-user stores export as in P8.
 - **`ctx export` and `doctor`** are store-owner only and unchanged.
 
+Implementation note (milestone 5): without an access document every lane
+egresses (T106). The mirror's multi-user condition is read from the
+committed document (a principal besides the owner is mapped), so its render
+stays a function of the log; skipped jobs stay `Queued` and are re-examined
+on every claim, and skipped pairs are postponed and woken by a `SetAccess`
+or a reload (gate P9).
+
 ## 8. Crypto-shred
 
 ### 8.1 Encrypted packs

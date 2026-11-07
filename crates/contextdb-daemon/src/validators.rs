@@ -16,6 +16,13 @@
 //!   validators ([`LLM_PRINCIPAL`]) only open a non-gating PendingReview,
 //!   and a batch from that principal that carries a `RecordValidation` is
 //!   refused before it is submitted (T50).
+//! - **Egress (ADR 0017 §7).** A job or pair whose bodies come from a lane
+//!   with egress off goes only to a validator marked `local`. Otherwise it
+//!   is skipped with no attempt counted: a job stays `Queued` and is looked
+//!   at again on every claim, so it runs once the lane's egress turns on or
+//!   a local validator is added; a pair is postponed, and woken by a
+//!   `SetAccess` or a reload. The check is repeated on the snapshot the
+//!   task is built from, just before the call.
 use crate::actor::{ActorHandle, Message, Snapshot};
 use crate::jobs::{Job, JobState, JobTable};
 use contextdb_core::BranchView;
@@ -53,6 +60,8 @@ pub struct Configured {
     pub note: String,
     /// Also judges contradiction candidates (`pairs = true`).
     pub pairs: bool,
+    /// May receive bodies of lanes whose egress is off (`local = true`).
+    pub local: bool,
 }
 /// The loaded configuration (replaced whole on reload).
 #[derive(Clone, Default)]
@@ -103,6 +112,11 @@ impl Loaded {
                         .to_owned(),
                     ),
                 };
+                let note = if e.local {
+                    format!("{note}; local")
+                } else {
+                    note
+                };
                 Configured {
                     filter: e.filter.clone(),
                     validator: e.build(&contextdb_validate::program_version(program)),
@@ -112,6 +126,7 @@ impl Loaded {
                         note
                     },
                     pairs: e.pairs,
+                    local: e.local,
                 }
             })
             .collect();
@@ -142,6 +157,9 @@ pub struct Stats {
     pub pair_calls: AtomicU64,
     pub pair_reviews: AtomicU64,
     pub pair_none: AtomicU64,
+    /// Pairs postponed because a side's lane has egress off and no local
+    /// validator takes them (ADR 0017 §7).
+    pub pair_skipped_egress: AtomicU64,
 }
 pub struct Scheduler<D: Durability> {
     actor: ActorHandle<D>,
@@ -196,6 +214,9 @@ pub enum Ran {
     Superseded,
     /// Over the LLM call cap: given back.
     Deferred,
+    /// A lane's egress turned off before the call: given back with no
+    /// attempt used (ADR 0017 §7).
+    SkippedEgress,
     /// The store failed (not the job): given back with no attempt used.
     Requeued(String),
     /// The attempt failed (requeued or `Failed`).
@@ -247,6 +268,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
     pub fn set_loaded(&self, loaded: Loaded) {
         if let Some(c) = self.candidates.get() {
             c.set_limits(loaded.candidates);
+            // A new validator may take postponed pairs.
+            let _ = c.judge_wake();
         }
         *self.loaded.lock().expect("loaded") = Arc::new(loaded);
         self.notify();
@@ -430,6 +453,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             counter("pair_calls", v(&st.pair_calls)),
             counter("pair_reviews", v(&st.pair_reviews)),
             counter("pair_none", v(&st.pair_none)),
+            counter("pair_skipped_egress", v(&st.pair_skipped_egress)),
+            counter("skipped_egress", self.skipped_egress()?),
         ];
         if let Some(c) = self.candidates.get() {
             let cs = &c.stats;
@@ -454,6 +479,16 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         }
         report.error = loaded.error.clone();
         Ok(report)
+    }
+    /// Queued jobs only non-local validators take while a lane they read
+    /// has egress off (`Skipped{egress}`, ADR 0017 §7).
+    pub fn skipped_egress(&self) -> Result<u64, String> {
+        let loaded = self.loaded();
+        let snap = self.actor.snapshot();
+        Ok((self.jobs.all()?.iter())
+            .filter(|j| j.state == JobState::Queued)
+            .filter(|j| matches!(choose(&loaded, &snap, j), Choice::Egress))
+            .count() as u64)
     }
     /// Runs every configured validator once on [`probe_task`] (an LLM call
     /// for LLM validators, within the hourly cap).
@@ -512,6 +547,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Some(e) if e > snap.epoch => {}
             Some(e) => {
                 let mut rescan = false;
+                let mut woken = false;
                 let mut touched: Vec<(BranchId, BTreeSet<RuleId>)> = Vec::new();
                 for n in e.0..=snap.epoch.0 {
                     if n == 0 {
@@ -520,6 +556,14 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     self.stats.discovery_rows.fetch_add(1, Ordering::Relaxed);
                     match candidates(&snap, Epoch(n)) {
                         Some(Candidates::Rescan) | None => rescan = true,
+                        // Egress may have turned on: postponed pairs are
+                        // looked at again (jobs are, on every claim).
+                        Some(Candidates::Access) => {
+                            if let Some(c) = self.candidates.get() {
+                                c.judge_wake().map_err(|e| format!("candidates: {e}"))?;
+                            }
+                            woken = true;
+                        }
                         Some(Candidates::Rules(b, rules)) => {
                             match touched.iter_mut().find(|(x, _)| *x == b) {
                                 Some((_, s)) => s.extend(rules),
@@ -527,6 +571,9 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                             }
                         }
                     }
+                }
+                if woken {
+                    self.notify();
                 }
                 if rescan {
                     queued += self.scan_all(&snap)?;
@@ -593,7 +640,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                     chosen = None;
                     true
                 }
-                Choice::Skip => false,
+                Choice::Skip | Choice::Egress => false,
             }
         })?;
         let Some(job) = job else {
@@ -603,8 +650,8 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         let ran = match chosen {
             None => self.end(&job, JobState::Superseded, None, None, Ran::Superseded)?,
             Some(n) => {
-                let v = loaded.validators[n].validator.clone();
-                self.run_job(&loaded, &job, v.as_ref(), lease)?
+                let c = &loaded.validators[n];
+                self.run_job(&loaded, &job, c.validator.as_ref(), c.local, lease)?
             }
         };
         Ok(Some(ran))
@@ -696,6 +743,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         loaded: &Loaded,
         job: &Job,
         v: &dyn Validator,
+        local: bool,
         lease: Duration,
     ) -> Result<Ran, String> {
         let txn = job.client_txn_id();
@@ -728,6 +776,14 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         if kind == ValidatorKind::Llm && job.generation == 0 && self.open_review(&snap, &view, job)
         {
             return self.end(job, JobState::Done, None, None, Ran::AlreadyReviewed);
+        }
+        // Egress, on the snapshot the bodies come from (ADR 0017 §7).
+        if !local && !egress_open(&snap, &rule_lanes(&view, &rule)) {
+            return Ok(if self.jobs.release(&job.key, job.token, now_ms())? {
+                Ran::SkippedEgress
+            } else {
+                Ran::Lost
+            });
         }
         let task = match build_task(&snap, &view, job, &rule) {
             Ok(t) => t,
@@ -999,6 +1055,52 @@ enum Choice {
     Stale,
     /// No validator takes it.
     Skip,
+    /// Only validators not marked `local` take it, and a lane it reads has
+    /// egress off (`Skipped{egress}`, ADR 0017 §7).
+    Egress,
+}
+/// What `pick` found among the validators.
+pub(crate) enum Pick {
+    Run(usize),
+    None,
+    Egress,
+}
+/// The first validator `matches` accepts that may receive the bodies: any
+/// when `open` (every lane read has egress on), else only `local` ones.
+pub(crate) fn pick(loaded: &Loaded, open: bool, matches: impl Fn(&Configured) -> bool) -> Pick {
+    let mut blocked = false;
+    for (n, c) in loaded.validators.iter().enumerate() {
+        if !matches(c) {
+            continue;
+        }
+        if open || c.local {
+            return Pick::Run(n);
+        }
+        blocked = true;
+    }
+    if blocked { Pick::Egress } else { Pick::None }
+}
+/// Whether every lane in `lanes` has egress on (no access document: all).
+pub(crate) fn egress_open<D: Durability>(snap: &Snapshot<D>, lanes: &BTreeSet<String>) -> bool {
+    let access = snap.kernel.access();
+    lanes
+        .iter()
+        .all(|l| contextdb_core::access::egress(access, l))
+}
+/// The lanes a rule job's task reads: the conclusion's, and each changed
+/// premise's (the bodies `build_task` sends).
+fn rule_lanes(view: &BranchView<'_>, rule: &contextdb_core::RuleSemantic) -> BTreeSet<String> {
+    let lane = |l: LogicalId| view.logical_info(l).map(|(_, _, s)| s);
+    let mut out: BTreeSet<String> = (view.revision_logical(rule.conclusion))
+        .and_then(lane)
+        .into_iter()
+        .collect();
+    for ((l, a), (_, c)) in rule.asserted.iter().zip(&rule.current) {
+        if a != c {
+            out.extend(lane(*l));
+        }
+    }
+    out
 }
 fn choose<D: Durability>(loaded: &Loaded, snap: &Snapshot<D>, job: &Job) -> Choice {
     let Some(view) = snap.kernel.branch(job.branch) else {
@@ -1019,9 +1121,11 @@ fn choose<D: Durability>(loaded: &Loaded, snap: &Snapshot<D>, job: &Job) -> Choi
         return Choice::Stale;
     };
     let name = &view.info().name;
-    match (loaded.validators.iter()).position(|c| c.filter.matches(name, kind, &scope)) {
-        Some(n) => Choice::Run(n),
-        None => Choice::Skip,
+    let open = egress_open(snap, &rule_lanes(&view, &rule));
+    match pick(loaded, open, |c| c.filter.matches(name, kind, &scope)) {
+        Pick::Run(n) => Choice::Run(n),
+        Pick::None => Choice::Skip,
+        Pick::Egress => Choice::Egress,
     }
 }
 /// The current vector of rule `j` when it is enabled and Pending.
@@ -1032,6 +1136,8 @@ fn pending_at(view: &BranchView<'_>, j: RuleId) -> Option<HeadVector> {
 enum Candidates {
     Rescan,
     Rules(BranchId, BTreeSet<RuleId>),
+    /// A `SetAccess`: lanes' egress may have changed.
+    Access,
 }
 /// The rules op_log row `e` can have made Pending, on its branch.
 fn candidates<D: Durability>(snap: &Snapshot<D>, e: Epoch) -> Option<Candidates> {
@@ -1044,6 +1150,9 @@ fn candidates<D: Durability>(snap: &Snapshot<D>, e: Epoch) -> Option<Candidates>
         )
     }) {
         return Some(Candidates::Rescan);
+    }
+    if (batch.ops.iter()).any(|op| matches!(op, Op::SetAccess { .. })) {
+        return Some(Candidates::Access);
     }
     let result = row.result().ok()?;
     let view = snap.kernel.branch(batch.branch)?;

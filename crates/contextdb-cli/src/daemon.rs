@@ -648,6 +648,7 @@ pub fn mirror(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 "--older-than",
                 "--force",
                 "--adopt",
+                "--readable-ok",
             ]
             .contains(&a.as_str())
         {
@@ -680,6 +681,7 @@ pub fn mirror(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
             project,
             force: has("--force"),
             adopt: has("--adopt"),
+            readable_ok: has("--readable-ok"),
         },
         "proposals" => MirrorAction::Proposals { branch, project },
         "status" => MirrorAction::Status { project },

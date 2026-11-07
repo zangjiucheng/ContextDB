@@ -356,9 +356,10 @@ name = "lint"
 type = "command"
 command = ["/usr/local/bin/ctx-lint", "--json"]
 trusted = true                # deterministic: may commit a ValidationRecord
+local = true                  # keeps data on this machine (P9 egress)
 ```
 
-A job goes to the first validator whose filters all match. `ctx validators reload <dir>` applies an edited file; `check` runs every loaded validator once on a probe task (one LLM call each, within the hourly cap); `status` lists jobs, counters and Failed jobs.
+A job goes to the first validator whose filters all match. With an access document (P9), work that reads a lane whose `egress` is off (personal lanes by default) goes only to a validator marked `local = true`, your statement that the command keeps data on the machine (a `claude` validator cannot be marked); until one is configured, or the lane's egress turns on, it waits with no attempt counted. `ctx validators reload <dir>` applies an edited file; `check` runs every loaded validator once on a probe task (one LLM call each, within the hourly cap); `status` lists jobs, counters and Failed jobs.
 
 **Upgrade note**: P7 raises the IPC protocol to 5 and the op_log to format 4 (a ValidationRecord can carry a metadata hash). Stop `ctxd`, run `ctx migrate <dir>` once (it keeps `log.v3.bak`; batches, hashes and frame checksums are unchanged), then upgrade every binary together.
 

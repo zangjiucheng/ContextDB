@@ -395,6 +395,36 @@ impl AccessState {
             .is_some_and(|n| !self.doc.principals.contains_key(n))
     }
 }
+impl AccessState {
+    /// Whether `lane`'s bodies may leave the machine (ADR 0017 §7): its
+    /// entry's `egress` (personal lanes: `[personal] egress`, F6).
+    pub fn egress(&self, lane: &str) -> bool {
+        self.entry(lane).egress
+    }
+    /// Whether the document maps a principal besides the store owner.
+    pub fn multi_user(&self) -> bool {
+        self.mapped().next().is_some()
+    }
+    /// Whether every principal may read every logical of `lane` (ADR 0017
+    /// §7, the mirror): members `*members`, no grants and no denies.
+    pub fn readable_by_all(&self, lane: &str) -> bool {
+        let e = self.entry(lane);
+        e.members.contains("*members") && e.grants.is_empty() && e.deny.is_empty()
+    }
+    /// Whether the git mirror exports `lane` (ADR 0017 §7): egress, and in
+    /// multi-user mode readable by every principal.
+    pub fn mirrored(&self, lane: &str) -> bool {
+        self.egress(lane) && (!self.multi_user() || self.readable_by_all(lane))
+    }
+}
+/// `egress` without an access document: every lane, as before P9.
+pub fn egress(state: Option<&AccessState>, lane: &str) -> bool {
+    state.is_none_or(|s| s.egress(lane))
+}
+/// `mirrored` without an access document: every lane (single-user, as P8).
+pub fn mirrored(state: Option<&AccessState>, lane: &str) -> bool {
+    state.is_none_or(|s| s.mirrored(lane))
+}
 /// `has_role` without an access document: only the store owner (T106).
 pub fn has_role(state: Option<&AccessState>, p: PrincipalId, lane: &str, role: Role) -> bool {
     match state {

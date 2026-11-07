@@ -31,10 +31,14 @@
 //! type = "command"
 //! command = ["/usr/local/bin/ctx-lint", "--json"]
 //! trusted = true                # Deterministic; otherwise counted as Llm
+//! local = true                  # keeps data on this machine (ADR 0017 §7)
 //! ```
 //!
 //! A job goes to the first validator whose filters all match; a candidate
 //! pair to the first with `pairs = true` whose filters match its newer side.
+//! A job or pair touching a lane whose egress is off goes only to a
+//! validator marked `local = true` (the owner's statement that the command
+//! keeps data on the machine; `claude` validators cannot be marked).
 use crate::{Validator, claude::ClaudeCli, command::CommandValidator};
 use contextdb_model::RecordKind;
 use std::path::{Path, PathBuf};
@@ -112,6 +116,9 @@ pub struct Entry {
     pub filter: Filter,
     /// Also judges contradiction candidates (ADR 0015 §5); off by default.
     pub pairs: bool,
+    /// The owner's statement that the command keeps data on this machine:
+    /// it may receive bodies of lanes whose egress is off (ADR 0017 §7).
+    pub local: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
@@ -245,7 +252,8 @@ impl Config {
                     "pairs",
                 ],
                 Some("command") => &[
-                    "name", "type", "command", "trusted", "branches", "kinds", "scopes", "pairs",
+                    "name", "type", "command", "trusted", "local", "branches", "kinds", "scopes",
+                    "pairs",
                 ],
                 _ => {
                     return Err(format!(
@@ -254,6 +262,12 @@ impl Config {
                 }
             };
             for k in t.keys() {
+                if k == "local" && s("type") == Some("claude") {
+                    return Err(format!(
+                        "validator `{name}`: a claude validator sends its task to a remote model \
+                         and cannot be marked local"
+                    ));
+                }
                 if !allowed.contains(&k.as_str()) {
                     return Err(format!("validator `{name}`: unknown field `{k}`"));
                 }
@@ -290,6 +304,12 @@ impl Config {
                     .as_bool()
                     .ok_or(format!("validator `{name}`: pairs is a bool"))?,
             };
+            let local = match t.get("local") {
+                None => false,
+                Some(b) => b
+                    .as_bool()
+                    .ok_or(format!("validator `{name}`: local is a bool"))?,
+            };
             let kinds = (strings("kinds")?.iter())
                 .map(|k| kind_of(k).ok_or(format!("validator `{name}`: unknown kind `{k}`")))
                 .collect::<Result<_, _>>()?;
@@ -302,6 +322,7 @@ impl Config {
                     scopes: strings("scopes")?,
                 },
                 pairs,
+                local,
             });
         }
         Ok(config)
@@ -446,5 +467,30 @@ mod tests {
         ] {
             assert!(Config::parse(bad, None).is_err(), "{bad}");
         }
+    }
+
+    /// `local` (ADR 0017 §7): commands only, a bool, off by default.
+    #[test]
+    fn local_is_for_commands_only() {
+        let c = Config::parse(
+            "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\nlocal = true\n\
+             [[validator]]\nname = \"b\"\ntype = \"command\"\ncommand = [\"y\"]",
+            None,
+        )
+        .unwrap();
+        assert!(c.validators[0].local && !c.validators[1].local);
+        let e = Config::parse(
+            "[[validator]]\nname = \"c\"\ntype = \"claude\"\nmodel = \"m\"\nlocal = true",
+            None,
+        )
+        .unwrap_err();
+        assert!(e.contains("cannot be marked local"), "{e}");
+        assert!(
+            Config::parse(
+                "[[validator]]\nname = \"a\"\ntype = \"command\"\ncommand = [\"x\"]\nlocal = 1",
+                None
+            )
+            .is_err()
+        );
     }
 }

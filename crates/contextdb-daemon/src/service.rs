@@ -642,7 +642,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(e) => return err(e.code(), e.detail()),
             };
         let done = match action {
-            MirrorAction::Export { force, adopt, .. } => m.export(branch, force, adopt),
+            MirrorAction::Export {
+                force,
+                adopt,
+                readable_ok,
+                ..
+            } => {
+                m.readable_ok = readable_ok;
+                m.export(branch, force, adopt)
+            }
             MirrorAction::Proposals { .. } => m.proposals(branch),
             MirrorAction::Status { .. } => m.status(),
             MirrorAction::Prune {
