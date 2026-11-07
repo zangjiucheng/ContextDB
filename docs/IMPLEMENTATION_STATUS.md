@@ -15,6 +15,8 @@ Milestone 2 is done: the access document (`SetAccess`, op_log format 5 with a he
 
 Milestone 3 is done: reads. Every response to a non-owner passes through one redaction point (`contextdb-daemon::redact`). Hidden reads are UNAVAILABLE and recall skips hidden matches. WHY, WHY_NOT and IMPACT are redacted with counts, diff-shaped responses drop and count, and certificates go without their vector. A revocation makes earlier certificates `Denied`, and `ctx ui` needs a launch token in multi-user mode (T17, T17b, T100, T101; PROP15 read half at 10,000 seeds). Multi-user mode still waits for write authorisation (milestone 4).
 
+Milestone 4 is done: writes. The kernel checks every op against the access document right after its refs resolve: `Read` on what it names, `Write` or `Curate` on the lane. An independent oracle reference matches it exactly on direct ops and on merges. The daemon checks proof of possession for every content hash. Branches belong to their creator, and merges into `main` or owner branches apply only what the merger could do directly (`MergeUnauthorized`). Tests: T60, T102, T107, T108, and PROP15's write half at 10,000 seeds. Egress (milestone 5) and crypto-shred (milestone 6) remain before multi-user mode is offered.
+
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;
 - index health and `ctx reindex`;

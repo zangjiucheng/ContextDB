@@ -1281,6 +1281,7 @@ mod tests {
             parent: None,
             fork_epoch: Epoch(0),
             archived: false,
+            creator: PrincipalId::STORE_OWNER,
         };
         let m = message(&info, Epoch(4), Epoch(9), &[0xab; 32]);
         assert_eq!(

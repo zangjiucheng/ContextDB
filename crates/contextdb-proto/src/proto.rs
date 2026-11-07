@@ -443,6 +443,8 @@ pub enum Request {
     },
     ImpactBatch {
         batch: Batch,
+        /// As for `WhatIf` (ADR 0017 §6.3).
+        blobs: Vec<Vec<u8>>,
     },
     /// `ctx_check` for the bound agent's view (ADR 0010 §6, §7). With
     /// `mode`, the daemon applies the gate predicate, logs the decision and
@@ -568,6 +570,10 @@ pub enum Request {
     WhatIf {
         binding: Binding,
         ops: Vec<Op>,
+        /// Payload bodies, for proof of possession only (ADR 0017 §6.3):
+        /// a dry run answers a hash exactly as the commit would. Never
+        /// stored.
+        blobs: Vec<Vec<u8>>,
     },
     /// Forks `from` (default `main`) as `name`.
     BranchCreate {
@@ -1668,9 +1674,10 @@ impl Wire for Request {
                 8u8.encode(o);
                 target.encode(o);
             }
-            Self::ImpactBatch { batch } => {
+            Self::ImpactBatch { batch, blobs } => {
                 9u8.encode(o);
                 batch.encode(o);
+                blobs.encode(o);
             }
             Self::Check {
                 binding,
@@ -1825,10 +1832,15 @@ impl Wire for Request {
                 expect_cert_valid.encode(o);
                 client_txn_id.encode(o);
             }
-            Self::WhatIf { binding, ops } => {
+            Self::WhatIf {
+                binding,
+                ops,
+                blobs,
+            } => {
                 27u8.encode(o);
                 binding.encode(o);
                 ops.encode(o);
+                blobs.encode(o);
             }
             Self::BranchCreate {
                 name,
@@ -2040,6 +2052,7 @@ impl Wire for Request {
             },
             9 => Self::ImpactBatch {
                 batch: Wire::decode(i)?,
+                blobs: Wire::decode(i)?,
             },
             10 => Self::Check {
                 binding: Wire::decode(i)?,
@@ -2138,6 +2151,7 @@ impl Wire for Request {
             27 => Self::WhatIf {
                 binding: Wire::decode(i)?,
                 ops: Wire::decode(i)?,
+                blobs: Wire::decode(i)?,
             },
             28 => Self::BranchCreate {
                 name: Wire::decode(i)?,
@@ -2813,6 +2827,7 @@ mod tests {
                 batch: Batch::new(vec![Op::RetractBase {
                     rev: RevisionId(0).into(),
                 }]),
+                blobs: vec![b"x".to_vec()],
             },
             Request::Check {
                 binding: Binding::root(s),
@@ -3015,6 +3030,7 @@ mod tests {
             Request::WhatIf {
                 binding: Binding::root(s),
                 ops: Vec::new(),
+                blobs: Vec::new(),
             },
             Request::BranchCreate {
                 name: "b".into(),

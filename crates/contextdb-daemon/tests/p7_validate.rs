@@ -151,6 +151,7 @@ fn t80_agent_batches_with_record_validation_are_refused() {
         let what_if = Request::WhatIf {
             binding: Binding::root(session),
             ops: vec![op.clone()],
+            blobs: Vec::new(),
         };
         assert_eq!(code(&call(&s, AGENT, what_if)), "ChannelRestricted");
         let raw = Request::Raw {

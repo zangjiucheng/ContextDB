@@ -38,12 +38,23 @@ pub const REDACTED_LOGICAL: LogicalId = LogicalId(u32::MAX);
 
 /// Error codes whose detail names nothing but the caller's own input or
 /// fixed text; any other code keeps its code and loses its detail (§5.7).
+///
+/// Milestone 4: write checks run right after a ref resolves, so a head or
+/// read-set conflict can only concern a logical the principal reads, and
+/// `Unauthorized` echoes the ref as the principal wrote it (§5.7, §6.1).
 const PLAIN_ERRORS: &[&str] = &[
     "AccessRevoked",
+    "BranchOfAnotherPrincipal",
     "ChannelRestricted",
+    "HeadConflict",
+    "InvalidLane",
     "InvalidRequest",
+    "MergeUnauthorized",
+    "MissingBlob",
+    "ReadSetConflict",
     "SessionOfAnotherPrincipal",
     "Timeout",
+    "Unauthorized",
     "Unavailable",
     "Unclaimed",
     "UnknownSession",

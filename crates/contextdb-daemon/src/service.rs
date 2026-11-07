@@ -388,10 +388,29 @@ pub(crate) fn resolve_branch<D: Durability>(
     explicit: Option<&str>,
     git_branch: Option<&str>,
 ) -> Result<BranchId, Response> {
+    resolve_branch_for(snap, explicit, git_branch, PrincipalId::STORE_OWNER)
+}
+/// As `resolve_branch`, for a session of principal `p`: the git branch's
+/// namesake binds only if `p` or the store owner created it (ADR 0017 §6.2
+/// rule 6); a branch another principal created under that name is skipped
+/// and the session binds `main`. An explicit name binds any open branch
+/// (commits there are still the creator's).
+pub(crate) fn resolve_branch_for<D: Durability>(
+    snap: &Snapshot<D>,
+    explicit: Option<&str>,
+    git_branch: Option<&str>,
+    p: PrincipalId,
+) -> Result<BranchId, Response> {
     let open = |name: &str| {
         let id = snap.kernel.branch_by_name(name)?;
         let archived = snap.kernel.branch(id)?.info().archived;
         Some((id, archived))
+    };
+    let ours = |id: BranchId| {
+        snap.kernel.branch(id).is_some_and(|b| {
+            let c = b.info().creator;
+            c.is_store_owner() || c == contextdb_core::access_class(p)
+        })
     };
     match explicit {
         Some(name) => match open(name) {
@@ -400,10 +419,26 @@ pub(crate) fn resolve_branch<D: Durability>(
             None => Err(err("UnknownBranch", format!("no branch named {name}"))),
         },
         None => Ok(match git_branch.and_then(open) {
-            Some((id, false)) => id,
+            Some((id, false)) if ours(id) => id,
             _ => MAIN,
         }),
     }
+}
+/// Every content-hash field a batch carries (ADR 0017 §6.3).
+fn content_hashes(ops: &[Op]) -> Vec<ContentHash> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            Op::CreateLogical { content, .. } | Op::AddRevision { content, .. } => {
+                out.push(*content)
+            }
+            Op::OpenArtifact { payload_hash, .. } => out.push(*payload_hash),
+            Op::ResolveArtifact { note: Some(n), .. } => out.push(*n),
+            Op::RecordValidation { meta: Some(m), .. } => out.push(*m),
+            _ => {}
+        }
+    }
+    out
 }
 /// A target as its sender wrote it, for `Unavailable` (ADR 0017 §5.7).
 fn target_text(t: &Target) -> String {
@@ -1148,7 +1183,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 branch,
                 git_branch,
             } => {
-                let branch = match resolve_branch(&snap, branch.as_deref(), git_branch.as_deref()) {
+                let branch = match resolve_branch_for(
+                    &snap,
+                    branch.as_deref(),
+                    git_branch.as_deref(),
+                    id.principal,
+                ) {
                     Ok(b) => b,
                     Err(r) => return r,
                 };
@@ -1360,7 +1400,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 },
                 Err(r) => r,
             },
-            Request::ImpactBatch { batch } => {
+            Request::ImpactBatch { batch, blobs } => {
                 drop(snap);
                 let mut batch = batch;
                 if branch != MAIN {
@@ -1368,6 +1408,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 batch.channel = id.channel;
                 batch.principal = id.principal;
+                if let Err(r) = self.possession(id.principal, batch.branch, &batch.ops, &blobs) {
+                    return r;
+                }
                 match self
                     .actor
                     .request(|reply| Message::ImpactExact { batch, reply })
@@ -1484,7 +1527,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Ok(b) => self.commit_ops(id, b, ops, blobs, expect_cert_valid, client_txn_id, snap),
                 Err(r) => r,
             },
-            Request::WhatIf { binding, ops } => match self.bind(id, &binding, &snap) {
+            Request::WhatIf {
+                binding,
+                ops,
+                blobs,
+            } => match self.bind(id, &binding, &snap) {
                 Ok((_, s, _, _)) => {
                     if let Some(r) = certificate_reads(&ops) {
                         return r;
@@ -1496,6 +1543,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     batch.branch = s.lock().expect("session").branch;
                     batch.channel = id.channel;
                     batch.principal = id.principal;
+                    if let Err(r) = self.possession(id.principal, batch.branch, &batch.ops, &blobs)
+                    {
+                        return r;
+                    }
                     drop(snap);
                     match self.actor.request(|reply| Message::WhatIf { batch, reply }) {
                         Ok(Ok((result, merge))) => Response::WhatIf { result, merge },
@@ -1950,7 +2001,8 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if let Some(hit) = live(self) {
             return found(hit);
         }
-        let branch = resolve_branch(snap, branch.as_deref(), git_branch.as_deref())?;
+        let branch =
+            resolve_branch_for(snap, branch.as_deref(), git_branch.as_deref(), id.principal)?;
         let session_id = random_id();
         let undo = |this: &Self| {
             this.sessions.lock().expect("sessions").remove(&session_id);
@@ -2285,6 +2337,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
             let cert = (s.agents.get(&agent)).and_then(|a| a.session_cert.clone());
             (s.branch, cert)
         };
+        if let Err(r) = self.possession(id.principal, branch, &ops, &blobs) {
+            return r;
+        }
         let expect = match (expect_cert_valid, cert) {
             (false, _) => None,
             // A session with no certificate expects nothing valid (§4 step 2).
@@ -2363,6 +2418,38 @@ impl<D: Durability + Clone + 'static> Service<D> {
             premises,
             body: None,
         }
+    }
+    /// Proof of possession for a principal other than the store owner (ADR
+    /// 0017 §6.3), before the kernel and for dry runs alike: every content
+    /// hash must come with matching bytes, unless it already belongs to a
+    /// revision of a logical the principal may read on `branch`. Otherwise
+    /// `MissingBlob`, the answer for a hash nobody has.
+    fn possession(
+        &self,
+        p: PrincipalId,
+        branch: BranchId,
+        ops: &[Op],
+        blobs: &[Vec<u8>],
+    ) -> Result<(), Response> {
+        if p.is_store_owner() {
+            return Ok(());
+        }
+        let sent: BTreeSet<ContentHash> = blobs.iter().map(|b| content_hash(b)).collect();
+        let snap = self.actor.snapshot();
+        let view = snap.view(branch);
+        for content in content_hashes(ops) {
+            if sent.contains(&content) {
+                continue;
+            }
+            let readable = (view.revisions_with_content(&content).into_iter())
+                .filter_map(|r| view.revision_logical(r))
+                .any(|l| view.authorizes(p, l));
+            if !readable {
+                let e = TxError::MissingBlob { content };
+                return Err(err(&code(&e), format!("{e:?}")));
+            }
+        }
+        Ok(())
     }
     /// Target → (logical, revision) without session context (no handles).
     pub(crate) fn resolve_plain(
@@ -2846,7 +2933,26 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut out = Vec::new();
         {
             let s = session.lock().expect("session");
-            for d in deps {
+            for (n, d) in deps.iter().enumerate() {
+                // A dep naming a logical the principal may not read is
+                // `Unauthorized(Read)` before anything else is said about
+                // it, whether or not the revision exists (ADR 0017 §6.1).
+                let named = match &d.target {
+                    Target::Pinned { logical, .. } | Target::Logical(logical) => Some(*logical),
+                    Target::KeyRev { key, .. } | Target::Key(key) => db.logical_by_key(key),
+                    Target::Handle(_) => None,
+                };
+                if let Some(l) = named
+                    && db.logical_info(l).is_some()
+                    && !db.authorizes(s.principal, l)
+                {
+                    let e = TxError::Unauthorized {
+                        op_index: n,
+                        reference: target_text(&d.target),
+                        need: AccessNeed::Read,
+                    };
+                    return Err(err(&code(&e), format!("{e:?}")));
+                }
                 let rev = match &d.target {
                     Target::Handle(h) => {
                         let (_, r, _) = self.resolve_handle(&s, h).ok_or_else(|| {
@@ -3035,7 +3141,27 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if carry_rules {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
-            for (_, enabled, premises, refs) in snap.view(branch).rules_concluding(expected_head) {
+            let view = snap.view(branch);
+            for (_, enabled, premises, refs) in view.rules_concluding(expected_head) {
+                // The copy names every premise: one the principal may not
+                // read refuses the request, without naming it (ADR 0017
+                // §6.2 rule 4).
+                let hidden = (premises
+                    .iter()
+                    .map(|p| p.premise)
+                    .chain(refs.iter().copied()))
+                .any(|r| {
+                    view.revision_logical(r)
+                        .is_none_or(|l| !view.authorizes(id.principal, l))
+                });
+                if enabled && hidden {
+                    let e = TxError::Unauthorized {
+                        op_index: ops.len(),
+                        reference: "carry_rules".into(),
+                        need: AccessNeed::Read,
+                    };
+                    return err(&code(&e), format!("{e:?}"));
+                }
                 if enabled {
                     ops.push(Op::AddRule {
                         conclusion: RevRef::New(0),

@@ -32,7 +32,7 @@ impl InputModel {
         if batch.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
-        self.apply_inner(batch, blobs, &|_| false)
+        self.apply_inner(batch, blobs, &|_| false, None)
     }
     /// A model over one branch's projected inputs (the branch oracle).
     pub fn from_inputs(inputs: Inputs, epoch: Epoch) -> Self {
@@ -46,13 +46,24 @@ impl InputModel {
         batch: &Batch,
         foreign: &dyn Fn(&str) -> bool,
     ) -> Result<ApplyResult, TxError> {
-        self.apply_inner(batch, &AllPresent, foreign)
+        self.apply_inner(batch, &AllPresent, foreign, None)
+    }
+    /// `apply_on_branch` with write authorisation against `access` (ADR
+    /// 0017 §6), as the multi-branch kernel commits.
+    pub fn apply_authorised(
+        &mut self,
+        batch: &Batch,
+        foreign: &dyn Fn(&str) -> bool,
+        access: Option<&crate::AccessModel>,
+    ) -> Result<ApplyResult, TxError> {
+        self.apply_inner(batch, &AllPresent, foreign, Some(access))
     }
     fn apply_inner(
         &mut self,
         batch: &Batch,
         blobs: &dyn BlobPresence,
         foreign: &dyn Fn(&str) -> bool,
+        auth: Option<Option<&crate::AccessModel>>,
     ) -> Result<ApplyResult, TxError> {
         let mut staged = self.inputs.clone();
         let mut ids = Allocations::default();
@@ -70,6 +81,7 @@ impl InputModel {
                 blobs,
                 &mut read_set,
                 foreign,
+                auth,
             )?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
@@ -291,6 +303,236 @@ fn aid(a: ArtifactRef) -> ArtifactId {
         _ => unreachable!("resolved"),
     }
 }
+// ---- write authorisation (ADR 0017 §6.1, §6.2) ----------------------------
+//
+// Independent of `contextdb-core`: each op lists what it reads and which
+// role it needs; the first unmet requirement, reads before roles, is the
+// error.
+fn owner_class(p: PrincipalId) -> bool {
+    p.0 < 16 || (0x5641_0000..=0x5641_FFFF).contains(&p.0)
+}
+fn may_read(i: &Inputs, m: Option<&crate::AccessModel>, p: PrincipalId, l: LogicalId) -> bool {
+    let x = &i.logicals[l.index()];
+    if owner_class(p) || x.owner == p {
+        return true;
+    }
+    let dirs = &i.metadata[l.index()].dirs;
+    m.is_some_and(|m| m.authorized(p, &x.key, &x.scope_lane, x.owner, dirs).0)
+}
+fn may_write(m: Option<&crate::AccessModel>, p: PrincipalId, lane: &str, curate: bool) -> bool {
+    owner_class(p) || m.is_some_and(|m| m.may_write(p, lane, curate))
+}
+fn refused(op_index: usize, reference: String, need: AccessNeed) -> TxError {
+    TxError::Unauthorized {
+        op_index,
+        reference,
+        need,
+    }
+}
+fn text_rev(r: RevRef) -> String {
+    match r {
+        RevRef::Existing(x) => format!("rev {}", x.0),
+        RevRef::New(n) => format!("new rev {n}"),
+    }
+}
+fn text_logical(l: &LogicalRef) -> String {
+    match l {
+        LogicalRef::Existing(x) => format!("logical {}", x.0),
+        LogicalRef::Key(k) => k.clone(),
+        LogicalRef::New(n) => format!("new logical {n}"),
+    }
+}
+fn text_rule(j: RuleRef) -> String {
+    match j {
+        RuleRef::Existing(x) => format!("rule {}", x.0),
+        RuleRef::New(n) => format!("new rule {n}"),
+    }
+}
+fn text_artifact(a: ArtifactRef) -> String {
+    match a {
+        ArtifactRef::Existing(x) => format!("artifact {}", x.0),
+        ArtifactRef::New(n) => format!("new artifact {n}"),
+    }
+}
+/// Logical refs that resolve, checked before the op's other refs.
+fn authorise_logicals(
+    i: &Inputs,
+    a: &Allocations,
+    m: Option<&crate::AccessModel>,
+    p: PrincipalId,
+    op: &Op,
+    op_index: usize,
+) -> Result<(), TxError> {
+    let refs: Vec<&LogicalRef> = match op {
+        Op::AddRevision { logical, .. }
+        | Op::SetHead { logical, .. }
+        | Op::SetMetadata { logical, .. } => vec![logical],
+        Op::ExpectHeads { entries, .. } => entries.iter().map(|(l, _)| l).collect(),
+        _ => Vec::new(),
+    };
+    for raw in refs {
+        if let Ok(l) = logical(i, a, raw)
+            && !may_read(i, m, p, l)
+        {
+            return Err(refused(op_index, text_logical(raw), AccessNeed::Read));
+        }
+    }
+    Ok(())
+}
+fn authorise(
+    i: &Inputs,
+    m: Option<&crate::AccessModel>,
+    p: PrincipalId,
+    op: &Op,
+    raw: &Op,
+    op_index: usize,
+) -> Result<(), TxError> {
+    let of = |r: RevisionId| i.revisions[r.index()].logical;
+    let lane = |l: LogicalId| i.logicals[l.index()].scope_lane.clone();
+    let rule_named = |j: RuleId| {
+        let x = &i.rules[j.index()];
+        std::iter::once(x.conclusion)
+            .chain(x.premises.iter().map(|q| q.premise))
+            .chain(x.references.iter().copied())
+            .map(of)
+            .collect::<Vec<_>>()
+    };
+    // (logical, reference) to read, then (lane, reference, need).
+    let mut reads: Vec<(LogicalId, String)> = Vec::new();
+    let mut roles: Vec<(String, String, AccessNeed)> = Vec::new();
+    match (op, raw) {
+        (
+            Op::CreateLogical {
+                key,
+                scope_lane,
+                adopt_as_base,
+                ..
+            },
+            _,
+        ) => {
+            roles.push((scope_lane.clone(), key.clone(), AccessNeed::Write));
+            if *adopt_as_base {
+                roles.push((scope_lane.clone(), key.clone(), AccessNeed::Curate));
+            }
+        }
+        (
+            Op::AddRevision {
+                logical,
+                adopt_as_base,
+                ..
+            },
+            Op::AddRevision { logical: rl, .. },
+        ) => {
+            let l = lid(logical);
+            reads.push((l, text_logical(rl)));
+            roles.push((lane(l), text_logical(rl), AccessNeed::Write));
+            if *adopt_as_base {
+                roles.push((lane(l), text_logical(rl), AccessNeed::Curate));
+            }
+        }
+        (
+            Op::SetHead {
+                logical,
+                expected,
+                new,
+            },
+            Op::SetHead {
+                logical: rl,
+                expected: re,
+                new: rn,
+            },
+        ) => {
+            let l = lid(logical);
+            reads.push((l, text_logical(rl)));
+            reads.push((of(rid(*expected)), text_rev(*re)));
+            reads.push((of(rid(*new)), text_rev(*rn)));
+            roles.push((lane(l), text_logical(rl), AccessNeed::Write));
+        }
+        (Op::SetMetadata { logical, .. }, Op::SetMetadata { logical: rl, .. }) => {
+            let l = lid(logical);
+            reads.push((l, text_logical(rl)));
+            roles.push((lane(l), text_logical(rl), AccessNeed::Write));
+        }
+        (
+            Op::AssertBase { rev } | Op::RetractBase { rev },
+            Op::AssertBase { rev: rr } | Op::RetractBase { rev: rr },
+        ) => {
+            let l = of(rid(*rev));
+            reads.push((l, text_rev(*rr)));
+            roles.push((lane(l), text_rev(*rr), AccessNeed::Curate));
+        }
+        (
+            Op::AddRule {
+                conclusion,
+                incidences,
+                ..
+            },
+            Op::AddRule {
+                conclusion: rc,
+                incidences: ri,
+                ..
+            },
+        ) => {
+            let c = of(rid(*conclusion));
+            reads.push((c, text_rev(*rc)));
+            for ((q, _), (rq, _)) in incidences.iter().zip(ri) {
+                reads.push((of(rid(*q)), text_rev(*rq)));
+            }
+            roles.push((lane(c), text_rev(*rc), AccessNeed::Write));
+        }
+        (
+            Op::Rebind { rule, to, .. },
+            Op::Rebind {
+                rule: rj, to: rt, ..
+            },
+        ) => {
+            let j = jid(*rule);
+            for l in rule_named(j) {
+                reads.push((l, text_rule(*rj)));
+            }
+            reads.push((of(rid(*to)), text_rev(*rt)));
+            let c = of(i.rules[j.index()].conclusion);
+            roles.push((lane(c), text_rule(*rj), AccessNeed::Write));
+        }
+        (Op::SetRuleEnabled { rule, .. }, Op::SetRuleEnabled { rule: rj, .. }) => {
+            let j = jid(*rule);
+            for l in rule_named(j) {
+                reads.push((l, text_rule(*rj)));
+            }
+            let c = of(i.rules[j.index()].conclusion);
+            roles.push((lane(c), text_rule(*rj), AccessNeed::Write));
+        }
+        (Op::OpenArtifact { target, .. }, Op::OpenArtifact { target: rt, .. }) => {
+            let t = of(rid(*target));
+            reads.push((t, text_rev(*rt)));
+            roles.push((lane(t), text_rev(*rt), AccessNeed::Write));
+        }
+        (Op::ResolveArtifact { id, .. }, Op::ResolveArtifact { id: ra, .. }) => {
+            let t = of(i.artifacts[aid(*id).index()].target);
+            reads.push((t, text_artifact(*ra)));
+            roles.push((lane(t), text_artifact(*ra), AccessNeed::Write));
+        }
+        (Op::RecordValidation { .. }, Op::RecordValidation { rule: rj, .. }) => {
+            return Err(refused(op_index, text_rule(*rj), AccessNeed::Curate));
+        }
+        (Op::ExpectHeads { entries, .. }, Op::ExpectHeads { entries: re, .. }) => {
+            for ((l, _), (rl, _)) in entries.iter().zip(re) {
+                reads.push((lid(l), text_logical(rl)));
+            }
+        }
+        _ => {}
+    }
+    if let Some((_, r)) = reads.into_iter().find(|(l, _)| !may_read(i, m, p, *l)) {
+        return Err(refused(op_index, r, AccessNeed::Read));
+    }
+    if let Some((_, r, need)) = roles
+        .into_iter()
+        .find(|(l, _, need)| !may_write(m, p, l, *need == AccessNeed::Curate))
+    {
+        return Err(refused(op_index, r, need));
+    }
+    Ok(())
+}
 fn kind(i: &Inputs, r: RevisionId) -> RecordKind {
     i.logicals[i.revisions[r.index()].logical.index()].kind
 }
@@ -485,10 +727,25 @@ fn apply_op(
     blobs: &dyn BlobPresence,
     read_set: &mut std::collections::BTreeMap<LogicalId, RevisionId>,
     foreign: &dyn Fn(&str) -> bool,
+    auth: Option<Option<&crate::AccessModel>>,
 ) -> Result<(), TxError> {
     let original = op;
     let published = i.logicals.len() - a.new_logicals.len();
+    if let (Some(Some(m)), Op::CreateLogical { scope_lane, .. }) = (auth, op)
+        && m.unknown_personal(scope_lane)
+    {
+        return Err(TxError::InvalidLane {
+            lane: scope_lane.clone(),
+        });
+    }
+    let check = auth.filter(|_| !owner_class(b.principal));
+    if let Some(m) = check {
+        authorise_logicals(i, a, m, b.principal, op, op_index)?;
+    }
     let op = resolve(i, a, op)?;
+    if let Some(m) = check {
+        authorise(i, m, b.principal, &op, original, op_index)?;
+    }
     check_channel(i, b.channel, &op)?;
     match op {
         Op::CreateLogical {

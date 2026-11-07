@@ -30,6 +30,157 @@ fn within(x: State, r: &Reach) -> bool {
     r.get(&x.0).is_some_and(|e| *e >= x.1)
 }
 
+/// What a merge would apply to the target, in global ids (ADR 0017 §6.2
+/// rule 7's classes).
+struct Applied<'a> {
+    policy: Option<&'a PolicyDoc>,
+    new_ids: &'a [Vec<u32>; 4],
+    heads: &'a BTreeMap<u32, u32>,
+    metadata: &'a BTreeMap<u32, Metadata>,
+    base: &'a BTreeMap<u32, bool>,
+    enabled: &'a BTreeMap<u32, bool>,
+    open: &'a BTreeMap<u32, bool>,
+    found: &'a [Found],
+}
+/// The changes of `a` that principal `p` could not make directly on the
+/// target `t` (ADR 0017 §6.2 rule 7's table), counted.
+fn refusals<M: Maintainer, S: StatsSink>(
+    s: &View<'_, M, S>,
+    t: &View<'_, M, S>,
+    access: Option<&crate::access::AccessState>,
+    p: PrincipalId,
+    a: &Applied<'_>,
+) -> u32 {
+    use crate::access::Role::{Curator, Writer};
+    // A logical's record and dirs: the target's when it sees it, else the
+    // source's (a newly visible logical).
+    let record = |gl: u32| match t.local(Kind::Logical, gl) {
+        Some(l) => t.db.logical_record(LogicalId(l)),
+        None => {
+            s.db.logical_record(LogicalId(s.local(Kind::Logical, gl).expect("visible")))
+        }
+    };
+    let dirs = |gl: u32| {
+        t.metadata(gl)
+            .or_else(|| s.metadata(gl))
+            .unwrap_or_default()
+            .dirs
+    };
+    let reads = |gl: u32| {
+        let r = record(gl);
+        let d = dirs(gl);
+        let facts = crate::access::LogicalFacts {
+            key: &r.key,
+            lane: &r.scope_lane,
+            owner: r.owner,
+            dirs: &d,
+        };
+        crate::access::authorized(access, p, &facts).allowed
+    };
+    let role = |gl: u32, role| crate::access::has_role(access, p, &record(gl).scope_lane, role);
+    let anchor = |gl: u32| record(gl).kind == RecordKind::CodeAnchor;
+    let logical_of = |gr: u32| match t.local(Kind::Revision, gr) {
+        Some(_) => t.logical_of(gr),
+        None => s.logical_of(gr),
+    };
+    // Every revision a rule names (conclusion first), from the source.
+    let rule_revs = |gj: u32| -> Vec<u32> {
+        let j =
+            s.db.rule_record(RuleId(s.local(Kind::Rule, gj).expect("visible")));
+        std::iter::once(j.conclusion)
+            .chain(j.premises.iter().map(|q| q.premise))
+            .chain(j.references.iter().copied())
+            .map(|r| s.global(Kind::Revision, r.0))
+            .collect()
+    };
+    let mut n = 0u32;
+    let mut fail = |ok: bool| n += u32::from(!ok);
+    // Policy: the store owner only, when the target's actually changes.
+    if let Some(policy) = a.policy {
+        fail(policy == t.db.policy());
+    }
+    for &gl in &a.new_ids[0] {
+        if !anchor(gl) {
+            fail(role(gl, Writer));
+        }
+    }
+    for &gr in &a.new_ids[1] {
+        let gl = logical_of(gr);
+        if anchor(gl) {
+            continue;
+        }
+        fail(reads(gl) && role(gl, Writer));
+        if a.base.get(&gr) == Some(&true) {
+            fail(reads(gl) && role(gl, Curator));
+        }
+    }
+    for &gl in a.heads.keys() {
+        fail(reads(gl) && role(gl, Writer));
+    }
+    for (&gl, m) in a.metadata {
+        let before = t.metadata(gl).unwrap_or_default().dirs;
+        fail(reads(gl) && role(gl, Writer) && narrows(&before, &m.dirs));
+    }
+    for (&gr, _) in a
+        .base
+        .iter()
+        .filter(|(gr, _)| t.local(Kind::Revision, **gr).is_some())
+    {
+        let gl = logical_of(gr);
+        fail(reads(gl) && role(gl, Curator));
+    }
+    // A new rule or artifact also has its taken value in `enabled` /
+    // `open`; it is one change.
+    let rules = (a.new_ids[2].iter()).chain(
+        a.enabled
+            .keys()
+            .filter(|j| t.local(Kind::Rule, **j).is_some()),
+    );
+    for &gj in rules {
+        let revs = rule_revs(gj);
+        let c = logical_of(revs[0]);
+        fail(revs.iter().all(|r| reads(logical_of(*r))) && role(c, Writer));
+    }
+    let artifacts = (a.new_ids[3].iter()).chain(
+        a.open
+            .keys()
+            .filter(|x| t.local(Kind::Artifact, **x).is_some()),
+    );
+    for &ga in artifacts {
+        let art =
+            s.db.artifact_record(ArtifactId(s.local(Kind::Artifact, ga).expect("visible")));
+        let gl = logical_of(s.global(Kind::Revision, art.target.0));
+        fail(reads(gl) && role(gl, Writer));
+    }
+    // A Conflict the merge opens: every side read.
+    for f in a.found {
+        fail(f.logical.is_none_or(reads) && reads(logical_of(f.target)));
+    }
+    n
+}
+/// SPEC §6.1 contract 10: `dirs` only narrow (the direct op's rule).
+fn narrows(before: &BTreeSet<String>, after: &BTreeSet<String>) -> bool {
+    if before == after {
+        return true;
+    }
+    let path_ok = |p: &str| {
+        !p.is_empty()
+            && !p
+                .split('/')
+                .any(|v| v.is_empty() || matches!(v, "." | "..") || v.contains('*'))
+    };
+    if !after.iter().all(|p| path_ok(p)) || (!before.is_empty() && after.is_empty()) {
+        return false;
+    }
+    before.is_empty()
+        || after.iter().all(|p| {
+            before.iter().any(|o| {
+                p == o
+                    || p.strip_prefix(o.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
+        })
+}
 /// One branch state read with global ids.
 struct View<'a, M: Maintainer, S: StatsSink> {
     db: &'a Db<M, S>,
@@ -606,6 +757,33 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
         }
         found.sort_by_key(|f| (f.kind, f.logical, f.rule, f.target));
+        // ADR 0017 §6.2 rule 7 (F14): into `main` or a store-owner branch, a
+        // non-owner may apply only what it could have done directly there;
+        // ValidationRecords and CodeAnchor objects are transported. Checked
+        // after classification, before anything is applied, so a dry run
+        // answers alike. Into the merger's own branch nothing is checked.
+        let creator = tb.info.creator;
+        if !b.principal.is_store_owner() && (target == MAIN || creator.is_store_owner()) {
+            let refused = refusals(
+                &s,
+                &t,
+                self.access.as_deref(),
+                b.principal,
+                &Applied {
+                    policy: policy.as_ref(),
+                    new_ids: &new_ids,
+                    heads: &heads,
+                    metadata: &metadata,
+                    base: &base,
+                    enabled: &enabled,
+                    open: &open,
+                    found: &found,
+                },
+            );
+            if refused > 0 {
+                return Err(TxError::MergeUnauthorized { count: refused });
+            }
+        }
         report.convergent = convergent;
         report.newly_visible = [0, 1, 2, 3].map(|k| new_ids[k].len());
 

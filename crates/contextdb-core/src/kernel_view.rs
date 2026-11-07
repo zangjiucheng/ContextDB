@@ -238,6 +238,16 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
         let l = self.b.db.revision_logical(self.lr(r).ok()?)?;
         Some(self.global_logical(l))
     }
+    /// Revisions visible on this branch holding `content`, with global ids
+    /// (P9 proof of possession, ADR 0017 §6.3). A linear scan: used only
+    /// for a non-owner's hash sent without its bytes.
+    pub fn revisions_with_content(&self, content: &ContentHash) -> Vec<RevisionId> {
+        (0..self.b.db.revision_count() as u32)
+            .map(RevisionId)
+            .filter(|r| self.b.db.revision_content(*r).ok().as_ref() == Some(content))
+            .map(|r| self.global_revision(r))
+            .collect()
+    }
     pub fn revision_content(&self, r: RevisionId) -> Result<ContentHash, TxError> {
         self.b.db.revision_content(self.lr(r)?)
     }

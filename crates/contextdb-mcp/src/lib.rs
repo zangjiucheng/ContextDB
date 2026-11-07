@@ -1050,10 +1050,12 @@ impl<B: Backend> Server<B> {
                 }
             }
             "ctx_what_if" => {
-                let (ops, _) = ops_of(args)?;
+                // The bodies go along for proof of possession (ADR 0017 §6.3).
+                let (ops, blobs) = ops_of(args)?;
                 let env = self.call(Request::WhatIf {
                     binding: binding.clone(),
                     ops,
+                    blobs,
                 })?;
                 let Response::WhatIf { result, merge } = env.response else {
                     return Err("unexpected response".into());

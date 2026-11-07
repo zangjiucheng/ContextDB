@@ -37,6 +37,8 @@ struct Branch {
     parent: Option<BranchId>,
     fork_epoch: Epoch,
     archived: bool,
+    /// Who created it (ADR 0017 §6.2 rule 6); 0 for `main`.
+    creator: u32,
     state: Overlay,
     /// The branch's canonical order per kind (ADR 0013 r0.5): the order in
     /// which objects became visible here. A fork inherits its parent's; a
@@ -274,6 +276,7 @@ impl BranchOracle {
                 parent: None,
                 fork_epoch: Epoch(0),
                 archived: false,
+                creator: 0,
                 state: Overlay::default(),
                 order: Default::default(),
             }],
@@ -501,6 +504,22 @@ impl BranchOracle {
                 name: branch.name.clone(),
             });
         }
+        // Rule 6 as a table: (principal is an owner, op kind, creator).
+        let owner = |p: u32| p < 16 || (0x5641_0000..=0x5641_FFFF).contains(&p);
+        let me = if owner(b.principal.0) {
+            0
+        } else {
+            b.principal.0
+        };
+        let allowed = match b.ops.first() {
+            _ if owner(b.principal.0) => true,
+            Some(Op::CreateBranch { .. }) => true,
+            Some(Op::ArchiveBranch { .. }) => branch.creator == me,
+            _ => branch.creator == 0 || branch.creator == me,
+        };
+        if !allowed {
+            return Err(TxError::BranchOfAnotherPrincipal);
+        }
         for op in &b.ops {
             let sole = match op {
                 Op::CreateBranch { .. } => Some("CreateBranch"),
@@ -557,6 +576,7 @@ impl BranchOracle {
                     parent: Some(b.branch),
                     fork_epoch: epoch,
                     archived: false,
+                    creator: me,
                     state,
                     order,
                 });
@@ -604,7 +624,7 @@ impl BranchOracle {
         let mut local_batch = local;
         local_batch.branch = MAIN;
         let result = model
-            .apply_on_branch(&local_batch, &foreign)
+            .apply_authorised(&local_batch, &foreign, self.access.as_ref())
             .map_err(|e| map_ids(e, &p))?;
         // Records name the batch's branch, not the projection's.
         let staged = model.inputs().clone();
@@ -1058,6 +1078,111 @@ impl BranchOracle {
         }
         for &a in &new[3] {
             next.open.entry(a).or_insert(s.open[&a]);
+        }
+        // ADR 0017 §6.2 rule 7 as a diff: every value the merged target
+        // gets that the target did not have is a change, and each change
+        // needs its direct op's permission (transported: validations and
+        // CodeAnchor objects). Only into `main` and owner branches.
+        let owner = |p: u32| p < 16 || (0x5641_0000..=0x5641_FFFF).contains(&p);
+        let creator = self.branches[t.0 as usize].creator;
+        if !owner(b.principal.0) && (t == MAIN || creator == 0) {
+            let m = self.access.as_ref();
+            let p = b.principal;
+            let dirs = |l: u32| {
+                (tstate.metadata.get(&l).or_else(|| s.metadata.get(&l)))
+                    .map(|x| x.dirs.clone())
+                    .unwrap_or_default()
+            };
+            let reads = |l: u32| {
+                let x = &self.logicals[l as usize];
+                x.owner == p
+                    || m.is_some_and(|m| {
+                        m.authorized(p, &x.key, &x.scope_lane, x.owner, &dirs(l)).0
+                    })
+            };
+            let writes = |l: u32, curate: bool| {
+                m.is_some_and(|m| m.may_write(p, &self.logicals[l as usize].scope_lane, curate))
+            };
+            let narrows = |old: &BTreeSet<String>, new: &BTreeSet<String>| {
+                let ok = |x: &str| {
+                    !x.is_empty()
+                        && x.split('/')
+                            .all(|v| !v.is_empty() && v != "." && v != ".." && !v.contains('*'))
+                };
+                // Equal, or every new path well-formed and under an old one
+                // (anything, from no dirs); never back to no dirs.
+                let under = |x: &String| {
+                    old.iter()
+                        .any(|o| x == o || x.starts_with(&format!("{o}/")))
+                };
+                old == new
+                    || (new.iter().all(|x| ok(x))
+                        && (old.is_empty() || (!new.is_empty() && new.iter().all(under))))
+            };
+            let mut refused = 0u32;
+            let mut check = |ok: bool| refused += u32::from(!ok);
+            if next.policy != tstate.policy {
+                check(false);
+            }
+            for &l in &new[0] {
+                if !anchor(self, l) {
+                    check(writes(l, false));
+                }
+            }
+            for &r in &new[1] {
+                let l = rev_logical(self, r);
+                if anchor(self, l) {
+                    continue;
+                }
+                check(reads(l) && writes(l, false));
+                if next.base.get(&r) == Some(&true) {
+                    check(reads(l) && writes(l, true));
+                }
+            }
+            for &(l, _, _) in &out.moved_heads {
+                check(reads(l) && writes(l, false));
+            }
+            for (l, mm) in &next.metadata {
+                if let Some(old) = tstate.metadata.get(l)
+                    && old != mm
+                {
+                    check(reads(*l) && writes(*l, false) && narrows(&old.dirs, &mm.dirs));
+                }
+            }
+            for (r, v) in &next.base {
+                if let Some(old) = tstate.base.get(r)
+                    && old != v
+                {
+                    let l = rev_logical(self, *r);
+                    check(reads(l) && writes(l, true));
+                }
+            }
+            let changed_rules = (next.enabled.iter())
+                .filter(|(j, v)| tstate.enabled.get(*j).is_some_and(|old| old != *v))
+                .map(|(j, _)| *j);
+            for j in new[2].iter().copied().chain(changed_rules) {
+                let x = &self.rules[j as usize];
+                let named = std::iter::once(x.conclusion)
+                    .chain(x.premises.iter().map(|q| q.premise))
+                    .chain(x.references.iter().copied());
+                // Every one is evaluated: no short cut in the reference.
+                let seen: Vec<bool> = named.map(|r| reads(rev_logical(self, r.0))).collect();
+                let all = !seen.contains(&false);
+                check(all && writes(rev_logical(self, x.conclusion.0), false));
+            }
+            let changed_open = (next.open.iter())
+                .filter(|(a, v)| tstate.open.get(*a).is_some_and(|old| old != *v))
+                .map(|(a, _)| *a);
+            for a in new[3].iter().copied().chain(changed_open) {
+                let l = rev_logical(self, self.artifacts[a as usize].target.0);
+                check(reads(l) && writes(l, false));
+            }
+            for (_, logical, _, target, _) in &found {
+                check(logical.is_none_or(reads) && reads(rev_logical(self, *target)));
+            }
+            if refused > 0 {
+                return Err(TxError::MergeUnauthorized { count: refused });
+            }
         }
         // The merged state, tried on a copy: cycles, certification, reads.
         let mut merged = self.clone();

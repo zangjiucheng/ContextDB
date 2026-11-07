@@ -208,6 +208,7 @@ fn set_access_is_admin_only_and_names_the_daemon_uid_as_owner() {
         Request::WhatIf {
             binding: Binding::root(session),
             ops,
+            blobs: Vec::new(),
         },
     );
     assert_ne!(code(&r.response), "ok");

@@ -724,6 +724,11 @@ op names,
 from the client or appended from a certificate (appended **before** the
 kernel checks), need `Read` on each logical.
 
+Implementation note (milestone 4): the kernel always authorises, and
+replay runs the same deterministic predicate. `Unauthorized` carries the
+ref as written. The read check covers every revision an op names (gate
+P9).
+
 ### 6.2 Rules
 
 Every rule below looks up permissions through `entry(lane)` (§4.3);

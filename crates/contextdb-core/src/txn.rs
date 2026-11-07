@@ -243,6 +243,253 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
     }
     Ok(())
 }
+/// Write authorisation (ADR 0017 §6.1, §6.2), right after the op's refs
+/// resolve: `Read` on every logical the op names, then the op's role in
+/// the lane entry (`Write` or `Curate`). The store owner passes; outside
+/// the kernel (`auth: None`) nothing is checked.
+struct Authorise<'s, 'a> {
+    i: &'s Stage<'a>,
+    access: Option<&'a crate::access::AccessState>,
+    p: PrincipalId,
+    index: usize,
+}
+impl Authorise<'_, '_> {
+    fn refuse(&self, reference: String, need: AccessNeed) -> TxError {
+        TxError::Unauthorized {
+            op_index: self.index,
+            reference,
+            need,
+        }
+    }
+    fn reads(&self, l: LogicalId) -> bool {
+        let (key, lane, owner) = self.i.logical_facts(l);
+        let dirs = self.i.metadata_of(l).dirs;
+        let facts = crate::access::LogicalFacts {
+            key: &key,
+            lane: &lane,
+            owner,
+            dirs: &dirs,
+        };
+        crate::access::authorized(self.access, self.p, &facts).allowed
+    }
+    fn role(&self, lane: &str, role: crate::access::Role) -> bool {
+        crate::access::has_role(self.access, self.p, lane, role)
+    }
+    fn read(&self, l: LogicalId, reference: impl FnOnce() -> String) -> Result<(), TxError> {
+        if self.reads(l) {
+            Ok(())
+        } else {
+            Err(self.refuse(reference(), AccessNeed::Read))
+        }
+    }
+    fn read_rev(&self, r: RevisionId, raw: RevRef) -> Result<(), TxError> {
+        self.read(self.i.revision_logical(r), || rev_text(raw))
+    }
+    fn read_rule(&self, j: RuleId, raw: RuleRef) -> Result<(), TxError> {
+        let named = std::iter::once(self.i.conclusion(j))
+            .chain(self.i.premises(j).map(|p| p.premise))
+            .chain(self.i.references(j).iter().copied());
+        for r in named.collect::<Vec<_>>() {
+            self.read(self.i.revision_logical(r), || rule_text(raw))?;
+        }
+        Ok(())
+    }
+    fn lane_role(
+        &self,
+        l: LogicalId,
+        role: crate::access::Role,
+        reference: impl FnOnce() -> String,
+    ) -> Result<(), TxError> {
+        let (_, lane, _) = self.i.logical_facts(l);
+        if self.role(&lane, role) {
+            Ok(())
+        } else {
+            let need = match role {
+                crate::access::Role::Writer => AccessNeed::Write,
+                crate::access::Role::Curator => AccessNeed::Curate,
+            };
+            Err(self.refuse(reference(), need))
+        }
+    }
+    /// Before full resolution: a logical ref naming a hidden logical is
+    /// `Unauthorized(Read)` whether or not the revisions the op also names
+    /// exist (no enumeration).
+    fn logical_first(&self, raw: &Op, ids: &Allocations) -> Result<(), TxError> {
+        let refs: Vec<&LogicalRef> = match raw {
+            Op::AddRevision { logical, .. }
+            | Op::SetHead { logical, .. }
+            | Op::SetMetadata { logical, .. } => vec![logical],
+            Op::ExpectHeads { entries, .. } => entries.iter().map(|(l, _)| l).collect(),
+            _ => Vec::new(),
+        };
+        for raw in refs {
+            let found = match raw {
+                LogicalRef::Existing(l) => Some(*l),
+                LogicalRef::Key(k) => self.i.find_key(k),
+                LogicalRef::New(n) => ids.new_logicals.get(*n as usize).copied(),
+            };
+            if let Some(l) = found.filter(|l| l.index() < self.i.logical_count()) {
+                self.read(l, || logical_text(raw))?;
+            }
+        }
+        Ok(())
+    }
+    /// After resolution: `Read` on everything named, then the role.
+    fn op(&self, op: &Op, raw: &Op) -> Result<(), TxError> {
+        use crate::access::Role::{Curator, Writer};
+        match (op, raw) {
+            (
+                Op::CreateLogical {
+                    key,
+                    scope_lane,
+                    adopt_as_base,
+                    ..
+                },
+                _,
+            ) => {
+                if !self.role(scope_lane, Writer) {
+                    return Err(self.refuse(key.clone(), AccessNeed::Write));
+                }
+                if *adopt_as_base && !self.role(scope_lane, Curator) {
+                    return Err(self.refuse(key.clone(), AccessNeed::Curate));
+                }
+            }
+            (
+                Op::AddRevision {
+                    logical,
+                    adopt_as_base,
+                    ..
+                },
+                Op::AddRevision { logical: raw, .. },
+            ) => {
+                let l = l(logical);
+                self.read(l, || logical_text(raw))?;
+                self.lane_role(l, Writer, || logical_text(raw))?;
+                if *adopt_as_base {
+                    self.lane_role(l, Curator, || logical_text(raw))?;
+                }
+            }
+            (
+                Op::SetHead {
+                    logical,
+                    expected,
+                    new,
+                },
+                Op::SetHead {
+                    logical: raw,
+                    expected: raw_expected,
+                    new: raw_new,
+                },
+            ) => {
+                let l = l(logical);
+                self.read(l, || logical_text(raw))?;
+                self.read_rev(r(*expected), *raw_expected)?;
+                self.read_rev(r(*new), *raw_new)?;
+                self.lane_role(l, Writer, || logical_text(raw))?;
+            }
+            (Op::SetMetadata { logical, .. }, Op::SetMetadata { logical: raw, .. }) => {
+                let l = l(logical);
+                self.read(l, || logical_text(raw))?;
+                self.lane_role(l, Writer, || logical_text(raw))?;
+            }
+            (
+                Op::AssertBase { rev } | Op::RetractBase { rev },
+                Op::AssertBase { rev: raw } | Op::RetractBase { rev: raw },
+            ) => {
+                let rv = r(*rev);
+                self.read_rev(rv, *raw)?;
+                self.lane_role(self.i.revision_logical(rv), Curator, || rev_text(*raw))?;
+            }
+            (
+                Op::AddRule {
+                    conclusion,
+                    incidences,
+                    ..
+                },
+                Op::AddRule {
+                    conclusion: raw_c,
+                    incidences: raw_i,
+                    ..
+                },
+            ) => {
+                let c = r(*conclusion);
+                self.read_rev(c, *raw_c)?;
+                for ((p, _), (raw_p, _)) in incidences.iter().zip(raw_i) {
+                    self.read_rev(r(*p), *raw_p)?;
+                }
+                self.lane_role(self.i.revision_logical(c), Writer, || rev_text(*raw_c))?;
+            }
+            (
+                Op::Rebind { rule, to, .. },
+                Op::Rebind {
+                    rule: raw,
+                    to: raw_to,
+                    ..
+                },
+            ) => {
+                let j = j(*rule);
+                self.read_rule(j, *raw)?;
+                self.read_rev(r(*to), *raw_to)?;
+                let c = self.i.revision_logical(self.i.conclusion(j));
+                self.lane_role(c, Writer, || rule_text(*raw))?;
+            }
+            (Op::SetRuleEnabled { rule, .. }, Op::SetRuleEnabled { rule: raw, .. }) => {
+                let j = j(*rule);
+                self.read_rule(j, *raw)?;
+                let c = self.i.revision_logical(self.i.conclusion(j));
+                self.lane_role(c, Writer, || rule_text(*raw))?;
+            }
+            (Op::OpenArtifact { target, .. }, Op::OpenArtifact { target: raw, .. }) => {
+                let t = r(*target);
+                self.read_rev(t, *raw)?;
+                self.lane_role(self.i.revision_logical(t), Writer, || rev_text(*raw))?;
+            }
+            (Op::ResolveArtifact { id, .. }, Op::ResolveArtifact { id: raw, .. }) => {
+                let (_, target, _) = self.i.artifact(a(*id));
+                let t = self.i.revision_logical(target);
+                self.read(t, || artifact_text(*raw))?;
+                self.lane_role(t, Writer, || artifact_text(*raw))?;
+            }
+            // Verdicts stay with the admin and the validators (§6.2 rule 5).
+            (Op::RecordValidation { .. }, Op::RecordValidation { rule: raw, .. }) => {
+                return Err(self.refuse(rule_text(*raw), AccessNeed::Curate));
+            }
+            (Op::ExpectHeads { entries, .. }, Op::ExpectHeads { entries: raw, .. }) => {
+                for ((logical, _), (raw, _)) in entries.iter().zip(raw) {
+                    self.read(l(logical), || logical_text(raw))?;
+                }
+            }
+            // Admin- and observer-only ops are refused by their channel.
+            _ => {}
+        }
+        Ok(())
+    }
+}
+fn rev_text(r: RevRef) -> String {
+    match r {
+        RevRef::Existing(x) => format!("rev {}", x.0),
+        RevRef::New(n) => format!("new rev {n}"),
+    }
+}
+fn logical_text(l: &LogicalRef) -> String {
+    match l {
+        LogicalRef::Existing(x) => format!("logical {}", x.0),
+        LogicalRef::Key(k) => k.clone(),
+        LogicalRef::New(n) => format!("new logical {n}"),
+    }
+}
+fn rule_text(j: RuleRef) -> String {
+    match j {
+        RuleRef::Existing(x) => format!("rule {}", x.0),
+        RuleRef::New(n) => format!("new rule {n}"),
+    }
+}
+fn artifact_text(a: ArtifactRef) -> String {
+    match a {
+        ArtifactRef::Existing(x) => format!("artifact {}", x.0),
+        ArtifactRef::New(n) => format!("new artifact {n}"),
+    }
+}
 fn id(n: usize, kind: CapacityKind) -> Result<u32, TxError> {
     u32::try_from(n).map_err(|_| TxError::CapacityExceeded { kind })
 }
@@ -351,7 +598,29 @@ pub(crate) fn apply<S: StatsSink>(
     blobs: &dyn BlobPresence,
 ) -> Result<(), TxError> {
     let original = op;
+    let authorise = i.auth.map(|access| Authorise {
+        i,
+        access,
+        p: b.principal,
+        index,
+    });
+    let authorise = authorise.filter(|_| !b.principal.is_store_owner());
+    // `personal:<name>` for an unlisted name: refused for everyone, the
+    // store owner included (ADR 0017 §6.2 rule 1).
+    if let (Some(Some(access)), Op::CreateLogical { scope_lane, .. }) = (i.auth, op)
+        && access.unknown_personal(scope_lane)
+    {
+        return Err(TxError::InvalidLane {
+            lane: scope_lane.clone(),
+        });
+    }
+    if let Some(check) = &authorise {
+        check.logical_first(op, ids)?;
+    }
     let op = Resolver { i, a: ids }.op(op)?;
+    if let Some(check) = &authorise {
+        check.op(&op, original)?;
+    }
     channel(i, &op, b.channel)?;
     match op {
         Op::CreateLogical {

@@ -180,6 +180,29 @@ impl AccessModel {
             ids,
         })
     }
+    /// Whether `p` is a writer (or, with `curate`, a curator) of
+    /// `entry(lane)` (ADR 0017 §6.2), as a list lookup over the expanded
+    /// role tokens.
+    pub fn may_write(&self, p: PrincipalId, lane: &str, curate: bool) -> bool {
+        if p.0 < 16 || (0x5641_0000..=0x5641_FFFF).contains(&p.0) {
+            return true;
+        }
+        let Some(name) = self.name_of(p) else {
+            return false;
+        };
+        let e = self.entry(lane);
+        let empty = BTreeSet::new();
+        if curate {
+            list_has(&self.doc, &e.curators, name, &e.writers)
+        } else {
+            list_has(&self.doc, &e.writers, name, &empty)
+        }
+    }
+    /// `personal:<name>` for an unlisted name (`InvalidLane`).
+    pub fn unknown_personal(&self, lane: &str) -> bool {
+        lane.strip_prefix("personal:")
+            .is_some_and(|n| !self.doc.principals.contains_key(n))
+    }
     fn name_of(&self, p: PrincipalId) -> Option<&String> {
         self.doc.principals.keys().find(|n| self.ids[*n] == p.0)
     }

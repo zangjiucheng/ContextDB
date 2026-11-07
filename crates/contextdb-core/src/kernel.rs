@@ -75,6 +75,9 @@ pub struct BranchInfo {
     pub parent: Option<BranchId>,
     pub fork_epoch: Epoch,
     pub archived: bool,
+    /// The principal whose batch created the branch (ADR 0017 §6.2 rule 6);
+    /// `main` is the store owner's.
+    pub creator: PrincipalId,
 }
 /// An object a branch imported from another branch by dedup; with the
 /// epoch, a `branch_visibility` row (ADR 0013 §2).
@@ -181,6 +184,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     parent: None,
                     fork_epoch: Epoch(0),
                     archived: false,
+                    creator: PrincipalId::STORE_OWNER,
                 },
                 db: Arc::new(db),
                 ids: Arc::new(ids),
@@ -276,6 +280,21 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 name: branch.info.name.clone(),
             });
         }
+        // ADR 0017 §6.2 rule 6: a branch another principal created takes
+        // commits, merges and its archive only from that principal and the
+        // store owner; `main` and the store owner's branches take every
+        // writer's commits, but only the store owner archives them. Forking
+        // writes nothing to the parent.
+        let forks = matches!(b.ops.first(), Some(Op::CreateBranch { .. }));
+        let archives = matches!(b.ops.first(), Some(Op::ArchiveBranch { .. }));
+        let creator = branch.info.creator;
+        let mine = creator == crate::access_class(b.principal);
+        // Allowed: one's own branch, or an owner branch for anything but
+        // its archive.
+        let allowed = mine || (!archives && creator.is_store_owner());
+        if !b.principal.is_store_owner() && !forks && !allowed {
+            return Err(TxError::BranchOfAnotherPrincipal);
+        }
         let sole = |op: &Op| {
             matches!(
                 op,
@@ -313,7 +332,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut report = None;
         let result = match b.ops.first() {
             Some(Op::CreateBranch { name }) if b.ops.len() == 1 => {
-                self.create_branch(b.branch, name, next, publish)?
+                self.create_branch(b.branch, b.principal, name, next, publish)?
             }
             Some(Op::ArchiveBranch { name }) if b.ops.len() == 1 => {
                 self.archive_branch(b.branch, name, next, publish)?
@@ -345,6 +364,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     fn create_branch(
         &mut self,
         parent: BranchId,
+        creator: PrincipalId,
         name: &str,
         epoch: Epoch,
         publish: bool,
@@ -369,6 +389,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 parent: Some(parent),
                 fork_epoch: epoch,
                 archived: false,
+                creator: crate::access_class(creator),
             },
             // O(1): the child shares the parent's state until either writes.
             db: Arc::clone(&from.db),
@@ -443,6 +464,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             rule_origins,
             revision_ids,
             rule_ids,
+            access,
             ..
         } = self;
         let branch = &mut branches[b.branch.0 as usize];
@@ -453,6 +475,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             kernel: true,
             foreign_key: Some(&foreign),
             staged: Some(&sink),
+            auth: Some(access.as_deref()),
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch

@@ -242,6 +242,8 @@ fn accept(s: &Svc, id: Identity, session: SessionId, h: [u8; 16]) -> Response {
 fn t58_identity_comes_from_the_transport_only() {
     let disk = SimDisk::new();
     let s = service(&disk);
+    // Bob writes `repo` (milestone 4 authorises writes).
+    share(&s);
     let mut forged = Batch::new(vec![Op::CreateLogical {
         key: "forged".into(),
         kind: RecordKind::Fact,
@@ -261,11 +263,25 @@ fn t58_identity_comes_from_the_transport_only() {
         )
         .response;
     assert_eq!(code(&r), "ChannelRestricted");
-    // The dry run of the same batch runs as BOB (no admin op is allowed).
-    let r = s
-        .handle(BOB, Request::ImpactBatch { batch: forged })
-        .response;
-    assert!(matches!(r, Response::ImpactExact { .. }), "{r:?}");
+    // The dry run of the same batch runs as BOB, not as the admin it
+    // names: proof of possession applies (milestone 4), and with the bytes
+    // the base needs a curator of `repo`, which bob is not.
+    let dry = |blobs: Vec<Vec<u8>>| {
+        s.handle(
+            BOB,
+            Request::ImpactBatch {
+                batch: forged.clone(),
+                blobs,
+            },
+        )
+        .response
+    };
+    assert_eq!(code(&dry(Vec::new())), "MissingBlob");
+    let r = dry(vec![b"x".to_vec()]);
+    assert!(
+        matches!(&r, Response::Error { code, detail } if code == "Unauthorized" && detail.contains("Curate")),
+        "{r:?}"
+    );
     let session = start(&s, BOB);
     let r = s
         .handle(

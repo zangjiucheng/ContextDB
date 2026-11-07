@@ -443,6 +443,7 @@ fn branch_requests() {
         Request::WhatIf {
             binding: Binding::root(on_b),
             ops: vec![Op::RetractBase { rev: x.rev.into() }],
+            blobs: Vec::new(),
         },
     );
     assert!(matches!(dry, Response::WhatIf { .. }), "{dry:?}");

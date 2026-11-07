@@ -48,6 +48,10 @@ pub(crate) struct Stage<'a> {
     /// Keys taken by logicals invisible here (the global key namespace,
     /// SD19); None for a single-branch database.
     pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
+    /// Set by the kernel: write authorisation against this access document
+    /// (ADR 0017 §6.1); `Some(None)` is a store without one. `None` (a
+    /// single-branch database, outside the kernel) checks nothing.
+    pub auth: Option<Option<&'a crate::access::AccessState>>,
 }
 /// What a stage publishes, detached from the published state it borrows.
 pub(crate) struct Parts {
@@ -118,6 +122,21 @@ impl<'a> Stage<'a> {
             incidences: index.inc_rule.len() as u64,
             read_set: BTreeMap::new(),
             foreign_key: None,
+            auth: None,
+        }
+    }
+    /// `(key, lane, owner)` of a published or staged logical.
+    pub fn logical_facts(&self, l: LogicalId) -> (String, String, PrincipalId) {
+        match l.index().checked_sub(self.published_logicals()) {
+            Some(n) => {
+                let x = &self.new_logicals[n];
+                (x.key.clone(), x.scope_lane.clone(), x.owner)
+            }
+            None => (
+                self.logicals.export_key(l),
+                self.logicals.scope_lane(l).to_owned(),
+                self.logicals.owner(l),
+            ),
         }
     }
     /// Whether another branch's logical holds `key` (SD19's one exception).

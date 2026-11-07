@@ -365,6 +365,43 @@ impl AccessState {
         decide(true, Step::Allowed)
     }
 }
+/// A write role of a lane entry (ADR 0017 §4.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Writer,
+    Curator,
+}
+impl AccessState {
+    /// Whether `p` holds `role` in `entry(lane)` (ADR 0017 §6.2). The store
+    /// owner holds every role; `*writers` among curators expands to the
+    /// entry's writers.
+    pub fn has_role(&self, p: PrincipalId, lane: &str, role: Role) -> bool {
+        if p.is_store_owner() {
+            return true;
+        }
+        let Some(name) = self.name_of(p) else {
+            return false;
+        };
+        let e = self.entry(lane);
+        match role {
+            Role::Writer => expand(&self.doc, &e.writers, None).contains(name),
+            Role::Curator => expand(&self.doc, &e.curators, Some(&e.writers)).contains(name),
+        }
+    }
+    /// Whether `lane` names a personal lane of a principal the document
+    /// does not list (ADR 0017 §6.2 rule 1: `InvalidLane`).
+    pub fn unknown_personal(&self, lane: &str) -> bool {
+        lane.strip_prefix(PERSONAL)
+            .is_some_and(|n| !self.doc.principals.contains_key(n))
+    }
+}
+/// `has_role` without an access document: only the store owner (T106).
+pub fn has_role(state: Option<&AccessState>, p: PrincipalId, lane: &str, role: Role) -> bool {
+    match state {
+        Some(s) => s.has_role(p, lane, role),
+        None => p.is_store_owner(),
+    }
+}
 /// Whether grant dir `g` covers metadata dir `d`: equal, or an ancestor.
 fn covers(g: &str, d: &str) -> bool {
     let (g, d) = (g.trim_end_matches('/'), d.trim_end_matches('/'));

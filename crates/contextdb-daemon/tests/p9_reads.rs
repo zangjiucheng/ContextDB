@@ -597,7 +597,8 @@ fn t100_no_hidden_names_in_diffs_transactions_and_errors() {
                         scope_lane: "repo".into(),
                     },
                     deps: Vec::new(),
-                    adopt_as_base: true,
+                    // A base in `repo` needs a curator (milestone 4).
+                    adopt_as_base: id.principal.is_store_owner(),
                     client_txn_id: Some(txn),
                 },
             )
@@ -1075,17 +1076,24 @@ fn t100_every_response_type_names_only_visible_ids() {
         matches!(out, Response::Recall { items, withheld, .. } if items.len() == 1 && withheld.is_empty())
     );
     // Errors and store-owner responses.
+    // A cycle's path may run through hidden nodes: withheld. A head
+    // conflict comes only after the read check (milestone 4): shown.
     assert_eq!(
         run(Response::Error {
-            code: "HeadConflict".into(),
-            detail: "logical 1 head r1".into()
+            code: "CycleDetected".into(),
+            detail: "path [Revision(1)]".into()
         })
         .0,
         Response::Error {
-            code: "HeadConflict".into(),
+            code: "CycleDetected".into(),
             detail: WITHHELD.into()
         }
     );
+    let conflict = Response::Error {
+        code: "HeadConflict".into(),
+        detail: "HeadConflict { logical: 0 }".into(),
+    };
+    assert_eq!(run(conflict.clone()).0, conflict);
     assert!(matches!(
         run(Response::Status {
             revisions: 3,

@@ -474,6 +474,35 @@ pub enum TxError {
     InvalidAccess {
         reason: String,
     },
+    /// The batch's principal lacks `need` on what op `op_index` names
+    /// (ADR 0017 §6.1). `reference` is the ref as the op wrote it, never a
+    /// resolved id of anything the principal cannot read.
+    Unauthorized {
+        op_index: usize,
+        reference: String,
+        need: AccessNeed,
+    },
+    /// `personal:<name>` for a name the access document does not list
+    /// (ADR 0017 §6.2 rule 1).
+    InvalidLane {
+        lane: String,
+    },
+    /// A merge into `main` or a store-owner branch carries changes the
+    /// merging principal could not make directly (ADR 0017 §6.2 rule 7);
+    /// `count` failing changes, nothing named.
+    MergeUnauthorized {
+        count: u32,
+    },
+    /// A commit on, or archive of, a branch another principal created
+    /// (ADR 0017 §6.2 rule 6).
+    BranchOfAnotherPrincipal,
+}
+/// What a write needs on a logical (ADR 0017 §6.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessNeed {
+    Read,
+    Write,
+    Curate,
 }
 /// What a merge cannot combine (SD19 supplement).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

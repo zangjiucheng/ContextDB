@@ -609,3 +609,297 @@ fn prop15_authorized_and_ids_match_the_reference() {
     assert_eq!(reached, decisions.len() - 1, "{decisions:?}");
     assert!(valid > n / 2, "{valid} valid documents of {n} seeds");
 }
+
+/// PROP15, write half (ADR 0017 §6.1, §6.2, §11 G3): random `generate_p7`
+/// histories whose logicals spread over shared, personal (listed and
+/// unlisted), code and unlisted lanes, committed by random principals
+/// (the store owner, mapped ones, an unknown one), with `SetMetadata` dirs
+/// and a second access document in the middle. The kernel and the
+/// independent branch oracle accept and refuse exactly the same batches,
+/// with the same error (op index, ref and need included), and end in the
+/// same epoch. `CONTEXTDB_P9_WRITE_SEEDS` (default 1,000).
+#[test]
+fn prop15_write_refusals_match_the_reference() {
+    let n = seeds("CONTEXTDB_P9_WRITE_SEEDS", 1_000);
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for seed in 0..n {
+        let mut g = Gen(ChaCha8Rng::seed_from_u64(seed ^ 0x5039_0004));
+        // Two documents, the second valid over the first (a revision of
+        // the same store: same owner name).
+        let first = loop {
+            let doc = g.doc();
+            if let Ok(s) = AccessState::apply(None, &doc) {
+                break (doc, s);
+            }
+        };
+        let second = loop {
+            let doc = g.doc();
+            if AccessState::apply(Some(&first.1), &doc).is_ok() {
+                break doc;
+            }
+        };
+        let docs = [first.0, second];
+        let mut g = Gen(ChaCha8Rng::seed_from_u64(seed));
+        let mut k = Kernel::default();
+        // The single-branch reference (every batch here is on `main`) with
+        // the oracle's own access model.
+        let mut o = contextdb_oracle::InputModel::default();
+        let mut m: Option<AccessModel> = None;
+        let history = contextdb_testkit::generate_p7(seed).batches;
+        let middle = history.len() / 2;
+        let lanes = [
+            "repo",
+            "billing",
+            "notes",
+            "code:r1",
+            "personal:alice",
+            "personal:bob",
+            "personal:carol",
+            "personal:zed",
+            "x",
+        ];
+        let mut both = |b: &Batch,
+                        k: &mut Kernel,
+                        o: &mut contextdb_oracle::InputModel,
+                        m: &Option<AccessModel>| {
+            let got = k.commit(b);
+            let want = o.apply_authorised(b, &|_| false, m.as_ref());
+            match (&got, &want) {
+                (Ok(r), Ok(a)) => assert_eq!(r.allocations, a.allocations, "seed {seed}"),
+                (Err(e), Err(w)) => assert_eq!(e, w, "seed {seed}: {b:?}"),
+                _ => panic!("seed {seed}: kernel {got:?}, oracle {want:?}, batch {b:?}"),
+            }
+            let label = match (&got, b.principal.is_store_owner()) {
+                (Ok(_), true) => "owner ok".to_owned(),
+                (Ok(_), false) => "principal ok".to_owned(),
+                (Err(TxError::Unauthorized { need, .. }), _) => format!("Unauthorized {need:?}"),
+                (Err(e), _) => code(e),
+            };
+            *counts.entry(label).or_default() += 1;
+        };
+        for (i, mut b) in history.into_iter().enumerate() {
+            if i == 0 || i == middle {
+                let d = docs[usize::from(i != 0)].clone();
+                k.commit(&admin(vec![set_access(d.clone())])).unwrap();
+                m = Some(AccessModel::apply(m.as_ref(), &d).unwrap());
+                // SetAccess takes an epoch in the kernel only.
+                o = contextdb_oracle::InputModel::from_inputs(o.inputs().clone(), k.epoch());
+            }
+            for op in &mut b.ops {
+                if let Op::CreateLogical { scope_lane, .. } = op {
+                    *scope_lane = lanes[g.pick(lanes.len())].into();
+                }
+            }
+            let ids: Vec<PrincipalId> = k.access().unwrap().ids.values().copied().collect();
+            b.principal = match g.pick(4) {
+                0 => PrincipalId(0),
+                3 => PrincipalId(99),
+                _ => ids[g.pick(ids.len())],
+            };
+            both(&b, &mut k, &mut o, &m);
+            if g.coin(30) {
+                let count = k.branch(MAIN).unwrap().logical_count();
+                if count > 0 {
+                    let mut x = Batch::new(vec![Op::SetMetadata {
+                        logical: LogicalRef::Existing(LogicalId(g.pick(count) as u32)),
+                        tags: BTreeSet::new(),
+                        dirs: set(
+                            &g.some(&["src", "src/billing", "src/billing/invoices/x", "docs"], 2)
+                        ),
+                    }]);
+                    x.principal = ids[g.pick(ids.len())];
+                    both(&x, &mut k, &mut o, &m);
+                }
+            }
+        }
+        assert_eq!(k.epoch(), o.epoch(), "seed {seed}");
+    }
+    eprintln!("PROP15 write half, {n} seeds: {counts:?}");
+    for want in [
+        "owner ok",
+        "principal ok",
+        "Unauthorized Read",
+        "Unauthorized Write",
+        "Unauthorized Curate",
+        "InvalidLane",
+    ] {
+        assert!(
+            counts.get(want).is_some_and(|c| *c > 0),
+            "{want} never seen: {counts:?}"
+        );
+    }
+}
+
+/// PROP15, write half, merges (ADR 0017 §6.2 rules 6–7): a branch created
+/// by a random principal, random writes on it and on `main` by random
+/// principals (lanes, bases, metadata, rules), then merges either way by
+/// random principals. The kernel and the independent branch oracle agree
+/// on every outcome, `MergeUnauthorized{count}` and
+/// `BranchOfAnotherPrincipal` included; a merge into the merger's own
+/// branch is never refused for authorisation. `CONTEXTDB_P9_MERGE_SEEDS`
+/// (default 1,000).
+#[test]
+fn prop15_merge_refusals_match_the_reference() {
+    let n = seeds("CONTEXTDB_P9_MERGE_SEEDS", 1_000);
+    let authz = |e: &TxError| {
+        matches!(
+            e,
+            TxError::Unauthorized { .. }
+                | TxError::MergeUnauthorized { .. }
+                | TxError::BranchOfAnotherPrincipal
+                | TxError::InvalidLane { .. }
+        )
+    };
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let lanes = [
+        "repo",
+        "billing",
+        "notes",
+        "personal:alice",
+        "personal:bob",
+        "x",
+    ];
+    for seed in 0..n {
+        let mut g = Gen(ChaCha8Rng::seed_from_u64(seed ^ 0x5039_0005));
+        let doc = loop {
+            let d = g.doc();
+            if AccessState::apply(None, &d).is_ok() {
+                break d;
+            }
+        };
+        let mut k = Kernel::default();
+        let mut o = BranchOracle::new(hash);
+        let run = |b: &Batch,
+                   k: &mut Kernel,
+                   o: &mut BranchOracle,
+                   counts: &mut BTreeMap<String, u64>| {
+            let got = k.commit(b);
+            let want = o.apply(b, true);
+            match (&got, &want) {
+                (Ok(r), Ok((a, _))) => assert_eq!(r.epoch, a.epoch, "seed {seed}"),
+                // Authorisation errors match exactly; others (whose ids or
+                // cycle paths the two report in their own ways on branches)
+                // by variant.
+                (Err(e), Err(w)) if authz(e) || authz(w) => {
+                    assert_eq!(e, w, "seed {seed}: {b:?}")
+                }
+                (Err(e), Err(w)) => assert_eq!(code(e), code(w), "seed {seed}: {b:?}"),
+                _ => panic!("seed {seed}: kernel {got:?}, oracle {want:?}, batch {b:?}"),
+            }
+            let merge = b.ops.iter().any(|op| matches!(op, Op::Merge { .. }));
+            let label = match &got {
+                Ok(_) if merge => "merge ok".to_owned(),
+                Ok(_) => "ok".to_owned(),
+                Err(TxError::MergeUnauthorized { .. }) => "MergeUnauthorized".to_owned(),
+                Err(TxError::Unauthorized { need, .. }) => format!("Unauthorized {need:?}"),
+                Err(e) => code(e),
+            };
+            *counts.entry(label).or_default() += 1;
+            got.is_ok()
+        };
+        run(&admin(vec![set_access(doc)]), &mut k, &mut o, &mut counts);
+        let ids: Vec<PrincipalId> = k.access().unwrap().ids.values().copied().collect();
+        let pick_principal = |g: &mut Gen| match g.pick(3) {
+            0 => PrincipalId(0),
+            _ => ids[g.pick(ids.len())],
+        };
+        // Some owner records on main first.
+        let mut serial = 0u32;
+        let create = |g: &mut Gen, serial: &mut u32| {
+            *serial += 1;
+            Op::CreateLogical {
+                key: format!("k{serial}"),
+                kind: RecordKind::Fact,
+                scope_lane: lanes[g.pick(lanes.len())].into(),
+                content: [*serial as u8; 32],
+                adopt_as_base: g.coin(50),
+            }
+        };
+        let seed_ops: Vec<Op> = (0..4).map(|_| create(&mut g, &mut serial)).collect();
+        run(&Batch::new(seed_ops), &mut k, &mut o, &mut counts);
+        let mut fork = admin(vec![Op::CreateBranch { name: "f".into() }]);
+        fork.channel = Channel::Agent;
+        fork.principal = pick_principal(&mut g);
+        if !run(&fork, &mut k, &mut o, &mut counts) {
+            continue;
+        }
+        let f = BranchId(1);
+        for _ in 0..10 {
+            let on = if g.coin(50) { MAIN } else { f };
+            let p = pick_principal(&mut g);
+            if g.coin(25) {
+                // A merge, either way.
+                let source = if on == MAIN { f } else { MAIN };
+                let mut b = Batch::new(vec![Op::Merge {
+                    source,
+                    require_certified: false,
+                    certify: Vec::new(),
+                }]);
+                b.branch = on;
+                b.principal = p;
+                let creator_is_p = {
+                    let v = k.branch(on).unwrap();
+                    v.info().creator == p && !p.is_store_owner()
+                };
+                let ok = run(&b, &mut k, &mut o, &mut counts);
+                if creator_is_p && !ok {
+                    // Never refused for authorisation into one's own branch.
+                    let e = k.what_if(&b).err();
+                    assert!(
+                        !matches!(e, Some(TxError::MergeUnauthorized { .. })),
+                        "seed {seed}: {e:?}"
+                    );
+                }
+                continue;
+            }
+            let v = k.branch(on).unwrap();
+            let logicals: Vec<LogicalId> = v.logicals().collect();
+            let heads: Vec<RevisionId> = logicals.iter().filter_map(|l| v.head(*l)).collect();
+            let mut ops = Vec::new();
+            for _ in 0..1 + g.pick(2) {
+                let op = match g.pick(6) {
+                    0 => create(&mut g, &mut serial),
+                    1 => {
+                        serial += 1;
+                        Op::AddRevision {
+                            logical: LogicalRef::Existing(logicals[g.pick(logicals.len())]),
+                            content: [serial as u8; 32],
+                            adopt_as_base: g.coin(40),
+                        }
+                    }
+                    2 => Op::AssertBase {
+                        rev: heads[g.pick(heads.len())].into(),
+                    },
+                    3 => Op::RetractBase {
+                        rev: heads[g.pick(heads.len())].into(),
+                    },
+                    4 => Op::SetMetadata {
+                        logical: LogicalRef::Existing(logicals[g.pick(logicals.len())]),
+                        tags: set(&g.some(&["t1", "t2"], 1)),
+                        dirs: set(&g.some(&["src", "src/billing", "docs"], 1)),
+                    },
+                    _ => Op::AddRule {
+                        conclusion: heads[g.pick(heads.len())].into(),
+                        incidences: vec![(
+                            heads[g.pick(heads.len())].into(),
+                            [EdgeKind::Cur, EdgeKind::Ref][g.pick(2)],
+                        )],
+                        enabled: g.coin(80),
+                    },
+                };
+                ops.push(op);
+            }
+            let mut b = Batch::new(ops);
+            b.branch = on;
+            b.principal = p;
+            run(&b, &mut k, &mut o, &mut counts);
+        }
+    }
+    eprintln!("PROP15 merges, {n} seeds: {counts:?}");
+    for want in ["merge ok", "MergeUnauthorized", "BranchOfAnotherPrincipal"] {
+        assert!(
+            counts.get(want).is_some_and(|c| *c > 0),
+            "{want} never seen: {counts:?}"
+        );
+    }
+}

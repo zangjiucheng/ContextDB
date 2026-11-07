@@ -52,6 +52,15 @@ pub use view::InputView;
 pub struct CommitTiming {
     pub total_nanos: u128,
 }
+/// The store owner's channels are one principal (ADR 0017 §3.1): every
+/// reserved id maps to `STORE_OWNER`, any other id to itself.
+pub fn access_class(p: PrincipalId) -> PrincipalId {
+    if p.is_store_owner() {
+        PrincipalId::STORE_OWNER
+    } else {
+        p
+    }
+}
 /// How the multi-branch kernel commits into one branch's database (ADR 0013
 /// r0.5): at the global epoch, for any branch id, with the global key
 /// namespace.
@@ -63,6 +72,9 @@ pub struct CommitContext<'a> {
     pub kernel: bool,
     /// Keys taken by logicals not visible in this branch.
     pub foreign_key: Option<&'a dyn Fn(&str) -> bool>,
+    /// Set by the kernel: write authorisation against this access document
+    /// (ADR 0017 §6.1); `Some(None)` is a store without one.
+    pub auth: Option<Option<&'a access::AccessState>>,
     /// Receives the revisions and rules the batch staged, in staging order,
     /// whether it commits or fails: the kernel gives them global ids.
     pub staged: Option<&'a std::cell::RefCell<Staged>>,
@@ -595,7 +607,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     })?,
             ),
         };
-        if fast::eligible(b) {
+        // A batch to authorise goes through the overlay, where the checks
+        // run (ADR 0017 §6.1); the store owner passes every check.
+        let authorise = ctx.auth.is_some() && !b.principal.is_store_owner();
+        if fast::eligible(b) && !authorise {
             if let Some(staged) = ctx.staged {
                 *staged.borrow_mut() = Staged::default();
             }
@@ -625,6 +640,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             &self.indexes,
         );
         staged.foreign_key = ctx.foreign_key;
+        staged.auth = ctx.auth;
         let pk = &mut self.pk;
         let result = (|| {
             for (n, op) in b.ops.iter().enumerate() {

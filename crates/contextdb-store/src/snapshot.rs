@@ -112,6 +112,12 @@ fn encode(k: &KernelSnapshot) -> Vec<u8> {
             a.ids.encode(&mut o);
         }
     }
+    // P9 milestone 4 (ADR 0017 §6.2 rule 6): each branch's creator. A
+    // format-5 snapshot written before it lacks the section and is
+    // rejected (replay starts earlier).
+    for (info, ..) in &k.branches {
+        info.creator.encode(&mut o);
+    }
     o
 }
 fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
@@ -140,6 +146,7 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
             parent: Wire::decode(&mut i)?,
             fork_epoch: Wire::decode(&mut i)?,
             archived: Wire::decode(&mut i)?,
+            creator: PrincipalId::STORE_OWNER,
         };
         let state = u32::decode(&mut i)?;
         let mut imports = Vec::new();
@@ -175,6 +182,9 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
         }
         _ => return Err(WireError::InvalidEncoding),
     };
+    for (info, ..) in &mut branches {
+        info.creator = PrincipalId::decode(&mut i)?;
+    }
     if i.remaining() != 0 {
         return Err(WireError::TrailingBytes);
     }
