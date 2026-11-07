@@ -433,6 +433,50 @@ impl Wire for PolicyDoc {
         })
     }
 }
+impl Wire for LaneEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.members.encode(o);
+        self.writers.encode(o);
+        self.curators.encode(o);
+        self.egress.encode(o);
+        self.grants.encode(o);
+        self.deny.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            members: Wire::decode(i)?,
+            writers: Wire::decode(i)?,
+            curators: Wire::decode(i)?,
+            egress: Wire::decode(i)?,
+            grants: Wire::decode(i)?,
+            deny: Wire::decode(i)?,
+        })
+    }
+}
+impl Wire for AccessDoc {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.version.encode(o);
+        self.owner.encode(o);
+        self.principals.encode(o);
+        self.groups.encode(o);
+        self.lanes.encode(o);
+        self.code_lanes.encode(o);
+        self.personal_egress.encode(o);
+        self.default_lane.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            version: Wire::decode(i)?,
+            owner: Wire::decode(i)?,
+            principals: Wire::decode(i)?,
+            groups: Wire::decode(i)?,
+            lanes: Wire::decode(i)?,
+            code_lanes: Wire::decode(i)?,
+            personal_egress: Wire::decode(i)?,
+            default_lane: Wire::decode(i)?,
+        })
+    }
+}
 impl Wire for Batch {
     fn encode(&self, o: &mut Vec<u8>) {
         self.branch.encode(o);
@@ -1057,6 +1101,11 @@ impl Wire for Op {
                 expected.encode(o);
                 position.encode(o);
             }
+            // op_log format 5 (ADR 0017 §10).
+            Self::SetAccess { doc } => {
+                20u8.encode(o);
+                doc.encode(o);
+            }
             Self::SetMetadata {
                 logical,
                 tags,
@@ -1183,6 +1232,9 @@ impl Wire for Op {
                 expected: Wire::decode(i)?,
                 position: Wire::decode(i)?,
             }),
+            20 => Ok(Self::SetAccess {
+                doc: Box::new(Wire::decode(i)?),
+            }),
             11 => Ok(Self::SetMetadata {
                 logical: Wire::decode(i)?,
                 tags: Wire::decode(i)?,
@@ -1308,8 +1360,9 @@ pub struct EventLog {
 }
 impl EventLog {
     /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches; v2
-    /// (P7, ADR 0015 §9) adds the format-4 op encodings (tags 18, 19).
-    pub const VERSION: u16 = 2;
+    /// (P7, ADR 0015 §9) adds the format-4 op encodings (tags 18, 19); v3
+    /// (P9, ADR 0017 §10) adds `SetAccess` (tag 20).
+    pub const VERSION: u16 = 3;
     /// The lowest version that can carry `batch`.
     pub fn version_of(batch: &Batch) -> u16 {
         let p6 = batch.branch != MAIN
@@ -1333,7 +1386,17 @@ impl EventLog {
                     | Op::ResolveArtifact { note: Some(_), .. }
             )
         });
-        if p7 { 2 } else { u16::from(p6) }
+        let p9 = batch
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::SetAccess { .. }));
+        if p9 {
+            3
+        } else if p7 {
+            2
+        } else {
+            u16::from(p6)
+        }
     }
     /// One line per batch, each at the lowest version that carries it, so a
     /// log without P6 features stays readable by v0 importers.
@@ -1374,6 +1437,7 @@ impl EventLog {
                 "0" => 0,
                 "1" => 1,
                 "2" => 2,
+                "3" => 3,
                 _ => return Err(WireError::UnknownVersion),
             };
             let hex = rest.strip_suffix("\"}").ok_or(WireError::InvalidEncoding)?;

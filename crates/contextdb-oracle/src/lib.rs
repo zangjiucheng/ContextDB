@@ -1,4 +1,6 @@
 //! Independent input model and Jacobi/Kahn reference evaluators.
+mod access;
+pub use access::AccessModel;
 mod branches;
 pub use branches::{
     BranchOracle, Canonical, Conflict, MergeOutcome, Obj, canonical, conflict_payload,

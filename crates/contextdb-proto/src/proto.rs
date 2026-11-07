@@ -664,6 +664,21 @@ pub enum Request {
     Mirror {
         action: MirrorAction,
     },
+    /// `ctx access apply` (admin, ADR 0017 §4.1): commits `SetAccess` on
+    /// `main` after the daemon's own checks (the owner entry's uid).
+    SetAccess {
+        doc: AccessDoc,
+        client_txn_id: Option<[u8; 16]>,
+    },
+    /// `ctx access show` (store owner).
+    AccessShow,
+    /// `ctx access check` (store owner): `Authorized` for `principal` and
+    /// the logical `key` on `branch` (default `main`), and the deciding step.
+    AccessCheck {
+        principal: String,
+        key: String,
+        branch: Option<String>,
+    },
 }
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
 /// `epoch`, to `summary`.
@@ -1147,6 +1162,19 @@ pub enum Response {
     /// `ctx mirror` done (ADR 0016 §8).
     Mirror {
         report: MirrorReport,
+    },
+    /// `ctx access show`: the committed document, every id it assigned, and
+    /// whether the uid mapping is in effect (multi-user mode).
+    Access {
+        doc: Option<AccessDoc>,
+        ids: Vec<(String, PrincipalId)>,
+        multi_user: bool,
+    },
+    /// `ctx access check`.
+    AccessDecision {
+        principal: PrincipalId,
+        allowed: bool,
+        step: String,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -1870,6 +1898,22 @@ impl Wire for Request {
                 40u8.encode(o);
                 action.encode(o);
             }
+            Self::SetAccess { doc, client_txn_id } => {
+                41u8.encode(o);
+                doc.encode(o);
+                client_txn_id.encode(o);
+            }
+            Self::AccessShow => 42u8.encode(o),
+            Self::AccessCheck {
+                principal,
+                key,
+                branch,
+            } => {
+                43u8.encode(o);
+                principal.encode(o);
+                key.encode(o);
+                branch.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2101,6 +2145,16 @@ impl Wire for Request {
             },
             40 => Self::Mirror {
                 action: Wire::decode(i)?,
+            },
+            41 => Self::SetAccess {
+                doc: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+            },
+            42 => Self::AccessShow,
+            43 => Self::AccessCheck {
+                principal: Wire::decode(i)?,
+                key: Wire::decode(i)?,
+                branch: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2334,6 +2388,26 @@ impl Wire for Response {
                 34u8.encode(o);
                 report.encode(o);
             }
+            Self::Access {
+                doc,
+                ids,
+                multi_user,
+            } => {
+                35u8.encode(o);
+                doc.encode(o);
+                ids.encode(o);
+                multi_user.encode(o);
+            }
+            Self::AccessDecision {
+                principal,
+                allowed,
+                step,
+            } => {
+                36u8.encode(o);
+                principal.encode(o);
+                allowed.encode(o);
+                step.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2481,6 +2555,16 @@ impl Wire for Response {
             },
             34 => Self::Mirror {
                 report: Wire::decode(i)?,
+            },
+            35 => Self::Access {
+                doc: Wire::decode(i)?,
+                ids: Wire::decode(i)?,
+                multi_user: Wire::decode(i)?,
+            },
+            36 => Self::AccessDecision {
+                principal: Wire::decode(i)?,
+                allowed: Wire::decode(i)?,
+                step: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2781,6 +2865,25 @@ mod tests {
                     older_than_secs: 86_400,
                 },
             },
+            Request::SetAccess {
+                doc: AccessDoc {
+                    version: 1,
+                    owner: "alice".into(),
+                    principals: [("alice".into(), 501), ("bob".into(), 502)].into(),
+                    groups: [("g".into(), ["bob".to_owned()].into())].into(),
+                    lanes: [("repo".into(), LaneEntry::code_default())].into(),
+                    code_lanes: LaneEntry::code_default(),
+                    personal_egress: true,
+                    default_lane: LaneEntry::owner_only(),
+                },
+                client_txn_id: Some([3; 16]),
+            },
+            Request::AccessShow,
+            Request::AccessCheck {
+                principal: "bob".into(),
+                key: "db.engine".into(),
+                branch: Some("f".into()),
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -3055,6 +3158,19 @@ mod tests {
             },
             Response::AlreadyOpen {
                 artifacts: vec![ArtifactId(4), ArtifactId(5)],
+            },
+            Response::Access {
+                doc: None,
+                ids: vec![
+                    ("alice".into(), PrincipalId(0)),
+                    ("bob".into(), PrincipalId(16)),
+                ],
+                multi_user: false,
+            },
+            Response::AccessDecision {
+                principal: PrincipalId(16),
+                allowed: false,
+                step: "acl".into(),
             },
             Response::Mirror {
                 report: MirrorReport {

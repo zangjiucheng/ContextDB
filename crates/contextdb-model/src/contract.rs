@@ -130,6 +130,57 @@ impl Default for PolicyDoc {
     }
 }
 
+/// One lane's roles (ADR 0017 §4.1, §4.3). Role lists hold principal names,
+/// `@group`, `*members`, `*owner` and (curators only) `*writers`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaneEntry {
+    pub members: BTreeSet<String>,
+    pub writers: BTreeSet<String>,
+    pub curators: BTreeSet<String>,
+    pub egress: bool,
+    /// Dir narrowing: a principal (or `@group`) → the dirs it may read.
+    pub grants: BTreeMap<String, BTreeSet<String>>,
+    /// Key-prefix denies: `(principal or @group, prefix)`.
+    pub deny: BTreeSet<(String, String)>,
+}
+impl LaneEntry {
+    /// Only the store owner (`default_lane`'s default: fail closed).
+    pub fn owner_only() -> Self {
+        let owner: BTreeSet<String> = ["*owner".to_owned()].into();
+        Self {
+            members: owner.clone(),
+            writers: owner.clone(),
+            curators: owner,
+            egress: true,
+            grants: BTreeMap::new(),
+            deny: BTreeSet::new(),
+        }
+    }
+    /// `code_lanes`' default: every member reads, only the store owner's
+    /// observer writes anchors (ADR 0017 §4.1, N5).
+    pub fn code_default() -> Self {
+        Self {
+            members: ["*members".to_owned()].into(),
+            ..Self::owner_only()
+        }
+    }
+}
+/// The committed access document (ADR 0017 §4): global, set by `SetAccess`.
+/// `owner` names the store owner's entry, whose uid is the daemon's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessDoc {
+    pub version: u16,
+    pub owner: String,
+    /// Principal name → OS uid.
+    pub principals: BTreeMap<String, u32>,
+    pub groups: BTreeMap<String, BTreeSet<String>>,
+    pub lanes: BTreeMap<String, LaneEntry>,
+    pub code_lanes: LaneEntry,
+    /// `[personal] egress` (F6: default `false`).
+    pub personal_egress: bool,
+    pub default_lane: LaneEntry,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     CreateLogical {
@@ -188,6 +239,11 @@ pub enum Op {
         expected: Option<Vec<u8>>,
         position: Vec<u8>,
     },
+    /// Replaces the access document (ADR 0017 §4.1): admin only, sole Op of
+    /// its batch, committed on `main`, global; never in a WHAT_IF or a merge.
+    SetAccess {
+        doc: Box<AccessDoc>,
+    },
     SetMetadata {
         logical: LogicalRef,
         tags: BTreeSet<String>,
@@ -244,6 +300,7 @@ impl Op {
             Self::RecordValidation { .. } => "RecordValidation",
             Self::SetPolicy { .. } => "SetPolicy",
             Self::ObserverWatermark { .. } => "ObserverWatermark",
+            Self::SetAccess { .. } => "SetAccess",
             Self::SetMetadata { .. } => "SetMetadata",
             Self::OpenArtifact { .. } => "OpenArtifact",
             Self::ResolveArtifact { .. } => "ResolveArtifact",
@@ -412,6 +469,10 @@ pub enum TxError {
     },
     InvalidReadSet {
         logical: LogicalId,
+    },
+    /// A refused access document (ADR 0017 §4.2).
+    InvalidAccess {
+        reason: String,
     },
 }
 /// What a merge cannot combine (SD19 supplement).

@@ -39,6 +39,11 @@ pub struct Options {
     /// Test hook (ADR 0017 §11 T98): the peer uid a connection reports. Only
     /// debug builds honour it; release builds always ask the kernel.
     pub peer_uid: Option<PeerUidHook>,
+    /// Whether the committed access document may map other uids (multi-user
+    /// mode). Off by default and never set by `ctxd` until read redaction
+    /// and write authorisation land (P9 milestones 3 and 4): before them a
+    /// mapped principal could read and write everything.
+    pub multi_user: bool,
 }
 /// A replacement for `getpeereid` in tests (debug builds only).
 #[derive(Clone)]
@@ -58,6 +63,7 @@ impl Default for Options {
             full_sync: true,
             anchor_live_timeout: None,
             peer_uid: None,
+            multi_user: false,
         }
     }
 }
@@ -68,6 +74,9 @@ pub enum StartError {
     Locked,
     Store(StoreError),
     Io(io::Error),
+    /// Multi-user mode was asked for and the file-system rules do not hold
+    /// (ADR 0017 §3.2).
+    MultiUser(Vec<contextdb_proto::fsguard::Violation>),
 }
 impl From<io::Error> for StartError {
     fn from(e: io::Error) -> Self {
@@ -270,7 +279,7 @@ impl Daemon {
                     }
                 })?;
         }
-        Ok(Self {
+        let daemon = Self {
             service,
             sockets,
             lease: lease_path,
@@ -279,7 +288,15 @@ impl Daemon {
             run,
             stop,
             cleaned: AtomicBool::new(false),
-        })
+        };
+        if options.multi_user {
+            daemon.service.enable_multi_user(daemon.multi_user());
+            if let Err(v) = daemon.service.apply_access() {
+                daemon.stop();
+                return Err(StartError::MultiUser(v));
+            }
+        }
+        Ok(daemon)
     }
     /// Enters (or leaves) multi-user mode with `map` (ADR 0017 §3.2–§3.3).
     /// Mapping another principal first requires the file-system rules: the
@@ -292,36 +309,25 @@ impl Daemon {
         &self,
         map: crate::principals::PrincipalMap,
     ) -> Result<(), Vec<contextdb_proto::fsguard::Violation>> {
-        use contextdb_proto::fsguard::{self, Violation};
-        let agent = self.socket(Channel::Agent).to_path_buf();
+        let fs = self.multi_user();
         if map.is_multi_user() {
-            if !self.run.starts_with(&self.dir) {
-                return Err(vec![Violation::SocketsOutsideData {
-                    path: self.run.clone(),
-                }]);
-            }
-            let mut v = fsguard::walk(&self.dir, self.owner_uid, 32);
-            if let Err(a) = fsguard::check_ancestors(&self.dir, self.owner_uid) {
-                v.push(a);
-            }
-            let shared = agent.parent().unwrap_or(&self.dir).to_path_buf();
-            for u in map.uids() {
-                if let Err(e) = fsguard::check_searchable(&shared, u) {
-                    v.push(e);
-                }
-            }
+            let v = fs.check(map.uids());
             if !v.is_empty() {
                 return Err(v);
             }
         }
-        let mode = if map.is_multi_user() { 0o666 } else { 0o600 };
+        let multi = map.is_multi_user();
         self.service.set_principals(map);
-        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(mode)).map_err(|e| {
-            vec![Violation::Io {
-                path: agent.clone(),
-                error: e.to_string(),
-            }]
-        })
+        fs.chmod(multi).map_err(|v| vec![v])
+    }
+    /// This daemon's file-system gate for multi-user mode.
+    pub fn multi_user(&self) -> crate::principals::MultiUser {
+        crate::principals::MultiUser {
+            dir: self.dir.clone(),
+            run: self.run.clone(),
+            agent_socket: self.socket(Channel::Agent).to_path_buf(),
+            owner_uid: self.owner_uid,
+        }
     }
     /// Socket path of a channel.
     pub fn socket(&self, channel: Channel) -> &Path {

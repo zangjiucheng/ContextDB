@@ -256,6 +256,8 @@ pub struct BranchOracle {
     branches: Vec<Branch>,
     syncs: Vec<Sync>,
     epoch: Epoch,
+    /// The access document (ADR 0017 §4), global.
+    access: Option<crate::AccessModel>,
 }
 impl BranchOracle {
     /// A store with only `main`; `hash` is the store's content hash.
@@ -277,6 +279,7 @@ impl BranchOracle {
             }],
             syncs: Vec::new(),
             epoch: Epoch(0),
+            access: None,
         }
     }
 }
@@ -284,6 +287,10 @@ impl BranchOracle {
 impl BranchOracle {
     pub fn epoch(&self) -> Epoch {
         self.epoch
+    }
+    /// The committed access document and its ids.
+    pub fn access(&self) -> Option<&crate::AccessModel> {
+        self.access.as_ref()
     }
     pub fn branch_count(&self) -> usize {
         self.branches.len()
@@ -476,11 +483,15 @@ impl BranchOracle {
         publish: bool,
     ) -> Result<(ApplyResult, Option<MergeOutcome>), TxError> {
         if publish {
-            return self.apply_now(b);
+            return self.apply_now(b, true);
         }
-        self.clone().apply_now(b)
+        self.clone().apply_now(b, false)
     }
-    fn apply_now(&mut self, b: &Batch) -> Result<(ApplyResult, Option<MergeOutcome>), TxError> {
+    fn apply_now(
+        &mut self,
+        b: &Batch,
+        publish: bool,
+    ) -> Result<(ApplyResult, Option<MergeOutcome>), TxError> {
         let branch = self
             .branches
             .get(b.branch.0 as usize)
@@ -494,6 +505,7 @@ impl BranchOracle {
             let sole = match op {
                 Op::CreateBranch { .. } => Some("CreateBranch"),
                 Op::ArchiveBranch { .. } => Some("ArchiveBranch"),
+                Op::SetAccess { .. } => Some("SetAccess"),
                 _ => None,
             };
             if let Some(name) = sole
@@ -555,6 +567,21 @@ impl BranchOracle {
                     return Err(TxError::InvalidBranchName { name: name.clone() });
                 }
                 self.branches[b.branch.0 as usize].archived = true;
+                Ok((done(self), None))
+            }
+            [Op::SetAccess { doc }] => {
+                if b.channel != Channel::Admin {
+                    return Err(TxError::ChannelRestricted {
+                        op: "SetAccess".into(),
+                        channel: b.channel,
+                    });
+                }
+                if b.branch != MAIN || !publish {
+                    return Err(TxError::InvalidAccess {
+                        reason: "main only, never dry-run".into(),
+                    });
+                }
+                self.access = Some(crate::AccessModel::apply(self.access.as_ref(), doc)?);
                 Ok((done(self), None))
             }
             _ if merges == 1 => self.merge(b, epoch).map(|(r, m)| (r, Some(m))),

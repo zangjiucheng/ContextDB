@@ -11,7 +11,9 @@
 //! Revision and rule identity is global (SPEC §6.1 contract 5, ADR 0013
 //! §11a): a branch that stages a revision or rule identical to one created
 //! on another branch imports that object instead of allocating a new id.
-use crate::{CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink};
+use crate::{
+    CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink, access::AccessState,
+};
 #[path = "kernel_merge.rs"]
 mod merge;
 #[path = "kernel_view.rs"]
@@ -112,6 +114,8 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     rule_ids: HashMap<RuleKey, u32>,
     /// Every sync point, in creation order (ADR 0013 §6.1).
     syncs: Vec<SyncPoint<M, S>>,
+    /// The committed access document (ADR 0017 §4), global.
+    access: Option<Arc<AccessState>>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -191,7 +195,12 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             revision_ids,
             rule_ids,
             syncs: Vec::new(),
+            access: None,
         }
+    }
+    /// The committed access document and its ids, if any (ADR 0017 §4).
+    pub fn access(&self) -> Option<&AccessState> {
+        self.access.as_deref()
     }
     pub fn epoch(&self) -> Epoch {
         self.epoch
@@ -267,7 +276,12 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 name: branch.info.name.clone(),
             });
         }
-        let sole = |op: &Op| matches!(op, Op::CreateBranch { .. } | Op::ArchiveBranch { .. });
+        let sole = |op: &Op| {
+            matches!(
+                op,
+                Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::SetAccess { .. }
+            )
+        };
         if let Some(op) = b.ops.iter().find(|op| sole(op))
             && b.ops.len() != 1
         {
@@ -303,6 +317,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
             Some(Op::ArchiveBranch { name }) if b.ops.len() == 1 => {
                 self.archive_branch(b.branch, name, next, publish)?
+            }
+            Some(Op::SetAccess { doc }) if b.ops.len() == 1 => {
+                self.set_access(b, doc, next, publish)?
             }
             _ if merges == 1 => {
                 let (result, r) = self.merge(b, next, publish)?;
@@ -366,6 +383,35 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         });
         self.branches.push(child);
         self.names.insert(name.into(), BranchId(id));
+        Ok(Self::empty_result(epoch))
+    }
+    /// `SetAccess` (ADR 0017 §4.1): admin only, on `main`, never dry-run;
+    /// the document is validated and its new names get ids.
+    fn set_access(
+        &mut self,
+        b: &Batch,
+        doc: &AccessDoc,
+        epoch: Epoch,
+        publish: bool,
+    ) -> Result<CommitResult, TxError> {
+        if b.channel != Channel::Admin {
+            return Err(TxError::ChannelRestricted {
+                op: "SetAccess".into(),
+                channel: b.channel,
+            });
+        }
+        if b.branch != MAIN {
+            return Err(TxError::InvalidAccess {
+                reason: "SetAccess is committed on main".into(),
+            });
+        }
+        if !publish {
+            return Err(TxError::InvalidAccess {
+                reason: "SetAccess cannot be dry-run".into(),
+            });
+        }
+        let state = AccessState::apply(self.access.as_deref(), doc)?;
+        self.access = Some(Arc::new(state));
         Ok(Self::empty_result(epoch))
     }
     fn archive_branch(
@@ -637,6 +683,8 @@ pub struct KernelSnapshot {
     /// `(src, dst, epoch, state)`; a pruned sync point's state is
     /// [`PRUNED`].
     pub syncs: Vec<(BranchId, BranchId, Epoch, u32)>,
+    /// The access document and its ids (ADR 0017 §4).
+    pub access: Option<AccessState>,
 }
 
 impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
@@ -672,6 +720,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             states,
             branches,
             syncs,
+            access: self.access.as_deref().cloned(),
         }
     }
     /// Rebuilds a kernel from [`Self::export`]. Each state is rebuilt from
@@ -801,6 +850,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             revision_ids,
             rule_ids,
             syncs,
+            access: match s.access {
+                Some(a) => {
+                    let complete = crate::access::validate(&a.doc).is_ok()
+                        && a.doc.principals.keys().all(|n| a.ids.contains_key(n));
+                    if !complete {
+                        return Err(bad());
+                    }
+                    Some(Arc::new(a))
+                }
+                None => None,
+            },
         })
     }
 }
@@ -920,7 +980,8 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
             | Op::SetPolicy { .. }
             | Op::ObserverWatermark { .. }
             | Op::CreateBranch { .. }
-            | Op::ArchiveBranch { .. } => op.clone(),
+            | Op::ArchiveBranch { .. }
+            | Op::SetAccess { .. } => op.clone(),
         })
         .collect();
     Batch {

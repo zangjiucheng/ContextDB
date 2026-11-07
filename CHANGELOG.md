@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P9 milestone 2: the access document** (ADR 0017 §3.1, §4). **op_log format 5**: existing stores need `ctx migrate <dir>` (a header-only rewrite; batches and frame checksums stay byte-identical, so certificates keep their log links).
+  - **`SetAccess`** commits the access document: admin only, the sole op of its batch, on `main`, global to every branch, never in a dry run. The kernel refuses a document breaking ADR 0017 §4.2 with `InvalidAccess{reason}`; the daemon also requires the owner entry to carry its own uid.
+  - **Principal ids** are assigned from 16 upwards in order of first appearance and never reused; a name keeps its first id, the owner's entry maps to 0, and a name cannot switch between owner and principal.
+  - **`ctx access apply <dir> [--file .contextdb/access.toml]`**, **`ctx access show <dir>`** and **`ctx access check <dir> <principal> <key> [--branch B]`** (admin). `check` prints `Authorized` and the step that decided it (owner, logical owner, membership, role, ACL); dir grants depend on the branch's `dirs`.
+  - **`Authorized(p, l, b)`** is implemented in the kernel and as an independent decision table in the oracle; they agree on random documents and logicals.
+  - **No deployment enters multi-user mode yet.** A committed document maps other OS users only when the daemon is started with multi-user mode enabled, which only tests do until reads and writes are authorised (milestones 3–4). `ctx access show` says whether the mapping is in effect.
+  - Snapshots of format 5 carry the document; older snapshots are ignored and replay starts earlier. EventLog v3 carries `SetAccess` (tag 20).
 - **P9 milestone 1: principals and the transport** (ADR 0017 §3; T58, T98, T99). Protocol 7; clients and `ctxd` upgrade together.
   - **The socket layout changes.** The agent socket is now in `run/shared/` and the observer and admin sockets in `run/private/`. A public `run/shared/endpoint` record holds only the protocol, the socket name and the owner's uid. Clients find sockets through the lease as before.
   - **Files in the data directory are private.** The store and the outbox create directories 0700 and files 0600; `ctxd`, `ctx`, `ctx-hook` and `ctx-mcp` set `umask 077`; `ctx service install` writes `Umask` 077 into the launchd plist and the systemd unit.

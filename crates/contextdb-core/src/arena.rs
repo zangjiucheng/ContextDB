@@ -138,6 +138,9 @@ impl LogicalArena {
     pub fn export_key(&self, l: LogicalId) -> String {
         self.key(l.index()).to_owned()
     }
+    pub fn owner(&self, l: LogicalId) -> PrincipalId {
+        self.owner[l.index()]
+    }
     pub fn scope_lane(&self, l: LogicalId) -> &str {
         &self.scopes[self.scope[l.index()] as usize]
     }

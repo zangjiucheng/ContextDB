@@ -1,5 +1,6 @@
 //! `ctx`: operator commands over a durable store (SPEC §5 P2, ADR 0006) and,
 //! with a running `ctxd`, admin commands over its socket (ADR 0008 §8.3).
+mod access;
 mod anchors;
 mod daemon;
 mod p4;
@@ -72,6 +73,11 @@ Hooks and gating (P4, ADR 0010):
   ctx check <dir> --all                exit 1 if any head is STALE or CONFLICTED
   ctx policy show|apply <dir> [--file .contextdb/policy.toml]
                                        commit a policy (admin; kernel-enforced)
+  ctx access apply <dir> [--file .contextdb/access.toml]
+                                       commit the access document (admin, P9)
+  ctx access show <dir>                the committed document and principal ids
+  ctx access check <dir> <principal> <key> [--branch B]
+                                       Authorized for one record, and the step
   ctx gating apply <dir> [--file .contextdb/gating.toml]
                                        compile gating for the hooks
   ctx hooks install|uninstall --harness claude|codex|opencode [--project ROOT]
@@ -221,6 +227,12 @@ fn run(args: &[String]) -> Result<u8, String> {
             let mut rest = vec![sub];
             rest.extend(args.iter().skip(3).cloned());
             p4::policy(dir(2)?, &rest)
+        }
+        Some("access") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            let mut rest = vec![sub];
+            rest.extend(args.iter().skip(3).cloned());
+            access::run(dir(2)?, &rest)
         }
         Some("gating") => {
             let sub = args.get(1).cloned().unwrap_or_default();

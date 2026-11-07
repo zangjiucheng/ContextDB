@@ -28,8 +28,14 @@ The encoder emits lowercase hex. Binary layout:
   (RecordValidation's fields, then `meta: Option<[u8;32]>`, `if_absent: bool`)
   and tag 19 `ResolveArtifact4` (`id`, then `note: Option<[u8;32]>`). They are
   used only when a new field is set: tag 18 with `meta = None` and
-  `if_absent = false` is rejected, as is tag 19 with `note = None`. Each line
-  carries the lowest version that can represent it.
+  `if_absent = false` is rejected, as is tag 19 with `note = None`. v3 (P9,
+  ADR 0017 §10) adds tag 20 `SetAccess` (`doc: AccessDoc`: `version: u16`,
+  `owner`, `principals: map<name, u32>`, `groups: map<name, set<name>>`,
+  `lanes: map<name, LaneEntry>`, `code_lanes`, `personal_egress: bool`,
+  `default_lane`; `LaneEntry` is `members`, `writers`, `curators` (sets of
+  strings), `egress: bool`, `grants: map<string, set<string>>`,
+  `deny: set<(string, string)>`). Each line carries the lowest version that
+  can represent it.
 - Edge tags: Ref=0, Pin=1, Sem=2, Cur=3. Channel: Agent=0, Observer=1, Admin=2.
 - RecordKind: Fact, Assumption, Decision, Plan, Convention, Procedure, Artifact,
   Evidence, CodeAnchor, Summary (0–9).

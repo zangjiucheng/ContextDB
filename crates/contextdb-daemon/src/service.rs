@@ -327,6 +327,8 @@ pub struct Service<D: Durability> {
     /// The uid → principal mapping (P9, ADR 0017 §3); empty in
     /// single-user mode.
     principals: std::sync::RwLock<Arc<crate::principals::PrincipalMap>>,
+    /// Set when multi-user mode may be entered (P9 milestone 2: tests only).
+    multi_user: std::sync::OnceLock<crate::principals::MultiUser>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -726,6 +728,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             change_waiters: std::sync::atomic::AtomicUsize::new(0),
             validators: std::sync::OnceLock::new(),
             principals: std::sync::RwLock::new(Arc::default()),
+            multi_user: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
         let broken = service.replay(events);
@@ -1184,6 +1187,37 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     return err("ChannelRestricted", "ctx mirror requires the admin socket");
                 }
                 self.mirror(action, &snap)
+            }
+            Request::SetAccess { doc, client_txn_id } => {
+                drop(snap);
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx access requires the admin socket");
+                }
+                let batch = Batch::new(vec![Op::SetAccess { doc: Box::new(doc) }]);
+                self.commit(id, Vec::new(), batch, client_txn_id)
+            }
+            Request::AccessShow => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx access requires the admin socket");
+                }
+                let access = snap.kernel.access();
+                Response::Access {
+                    doc: access.map(|a| a.doc.clone()),
+                    ids: access
+                        .map(|a| a.ids.iter().map(|(n, p)| (n.clone(), *p)).collect())
+                        .unwrap_or_default(),
+                    multi_user: self.principals().is_multi_user(),
+                }
+            }
+            Request::AccessCheck {
+                principal,
+                key,
+                branch,
+            } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx access requires the admin socket");
+                }
+                self.access_check(&snap, &principal, &key, branch.as_deref())
             }
             Request::Reindex { target } => {
                 if id.channel != Channel::Admin {
@@ -1918,6 +1952,121 @@ impl<D: Durability + Clone + 'static> Service<D> {
         Ok((session_id, session, None, true))
     }
     /// The current uid → principal mapping (ADR 0017 §3.3).
+    /// Lets this service enter multi-user mode (ADR 0017 §3.2): without it
+    /// a committed access document is kept but no other uid is mapped.
+    pub fn enable_multi_user(&self, fs: crate::principals::MultiUser) {
+        let _ = self.multi_user.set(fs);
+    }
+    /// The daemon's checks of a `SetAccess` before the kernel's: the owner
+    /// entry carries the daemon's uid, and with multi-user mode enabled the
+    /// file-system rules hold for every uid it maps.
+    fn access_precheck(&self, doc: &AccessDoc) -> Result<(), Response> {
+        let uid = contextdb_proto::fsguard::current_uid();
+        if doc.principals.get(&doc.owner) != Some(&uid) {
+            return Err(err(
+                "InvalidAccess",
+                format!(
+                    "the owner entry {} must carry the daemon's uid {uid}",
+                    doc.owner
+                ),
+            ));
+        }
+        let others: Vec<u32> = (doc.principals.iter())
+            .filter(|(n, _)| **n != doc.owner)
+            .map(|(_, u)| *u)
+            .collect();
+        if let Some(fs) = self.multi_user.get()
+            && !others.is_empty()
+        {
+            let v = fs.check(others.into_iter());
+            if !v.is_empty() {
+                let list: Vec<String> = v.iter().map(|v| v.to_string()).collect();
+                return Err(err(
+                    "InvalidAccess",
+                    format!("multi-user mode needs: {}", list.join("; ")),
+                ));
+            }
+        }
+        Ok(())
+    }
+    /// Applies the committed access document's mapping (at start and after
+    /// every `SetAccess`). Without multi-user mode enabled nothing changes.
+    /// On any failure the daemon falls back to single-user mode (fail closed).
+    pub fn apply_access(&self) -> Result<(), Vec<contextdb_proto::fsguard::Violation>> {
+        let Some(fs) = self.multi_user.get() else {
+            return Ok(());
+        };
+        let snap = self.actor.snapshot();
+        let result = crate::principals::map_of(snap.kernel.access(), fs.owner_uid)
+            .map_err(|e| {
+                vec![contextdb_proto::fsguard::Violation::Io {
+                    path: fs.dir.clone(),
+                    error: e,
+                }]
+            })
+            .and_then(|map| {
+                if map.is_multi_user() {
+                    let v = fs.check(map.uids());
+                    if !v.is_empty() {
+                        return Err(v);
+                    }
+                }
+                Ok(map)
+            });
+        let (map, out) = match result {
+            Ok(map) => (map, Ok(())),
+            Err(v) => (crate::principals::PrincipalMap::default(), Err(v)),
+        };
+        let multi = map.is_multi_user();
+        self.set_principals(map);
+        fs.chmod(multi).map_err(|v| vec![v])?;
+        out
+    }
+    /// `ctx access check` (ADR 0017 §4.1).
+    fn access_check(
+        &self,
+        snap: &Snapshot<D>,
+        principal: &str,
+        key: &str,
+        branch: Option<&str>,
+    ) -> Response {
+        let access = snap.kernel.access();
+        let p = match access.and_then(|a| a.principal_of_name(principal)) {
+            Some(p) => p,
+            None => return err("UnknownPrincipal", principal.to_owned()),
+        };
+        let b = match branch {
+            None => MAIN,
+            Some(name) => match snap.kernel.branch_by_name(name) {
+                Some(b) => b,
+                None => return err("UnknownBranch", name.to_owned()),
+            },
+        };
+        let view = snap.view(b);
+        let Some(l) = view.logical_by_key(key) else {
+            return err("UnknownRef", key.to_owned());
+        };
+        let (Some((_, _, lane)), Some(owner)) = (view.logical_info(l), view.logical_owner(l))
+        else {
+            return err("UnknownRef", key.to_owned());
+        };
+        let dirs = view.metadata(l).unwrap_or_default().dirs;
+        let d = contextdb_core::access::authorized(
+            access,
+            p,
+            &contextdb_core::access::LogicalFacts {
+                key,
+                lane: &lane,
+                owner,
+                dirs: &dirs,
+            },
+        );
+        Response::AccessDecision {
+            principal: p,
+            allowed: d.allowed,
+            step: d.step.name().to_owned(),
+        }
+    }
     pub fn principals(&self) -> Arc<crate::principals::PrincipalMap> {
         self.principals.read().expect("principals").clone()
     }
@@ -1995,6 +2144,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         })
     }
     /// Stamps the transport identity, assigns a client_txn_id and commits.
+    /// A `SetAccess` is checked against the daemon first (its owner entry's
+    /// uid, and the file-system rules if multi-user mode may be entered),
+    /// and its mapping is applied once it is durable (ADR 0017 §3.2, §4.1).
     pub(crate) fn commit(
         &self,
         id: Identity,
@@ -2002,11 +2154,26 @@ impl<D: Durability + Clone + 'static> Service<D> {
         mut batch: Batch,
         txn: Option<[u8; 16]>,
     ) -> Response {
+        let access = (batch.ops.iter()).find_map(|op| match op {
+            Op::SetAccess { doc } => Some(doc),
+            _ => None,
+        });
+        let sets_access = access.is_some();
+        if let Some(doc) = access
+            && let Err(r) = self.access_precheck(doc)
+        {
+            return r;
+        }
         batch.channel = id.channel;
         batch.principal = id.principal;
         batch.client_txn_id = Some(txn.unwrap_or_else(random_id));
         match self.actor.write(blobs, batch) {
-            Ok(Ok(result)) => Response::Committed { result },
+            Ok(Ok(result)) => {
+                if sets_access && let Err(v) = self.apply_access() {
+                    eprintln!("ctxd: access document committed but not applied: {v:?}");
+                }
+                Response::Committed { result }
+            }
             Ok(Err(e)) => {
                 let (c, d) = store_code(&e);
                 err(&c, d)
@@ -2035,10 +2202,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if ops.iter().any(|op| {
             matches!(
                 op,
-                Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. }
+                Op::CreateBranch { .. }
+                    | Op::ArchiveBranch { .. }
+                    | Op::Merge { .. }
+                    | Op::SetAccess { .. }
             )
         }) {
-            return err("InvalidRequest", "branch ops have their own requests");
+            return err(
+                "InvalidRequest",
+                "branch ops and SetAccess have their own requests",
+            );
         }
         let (branch, cert) = {
             let s = s.lock().expect("session");

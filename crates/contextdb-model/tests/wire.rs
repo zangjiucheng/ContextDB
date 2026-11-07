@@ -107,7 +107,7 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
 #[test]
 fn log_rejects_unknown_version_bad_hex_and_unbounded_lengths() {
     assert_eq!(
-        EventLog::from_jsonl("{\"version\":3,\"batch_hex\":\"\"}"),
+        EventLog::from_jsonl("{\"version\":4,\"batch_hex\":\"\"}"),
         Err(WireError::UnknownVersion)
     );
     for line in [

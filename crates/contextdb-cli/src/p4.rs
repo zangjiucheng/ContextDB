@@ -22,7 +22,7 @@ pub const EXIT_DENY: u8 = 1;
 pub const EXIT_ERROR: u8 = 2;
 pub const EXIT_UNAVAILABLE: u8 = 3;
 
-fn connect(dir: &Path, socket: &str) -> Result<Client, String> {
+pub(crate) fn connect(dir: &Path, socket: &str) -> Result<Client, String> {
     let l = lease::read_lease(&dir.join("ctxd.lease"))
         .filter(lease::Lease::is_live)
         .ok_or_else(|| format!("ctxd is not running for {}", dir.display()))?;
@@ -33,14 +33,14 @@ fn connect(dir: &Path, socket: &str) -> Result<Client, String> {
         .ok_or_else(|| format!("lease names no {socket}"))?;
     Client::connect_timeout(path, Duration::from_secs(30)).map_err(|e| format!("connect: {e}"))
 }
-fn call(c: &mut Client, r: Request) -> Result<Envelope, String> {
+pub(crate) fn call(c: &mut Client, r: Request) -> Result<Envelope, String> {
     let env = c.call(&r).map_err(|e| format!("{e:?}"))?;
     if let Response::Error { code, detail } = &env.response {
         return Err(format!("{code}: {detail}"));
     }
     Ok(env)
 }
-fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+pub(crate) fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
@@ -59,10 +59,10 @@ fn unhex16(s: &str) -> Option<[u8; 16]> {
     }
     (s.len() == 32).then_some(out)
 }
-fn table(src: &str) -> Result<toml::Table, String> {
+pub(crate) fn table(src: &str) -> Result<toml::Table, String> {
     src.parse::<toml::Table>().map_err(|e| format!("toml: {e}"))
 }
-fn only_keys(t: &toml::Table, allowed: &[&str], what: &str) -> Result<(), String> {
+pub(crate) fn only_keys(t: &toml::Table, allowed: &[&str], what: &str) -> Result<(), String> {
     match t.keys().find(|k| !allowed.contains(&k.as_str())) {
         Some(k) => Err(format!("{what}: unknown key {k}")),
         None => Ok(()),

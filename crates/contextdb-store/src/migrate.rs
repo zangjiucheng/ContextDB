@@ -100,7 +100,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
                 changed,
             });
         }
-        Some(f @ (0..=3)) => f,
+        Some(f @ (0..=4)) => f,
         Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
         Some(f) => return Err(StoreError::FormatUnsupported(f)),
         None => return Err(StoreError::Io("no log to migrate".into())),
@@ -367,6 +367,14 @@ pub fn write_format3(
     batches: &[Batch],
 ) -> Result<u64, StoreError> {
     write_format(disk, dir, batches, 3)
+}
+/// Test and tooling support: writes a format-4 log (P7/P8 layout).
+pub fn write_format4(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 4)
 }
 /// Test and tooling support: writes a format-1 log (P2 layout, no group header).
 pub fn write_format1(

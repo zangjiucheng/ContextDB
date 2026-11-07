@@ -405,6 +405,10 @@ uid = 502
 
 - **The op.** `SetAccess{doc: AccessDoc}`: admin only, **sole op in its
   batch**, inline canonical JSON (like `PolicyDoc`, SPEC §6.1 contract 8).
+  Implementation note (milestone 2): the canonical form also names the
+  owner's entry (`owner`), filled by `ctx access apply` from the caller's
+  uid and checked by the daemon; a name never switches between the owner
+  and another principal (gate P9).
 - **Global.** It applies to every branch from its epoch (an SD19
   exception, §12). Its frame is committed on `main`. It cannot appear in
   a WHAT_IF or a merge, and `SetPolicy` stays per branch.
@@ -1015,7 +1019,11 @@ says "optional signature: deferred, ADR 0017 §9".
 
 - **op_log format 5.** It adds `SetAccess` and `ShredContent`, with
   canonical op tags 20 and 21 (format 4 ended at 19). No older op changes,
-  and frame checksums exclude the header.
+  and frame checksums exclude the header. Implementation note (milestone 2): format
+  5 and `SetAccess` land first, with today's header-only `ctx migrate`;
+  the completion procedure below replaces it in milestone 6, whose open
+  check and rerun must also handle a format-5 store without the marker
+  that a milestone-2 build migrated (gate P9).
 - **`ctx migrate` 4 → 5** (offline, store owner). The log's format alone
   does not mean the migration is finished: the header switch is the first
   step, and the packs, projections and modes follow it. Today's `migrate`

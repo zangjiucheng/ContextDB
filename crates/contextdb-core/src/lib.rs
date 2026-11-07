@@ -7,6 +7,7 @@
 // Keep diagnostic assertions active in optimized paranoid builds as well.
 macro_rules! invariant_assert { ($($arg:tt)*) => { if cfg!(any(debug_assertions, feature="paranoid")) { assert!($($arg)*); } }; }
 pub(crate) use invariant_assert;
+pub mod access;
 mod arena;
 mod cert;
 pub use cert::{HistoryUnavailable, IssueRequest, LogLink};
@@ -370,6 +371,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.logicals.len()
     }
     /// `(key, kind, scope_lane)` of a logical.
+    /// The principal that created the logical (ADR 0017 §4.4 step 1).
+    pub fn logical_owner(&self, l: LogicalId) -> Option<PrincipalId> {
+        (l.index() < self.logicals.len()).then(|| self.logicals.owner(l))
+    }
     pub fn logical_info(&self, l: LogicalId) -> Option<(String, RecordKind, String)> {
         (l.index() < self.logicals.len()).then(|| {
             (

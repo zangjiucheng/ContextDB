@@ -3,7 +3,7 @@
 //! branch table and the sync points. A snapshot is only an accelerator;
 //! anything that does not match the log is ignored.
 use crate::durability::Durability;
-use contextdb_core::{BranchInfo, Import, KernelSnapshot, KernelState};
+use contextdb_core::{BranchInfo, Import, KernelSnapshot, KernelState, access::AccessState};
 use contextdb_model::*;
 use std::{io, path::Path};
 
@@ -103,6 +103,15 @@ fn encode(k: &KernelSnapshot) -> Vec<u8> {
         epoch.encode(&mut o);
         state.encode(&mut o);
     }
+    // Format 5 (ADR 0017 §4): the access document and its ids.
+    match &k.access {
+        None => 0u8.encode(&mut o),
+        Some(a) => {
+            1u8.encode(&mut o);
+            a.doc.encode(&mut o);
+            a.ids.encode(&mut o);
+        }
+    }
     o
 }
 fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
@@ -157,6 +166,15 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
             u32::decode(&mut i)?,
         ));
     }
+    let access = match u8::decode(&mut i)? {
+        0 => None,
+        1 => {
+            let doc = AccessDoc::decode(&mut i)?;
+            let ids: std::collections::BTreeMap<String, PrincipalId> = Wire::decode(&mut i)?;
+            Some(AccessState { doc, ids })
+        }
+        _ => return Err(WireError::InvalidEncoding),
+    };
     if i.remaining() != 0 {
         return Err(WireError::TrailingBytes);
     }
@@ -165,6 +183,7 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
         states,
         branches,
         syncs,
+        access,
     })
 }
 /// The accepted snapshot (if any) and the names of rejected snapshot files.

@@ -168,7 +168,10 @@ impl Resolver<'_, '_> {
                 source: *source,
             },
             // Branch ops belong to the multi-branch kernel, never to one branch.
-            Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+            Op::CreateBranch { .. }
+            | Op::ArchiveBranch { .. }
+            | Op::Merge { .. }
+            | Op::SetAccess { .. } => {
                 return Err(TxError::UnknownBranch);
             }
         })
@@ -687,7 +690,10 @@ pub(crate) fn apply<S: StatsSink>(
                 }
             }
         }
-        Op::CreateBranch { .. } | Op::ArchiveBranch { .. } | Op::Merge { .. } => {
+        Op::CreateBranch { .. }
+        | Op::ArchiveBranch { .. }
+        | Op::Merge { .. }
+        | Op::SetAccess { .. } => {
             unreachable!("rejected by the resolver")
         }
     }

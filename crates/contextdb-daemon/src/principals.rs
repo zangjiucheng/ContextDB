@@ -2,9 +2,10 @@
 //!
 //! The store owner is the uid the daemon runs as: principals 0, 1 and 2 and
 //! every other reserved id act for it. Other principals come from the
-//! committed access document (milestone 2); until one is mapped the daemon
+//! committed access document ([`map_of`]); until one is mapped the daemon
 //! is in single-user mode and behaves as in P8 (T106).
 use contextdb_model::PrincipalId;
+use contextdb_proto::fsguard::{self, Violation};
 use std::collections::BTreeMap;
 
 /// The uid → principal mapping of the current access document.
@@ -59,6 +60,73 @@ impl PrincipalMap {
     /// The mapped non-owner uids.
     pub fn uids(&self) -> impl Iterator<Item = u32> + '_ {
         self.by_uid.keys().copied()
+    }
+}
+
+/// The mapping of the committed access document (ADR 0017 §3.1): every
+/// listed principal but the owner, whose entry must carry the daemon's uid.
+pub fn map_of(
+    access: Option<&contextdb_core::access::AccessState>,
+    owner_uid: u32,
+) -> Result<PrincipalMap, String> {
+    let Some(a) = access else {
+        return Ok(PrincipalMap::default());
+    };
+    if a.doc.principals.get(&a.doc.owner) != Some(&owner_uid) {
+        return Err(format!(
+            "the owner entry {} does not carry the daemon's uid {owner_uid}",
+            a.doc.owner
+        ));
+    }
+    PrincipalMap::new(
+        Some(&a.doc.owner),
+        owner_uid,
+        a.mapped().map(|(n, u, p)| (n.to_owned(), u, p)),
+    )
+}
+
+/// The file-system side of multi-user mode (ADR 0017 §3.2): the daemon
+/// gives the service one when multi-user mode may be entered.
+#[derive(Clone, Debug)]
+pub struct MultiUser {
+    pub dir: std::path::PathBuf,
+    /// The socket directory.
+    pub run: std::path::PathBuf,
+    pub agent_socket: std::path::PathBuf,
+    pub owner_uid: u32,
+}
+impl MultiUser {
+    /// The rules a map with other principals needs: the sockets inside
+    /// `<data>`, every entry owned by the owner with private modes and no
+    /// ACL, safe ancestors, and each uid able to search down to the socket.
+    pub fn check(&self, uids: impl Iterator<Item = u32>) -> Vec<Violation> {
+        if !self.run.starts_with(&self.dir) {
+            return vec![Violation::SocketsOutsideData {
+                path: self.run.clone(),
+            }];
+        }
+        let mut v = fsguard::walk(&self.dir, self.owner_uid, 32);
+        if let Err(a) = fsguard::check_ancestors(&self.dir, self.owner_uid) {
+            v.push(a);
+        }
+        let shared = self.agent_socket.parent().unwrap_or(&self.dir);
+        for u in uids {
+            if let Err(e) = fsguard::check_searchable(shared, u) {
+                v.push(e);
+            }
+        }
+        v
+    }
+    /// The agent socket's mode: 0666 with other principals, else 0600.
+    pub fn chmod(&self, multi: bool) -> Result<(), Violation> {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if multi { 0o666 } else { 0o600 };
+        std::fs::set_permissions(&self.agent_socket, std::fs::Permissions::from_mode(mode)).map_err(
+            |e| Violation::Io {
+                path: self.agent_socket.clone(),
+                error: e.to_string(),
+            },
+        )
     }
 }
 
