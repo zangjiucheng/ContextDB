@@ -81,6 +81,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             },
             (None, None) => MAIN,
         };
+        crate::redact::note_branch(b);
         drop(snap);
         let max = match max_items {
             0 => DEFAULT_ITEMS,

@@ -112,10 +112,10 @@ impl Handoff {
     }
 }
 impl<D: Durability + Clone + 'static> Service<D> {
-    /// May principal `p` read `logical` on `branch`? Every principal may
-    /// until per-lane authorisation lands (ADR 0017 §4.4, milestone 3).
-    pub(crate) fn may_read(&self, _p: PrincipalId, _logical: LogicalId, _branch: BranchId) -> bool {
-        true
+    /// May principal `p` read `logical` on `branch`, under the current
+    /// access document (ADR 0017 §3.4, §4.4)?
+    pub(crate) fn may_read(&self, p: PrincipalId, logical: LogicalId, branch: BranchId) -> bool {
+        self.actor.snapshot().view(branch).authorizes(p, logical)
     }
     fn handoff_unavailable(&self) -> Option<Response> {
         self.handoffs

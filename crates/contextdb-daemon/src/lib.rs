@@ -41,6 +41,9 @@ pub mod packing;
 pub mod principals;
 /// Recall rank fusion (P8, ADR 0016 §3.2).
 pub mod ranking;
+/// The single redaction point (P9, ADR 0017 §5).
+#[cfg(not(loom))]
+pub mod redact;
 #[cfg(not(loom))]
 pub use contextdb_proto::proto;
 #[cfg(not(loom))]

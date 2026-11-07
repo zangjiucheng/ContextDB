@@ -9,6 +9,15 @@
 //!   payloads are decoded descriptors.
 //! - The server binds 127.0.0.1 only, answers GET only, and rejects any
 //!   `Host` other than its own (DNS rebinding); it never writes anything.
+//! - While the access document maps principals other than the store owner
+//!   (ADR 0017 §5.8, F9), every `/api/` request needs the launch token: it
+//!   is printed once in the URL fragment, kept by the page in
+//!   `sessionStorage` and sent as `Authorization: Bearer`, never as a
+//!   cookie; a foreign `Origin` is refused. Other local users can reach
+//!   127.0.0.1, and the viewer shows the whole store (it replays the
+//!   op_log, which only the store owner can read).
+//! - Abstracts come from `recall.sqlite` only while no access document
+//!   exists; after that the panel reads them live from `ctxd`.
 mod graph;
 
 use contextdb_model::*;
@@ -30,8 +39,16 @@ struct State {
     dir: PathBuf,
     port: u16,
     cache: Mutex<Option<(graph::Fingerprint, Arc<graph::Snapshot>)>>,
+    /// The launch token, in multi-user mode (F9).
+    token: Option<String>,
 }
 impl State {
+    /// Whether an access document has been committed (ADR 0017 §5.8: no
+    /// abstracts from `recall.sqlite` after that).
+    fn has_access_doc(&self) -> bool {
+        self.snapshot()
+            .map_or(true, |s| s.kernel.access().is_some())
+    }
     /// The current snapshot, replayed again only when the op_log changed.
     fn snapshot(&self) -> Result<Arc<graph::Snapshot>, String> {
         let fp = graph::fingerprint(&self.dir);
@@ -148,6 +165,19 @@ fn with_abstracts(dir: &Path, g: &mut Value) {
         }
     }
 }
+/// A fresh launch token: 32 random bytes, hex.
+fn token() -> Result<String, String> {
+    use std::io::Read;
+    let mut b = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .map_err(|e| format!("/dev/urandom: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+/// Constant-time equality, so the token's bytes do not leak by timing.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\
@@ -195,17 +225,22 @@ fn handle(state: &State, mut stream: TcpStream) {
     if reader.read_line(&mut request).is_err() {
         return;
     }
-    let mut host = None;
+    let (mut host, mut origin, mut auth) = (None, None, None);
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => break,
             Ok(_) if line == "\r\n" || line == "\n" => break,
             Ok(_) => {
-                if let Some((k, v)) = line.split_once(':')
-                    && k.eq_ignore_ascii_case("host")
-                {
-                    host = Some(v.trim().to_owned());
+                if let Some((k, v)) = line.split_once(':') {
+                    let v = Some(v.trim().to_owned());
+                    if k.eq_ignore_ascii_case("host") {
+                        host = v;
+                    } else if k.eq_ignore_ascii_case("origin") {
+                        origin = v;
+                    } else if k.eq_ignore_ascii_case("authorization") {
+                        auth = v;
+                    }
                 }
             }
         }
@@ -235,6 +270,34 @@ fn handle(state: &State, mut stream: TcpStream) {
         return;
     }
     let path = target.split('?').next().unwrap_or("");
+    if let Some(token) = &state.token
+        && path.starts_with("/api/")
+    {
+        let own = allowed
+            .iter()
+            .any(|a| origin.as_deref() == Some(&format!("http://{a}")));
+        if origin.is_some() && !own {
+            respond(
+                &mut stream,
+                "403 Forbidden",
+                "text/plain",
+                b"foreign origin",
+            );
+            return;
+        }
+        let sent = auth.as_deref().and_then(|a| a.strip_prefix("Bearer "));
+        if !sent.is_some_and(|t| same(t.as_bytes(), token.as_bytes())) {
+            respond(
+                &mut stream,
+                "401 Unauthorized",
+                "application/json",
+                json!({ "error": "the launch token is required: open the URL ctx ui printed" })
+                    .to_string()
+                    .as_bytes(),
+            );
+            return;
+        }
+    }
     match path {
         "/" => respond(
             &mut stream,
@@ -265,7 +328,9 @@ fn handle(state: &State, mut stream: TcpStream) {
                 .snapshot()
                 .and_then(|s| s.graph(branch_param(target)))
                 .map(|mut g| {
-                    with_abstracts(&state.dir, &mut g);
+                    if state.token.is_none() && !state.has_access_doc() {
+                        with_abstracts(&state.dir, &mut g);
+                    }
                     g
                 }),
         ),
@@ -369,16 +434,105 @@ pub fn run(args: &[String]) -> Result<u8, String> {
             format!("cannot listen on 127.0.0.1:{lo}-{hi}: {e} (try --port N)")
         }
     })?;
-    let state = Arc::new(State {
+    let mut state = State {
         dir,
         port,
         cache: Mutex::new(None),
-    });
-    state.snapshot()?;
-    println!("ctx ui: http://127.0.0.1:{port}/  (read-only; Ctrl-C to stop)");
+        token: None,
+    };
+    let snap = state.snapshot()?;
+    // Multi-user mode: other principals are mapped (ADR 0017 §5.8, F9).
+    let others = (snap.kernel.access()).is_some_and(|a| a.doc.principals.len() > 1);
+    drop(snap);
+    if others {
+        state.token = Some(token()?);
+    }
+    let state = Arc::new(state);
+    match &state.token {
+        Some(t) => println!(
+            "ctx ui: http://127.0.0.1:{port}/#token={t}  (read-only; the token is required while other principals are mapped; Ctrl-C to stop)"
+        ),
+        None => println!("ctx ui: http://127.0.0.1:{port}/  (read-only; Ctrl-C to stop)"),
+    }
     for stream in listener.incoming().flatten() {
         let state = state.clone();
         std::thread::spawn(move || handle(&state, stream));
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// One raw request to a viewer with `token`; returns the status line.
+    fn get(token: Option<&str>, path: &str, headers: &[String]) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = State {
+            dir: std::env::temp_dir().join("ctx-ui-token-test-none"),
+            port,
+            cache: Mutex::new(None),
+            token: token.map(str::to_owned),
+        };
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle(&state, stream);
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
+        for h in headers {
+            req.push_str(h);
+            req.push_str("\r\n");
+        }
+        req.push_str("\r\n");
+        c.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        server.join().unwrap();
+        out.lines().next().unwrap_or_default().to_owned()
+    }
+
+    /// ADR 0017 §5.8 (F9): with a launch token, `/api/` needs it as a
+    /// bearer header and refuses a foreign `Origin`; the static page does
+    /// not (it carries no data). Without a token nothing changes.
+    #[test]
+    fn the_launch_token_guards_the_api() {
+        let t = "00ff";
+        assert!(get(Some(t), "/api/epoch", &[]).contains("401"));
+        assert!(
+            get(
+                Some(t),
+                "/api/epoch",
+                &["Authorization: Bearer 00fe".into()]
+            )
+            .contains("401")
+        );
+        assert!(get(Some(t), "/api/epoch", &["Cookie: token=00ff".into()]).contains("401"));
+        assert!(
+            get(
+                Some(t),
+                "/api/epoch",
+                &["Authorization: Bearer 00ff".into()]
+            )
+            .contains("200")
+        );
+        let foreign = [
+            "Authorization: Bearer 00ff".to_owned(),
+            "Origin: http://evil.example".to_owned(),
+        ];
+        assert!(get(Some(t), "/api/epoch", &foreign).contains("403"));
+        assert!(get(Some(t), "/", &[]).contains("200"));
+        assert!(get(None, "/api/epoch", &[]).contains("200"));
+    }
+    #[test]
+    fn tokens_are_fresh_and_compared_whole() {
+        let (a, b) = (token().unwrap(), token().unwrap());
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b);
+        assert!(same(a.as_bytes(), a.as_bytes()));
+        assert!(!same(a.as_bytes(), b.as_bytes()));
+        assert!(!same(b"ab", b"abc"));
+    }
 }

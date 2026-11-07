@@ -29,8 +29,19 @@ const html = (tag, cls, text) => {
   return e;
 };
 
+// The launch token (multi-user mode, ADR 0017 §5.8): taken once from the
+// URL fragment, kept in sessionStorage, sent as a header, never a cookie.
+const TOKEN = (() => {
+  const m = location.hash.match(/token=([0-9a-f]+)/);
+  if (m) {
+    sessionStorage.setItem("ctx-ui-token", m[1]);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  return sessionStorage.getItem("ctx-ui-token");
+})();
 async function getJSON(url) {
-  const r = await fetch(url, { cache: "no-store" });
+  const headers = TOKEN ? { Authorization: "Bearer " + TOKEN } : {};
+  const r = await fetch(url, { cache: "no-store", headers });
   const v = await r.json();
   if (!r.ok) throw new Error(v.error || r.statusText);
   return v;

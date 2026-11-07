@@ -395,6 +395,7 @@ impl LayerColumns {
             match witness.iter().rev().flatten().next() {
                 Some(Witness::Base) => SemState::NotRequired,
                 Some(Witness::Rule(j)) => self.sem[j.index()],
+                Some(Witness::Redacted) => unreachable!("never computed"),
                 None => SemState::NotApplicable,
             }
         };

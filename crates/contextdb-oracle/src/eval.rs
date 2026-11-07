@@ -256,6 +256,7 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
                         |w| match w {
                             Witness::Base => SemState::NotRequired,
                             Witness::Rule(j) => sem[j.index()],
+                            Witness::Redacted => unreachable!("never computed"),
                         },
                     )
                 };

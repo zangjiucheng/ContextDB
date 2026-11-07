@@ -142,3 +142,90 @@ fn t99_every_mcp_tool_request_is_on_the_non_owner_allowlist() {
         }
     }
 }
+
+/// P9 milestone 3 (ADR 0017 §5.2, §5.4): a hidden key reads as
+/// `{key, status: UNAVAILABLE}` and nothing else; a redacted response
+/// carries its counts under `redacted`.
+#[test]
+fn hidden_reads_render_as_unavailable_with_counts() {
+    let s = service();
+    let admin = Identity {
+        channel: Channel::Admin,
+        principal: PrincipalId(0),
+    };
+    let all: std::collections::BTreeSet<String> = ["*members".to_owned()].into();
+    let doc = AccessDoc {
+        version: 1,
+        owner: "alice".into(),
+        principals: [
+            ("alice".to_owned(), contextdb_proto::fsguard::current_uid()),
+            ("bob".to_owned(), 4242),
+        ]
+        .into(),
+        groups: Default::default(),
+        lanes: [(
+            "repo".to_owned(),
+            LaneEntry {
+                members: all.clone(),
+                writers: all,
+                ..LaneEntry::owner_only()
+            },
+        )]
+        .into(),
+        code_lanes: LaneEntry::code_default(),
+        personal_egress: false,
+        default_lane: LaneEntry::owner_only(),
+    };
+    let r = s.handle(
+        admin,
+        Request::SetAccess {
+            doc,
+            client_txn_id: None,
+        },
+    );
+    assert!(matches!(r.response, Response::Committed { .. }));
+    let create = |key: &str, lane: &str, base: bool| Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Fact,
+        scope_lane: lane.into(),
+        content: content_hash(key.as_bytes()),
+        adopt_as_base: base,
+    };
+    let r = s.handle(
+        admin,
+        Request::Raw {
+            blobs: vec![b"pub/a".to_vec(), b"sec/s".to_vec()],
+            batch: Batch::new(vec![
+                create("pub/a", "repo", false),
+                create("sec/s", "secret", true),
+            ]),
+        },
+    );
+    assert!(matches!(r.response, Response::Committed { .. }), "{r:?}");
+    let r = s.handle(
+        admin,
+        Request::Raw {
+            blobs: Vec::new(),
+            batch: Batch::new(vec![Op::AddRule {
+                conclusion: RevRef::Existing(RevisionId(0)),
+                incidences: vec![(RevRef::Existing(RevisionId(1)), EdgeKind::Cur)],
+                enabled: true,
+            }]),
+        },
+    );
+    assert!(matches!(r.response, Response::Committed { .. }), "{r:?}");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut server = Server::new(Recording(s, log), "claude", "repo", "h");
+    let reply = tool(&mut server, "ctx_read", json!({ "target": "sec/s" }));
+    let out = &reply["result"]["structuredContent"];
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    assert_eq!(
+        out["item"],
+        json!({ "key": "sec/s", "status": "UNAVAILABLE" })
+    );
+    assert!(!reply.to_string().contains("secret"), "{reply}");
+    // WHY of pub/a: its only rule's premise is hidden.
+    let reply = tool(&mut server, "ctx_why", json!({ "target": "pub/a" }));
+    let out = &reply["result"]["structuredContent"];
+    assert_eq!(out["redacted"]["nodes"][0]["rules"], json!(1), "{reply}");
+}

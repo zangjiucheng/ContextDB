@@ -695,6 +695,7 @@ impl Hook {
                             items,
                             summaries,
                         },
+                    ..
                 }) = d.call(Request::Briefing {
                     binding: Some(self.binding(session)),
                     budget_chars: 1_500,

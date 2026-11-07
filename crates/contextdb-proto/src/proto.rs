@@ -1181,13 +1181,73 @@ pub enum Response {
         /// More items than `limit` matched.
         truncated: bool,
     },
+    /// A read, WHY, WHY_NOT or IMPACT of a logical the caller may not read
+    /// (ADR 0017 §5.2, §5.4): the target echoed as the caller sent it, and
+    /// nothing else.
+    Unavailable {
+        target: String,
+    },
 }
 /// Every response names the snapshot epoch it was computed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     pub epoch: Epoch,
     pub response: Response,
+    /// What redaction left out, for a principal other than the store owner
+    /// (ADR 0017 §5); `None` for the store owner, whose responses are never
+    /// filtered.
+    pub redaction: Option<Redaction>,
 }
+impl Envelope {
+    /// An unfiltered envelope (the store owner's, or a client's own).
+    pub fn new(epoch: Epoch, response: Response) -> Self {
+        Self {
+            epoch,
+            response,
+            redaction: None,
+        }
+    }
+}
+/// The counts a redacted response carries instead of what it left out
+/// (ADR 0017 §2.3, §5.4–§5.6). Names, ids and revisions are never in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Redaction {
+    /// Entries dropped from the response's lists (§5.5); for IMPACT, the
+    /// hidden supported dependants (§5.4).
+    pub redacted: u32,
+    /// IMPACT: the hidden reference-only dependants.
+    pub redacted_references: u32,
+    /// WHY / WHY_NOT: what was left out at each node shown (§5.4).
+    pub nodes: Vec<NodeRedaction>,
+    /// Each certificate in the response, by id, with the size of its
+    /// vector; the vector itself is withheld (§5.6).
+    pub vector_size: Vec<(ContentHash, u32)>,
+}
+/// What WHY or WHY_NOT left out at one shown revision (ADR 0017 §5.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeRedaction {
+    pub rev: RevisionId,
+    /// WHY_NOT: the failing rule this count belongs to; `None` for the node
+    /// itself.
+    pub rule: Option<RuleId>,
+    /// WHY: hidden premises of the witness rule and hidden references.
+    /// WHY_NOT: hidden failing incidences and vector entries of `rule`.
+    pub premises: u32,
+    /// Rules whose premises are all hidden (`redacted_rules`).
+    pub rules: u32,
+}
+wire_struct!(Redaction {
+    redacted,
+    redacted_references,
+    nodes,
+    vector_size
+});
+wire_struct!(NodeRedaction {
+    rev,
+    rule,
+    premises,
+    rules
+});
 
 wire_struct!(Dep { target, kind });
 wire_struct!(ValidatorInfo {
@@ -1254,7 +1314,11 @@ wire_struct!(Item {
     premises,
     body
 });
-wire_struct!(Envelope { epoch, response });
+wire_struct!(Envelope {
+    epoch,
+    response,
+    redaction
+});
 wire_struct!(NamedRead {
     key,
     agent,
@@ -2408,6 +2472,10 @@ impl Wire for Response {
                 allowed.encode(o);
                 step.encode(o);
             }
+            Self::Unavailable { target } => {
+                37u8.encode(o);
+                target.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2565,6 +2633,9 @@ impl Wire for Response {
                 principal: Wire::decode(i)?,
                 allowed: Wire::decode(i)?,
                 step: Wire::decode(i)?,
+            },
+            37 => Self::Unavailable {
+                target: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -3172,6 +3243,9 @@ mod tests {
                 allowed: false,
                 step: "acl".into(),
             },
+            Response::Unavailable {
+                target: "billing/notes".into(),
+            },
             Response::Mirror {
                 report: MirrorReport {
                     lines: vec!["exported".into()],
@@ -3226,6 +3300,17 @@ mod tests {
             let env = Envelope {
                 epoch: Epoch(1),
                 response: r,
+                redaction: Some(Redaction {
+                    redacted: 2,
+                    redacted_references: 1,
+                    nodes: vec![NodeRedaction {
+                        rev: RevisionId(3),
+                        rule: Some(RuleId(4)),
+                        premises: 5,
+                        rules: 6,
+                    }],
+                    vector_size: vec![([7; 32], 8)],
+                }),
             };
             let mut buf = Vec::new();
             write_response(&mut buf, &env).unwrap();

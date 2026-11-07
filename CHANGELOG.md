@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **P9 milestone 3: reads** (ADR 0017 §5; T17, T17b, T100, T101, S13-rows-e2e UNAVAILABLE; PROP15 read half). Protocol 7 gains the redacted shapes; clients and `ctxd` upgrade together.
+  - **One redaction point.** Every response to a principal other than the store owner passes through it. A response names only logicals that principal may read, with their revisions and rules. Hidden entries are dropped, or counted in the envelope's new `redaction` record: `redacted`, IMPACT's `redacted_references`, per-node WHY / WHY_NOT counts, and each certificate's `vector_size`. The store owner's responses are unchanged and carry no `redaction`.
+  - **Reads.** A hidden logical read by key (or WHY, WHY_NOT, IMPACT of one) answers `Unavailable{target}` with the target as sent, no payload, no ledger entry and no certificate. Recall skips hidden matches before they take a slot, so it returns `min(limit, readable eligible)` items; a scope naming a lane the principal cannot read returns nothing.
+  - **Inside readable items**, a witness rule with a hidden premise reads `Redacted`, and a hidden pinned premise in `SupersededPinnedPremise` reads `SupersededPinnedPremiseRedacted`.
+  - **Diff-shaped responses** (commit results, WhatIf, Diff, `ctx_changes`, `context_update`, merge reports, certificate diffs) drop hidden entries and count them. `TxnStatus` answers a non-owner only for its own transactions. `ctx_conflicts` lists a pair only if both sides are readable. Error details are withheld from non-owners (the code stays).
+  - **Certificates.** Issuance refuses an entry the principal cannot read (UNAVAILABLE). Validation re-checks every entry under the current access document, so a revocation makes earlier certificates and ledger reads `Denied`. A non-owner never receives a certificate's vector.
+  - **Handoffs** copy only the reads the acceptor may read; the rest are counted in `dropped_unauthorized`.
+  - **`ctx ui`** needs a launch token while the access document maps other principals: it prints `http://127.0.0.1:<port>/#token=…`, the page keeps the token in `sessionStorage` and sends it as a bearer header, and a foreign `Origin` is refused. Once an access document exists, abstracts are no longer read from `recall.sqlite`. Single-user stores see no change.
+  - `ctx-mcp` renders a hidden read as `{key, status: "UNAVAILABLE"}` and adds the counts under `redacted`.
+  - **Still no multi-user deployment**: `ctxd` does not enable it until writes are authorised (milestone 4).
 - **P9 milestone 2: the access document** (ADR 0017 §3.1, §4). **op_log format 5**: existing stores need `ctx migrate <dir>` (a header-only rewrite; batches and frame checksums stay byte-identical, so certificates keep their log links).
   - **`SetAccess`** commits the access document: admin only, the sole op of its batch, on `main`, global to every branch, never in a dry run. The kernel refuses a document breaking ADR 0017 §4.2 with `InvalidAccess{reason}`; the daemon also requires the owner entry to carry its own uid.
   - **Principal ids** are assigned from 16 upwards in order of first appearance and never reused; a name keeps its first id, the owner's entry maps to 0, and a name cannot switch between owner and principal.

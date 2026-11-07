@@ -78,7 +78,48 @@ fn code(r: &Response) -> &str {
 fn h(b: &[u8]) -> ContentHash {
     *blake3::hash(b).as_bytes()
 }
+/// The access document of these tests: alice (the daemon's uid), bob and
+/// carol, all members of `repo` (milestone 3 enforces reads).
+fn share(s: &Svc) {
+    let all: std::collections::BTreeSet<String> = ["*members".to_owned()].into();
+    let doc = AccessDoc {
+        version: 1,
+        owner: "alice".into(),
+        principals: [
+            ("alice".to_owned(), fsguard::current_uid()),
+            ("bob".to_owned(), BOB_UID),
+            ("carol".to_owned(), BOB_UID + 1),
+        ]
+        .into(),
+        groups: Default::default(),
+        lanes: [(
+            "repo".to_owned(),
+            LaneEntry {
+                members: all.clone(),
+                writers: all,
+                ..LaneEntry::owner_only()
+            },
+        )]
+        .into(),
+        code_lanes: LaneEntry::code_default(),
+        personal_egress: false,
+        default_lane: LaneEntry::owner_only(),
+    };
+    let r = s
+        .handle(
+            ADMIN,
+            Request::SetAccess {
+                doc,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+}
 fn records(s: &Svc, n: u32) {
+    if s.actor.snapshot().kernel.access().is_none() {
+        share(s);
+    }
     let ops = (0..n)
         .map(|i| Op::CreateLogical {
             key: format!("k{i}"),

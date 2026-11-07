@@ -13,6 +13,8 @@ Milestone 1 is done: principals and the transport (socket layout, private file m
 
 Milestone 2 is done: the access document (`SetAccess`, op_log format 5 with a header-only `ctx migrate`, principal ids, `ctx access apply|show|check`, `Authorized` with an independent oracle reference). The uid mapping follows the committed document, but only when multi-user mode is enabled, which only tests do until read redaction and write authorisation land (milestones 3–4).
 
+Milestone 3 is done: reads. Every response to a non-owner passes through one redaction point (`contextdb-daemon::redact`). Hidden reads are UNAVAILABLE and recall skips hidden matches. WHY, WHY_NOT and IMPACT are redacted with counts, diff-shaped responses drop and count, and certificates go without their vector. A revocation makes earlier certificates `Denied`, and `ctx ui` needs a launch token in multi-user mode (T17, T17b, T100, T101; PROP15 read half at 10,000 seeds). Multi-user mode still waits for write authorisation (milestone 4).
+
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;
 - index health and `ctx reindex`;

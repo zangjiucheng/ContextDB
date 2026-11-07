@@ -70,7 +70,7 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     fn g_witness(&self, w: Witness) -> Witness {
         match w {
             Witness::Rule(j) => Witness::Rule(self.global_rule(j)),
-            Witness::Base => Witness::Base,
+            other => other,
         }
     }
     fn g_reason(&self, r: StaleReason) -> StaleReason {
@@ -351,6 +351,22 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     pub fn why_not(&self, r: RevisionId, depth: usize) -> Result<WhyNot, TxError> {
         Ok(self.g_why_not(self.b.db.why_not(self.lr(r)?, depth)?))
     }
+    /// A visible rule's conclusion, premises and references, with global
+    /// ids (P9 redaction).
+    pub fn rule_parts(&self, j: RuleId) -> Option<(RevisionId, Vec<Incidence>, Vec<RevisionId>)> {
+        let local = self.local(Kind::Rule, j.0)?;
+        let (c, premises, refs) = self.b.db.rule_parts(RuleId(local))?;
+        Some((
+            self.global_revision(c),
+            (premises.into_iter())
+                .map(|p| Incidence {
+                    premise: self.global_revision(p.premise),
+                    kind: p.kind,
+                })
+                .collect(),
+            refs.into_iter().map(|r| self.global_revision(r)).collect(),
+        ))
+    }
     pub fn rules_concluding(
         &self,
         r: RevisionId,
@@ -474,6 +490,15 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
         entries: &[CertItem],
         live_pos: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Certificate, IssueFailure> {
+        // CERTIFIED includes `Authorized(p, l, b)` (SD11, ADR 0017 §4.5): an
+        // entry the requesting principal may not read is UNAVAILABLE.
+        if let Some(e) = (entries.iter()).find(|e| !self.authorizes(request.principal, e.logical)) {
+            return Err(IssueFailure::NotCertified {
+                logical: e.logical,
+                rev: e.rev,
+                summary: Summary::Unavailable,
+            });
+        }
         let mut local = Vec::with_capacity(entries.len());
         for e in entries {
             match (self.ll(e.logical), self.lr(e.rev)) {
@@ -515,6 +540,26 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
             Err(IssueFailure::Empty) => Err(IssueFailure::Empty),
         }
     }
+    /// `Authorized(p, l, b)` on this branch under the kernel's access
+    /// document (ADR 0017 §4.4). A logical this branch cannot see is not
+    /// authorised for anyone but the store owner.
+    pub fn authorizes(&self, p: PrincipalId, l: LogicalId) -> bool {
+        if p.is_store_owner() {
+            return true;
+        }
+        let (Some((key, _, lane)), Some(owner)) = (self.logical_info(l), self.logical_owner(l))
+        else {
+            return false;
+        };
+        let dirs = self.metadata(l).unwrap_or_default().dirs;
+        let facts = crate::access::LogicalFacts {
+            key: &key,
+            lane: &lane,
+            owner,
+            dirs: &dirs,
+        };
+        crate::access::authorized(self.k.access(), p, &facts).allowed
+    }
     pub fn validate_certificate(
         &self,
         cert: &Certificate,
@@ -526,6 +571,17 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
                 reason: InvalidReason::BranchMismatch,
                 diffs: Vec::new(),
             });
+        }
+        // `Authorized(cert.principal, l, b)` under the current access
+        // document, for every entry (ADR 0017 §5.6, T101): a revocation
+        // makes the certificate `Denied`.
+        if !cert.principal.is_store_owner()
+            && cert
+                .entries
+                .iter()
+                .any(|e| !self.authorizes(cert.principal, e.logical))
+        {
+            return Ok(Validation::Denied);
         }
         // Visibility only grows, so everything a certificate issued on this
         // branch requires is still visible; a required entry that is not is

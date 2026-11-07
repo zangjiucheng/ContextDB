@@ -135,6 +135,7 @@ impl Fake {
                         let env = Envelope {
                             epoch: Epoch(7),
                             response,
+                            redaction: None,
                         };
                         if write_response(&mut conn, &env).is_err() {
                             break;

@@ -572,6 +572,15 @@ branch's `dirs` are unchanged.
    The store owner gets responses unfiltered. PROP15 checks the function
    on every response type.
 
+Implementation note (milestone 3): the counts of §5.4–§5.6 travel in one
+`redaction` record on the response envelope, so the durable values (commit
+results, merge reports, certificates) keep their encodings. A hidden target
+answers `Unavailable{target}`. `Witness::Redacted` and
+`SupersededPinnedPremiseRedacted` exist only in responses. Until milestone 4,
+error details are withheld wholesale from non-owners. WHY, WHY_NOT, IMPACT
+and Diff stay unbound: redaction keys off the connection's principal and the
+branch the request reads (gate P9).
+
 ### 5.2 Items and `ctx_read` (T17)
 
 A hidden logical read by a key *p* supplied gives the item

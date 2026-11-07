@@ -143,6 +143,7 @@ fn proof(p: &Proof) -> Value {
         "witness": match e.witness {
             Some(Witness::Base) => json!("base"),
             Some(Witness::Rule(j)) => json!(j.0),
+            Some(Witness::Redacted) => json!("redacted"),
             None => Value::Null,
         },
         "active_rules": e.active_rules.iter().map(|j| j.0).collect::<Vec<_>>(),

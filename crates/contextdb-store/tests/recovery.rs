@@ -87,7 +87,8 @@ fn idempotent_retry_and_txn_status_t18b() {
         store.txn_status(&txn(1)).unwrap(),
         TxnStatus::Committed {
             epoch: first.epoch,
-            result: Box::new(first.clone())
+            result: Box::new(first.clone()),
+            principal: PrincipalId(0),
         }
     );
     assert_eq!(

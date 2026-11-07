@@ -11,6 +11,9 @@ pub enum SemState {
 pub enum Witness {
     Base,
     Rule(RuleId),
+    /// A rule with a premise the reader may not see (ADR 0017 §5.2): only in
+    /// responses to principals other than the store owner, never computed.
+    Redacted,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaleReason {
@@ -18,6 +21,9 @@ pub enum StaleReason {
     Unsupported,
     Rejected,
     SupersededPinnedPremise(RevisionId),
+    /// `SupersededPinnedPremise` naming a revision the reader may not see
+    /// (ADR 0017 §5.2): only in responses, never computed.
+    SupersededPinnedPremiseRedacted,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingReason {

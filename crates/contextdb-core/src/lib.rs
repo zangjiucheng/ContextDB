@@ -427,6 +427,19 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             current,
         })
     }
+    /// A rule's conclusion, premises and references (P9 redaction, ADR 0017
+    /// §5); `None` for an unknown rule.
+    pub fn rule_parts(&self, j: RuleId) -> Option<(RevisionId, Vec<Incidence>, Vec<RevisionId>)> {
+        if j.index() >= self.rules.len() {
+            return None;
+        }
+        let view = self.view();
+        Some((
+            view.conclusion(j),
+            view.premises(j).collect(),
+            view.references(j).to_vec(),
+        ))
+    }
     /// Logicals one rule away from logical `l` (P7 contradiction candidates,
     /// ADR 0015 §5): the premises of rules concluding any revision of `l`,
     /// and the conclusions of rules citing any revision of `l`. Sorted,

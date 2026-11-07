@@ -22,6 +22,24 @@ pub struct Server<B: Backend> {
     head_sha: String,
     /// The data directory, for `gating.wire` (`ctx_check`'s gate decision).
     data_dir: Option<std::path::PathBuf>,
+    /// What the daemon redacted from the last response (ADR 0017 §5), and
+    /// the target of an `Unavailable` answer, for the tool result.
+    redaction: Option<Redaction>,
+    unavailable: Option<String>,
+}
+/// The counts a redacted response carries (ADR 0017 §2.3, §5).
+fn redaction_json(r: &Redaction) -> Value {
+    json!({
+        "count": r.redacted,
+        "references": r.redacted_references,
+        "nodes": r.nodes.iter().map(|n| json!({
+            "rev": n.rev.0,
+            "rule": n.rule.map(|j| j.0),
+            "premises": n.premises,
+            "rules": n.rules,
+        })).collect::<Vec<_>>(),
+        "vector_size": r.vector_size.iter().map(|(c, n)| json!({ "cert_id": hex(c), "size": n })).collect::<Vec<_>>(),
+    })
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -549,6 +567,8 @@ impl<B: Backend> Server<B> {
             repo: repo.into(),
             head_sha: head_sha.into(),
             data_dir: None,
+            redaction: None,
+            unavailable: None,
         }
     }
     /// `ctx_check` decides with the gating configuration in `dir`.
@@ -653,8 +673,20 @@ impl<B: Backend> Server<B> {
     }
     fn call(&mut self, request: Request) -> Result<Envelope, String> {
         let env = self.backend.call(request)?;
+        if let Some(r) = &env.redaction {
+            let total = self.redaction.get_or_insert_with(Redaction::default);
+            total.redacted += r.redacted;
+            total.redacted_references += r.redacted_references;
+            total.nodes.extend(r.nodes.iter().cloned());
+            total.vector_size.extend(r.vector_size.iter().cloned());
+        }
         match &env.response {
             Response::Error { code, detail } => return Err(format!("{code}: {detail}")),
+            Response::Unavailable { target } => {
+                // A logical this principal may not read (ADR 0017 §5.2).
+                self.unavailable = Some(target.clone());
+                return Err(format!("UNAVAILABLE: {target}"));
+            }
             Response::Read { item, .. } => {
                 self.logicals.insert(item.key.clone(), item.logical);
             }
@@ -677,6 +709,8 @@ impl<B: Backend> Server<B> {
         args: &Value,
         binding: Option<Binding>,
     ) -> Result<Value, String> {
+        self.redaction = None;
+        self.unavailable = None;
         let (label, result) = match binding {
             Some(b) => {
                 let label = match &b {
@@ -692,9 +726,20 @@ impl<B: Backend> Server<B> {
             }
             None => ("server", self.tool(name, args, None)),
         };
+        let result = match (result, self.unavailable.take()) {
+            // Only the target, as sent, and the status (ADR 0017 §5.2).
+            (Err(_), Some(target)) => Ok(json!({
+                "item": { "key": target, "status": "UNAVAILABLE" },
+            })),
+            (result, _) => result,
+        };
+        let redaction = self.redaction.take();
         result.map(|mut v| {
             if let Some(o) = v.as_object_mut() {
                 o.insert("binding".into(), json!(label));
+                if let Some(r) = redaction {
+                    o.insert("redacted".into(), redaction_json(&r));
+                }
             }
             v
         })

@@ -471,6 +471,7 @@ fn serve(
                     &mut stream,
                     &Envelope {
                         epoch: Epoch(0),
+                        redaction: None,
                         response: Response::Error {
                             code: "ProtocolVersion".into(),
                             detail: format!("supported {}", proto::PROTOCOL_VERSION),
@@ -492,6 +493,7 @@ fn serve(
                 &mut stream,
                 &Envelope {
                     epoch: service.actor.snapshot().epoch,
+                    redaction: None,
                     response: Response::Error {
                         code: "AccessRevoked".into(),
                         detail: "this uid is no longer mapped to the principal".into(),

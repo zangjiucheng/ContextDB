@@ -264,6 +264,9 @@ pub enum TxnStatus {
     Committed {
         epoch: Epoch,
         result: Box<CommitResult>,
+        /// The committing principal (ADR 0017 §5.5: a non-owner sees only
+        /// its own rows).
+        principal: PrincipalId,
     },
     NotCommitted,
 }
@@ -685,14 +688,14 @@ impl<D: Durability> Store<D> {
     pub fn txn_status(&self, id: &[u8; 16]) -> Result<TxnStatus, StoreError> {
         self.readable()?;
         match self.ids.get(id) {
-            Some((epoch, _)) => Ok(TxnStatus::Committed {
-                epoch: *epoch,
-                result: Box::new(
-                    self.read_row(*epoch)?
-                        .acked()
-                        .map_err(|e| StoreError::Io(e.to_string()))?,
-                ),
-            }),
+            Some((epoch, _)) => {
+                let row = self.read_row(*epoch)?;
+                Ok(TxnStatus::Committed {
+                    epoch: *epoch,
+                    result: Box::new(row.acked().map_err(|e| StoreError::Io(e.to_string()))?),
+                    principal: row.principal,
+                })
+            }
             None => Ok(TxnStatus::NotCommitted),
         }
     }

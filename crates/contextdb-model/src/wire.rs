@@ -962,12 +962,16 @@ impl Wire for Witness {
                 1u8.encode(o);
                 value.encode(o);
             }
+            Self::Redacted => {
+                2u8.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
         match u8::decode(i)? {
             0 => Ok(Self::Base),
             1 => Ok(Self::Rule(Wire::decode(i)?)),
+            2 => Ok(Self::Redacted),
             _ => Err(WireError::InvalidEncoding),
         }
     }
@@ -988,6 +992,9 @@ impl Wire for StaleReason {
                 3u8.encode(o);
                 value.encode(o);
             }
+            Self::SupersededPinnedPremiseRedacted => {
+                4u8.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -996,6 +1003,7 @@ impl Wire for StaleReason {
             1 => Ok(Self::Unsupported),
             2 => Ok(Self::Rejected),
             3 => Ok(Self::SupersededPinnedPremise(Wire::decode(i)?)),
+            4 => Ok(Self::SupersededPinnedPremiseRedacted),
             _ => Err(WireError::InvalidEncoding),
         }
     }

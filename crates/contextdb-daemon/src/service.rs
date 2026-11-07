@@ -38,6 +38,10 @@ struct Eligibility<'a, 'v, D: Durability> {
     mode: Mode,
     limit: usize,
     live: &'a BTreeMap<String, Vec<u8>>,
+    /// The session's principal: a match it may not read is skipped as if
+    /// it did not match, before it can be withheld or take a slot (ADR
+    /// 0017 §5.3).
+    viewer: crate::redact::Viewer<'a, 'v>,
     /// `Some(item)` for an eligible logical, `None` for an ineligible one.
     decided: BTreeMap<LogicalId, Option<Item>>,
     withheld: Vec<Item>,
@@ -48,6 +52,9 @@ impl<D: Durability + Clone + 'static> Eligibility<'_, '_, D> {
     /// a hit on a revision that is not the head says nothing about `l`
     /// (another row may index the head), so it is not remembered.
     fn admit(&mut self, l: LogicalId, hit: Option<RevisionId>) -> bool {
+        if !self.viewer.sees(l) {
+            return false;
+        }
         let Some(head) = self.db.head(l) else {
             return false;
         };
@@ -396,6 +403,16 @@ pub(crate) fn resolve_branch<D: Durability>(
             Some((id, false)) => id,
             _ => MAIN,
         }),
+    }
+}
+/// A target as its sender wrote it, for `Unavailable` (ADR 0017 §5.7).
+fn target_text(t: &Target) -> String {
+    match t {
+        Target::Handle(h) => h.clone(),
+        Target::Key(k) => k.clone(),
+        Target::KeyRev { key, rev } => format!("{key}@{}", rev.0),
+        Target::Logical(l) => format!("logical {}", l.0),
+        Target::Pinned { logical, rev } => format!("logical {}@{}", logical.0, rev.0),
     }
 }
 fn random_id() -> [u8; 16] {
@@ -1041,18 +1058,40 @@ impl<D: Durability + Clone + 'static> Service<D> {
     pub fn session_count(&self) -> usize {
         self.sessions.lock().expect("sessions").len()
     }
-    /// Handles one request on the given snapshot-consistent view.
+    /// Handles one request on the given snapshot-consistent view. A
+    /// principal other than the store owner gets the response through the
+    /// single redaction point (ADR 0017 §5.1).
     pub fn handle(&self, id: Identity, req: Request) -> Envelope {
+        let _ = crate::redact::take_branch();
+        let (epoch, response) = self.handle_unredacted(id, req);
+        if id.principal.is_store_owner() {
+            return Envelope::new(epoch, response);
+        }
+        // The newest snapshot names every id the response can carry (a
+        // commit's own allocations included): topology only grows.
+        let snap = self.actor.snapshot();
+        let branch = crate::redact::take_branch().unwrap_or(MAIN);
+        let view = snap.view(branch);
+        let viewer = crate::redact::Viewer::new(id.principal, &view);
+        let mut redaction = Redaction::default();
+        let response = viewer.redact(response, &mut redaction);
+        Envelope {
+            epoch,
+            response,
+            redaction: Some(redaction),
+        }
+    }
+    fn handle_unredacted(&self, id: Identity, req: Request) -> (Epoch, Response) {
         // Principals other than the store owner get MCP-level requests only
         // (ADR 0017 §3.3, F8).
         if !id.principal.is_store_owner() && !non_owner_allowed(&req) {
-            return Envelope {
-                epoch: self.actor.snapshot().epoch,
-                response: err(
+            return (
+                self.actor.snapshot().epoch,
+                err(
                     "ChannelRestricted",
                     "this request is for the store owner only",
                 ),
-            };
+            );
         }
         // A long-poll must not hold a snapshot while it waits (the actor
         // would have to clone a replica per group, ADR 0008 §3.3).
@@ -1075,13 +1114,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 wait_ms,
                 self.actor.snapshot(),
             );
-            let epoch = self.actor.snapshot().epoch;
-            return Envelope { epoch, response };
+            return (self.actor.snapshot().epoch, response);
         }
         let snap = self.actor.snapshot();
         let epoch = snap.epoch;
-        let response = self.dispatch(id, req, snap);
-        Envelope { epoch, response }
+        (epoch, self.dispatch(id, req, snap))
     }
     /// Takes the snapshot by value: write paths release it before waiting for
     /// their group, so a queued writer never pins a replica the actor wants
@@ -1098,6 +1135,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         snap: Arc<Snapshot<D>>,
         branch: BranchId,
     ) -> Response {
+        if branch != MAIN {
+            crate::redact::note_branch(branch);
+        }
         let db = &snap.view(branch);
         match req {
             Request::SessionStart {
@@ -1291,6 +1331,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => r,
             },
             Request::Why { target, depth } => match self.resolve_plain(&target, db) {
+                Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
+                    target: target_text(&target),
+                },
                 Ok((_, r)) => match db.why_depth(r, depth as usize) {
                     Ok(proof) => Response::Why { proof },
                     Err(e) => err(&code(&e), format!("{e:?}")),
@@ -1298,6 +1341,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => r,
             },
             Request::WhyNot { target, depth } => match self.resolve_plain(&target, db) {
+                Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
+                    target: target_text(&target),
+                },
                 Ok((_, r)) => match db.why_not(r, depth as usize) {
                     Ok(why_not) => Response::WhyNot { why_not },
                     Err(e) => err(&code(&e), format!("{e:?}")),
@@ -1305,6 +1351,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 Err(r) => r,
             },
             Request::Impact { target } => match self.resolve_plain(&target, db) {
+                Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
+                    target: target_text(&target),
+                },
                 Ok((_, r)) => match db.impact_reachable(&[r]) {
                     Ok(impact) => Response::Impact { impact },
                     Err(e) => err(&code(&e), format!("{e:?}")),
@@ -1557,10 +1606,21 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 .actor
                 .request(|reply| Message::TxnStatus { id: txn, reply })
             {
-                Ok(Ok(contextdb_store::TxnStatus::Committed { epoch, result })) => {
+                // A non-owner sees only its own rows; any other id answers
+                // as an unknown one (ADR 0017 §5.5).
+                Ok(Ok(contextdb_store::TxnStatus::Committed {
+                    epoch,
+                    result,
+                    principal,
+                })) if crate::principals::class(principal)
+                    == crate::principals::class(id.principal) =>
+                {
                     Response::TxnStatus {
                         committed: Some((epoch, *result)),
                     }
+                }
+                Ok(Ok(contextdb_store::TxnStatus::Committed { .. })) => {
+                    Response::TxnStatus { committed: None }
                 }
                 Ok(Ok(contextdb_store::TxnStatus::NotCommitted)) => {
                     Response::TxnStatus { committed: None }
@@ -2088,8 +2148,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     return Err(err("UnknownSession", "unknown session"));
                 };
                 same_principal(id, &s)?;
-                if let Some(a) = agent {
-                    s.lock().expect("session").known_agents.insert(a.clone());
+                {
+                    let mut s = s.lock().expect("session");
+                    crate::redact::note_branch(s.branch);
+                    if let Some(a) = agent {
+                        s.known_agents.insert(a.clone());
+                    }
                 }
                 Ok((*session, s, agent.clone(), false))
             }
@@ -2109,9 +2173,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 )?;
                 // Only ids a hook reported are children; any other is the
                 // root (ADR 0010 §2.2).
-                let agent = agent
-                    .clone()
-                    .filter(|a| s.lock().expect("session").known_agents.contains(a));
+                let agent = {
+                    let s = s.lock().expect("session");
+                    crate::redact::note_branch(s.branch);
+                    agent.clone().filter(|a| s.known_agents.contains(a))
+                };
                 Ok((sid, s, agent, created))
             }
             Binding::Call { id: call } => {
@@ -2120,6 +2186,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Some((sid, agent)) => match self.session(&sid) {
                         Some(s) => {
                             same_principal(id, &s)?;
+                            crate::redact::note_branch(s.lock().expect("session").branch);
                             Ok((sid, s, agent, false))
                         }
                         None => Err(err("UnknownSession", "the claiming session ended")),
@@ -2363,7 +2430,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
     ) -> Response {
         let limit_clamped = limit > MAX_RECALL;
         let limit = limit.clamp(1, MAX_RECALL);
-        let db = &snap.view(s.lock().expect("session").branch);
+        let (branch, principal) = {
+            let s = s.lock().expect("session");
+            (s.branch, s.principal)
+        };
+        let db = &snap.view(branch);
         let live = self.anchor_live(db);
         let mut elig = Eligibility {
             service: self,
@@ -2373,6 +2444,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             mode,
             limit,
             live: &live,
+            viewer: crate::redact::Viewer::new(principal, db),
             decided: BTreeMap::new(),
             withheld: Vec::new(),
         };
@@ -2678,6 +2750,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(v) => v,
             Err(resp) => return resp,
         };
+        // A hidden logical: the target echoed, no item, no ledger entry,
+        // no certificate (ADR 0017 §5.2).
+        let principal = s.lock().expect("session").principal;
+        if !db.authorizes(principal, l) {
+            return Response::Unavailable {
+                target: target_text(target),
+            };
+        }
         let live = self.anchor_live(db);
         let item = self.item_at(db, l, r, None, &live);
         let certified = item.summary == Summary::Certified && db.head(l) == Some(r);
