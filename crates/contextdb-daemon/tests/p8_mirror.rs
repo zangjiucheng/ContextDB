@@ -751,8 +751,9 @@ fn t97_an_unavailable_payload_renders_as_a_placeholder() {
     let disk = SimDisk::new();
     let s = service_on(&env, disk.clone());
     create_on(&s, MAIN, "gone", RecordKind::Fact, "soon unreadable");
-    // Corrupt the packed payload (its bytes start after the 40-byte record
-    // header, ADR 0008 §17): reads now give Unavailable(Corrupt).
+    // Corrupt the packed payload (its ciphertext starts after the 8-byte
+    // segment header and the 64-byte record header, ADR 0017 §8.1): reads
+    // now give Unavailable(Corrupt).
     let blobs = Path::new("/db/blobs");
     let pack = disk
         .list(blobs)
@@ -760,7 +761,7 @@ fn t97_an_unavailable_payload_renders_as_a_placeholder() {
         .into_iter()
         .find(|n| n.starts_with("pack-"))
         .unwrap();
-    disk.corrupt(&blobs.join(pack), 40, b'X');
+    disk.corrupt(&blobs.join(pack), 72, b'X');
     export(&s, &env, None).unwrap();
     let t = tip(&env, 0).unwrap();
     let body = git(

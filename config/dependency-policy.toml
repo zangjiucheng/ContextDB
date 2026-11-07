@@ -9,8 +9,11 @@ allowed_external = ["blake3", "arrayvec", "cfg-if", "constant_time_eq", "cpufeat
 # rusqlite (bundled SQLite, public domain; MIT wrapper) for rebuildable projections
 # only. The op_log never goes through SQLite. nix (fs feature) provides plain
 # fsync(2) for the "fullfsync off" measurement mode (ADR 0006 §10).
+# ADR 0017 §8.1 (P9 milestone 6): chacha20poly1305 (RustCrypto, Apache-2.0/MIT)
+# encrypts pack records with one random key per content hash, so a shred can
+# erase a payload by deleting its key; getrandom draws keys and nonces.
 [store]
-reviewed_external = ["rusqlite", "blake3", "nix"]
+reviewed_external = ["rusqlite", "blake3", "nix", "chacha20poly1305", "getrandom"]
 
 # ADR 0008 §1: ctxd uses std threads (no async runtime), nix for sockets, peer
 # credentials, statfs and process checks, arc-swap for lock-free snapshot

@@ -3,6 +3,7 @@
 //! by a new disk instance (a new process in production).
 use crate::{
     durability::{Durability, LockGuard},
+    keys,
     log::{self, FrameFault, LogRow},
     pack::{self, PackIndex},
     projection::{EpochRows, ProjectionFile, Projections},
@@ -308,6 +309,10 @@ pub struct Store<D: Durability> {
     packs: Arc<RwLock<PackIndex>>,
     /// Active pack segment (created by this process) and its size.
     pack_tail: Option<(usize, u64)>,
+    /// The key-log segment this process appends to (created on its first
+    /// key), and the next segment number (ADR 0017 §8.2).
+    key_tail: Option<PathBuf>,
+    key_next: u32,
     tail: Option<Tail>,
     proj: Projections,
     /// Set across apply/append; still true after a panic, which poisons.
@@ -377,6 +382,9 @@ impl<D: Durability> Store<D> {
     fn blob_dir(&self) -> PathBuf {
         self.dir.join("blobs")
     }
+    fn key_dir(&self) -> PathBuf {
+        self.dir.join(keys::DIR)
+    }
     pub fn open(
         disk: D,
         dir: &Path,
@@ -405,7 +413,8 @@ impl<D: Durability> Store<D> {
         if migration_incomplete(&disk, dir).map_err(io)? {
             return Err(StoreError::MigrationIncomplete);
         }
-        for d in [&log_dir, &blob_dir] {
+        let key_dir = dir.join(keys::DIR);
+        for d in [&log_dir, &blob_dir, &key_dir] {
             disk.create_dir_all(d).map_err(io)?;
         }
         disk.sync_dir(dir).map_err(io)?;
@@ -418,13 +427,22 @@ impl<D: Durability> Store<D> {
         // segment that is durable. A killed process can leave verifying
         // records only in the page cache, so every segment is fully synced
         // before it is trusted (ADR 0008 §17, P3 review finding 1).
+        // Keys first (ADR 0017 §8.2): an encrypted record is present only
+        // when it authenticates under its key. Key segments are synced
+        // before they are trusted, as pack segments are.
+        disk.sync_dir(&key_dir).map_err(io)?;
+        for name in (disk.list(&key_dir).map_err(io)?.iter()).filter(|n| keys::is_segment(n)) {
+            disk.sync(&key_dir.join(name)).map_err(io)?;
+        }
+        let keylog = keys::load(&disk, &key_dir).map_err(io)?;
+        let key_next = keys::next_number(&keylog);
         disk.sync_dir(&blob_dir).map_err(io)?;
         let mut blobs = BTreeSet::new();
         let names = disk.list(&blob_dir).map_err(io)?;
         for name in names.iter().filter(|n| pack::is_pack(n)) {
             disk.sync(&blob_dir.join(name)).map_err(io)?;
         }
-        let packs = pack::scan(&disk, &blob_dir, &names).map_err(io)?;
+        let packs = pack::scan(&disk, &blob_dir, &names, keylog.keys).map_err(io)?;
         blobs.extend(packs.map.keys().copied());
         for name in names {
             match unhex(&name) {
@@ -497,6 +515,8 @@ impl<D: Durability> Store<D> {
             blobs,
             packs: Arc::new(RwLock::new(packs)),
             pack_tail: None,
+            key_tail: None,
+            key_next,
             tail: None,
             proj,
             in_flight: false,
@@ -977,6 +997,16 @@ impl<D: Durability> Store<D> {
     /// Stores payloads; returns only after all are durable.
     pub fn put_blobs(&mut self, blobs: &[&[u8]]) -> Result<(), StoreError> {
         self.stage_blobs(blobs)?;
+        let keys = match &self.key_tail {
+            Some(path) => self
+                .disk
+                .sync(path)
+                .and_then(|()| self.disk.sync_dir(&self.key_dir())),
+            None => Ok(()),
+        };
+        if keys.is_err() {
+            return Err(self.poison());
+        }
         let synced = match self.pack_tail {
             Some((segment, _)) => {
                 let path = self.packs.read().expect("pack index").segments[segment].clone();
@@ -997,27 +1027,50 @@ impl<D: Durability> Store<D> {
     /// reach media ahead of them (ADR 0008 §17).
     pub fn stage_blobs(&mut self, blobs: &[&[u8]]) -> Result<(), StoreError> {
         self.usable()?;
+        // Each new payload gets its content's key (a key left by a crash
+        // before its record is reused) or a fresh one (ADR 0017 §8.1).
         let mut fresh: Vec<(ContentHash, Vec<u8>)> = Vec::new();
+        let mut new_keys: Vec<(ContentHash, keys::Key)> = Vec::new();
         for bytes in blobs {
             let hash = *blake3::hash(bytes).as_bytes();
             let present = fresh.iter().any(|(h, _)| *h == hash)
                 || self.blobs.contains(&hash)
                     && matches!(self.get_blob(&hash), Ok(Payload::Available(_)));
-            if !present {
-                let (_, rec) = pack::record(bytes)
-                    .ok_or_else(|| StoreError::Io("payload too large".into()))?;
-                fresh.push((hash, rec));
+            if present {
+                continue;
             }
+            let known = self
+                .packs
+                .read()
+                .expect("pack index")
+                .keys
+                .get(&hash)
+                .copied();
+            let key = match known {
+                Some(k) => k,
+                None => {
+                    let k = keys::fresh().map_err(io)?;
+                    new_keys.push((hash, k));
+                    k
+                }
+            };
+            let (_, rec) = pack::sealed(bytes, &key)
+                .ok_or_else(|| StoreError::Io("payload too large".into()))?;
+            fresh.push((hash, rec));
         }
         if fresh.is_empty() {
             return Ok(());
         }
+        // Keys before their records, with an ordered sync: the group's full
+        // sync makes both durable, and no record reaches media before its
+        // key (§8.2).
+        if !new_keys.is_empty() && self.append_keys(&new_keys).is_err() {
+            return Err(self.poison());
+        }
         let dir = self.blob_dir();
         let size: u64 = fresh.iter().map(|(_, r)| r.len() as u64).sum();
         let (segment, start, created) = match self.pack_tail {
-            Some((segment, at)) if at == 0 || at + size <= self.segment_target as u64 => {
-                (segment, at, false)
-            }
+            Some((segment, at)) if at + size <= self.segment_target as u64 => (segment, at, false),
             _ => {
                 let mut packs = self.packs.write().expect("pack index");
                 let next = packs
@@ -1027,11 +1080,19 @@ impl<D: Durability> Store<D> {
                     .max()
                     .map_or(1, |n| n + 1);
                 packs.segments.push(dir.join(pack::segment_name(next)));
-                (packs.segments.len() - 1, 0, true)
+                (
+                    packs.segments.len() - 1,
+                    pack::SEGMENT_HEADER.len() as u64,
+                    true,
+                )
             }
         };
         let path = self.packs.read().expect("pack index").segments[segment].clone();
-        let bytes: Vec<u8> = fresh.iter().flat_map(|(_, r)| r.iter().copied()).collect();
+        let mut bytes: Vec<u8> = Vec::with_capacity(size as usize + 8);
+        if created {
+            bytes.extend_from_slice(&pack::SEGMENT_HEADER);
+        }
+        bytes.extend(fresh.iter().flat_map(|(_, r)| r.iter().copied()));
         let written = self
             .disk
             .append(&path, &bytes)
@@ -1047,18 +1108,47 @@ impl<D: Durability> Store<D> {
             return Err(self.poison());
         }
         let mut packs = self.packs.write().expect("pack index");
+        packs.keys.extend(new_keys);
         let mut at = start;
         for (hash, rec) in fresh {
+            let nonce: [u8; pack::NONCE] = rec[40..pack::ENC_HEADER].try_into().expect("nonce");
             packs.insert(
                 hash,
                 segment,
-                at + pack::HEADER as u64,
-                (rec.len() - pack::HEADER) as u32,
+                at + pack::ENC_HEADER as u64,
+                (rec.len() - pack::ENC_HEADER) as u32,
+                Some(nonce),
             );
             at += rec.len() as u64;
             self.blobs.insert(hash);
         }
         self.pack_tail = Some((segment, at));
+        Ok(())
+    }
+    /// Appends key records to this process's key segment (creating it with
+    /// its header), with an ordered sync.
+    fn append_keys(&mut self, new: &[(ContentHash, keys::Key)]) -> std::io::Result<()> {
+        let dir = self.key_dir();
+        let mut bytes = Vec::with_capacity(keys::HEADER + new.len() * keys::RECORD);
+        let created = self.key_tail.is_none();
+        let path = match &self.key_tail {
+            Some(p) => p.clone(),
+            None => {
+                bytes.extend(keys::header(keys::Kind::Append, Epoch(0)));
+                let p = dir.join(keys::segment_name(self.key_next));
+                self.key_next += 1;
+                p
+            }
+        };
+        for (h, k) in new {
+            bytes.extend(keys::record(h, k));
+        }
+        self.disk.append(&path, &bytes)?;
+        self.disk.sync_weak(&path)?;
+        if created {
+            self.disk.sync_dir_weak(&dir)?;
+            self.key_tail = Some(path);
+        }
         Ok(())
     }
     /// Poisoned stores refuse: a blob whose put failed may be visible now
@@ -1325,7 +1415,27 @@ fn read_payload(
 ) -> Payload {
     let located = packs.read().expect("pack index").locate(hash);
     let read = match located {
-        Some((path, offset, len)) => disk.read_range(&path, offset, len),
+        Some(pack::Located {
+            path,
+            offset,
+            len,
+            sealed: Some((nonce, key)),
+        }) => {
+            // Decrypt, then check BLAKE3 (ADR 0017 §8.1).
+            let Some(key) = key else {
+                return Payload::Unavailable(Unavailable::Missing);
+            };
+            match disk.read_range(&path, offset, len) {
+                Ok(ct) => match pack::open_sealed(&key, hash, &nonce, &ct) {
+                    Some(plain) => Ok(plain),
+                    None => return Payload::Unavailable(Unavailable::Corrupt),
+                },
+                Err(e) => Err(e),
+            }
+        }
+        Some(pack::Located {
+            path, offset, len, ..
+        }) => disk.read_range(&path, offset, len),
         None => disk.read(&dir.join("blobs").join(hex(hash))),
     };
     match read {

@@ -138,10 +138,11 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         store.commit(&Batch::new(vec![create])),
         Err(StoreError::Tx(TxError::MissingBlob { content: missing }))
     );
-    // A corrupt blob is reported and replaced by the next put (its packed
-    // bytes start after the 40-byte record header, ADR 0008 §17).
+    // A corrupt blob is reported and replaced by the next put (its
+    // ciphertext starts after the 8-byte segment header and the 64-byte
+    // encrypted record header, ADR 0008 §17, ADR 0017 §8.1).
     let path = Path::new(DIR).join("blobs").join("pack-00000001");
-    disk.corrupt(&path, 40, b'X');
+    disk.corrupt(&path, 72, b'X');
     assert_eq!(
         store.get_blob(&h).unwrap(),
         Payload::Unavailable(Unavailable::Corrupt)

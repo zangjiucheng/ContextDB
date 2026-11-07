@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **P9 milestone 6a: encrypted packs and the key log** (ADR 0017 §8.1, §8.2). New payloads are stored as `CXBE` records, encrypted with XChaCha20-Poly1305 under one random key per content hash. The content hash stays BLAKE3 of the plaintext, so addresses, dedup and the op_log do not change. Segments written since P9 start with a `CXPH` header.
+  - **`<data>/keys/`** holds the key log (`keylog-NNNNNNNN`), which is truth like the packs: it cannot be rebuilt, and **backups must include it**, or every payload is lost. A key record is written with an ordered sync before its pack record, so the commit's full sync makes both durable.
+  - A record whose key is missing is unreadable and the payload counts as absent. Plaintext `CXBP` records from before P9 stay readable until `ctx migrate` (milestone 6e) re-encrypts them.
+  - New dependencies in `contextdb-store`: `chacha20poly1305` 0.11 (RustCrypto, Apache-2.0/MIT) and `getrandom` 0.3.
 - **P9 milestone 5: egress** (ADR 0017 §7; T105). Once an access document exists, the bodies of a lane whose `egress` is off (personal lanes by default, F6) stay on the machine. Without an access document nothing changes.
   - **Validators and the judge.** A rule job or candidate pair reading such a lane goes only to a validator marked `local = true` in `validators.toml`. The flag is the owner's statement that the command keeps data on the machine; a `claude` validator cannot carry it. Other work is skipped with no attempt counted: a job stays queued and runs once the lane's egress turns on or a local validator is added; a pair is postponed and woken by the next `SetAccess` or reload. The check is repeated on the snapshot the task is built from. `ctx validators status` shows `skipped_egress` and `pair_skipped_egress`.
   - **The embedder** receives a body only if a head in an egress lane carries it, re-checked before each batch. Vector ranking and embedding candidates skip heads in non-egress lanes, so a vector shared through equal content is never used for one.

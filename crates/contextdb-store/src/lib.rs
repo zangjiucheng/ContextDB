@@ -4,6 +4,7 @@
 //! All durable I/O goes through [`Durability`]; [`SimDisk`] drives crash tests.
 pub mod doctor;
 pub mod durability;
+mod keys;
 pub mod log;
 pub mod migrate;
 mod pack;
