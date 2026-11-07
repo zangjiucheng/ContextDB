@@ -29,7 +29,10 @@ reviewed_external = ["serde", "serde_json"]
 # shared by the daemon (sweeper) and light clients; blake3 for stream ids and
 # record hashes, nix (fs) for flock and plain fsync.
 [proto]
-reviewed_external = ["blake3", "nix"]
+# ADR 0017 §3.2 (P9 milestone 1): ACL checks for the file-system gate —
+# exacl for macOS extended ACLs, xattr for Linux POSIX ACL xattrs (no
+# libacl). Each is built on its own platform only.
+reviewed_external = ["blake3", "nix", "exacl", "xattr"]
 
 # ADR 0010 §1: ctx-hook parses harness JSON (serde_json) and hashes
 # baselines (blake3); the outbox itself is in contextdb-proto.
