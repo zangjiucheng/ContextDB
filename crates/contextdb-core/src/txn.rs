@@ -171,7 +171,8 @@ impl Resolver<'_, '_> {
             Op::CreateBranch { .. }
             | Op::ArchiveBranch { .. }
             | Op::Merge { .. }
-            | Op::SetAccess { .. } => {
+            | Op::SetAccess { .. }
+            | Op::ShredContent { .. } => {
                 return Err(TxError::UnknownBranch);
             }
         })
@@ -642,6 +643,7 @@ pub(crate) fn apply<S: StatsSink>(
             {
                 return Err(TxError::InvalidKey { key });
             }
+            shredded(i, &content)?;
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
@@ -683,6 +685,7 @@ pub(crate) fn apply<S: StatsSink>(
             if i.logical_kind(logical) == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
+            shredded(i, &content)?;
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
             }
@@ -812,6 +815,9 @@ pub(crate) fn apply<S: StatsSink>(
             if_absent,
         } => {
             // §6.2 order: MissingBlob before NoSemIncidence and the CAS class.
+            if let Some(content) = &meta {
+                shredded(i, content)?;
+            }
             if let Some(content) = meta
                 && !blobs.contains(&content)
             {
@@ -918,6 +924,7 @@ pub(crate) fn apply<S: StatsSink>(
             target,
             payload_hash,
         } => {
+            shredded(i, &payload_hash)?;
             let artifact = ArtifactId(id(i.artifact_count(), CapacityKind::Artifact)?);
             i.new_artifacts.push(Artifact {
                 ty,
@@ -931,6 +938,9 @@ pub(crate) fn apply<S: StatsSink>(
             ids.new_artifacts.push(artifact);
         }
         Op::ResolveArtifact { id, note } => {
+            if let Some(content) = &note {
+                shredded(i, content)?;
+            }
             if let Some(content) = note
                 && !blobs.contains(&content)
             {
@@ -962,12 +972,21 @@ pub(crate) fn apply<S: StatsSink>(
         Op::CreateBranch { .. }
         | Op::ArchiveBranch { .. }
         | Op::Merge { .. }
-        | Op::SetAccess { .. } => {
+        | Op::SetAccess { .. }
+        | Op::ShredContent { .. } => {
             unreachable!("rejected by the resolver")
         }
     }
 
     Ok(())
+}
+/// `ContentShredded` for an op naming a shredded payload (ADR 0017 §8.3),
+/// before `MissingBlob`.
+fn shredded(i: &Stage, content: &ContentHash) -> Result<(), TxError> {
+    match i.shredded {
+        Some(set) if set.contains(content) => Err(TxError::ContentShredded { content: *content }),
+        _ => Ok(()),
+    }
 }
 /// `ExpectHeads` at batch end, after A5 (SPEC §6.1 contract 12): every read
 /// head must still be the published one.

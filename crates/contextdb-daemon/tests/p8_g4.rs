@@ -566,7 +566,20 @@ fn a_truncated_log_is_stale_not_modified() {
     mirror(&mut c, &repo).unwrap();
     d.stop();
     let disk = StdDisk::default();
-    let plan = contextdb_store::doctor::plan_truncate_before(&disk, &db, Epoch(3)).unwrap();
+    // `stop` releases the store lock before it returns; a macOS CI run once
+    // still saw `Locked` here (P9 6a), so the offline step waits for it
+    // rather than failing on the first try.
+    let start = std::time::Instant::now();
+    let plan = loop {
+        match contextdb_store::doctor::plan_truncate_before(&disk, &db, Epoch(3)) {
+            Err(contextdb_store::StoreError::Locked)
+                if start.elapsed() < std::time::Duration::from_secs(10) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => break other.unwrap(),
+        }
+    };
     contextdb_store::doctor::truncate_before(&disk, &db, &plan).unwrap();
     let d = Daemon::start(&db, &Options::default()).unwrap();
     let mut c = Client::connect(d.socket(Channel::Admin)).unwrap();

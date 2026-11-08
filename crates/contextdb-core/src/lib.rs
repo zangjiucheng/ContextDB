@@ -75,6 +75,8 @@ pub struct CommitContext<'a> {
     /// Set by the kernel: write authorisation against this access document
     /// (ADR 0017 §6.1); `Some(None)` is a store without one.
     pub auth: Option<Option<&'a access::AccessState>>,
+    /// Set by the kernel: the shredded content hashes (ADR 0017 §8.3).
+    pub shredded: Option<&'a std::collections::BTreeSet<ContentHash>>,
     /// Receives the revisions and rules the batch staged, in staging order,
     /// whether it commits or fails: the kernel gives them global ids.
     pub staged: Option<&'a std::cell::RefCell<Staged>>,
@@ -641,6 +643,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         );
         staged.foreign_key = ctx.foreign_key;
         staged.auth = ctx.auth;
+        staged.shredded = ctx.shredded;
         let pk = &mut self.pk;
         let result = (|| {
             for (n, op) in b.ops.iter().enumerate() {

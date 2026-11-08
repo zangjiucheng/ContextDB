@@ -244,6 +244,12 @@ pub enum Op {
     SetAccess {
         doc: Box<AccessDoc>,
     },
+    /// Shreds a payload (ADR 0017 §8.3): admin only, global, batches of
+    /// `ShredContent` alone, committed on `main`, never in a WHAT_IF. No
+    /// effect on derivation; later ops naming the hash are refused.
+    ShredContent {
+        content: ContentHash,
+    },
     SetMetadata {
         logical: LogicalRef,
         tags: BTreeSet<String>,
@@ -301,6 +307,7 @@ impl Op {
             Self::SetPolicy { .. } => "SetPolicy",
             Self::ObserverWatermark { .. } => "ObserverWatermark",
             Self::SetAccess { .. } => "SetAccess",
+            Self::ShredContent { .. } => "ShredContent",
             Self::SetMetadata { .. } => "SetMetadata",
             Self::OpenArtifact { .. } => "OpenArtifact",
             Self::ResolveArtifact { .. } => "ResolveArtifact",
@@ -473,6 +480,10 @@ pub enum TxError {
     /// A refused access document (ADR 0017 §4.2).
     InvalidAccess {
         reason: String,
+    },
+    /// An op names a shredded payload (ADR 0017 §8.3).
+    ContentShredded {
+        content: ContentHash,
     },
     /// The batch's principal lacks `need` on what op `op_index` names
     /// (ADR 0017 §6.1). `reference` is the ref as the op wrote it, never a

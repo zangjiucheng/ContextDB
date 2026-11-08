@@ -876,3 +876,175 @@ fn t108_branches_and_merges() {
     assert_eq!(records[0].1.verdict, Verdict::Verified);
     assert_eq!(records[0].1.validator, "human:alice");
 }
+
+fn shred(s: &Svc, id: Identity, key: &str, with_reviews: bool, confirm: bool) -> Response {
+    s.handle(
+        id,
+        Request::Shred {
+            key: key.into(),
+            rev: None,
+            with_reviews,
+            confirm,
+            client_txn_id: None,
+        },
+    )
+    .response
+}
+/// T59 (daemon half) and T107's shred rows (ADR 0017 §8.3, F13):
+/// - `ctx shred` lists, then with `confirm` shreds, every revision sharing
+///   the content, on every branch; review payloads only with
+///   `with_reviews`; CodeAnchors and non-admin callers are refused;
+/// - a read answers `unavailable: "shredded"` with no payload, the status
+///   unchanged, and WHY shows no body;
+/// - a non-owner sending the shredded bytes gets `ContentShredded`;
+///   without them, `MissingBlob`, even for a hash on a revision it reads.
+#[test]
+fn t59_t107_shredded_payloads() {
+    let f = fixture();
+    let s = &f.s;
+    let (carol, alice) = (start(s, CAROL), start(s, OWNER_AGENT));
+    // A copy of pub/b's body under another key, on a branch.
+    let r = branch(s, ADMIN, "side");
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let side = s.actor.snapshot().kernel.branch_by_name("side").unwrap();
+    let mut copy = Batch::new(vec![create("pub/copy", "repo", false)]);
+    if let Op::CreateLogical { content, .. } = &mut copy.ops[0] {
+        *content = h(&body("pub/b"));
+    }
+    copy.branch = side;
+    copy.channel = Channel::Admin;
+    let r = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![],
+                batch: copy,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    // A review on pub/b.
+    let review = b"reviewer: pub/b looks wrong".to_vec();
+    let open = Op::OpenArtifact {
+        ty: ArtifactType::PendingReview,
+        target: f.rev["pub/b"].into(),
+        payload_hash: h(&review),
+    };
+    assert_eq!(
+        code(&commit(
+            s,
+            OWNER_AGENT,
+            alice,
+            vec![open],
+            vec![review.clone()]
+        )),
+        "ok"
+    );
+
+    // Non-admin callers and CodeAnchors are refused.
+    assert_eq!(
+        code(&shred(s, OWNER_AGENT, "pub/b", false, true)),
+        "ChannelRestricted"
+    );
+    assert_eq!(
+        code(&shred(s, CAROL, "pub/b", false, true)),
+        "ChannelRestricted"
+    );
+    assert_eq!(code(&shred(s, ADMIN, "nope", false, false)), "UnknownRef");
+
+    // The plan, then the shred.
+    let Response::Shred {
+        targets,
+        epoch: None,
+        ..
+    } = shred(s, ADMIN, "pub/b", false, false)
+    else {
+        panic!()
+    };
+    let mut where_: Vec<(String, String, String)> = targets
+        .iter()
+        .map(|t| (t.what.clone(), t.branch.clone(), t.key.clone()))
+        .collect();
+    where_.sort();
+    assert_eq!(
+        where_,
+        vec![
+            ("body".into(), "main".into(), "pub/b".into()),
+            ("body".into(), "side".into(), "pub/b".into()),
+            ("body".into(), "side".into(), "pub/copy".into()),
+        ]
+    );
+    let Response::Shred { targets, .. } = shred(s, ADMIN, "pub/b", true, false) else {
+        panic!()
+    };
+    assert!(
+        targets
+            .iter()
+            .any(|t| t.what == "review" && t.content == h(&review))
+    );
+    let before = s.actor.snapshot().view(MAIN).node(f.rev["pub/b"]).unwrap();
+    let Response::Shred {
+        epoch: Some(_),
+        purged: false,
+        ..
+    } = shred(s, ADMIN, "pub/b", false, true)
+    else {
+        panic!()
+    };
+    let snap = s.actor.snapshot();
+    assert_eq!(
+        snap.view(MAIN).node(f.rev["pub/b"]).unwrap(),
+        before,
+        "status unchanged"
+    );
+    assert!(
+        !snap.kernel.shredded().contains(&h(&review)),
+        "no --with-reviews"
+    );
+    drop(snap);
+    match s
+        .handle(
+            OWNER_AGENT,
+            Request::Read {
+                binding: Binding::root(alice),
+                target: Target::Key("pub/b".into()),
+                mode: Mode::Advisory,
+                level: None,
+            },
+        )
+        .response
+    {
+        Response::Read {
+            payload: None,
+            unavailable: Some(why),
+            ..
+        } => assert_eq!(why, "shredded"),
+        other => panic!("{other:?}"),
+    }
+    let why = s
+        .handle(
+            OWNER_AGENT,
+            Request::Why {
+                target: Target::Key("pub/b".into()),
+                depth: 3,
+            },
+        )
+        .response;
+    assert!(!format!("{why:?}").contains("body of pub/b"), "{why:?}");
+
+    // Carol: with the bytes, ContentShredded (F13); without, MissingBlob.
+    let mk = |key: &str| Op::CreateLogical {
+        key: key.into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: h(&body("pub/b")),
+        adopt_as_base: false,
+    };
+    let r = commit(s, CAROL, carol, vec![mk("pub/z")], vec![body("pub/b")]);
+    assert_eq!(code(&r), "ContentShredded", "{r:?}");
+    let r = commit(s, CAROL, carol, vec![mk("pub/z")], vec![]);
+    assert_eq!(code(&r), "MissingBlob", "{r:?}");
+    // The store owner gets ContentShredded either way.
+    let r = commit(s, OWNER_AGENT, alice, vec![mk("pub/z")], vec![]);
+    assert_eq!(code(&r), "ContentShredded", "{r:?}");
+}

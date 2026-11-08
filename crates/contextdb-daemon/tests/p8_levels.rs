@@ -220,11 +220,11 @@ fn levels_render_like_the_pure_functions() {
             assert!(r.cut);
         }
         match read(&s, &a, "doc", Mode::Certified, Some(level)) {
-            Response::Read { item, payload } if level == Level::Full => {
+            Response::Read { item, payload, .. } if level == Level::Full => {
                 assert_eq!(payload.unwrap(), text.as_bytes());
                 assert!(item.body.is_none());
             }
-            Response::Read { item, payload } => {
+            Response::Read { item, payload, .. } => {
                 assert!(payload.is_none());
                 assert_eq!(item.body.unwrap().text, want.text);
             }

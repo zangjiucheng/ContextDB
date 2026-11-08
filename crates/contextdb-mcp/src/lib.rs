@@ -816,7 +816,12 @@ impl<B: Backend> Server<B> {
                     mode: mode(args),
                     level: level_arg(args)?,
                 })?;
-                let Response::Read { item: i, payload } = env.response else {
+                let Response::Read {
+                    item: i,
+                    payload,
+                    unavailable,
+                } = env.response
+                else {
                     return Err("unexpected response".into());
                 };
                 // Below `full` the text is in the item; a full read keeps
@@ -826,11 +831,17 @@ impl<B: Backend> Server<B> {
                     o.insert("level".into(), json!("full"));
                     o.insert("cut".into(), json!(false));
                 }
-                Ok(json!({
+                let mut out = json!({
                     "epoch": env.epoch.0,
                     "item": it,
                     "body": payload.map(|p| String::from_utf8_lossy(&p).into_owned()),
-                }))
+                });
+                // Why there is no body: `"shredded"` after a shred (ADR 0017
+                // §8.3), `"missing"` or `"corrupt"` otherwise.
+                if let (Some(o), Some(why)) = (out.as_object_mut(), unavailable) {
+                    o.insert("unavailable".into(), json!(why));
+                }
+                Ok(out)
             }
             "ctx_record" => {
                 let kind = kind_of(arg(args, "kind").ok_or("kind required")?)?;

@@ -118,6 +118,9 @@ fn encode(k: &KernelSnapshot) -> Vec<u8> {
     for (info, ..) in &k.branches {
         info.creator.encode(&mut o);
     }
+    // P9 milestone 6b (ADR 0017 §8.3): the shredded content hashes. A
+    // snapshot written before it lacks the section and is rejected.
+    k.shredded.encode(&mut o);
     o
 }
 fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
@@ -185,6 +188,7 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
     for (info, ..) in &mut branches {
         info.creator = PrincipalId::decode(&mut i)?;
     }
+    let shredded = Wire::decode(&mut i)?;
     if i.remaining() != 0 {
         return Err(WireError::TrailingBytes);
     }
@@ -194,6 +198,7 @@ fn decode(body: &[u8]) -> Result<KernelSnapshot, WireError> {
         branches,
         syncs,
         access,
+        shredded,
     })
 }
 /// The accepted snapshot (if any) and the names of rejected snapshot files.

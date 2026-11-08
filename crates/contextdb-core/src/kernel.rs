@@ -22,7 +22,7 @@ use contextdb_model::*;
 use merge::SyncPoint;
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 pub use view::BranchView;
@@ -119,6 +119,8 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     syncs: Vec<SyncPoint<M, S>>,
     /// The committed access document (ADR 0017 §4), global.
     access: Option<Arc<AccessState>>,
+    /// Every shredded content hash (ADR 0017 §8.3), global.
+    shredded: Arc<BTreeSet<ContentHash>>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -200,11 +202,16 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             rule_ids,
             syncs: Vec::new(),
             access: None,
+            shredded: Arc::default(),
         }
     }
     /// The committed access document and its ids, if any (ADR 0017 §4).
     pub fn access(&self) -> Option<&AccessState> {
         self.access.as_deref()
+    }
+    /// Every shredded content hash (ADR 0017 §8.3).
+    pub fn shredded(&self) -> &BTreeSet<ContentHash> {
+        &self.shredded
     }
     pub fn epoch(&self) -> Epoch {
         self.epoch
@@ -308,6 +315,15 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 op: op.name().into(),
             });
         }
+        // ShredContent batches hold ShredContent alone (ADR 0017 §8.3).
+        let shreds = (b.ops.iter())
+            .filter(|op| matches!(op, Op::ShredContent { .. }))
+            .count();
+        if shreds > 0 && shreds != b.ops.len() {
+            return Err(TxError::SoleOpRequired {
+                op: "ShredContent".into(),
+            });
+        }
         let merges = b
             .ops
             .iter()
@@ -340,6 +356,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             Some(Op::SetAccess { doc }) if b.ops.len() == 1 => {
                 self.set_access(b, doc, next, publish)?
             }
+            Some(Op::ShredContent { .. }) => self.shred(b, next, publish)?,
             _ if merges == 1 => {
                 let (result, r) = self.merge(b, next, publish)?;
                 report = Some(r);
@@ -435,6 +452,36 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         self.access = Some(Arc::new(state));
         Ok(Self::empty_result(epoch))
     }
+    /// `ShredContent` (ADR 0017 §8.3): admin only, on `main`, never
+    /// dry-run. It records the hashes and changes nothing else: topology,
+    /// bases, heads, rules, statuses and digests stay as they were (T59).
+    fn shred(&mut self, b: &Batch, epoch: Epoch, publish: bool) -> Result<CommitResult, TxError> {
+        if b.channel != Channel::Admin {
+            return Err(TxError::ChannelRestricted {
+                op: "ShredContent".into(),
+                channel: b.channel,
+            });
+        }
+        // Committed on `main`, never dry-run.
+        if b.branch != MAIN || !publish {
+            return Err(TxError::ChannelRestricted {
+                op: if publish {
+                    "ShredContent off main"
+                } else {
+                    "ShredContent in a dry run"
+                }
+                .into(),
+                channel: b.channel,
+            });
+        }
+        let set = Arc::make_mut(&mut self.shredded);
+        for op in &b.ops {
+            if let Op::ShredContent { content } = op {
+                set.insert(*content);
+            }
+        }
+        Ok(Self::empty_result(epoch))
+    }
     fn archive_branch(
         &mut self,
         branch: BranchId,
@@ -465,6 +512,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             revision_ids,
             rule_ids,
             access,
+            shredded,
             ..
         } = self;
         let branch = &mut branches[b.branch.0 as usize];
@@ -476,6 +524,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             foreign_key: Some(&foreign),
             staged: Some(&sink),
             auth: Some(access.as_deref()),
+            shredded: Some(shredded),
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch
@@ -708,6 +757,8 @@ pub struct KernelSnapshot {
     pub syncs: Vec<(BranchId, BranchId, Epoch, u32)>,
     /// The access document and its ids (ADR 0017 §4).
     pub access: Option<AccessState>,
+    /// Every shredded content hash (ADR 0017 §8.3).
+    pub shredded: BTreeSet<ContentHash>,
 }
 
 impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
@@ -744,6 +795,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             branches,
             syncs,
             access: self.access.as_deref().cloned(),
+            shredded: (*self.shredded).clone(),
         }
     }
     /// Rebuilds a kernel from [`Self::export`]. Each state is rebuilt from
@@ -884,6 +936,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 }
                 None => None,
             },
+            shredded: Arc::new(s.shredded),
         })
     }
 }
@@ -1004,7 +1057,8 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
             | Op::ObserverWatermark { .. }
             | Op::CreateBranch { .. }
             | Op::ArchiveBranch { .. }
-            | Op::SetAccess { .. } => op.clone(),
+            | Op::SetAccess { .. }
+            | Op::ShredContent { .. } => op.clone(),
         })
         .collect();
     Batch {

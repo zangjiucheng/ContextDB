@@ -275,6 +275,8 @@ pub enum TxnStatus {
 pub enum Unavailable {
     Missing,
     Corrupt,
+    /// The payload was shredded (ADR 0017 §8.3).
+    Shredded,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload {
@@ -630,6 +632,7 @@ impl<D: Durability> Store<D> {
         // Projection rows rolled forward are committed only after the
         // self-check accepted the state they came from (review N5).
         store.proj.end_bulk().map_err(sql)?;
+        store.packs.write().expect("pack index").shredded = store.db.shredded().clone();
         // A last segment with a valid header but no frames continues the chain.
         let last_segment = {
             let index = store.index.read().expect("log index");
@@ -917,6 +920,11 @@ impl<D: Durability> Store<D> {
             }
             // Step 4: publish.
             self.group_seq = seq;
+            // A shred is readable as `Shredded` once durable (§8.3); the set
+            // only grows, so its size tells whether this group added any.
+            if self.db.shredded().len() != self.packs.read().expect("pack index").shredded.len() {
+                self.packs.write().expect("pack index").shredded = self.db.shredded().clone();
+            }
             let mut from = start;
             for (k, (row, result)) in applied.iter().enumerate() {
                 let end = start + ends[k];
@@ -1033,6 +1041,16 @@ impl<D: Durability> Store<D> {
         let mut new_keys: Vec<(ContentHash, keys::Key)> = Vec::new();
         for bytes in blobs {
             let hash = *blake3::hash(bytes).as_bytes();
+            // Re-sending a shredded payload cannot store a new copy (§8.4).
+            if self
+                .packs
+                .read()
+                .expect("pack index")
+                .shredded
+                .contains(&hash)
+            {
+                return Err(StoreError::Tx(TxError::ContentShredded { content: hash }));
+            }
             let present = fresh.iter().any(|(h, _)| *h == hash)
                 || self.blobs.contains(&hash)
                     && matches!(self.get_blob(&hash), Ok(Payload::Available(_)));
@@ -1413,7 +1431,14 @@ fn read_payload(
     packs: &RwLock<PackIndex>,
     hash: &ContentHash,
 ) -> Payload {
-    let located = packs.read().expect("pack index").locate(hash);
+    let located = {
+        let p = packs.read().expect("pack index");
+        // The shred set first, before the blob store (ADR 0017 §8.3).
+        if p.shredded.contains(hash) {
+            return Payload::Unavailable(Unavailable::Shredded);
+        }
+        p.locate(hash)
+    };
     let read = match located {
         Some(pack::Located {
             path,

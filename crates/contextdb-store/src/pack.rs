@@ -51,6 +51,8 @@ pub(crate) struct PackIndex {
     pub(crate) map: HashMap<ContentHash, Loc>,
     /// The key of every content hash (ADR 0017 §8.2).
     pub(crate) keys: HashMap<ContentHash, Key>,
+    /// Shredded content hashes, checked before the packs (ADR 0017 §8.3).
+    pub(crate) shredded: std::collections::BTreeSet<ContentHash>,
 }
 /// Whether a segment's bytes start with the encrypted-segment header.
 pub(crate) fn is_encrypted_segment(data: &[u8]) -> bool {

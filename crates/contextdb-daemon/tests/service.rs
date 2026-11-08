@@ -276,14 +276,14 @@ fn t07e_certified_read_never_returns_a_superseded_revision() {
     assert_eq!(code(&read(v1.clone(), Mode::Certified)), "NotCertified");
     // Advisory reads return it, marked superseded.
     match read(v1, Mode::Advisory) {
-        Response::Read { item, payload } => {
+        Response::Read { item, payload, .. } => {
             assert_eq!(payload.as_deref(), Some(&b"mongodb"[..]));
             assert_eq!(item.summary, Summary::Stale(StaleReason::HeadSuperseded));
         }
         other => panic!("{other:?}"),
     }
     match read(Target::Key("db".into()), Mode::Certified) {
-        Response::Read { item, payload } => {
+        Response::Read { item, payload, .. } => {
             assert_eq!(item.rev, RevisionId(1));
             assert_eq!(payload.as_deref(), Some(&b"postgresql"[..]));
         }

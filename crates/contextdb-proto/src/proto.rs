@@ -691,7 +691,35 @@ pub enum Request {
         key: String,
         branch: Option<String>,
     },
+    /// `ctx shred` (admin, ADR 0017 §8.3): the payload of `key` (at `rev`,
+    /// default its head on `main`), plus, with `with_reviews`, the review
+    /// payloads, validation metadata and resolution notes on the revisions
+    /// sharing it. Without `confirm` it only lists what would be shredded.
+    Shred {
+        key: String,
+        rev: Option<RevisionId>,
+        with_reviews: bool,
+        confirm: bool,
+        client_txn_id: Option<[u8; 16]>,
+    },
 }
+/// One payload `ctx shred` names: what it is and where it is attached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShredTarget {
+    pub content: ContentHash,
+    /// `body`, `review`, `validation` or `note`.
+    pub what: String,
+    pub branch: String,
+    pub key: String,
+    pub rev: RevisionId,
+}
+wire_struct!(ShredTarget {
+    content,
+    what,
+    branch,
+    key,
+    rev
+});
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
 /// `epoch`, to `summary`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1027,6 +1055,9 @@ pub enum Response {
     Read {
         item: Item,
         payload: Option<Vec<u8>>,
+        /// Why a full read has no payload: `missing`, `corrupt` or
+        /// `shredded` (ADR 0017 §8.3).
+        unavailable: Option<String>,
     },
     Committed {
         result: CommitResult,
@@ -1187,6 +1218,13 @@ pub enum Response {
         principal: PrincipalId,
         allowed: bool,
         step: String,
+    },
+    /// `ctx shred`: what is (or would be) shredded; `epoch` once committed,
+    /// and whether the purge completed (ADR 0017 §8.4).
+    Shred {
+        targets: Vec<ShredTarget>,
+        epoch: Option<Epoch>,
+        purged: bool,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -1996,6 +2034,20 @@ impl Wire for Request {
                 key.encode(o);
                 branch.encode(o);
             }
+            Self::Shred {
+                key,
+                rev,
+                with_reviews,
+                confirm,
+                client_txn_id,
+            } => {
+                44u8.encode(o);
+                key.encode(o);
+                rev.encode(o);
+                with_reviews.encode(o);
+                confirm.encode(o);
+                client_txn_id.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2240,6 +2292,13 @@ impl Wire for Request {
                 key: Wire::decode(i)?,
                 branch: Wire::decode(i)?,
             },
+            44 => Self::Shred {
+                key: Wire::decode(i)?,
+                rev: Wire::decode(i)?,
+                with_reviews: Wire::decode(i)?,
+                confirm: Wire::decode(i)?,
+                client_txn_id: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -2275,10 +2334,15 @@ impl Wire for Response {
                 omitted.encode(o);
                 estimate.encode(o);
             }
-            Self::Read { item, payload } => {
+            Self::Read {
+                item,
+                payload,
+                unavailable,
+            } => {
                 4u8.encode(o);
                 item.encode(o);
                 payload.encode(o);
+                unavailable.encode(o);
             }
             Self::Committed { result } => {
                 5u8.encode(o);
@@ -2496,6 +2560,16 @@ impl Wire for Response {
                 37u8.encode(o);
                 target.encode(o);
             }
+            Self::Shred {
+                targets,
+                epoch,
+                purged,
+            } => {
+                38u8.encode(o);
+                targets.encode(o);
+                epoch.encode(o);
+                purged.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2520,6 +2594,7 @@ impl Wire for Response {
             4 => Self::Read {
                 item: Wire::decode(i)?,
                 payload: Wire::decode(i)?,
+                unavailable: Wire::decode(i)?,
             },
             5 => Self::Committed {
                 result: Wire::decode(i)?,
@@ -2656,6 +2731,11 @@ impl Wire for Response {
             },
             37 => Self::Unavailable {
                 target: Wire::decode(i)?,
+            },
+            38 => Self::Shred {
+                targets: Wire::decode(i)?,
+                epoch: Wire::decode(i)?,
+                purged: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2977,6 +3057,13 @@ mod tests {
                 key: "db.engine".into(),
                 branch: Some("f".into()),
             },
+            Request::Shred {
+                key: "vendor/keys".into(),
+                rev: Some(RevisionId(4)),
+                with_reviews: true,
+                confirm: false,
+                client_txn_id: Some([4; 16]),
+            },
             Request::SessionAttach {
                 harness: "claude".into(),
                 harness_session: "abc".into(),
@@ -3268,6 +3355,17 @@ mod tests {
             },
             Response::Unavailable {
                 target: "billing/notes".into(),
+            },
+            Response::Shred {
+                targets: vec![ShredTarget {
+                    content: [9; 32],
+                    what: "body".into(),
+                    branch: "main".into(),
+                    key: "vendor/keys".into(),
+                    rev: RevisionId(4),
+                }],
+                epoch: Some(Epoch(12)),
+                purged: false,
             },
             Response::Mirror {
                 report: MirrorReport {

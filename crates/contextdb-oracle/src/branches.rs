@@ -604,6 +604,24 @@ impl BranchOracle {
                 self.access = Some(crate::AccessModel::apply(self.access.as_ref(), doc)?);
                 Ok((done(self), None))
             }
+            // ShredContent (ADR 0017 §8.3): ShredContent alone, admin, on
+            // main, never dry-run; no effect on derivation. The shredded
+            // set and `ContentShredded` are checked by PROP16 against the
+            // store, not here.
+            ops if ops.iter().any(|op| matches!(op, Op::ShredContent { .. })) => {
+                if !ops.iter().all(|op| matches!(op, Op::ShredContent { .. })) {
+                    return Err(TxError::SoleOpRequired {
+                        op: "ShredContent".into(),
+                    });
+                }
+                if b.channel != Channel::Admin || b.branch != MAIN || !publish {
+                    return Err(TxError::ChannelRestricted {
+                        op: "ShredContent".into(),
+                        channel: b.channel,
+                    });
+                }
+                Ok((done(self), None))
+            }
             _ if merges == 1 => self.merge(b, epoch).map(|(r, m)| (r, Some(m))),
             _ => self.commit(b, epoch).map(|r| (r, None)),
         }

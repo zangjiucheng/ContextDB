@@ -51,6 +51,8 @@ pub(crate) struct Stage<'a> {
     /// Set by the kernel: write authorisation against this access document
     /// (ADR 0017 §6.1); `Some(None)` is a store without one. `None` (a
     /// single-branch database, outside the kernel) checks nothing.
+    /// Set by the kernel: the shredded content hashes (ADR 0017 §8.3).
+    pub shredded: Option<&'a std::collections::BTreeSet<ContentHash>>,
     pub auth: Option<Option<&'a crate::access::AccessState>>,
 }
 /// What a stage publishes, detached from the published state it borrows.
@@ -123,6 +125,7 @@ impl<'a> Stage<'a> {
             read_set: BTreeMap::new(),
             foreign_key: None,
             auth: None,
+            shredded: None,
         }
     }
     /// `(key, lane, owner)` of a published or staged logical.

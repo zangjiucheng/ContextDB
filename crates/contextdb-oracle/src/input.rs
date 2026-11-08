@@ -190,7 +190,8 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
         Op::CreateBranch { .. }
         | Op::ArchiveBranch { .. }
         | Op::Merge { .. }
-        | Op::SetAccess { .. } => {
+        | Op::SetAccess { .. }
+        | Op::ShredContent { .. } => {
             return Err(TxError::UnknownBranch);
         }
         Op::AddRevision {
@@ -1053,7 +1054,8 @@ fn apply_op(
         Op::CreateBranch { .. }
         | Op::ArchiveBranch { .. }
         | Op::Merge { .. }
-        | Op::SetAccess { .. } => {
+        | Op::SetAccess { .. }
+        | Op::ShredContent { .. } => {
             unreachable!("rejected by resolve")
         }
     }

@@ -554,6 +554,113 @@ fn certificate_reads(ops: &[Op]) -> Option<Response> {
             )
         })
 }
+/// What `ctx shred` names (ADR 0017 §8.3): the content of `key` at `rev`
+/// (default: its head on `main`, else on the first branch that sees it),
+/// every revision sharing it on every branch, and with `with_reviews` the
+/// review payloads and validation metadata on those revisions and the
+/// notes that resolved those reviews. CodeAnchor descriptors are refused:
+/// they hold hashes, not text.
+fn shred_targets<D: Durability>(
+    snap: &Snapshot<D>,
+    key: &str,
+    rev: Option<RevisionId>,
+    with_reviews: bool,
+) -> Result<Vec<ShredTarget>, Response> {
+    let k = &snap.kernel;
+    let seen = (k.branches())
+        .filter_map(|b| {
+            let v = k.branch(b.id)?;
+            let l = v.logical_by_key(key)?;
+            Some((v, l))
+        })
+        .next();
+    let Some((view, l)) = seen else {
+        return Err(err("UnknownRef", format!("no logical {key}")));
+    };
+    if view
+        .logical_info(l)
+        .is_some_and(|(_, kind, _)| kind == RecordKind::CodeAnchor)
+    {
+        return Err(err(
+            "InvalidRequest",
+            "a CodeAnchor descriptor holds hashes and paths, not text: nothing to shred",
+        ));
+    }
+    let main_head = k.branch(MAIN).and_then(|m| m.head(l));
+    let r = match rev.or(main_head).or_else(|| view.head(l)) {
+        Some(r) if view.revision_logical(r) == Some(l) => r,
+        _ => return Err(err("UnknownRef", format!("no such revision of {key}"))),
+    };
+    let content = view
+        .revision_content(r)
+        .map_err(|e| err(&code(&e), format!("{e:?}")))?;
+    let mut out: Vec<ShredTarget> = Vec::new();
+    let mut artifacts: BTreeMap<ArtifactId, ShredTarget> = BTreeMap::new();
+    for info in k.branches() {
+        let Some(v) = k.branch(info.id) else { continue };
+        for r in v.revisions_with_content(&content) {
+            let Some(key) = (v.revision_logical(r))
+                .and_then(|l| v.logical_info(l))
+                .map(|i| i.0)
+            else {
+                continue;
+            };
+            let target = |content, what: &str| ShredTarget {
+                content,
+                what: what.into(),
+                branch: info.name.clone(),
+                key: key.clone(),
+                rev: r,
+            };
+            out.push(target(content, "body"));
+            if !with_reviews {
+                continue;
+            }
+            for (a, art) in v.artifacts() {
+                if art.target == r {
+                    let t = target(art.payload_hash, "review");
+                    artifacts.insert(a, t.clone());
+                    out.push(t);
+                }
+            }
+            for (j, ..) in v.rules_concluding(r) {
+                for (_, record) in v.rule_validations(j) {
+                    if let Some(meta) = record.meta {
+                        out.push(target(meta, "validation"));
+                    }
+                }
+            }
+        }
+    }
+    // Resolution notes live only in the op_log.
+    if with_reviews && !artifacts.is_empty() {
+        for e in 1..=snap.epoch.0 {
+            let Ok(batch) = snap.log.read_row(Epoch(e)).and_then(|r| {
+                r.batch()
+                    .map_err(|e| contextdb_store::StoreError::Io(e.to_string()))
+            }) else {
+                continue;
+            };
+            for op in &batch.ops {
+                if let Op::ResolveArtifact {
+                    id: ArtifactRef::Existing(a),
+                    note: Some(note),
+                } = op
+                    && let Some(t) = artifacts.get(a)
+                {
+                    out.push(ShredTarget {
+                        content: *note,
+                        what: "note".into(),
+                        ..t.clone()
+                    });
+                }
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    out.retain(|t| seen.insert((t.content, t.what.clone(), t.branch.clone(), t.rev)));
+    Ok(out)
+}
 fn submit_err(e: SubmitError) -> Response {
     match e {
         SubmitError::Busy => err("Busy", "write queue full"),
@@ -1283,6 +1390,42 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 let batch = Batch::new(vec![Op::SetAccess { doc: Box::new(doc) }]);
                 self.commit(id, Vec::new(), batch, client_txn_id)
+            }
+            Request::Shred {
+                key,
+                rev,
+                with_reviews,
+                confirm,
+                client_txn_id,
+            } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx shred requires the admin socket");
+                }
+                let targets = match shred_targets(&snap, &key, rev, with_reviews) {
+                    Ok(t) => t,
+                    Err(r) => return r,
+                };
+                drop(snap);
+                if !confirm {
+                    return Response::Shred {
+                        targets,
+                        epoch: None,
+                        purged: false,
+                    };
+                }
+                let contents: BTreeSet<ContentHash> = targets.iter().map(|t| t.content).collect();
+                let ops = (contents.into_iter())
+                    .map(|content| Op::ShredContent { content })
+                    .collect();
+                match self.commit(id, Vec::new(), Batch::new(ops), client_txn_id) {
+                    Response::Committed { result } => Response::Shred {
+                        targets,
+                        epoch: Some(result.epoch),
+                        // The purge (keys, projections) is milestone 6c.
+                        purged: false,
+                    },
+                    other => other,
+                }
             }
             Request::AccessShow => {
                 if id.channel != Channel::Admin {
@@ -2333,11 +2476,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     | Op::ArchiveBranch { .. }
                     | Op::Merge { .. }
                     | Op::SetAccess { .. }
+                    | Op::ShredContent { .. }
             )
         }) {
             return err(
                 "InvalidRequest",
-                "branch ops and SetAccess have their own requests",
+                "branch ops, SetAccess and ShredContent have their own requests",
             );
         }
         let (branch, cert) = {
@@ -2449,9 +2593,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             if sent.contains(&content) {
                 continue;
             }
-            let readable = (view.revisions_with_content(&content).into_iter())
-                .filter_map(|r| view.revision_logical(r))
-                .any(|l| view.authorizes(p, l));
+            // A shredded hash proves nothing without its bytes (T107).
+            let readable = !snap.kernel.shredded().contains(&content)
+                && (view.revisions_with_content(&content).into_iter())
+                    .filter_map(|r| view.revision_logical(r))
+                    .any(|l| view.authorizes(p, l));
             if !readable {
                 let e = TxError::MissingBlob { content };
                 return Err(err(&code(&e), format!("{e:?}")));
@@ -2902,12 +3048,26 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return err("NotCertified", format!("{:?} {:?}", l, summary));
         }
         let content = db.revision_content(r).expect("existing revision");
-        let payload = match snap.log.read_blob(&content) {
-            Payload::Available(bytes) => Some(bytes),
-            Payload::Unavailable(_) => None,
+        let (payload, unavailable) = match snap.log.read_blob(&content) {
+            Payload::Available(bytes) => (Some(bytes), None),
+            Payload::Unavailable(why) => (
+                None,
+                Some(
+                    match why {
+                        contextdb_store::Unavailable::Missing => "missing",
+                        contextdb_store::Unavailable::Corrupt => "corrupt",
+                        contextdb_store::Unavailable::Shredded => "shredded",
+                    }
+                    .to_owned(),
+                ),
+            ),
         };
         if level == levels::Level::Full {
-            return Response::Read { item, payload };
+            return Response::Read {
+                item,
+                payload,
+                unavailable,
+            };
         }
         // Below `full`: recomputed from the payload, so a stale projection
         // never serves a wrong rendering (ADR 0016 §4.1).
@@ -2927,6 +3087,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         Response::Read {
             item,
             payload: None,
+            unavailable,
         }
     }
     /// Deps: handles of this session's certificates (required entries) or

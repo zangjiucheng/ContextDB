@@ -1114,6 +1114,10 @@ impl Wire for Op {
                 20u8.encode(o);
                 doc.encode(o);
             }
+            Self::ShredContent { content } => {
+                21u8.encode(o);
+                content.encode(o);
+            }
             Self::SetMetadata {
                 logical,
                 tags,
@@ -1243,6 +1247,9 @@ impl Wire for Op {
             20 => Ok(Self::SetAccess {
                 doc: Box::new(Wire::decode(i)?),
             }),
+            21 => Ok(Self::ShredContent {
+                content: Wire::decode(i)?,
+            }),
             11 => Ok(Self::SetMetadata {
                 logical: Wire::decode(i)?,
                 tags: Wire::decode(i)?,
@@ -1369,7 +1376,8 @@ pub struct EventLog {
 impl EventLog {
     /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches; v2
     /// (P7, ADR 0015 §9) adds the format-4 op encodings (tags 18, 19); v3
-    /// (P9, ADR 0017 §10) adds `SetAccess` (tag 20).
+    /// (P9, ADR 0017 §10) adds `SetAccess` (tag 20) and `ShredContent`
+    /// (tag 21).
     pub const VERSION: u16 = 3;
     /// The lowest version that can carry `batch`.
     pub fn version_of(batch: &Batch) -> u16 {
@@ -1397,7 +1405,7 @@ impl EventLog {
         let p9 = batch
             .ops
             .iter()
-            .any(|op| matches!(op, Op::SetAccess { .. }));
+            .any(|op| matches!(op, Op::SetAccess { .. } | Op::ShredContent { .. }));
         if p9 {
             3
         } else if p7 {

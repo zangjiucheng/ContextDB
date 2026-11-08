@@ -1034,6 +1034,7 @@ fn t100_every_response_type_names_only_visible_ids() {
     let (out, _) = run(Response::Read {
         item: it(lv, vis),
         payload: None,
+        unavailable: None,
     });
     let Response::Read { item, .. } = out else {
         panic!()
@@ -1054,6 +1055,7 @@ fn t100_every_response_type_names_only_visible_ids() {
         run(Response::Read {
             item: it(lh, hid),
             payload: Some(b"secret".to_vec()),
+            unavailable: None,
         })
         .0,
         Response::Unavailable {

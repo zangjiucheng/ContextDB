@@ -46,6 +46,7 @@ const PLAIN_ERRORS: &[&str] = &[
     "AccessRevoked",
     "BranchOfAnotherPrincipal",
     "ChannelRestricted",
+    "ContentShredded",
     "HeadConflict",
     "InvalidLane",
     "InvalidRequest",

@@ -5,6 +5,7 @@ mod anchors;
 mod daemon;
 mod p4;
 mod setup;
+mod shred;
 mod ui;
 
 use contextdb_model::*;
@@ -79,6 +80,9 @@ Hooks and gating (P4, ADR 0010):
   ctx access apply <dir> [--file .contextdb/access.toml]
                                        commit the access document (admin, P9)
   ctx access show <dir>                the committed document and principal ids
+  ctx shred <dir> <key>[@rev] [--with-reviews] [--yes]
+                                       list, then (with --yes) shred a payload and every
+                                       revision sharing it; prints what a shred cannot reach
   ctx access check <dir> <principal> <key> [--branch B]
                                        Authorized for one record, and the step
   ctx gating apply <dir> [--file .contextdb/gating.toml]
@@ -237,6 +241,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             rest.extend(args.iter().skip(3).cloned());
             access::run(dir(2)?, &rest)
         }
+        Some("shred") => shred::run(dir(1)?, &args[2..]),
         Some("gating") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             let mut rest = vec![sub];

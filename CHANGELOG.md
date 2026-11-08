@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **P9 milestone 6b: `ShredContent`** (ADR 0017 §8.3; T59, PROP16). op_log format 5 gains op tag 21; protocol 7 gains `Shred` and `ContentShredded`.
+  - **`ctx shred <dir> <key>[@rev] [--with-reviews] [--yes]`** (admin). It lists every revision on every branch that shares the payload; with `--with-reviews` it also lists review payloads, validation metadata and resolution notes on those revisions. It refuses CodeAnchor descriptors and prints what a shred cannot reach. `--yes` commits the shred.
+  - **No effect on derivation.** Topology, bases, heads, rules, statuses and digests are unchanged. The kernel records the shredded set globally and carries it in snapshots; older snapshots are ignored and replay starts earlier.
+  - **Reads** answer `Payload::Unavailable(Shredded)`, checked before the blob store. `ctx_read` returns no body and `unavailable: "shredded"`.
+  - **Refusals.** A later op naming the hash (`content`, `meta`, `payload_hash`, `note`) is `ContentShredded`, and re-sending the bytes cannot store a new copy. A non-owner sending the bytes learns `ContentShredded` (F13); without them it gets `MissingBlob`, even for a hash on a revision it reads.
+  - The key and the projection rows are not purged yet: the shred reports `committed, purge pending` until milestone 6c.
 - **P9 milestone 6a: encrypted packs and the key log** (ADR 0017 §8.1, §8.2). New payloads are stored as `CXBE` records, encrypted with XChaCha20-Poly1305 under one random key per content hash. The content hash stays BLAKE3 of the plaintext, so addresses, dedup and the op_log do not change. Segments written since P9 start with a `CXPH` header.
   - **`<data>/keys/`** holds the key log (`keylog-NNNNNNNN`), which is truth like the packs: it cannot be rebuilt, and **backups must include it**, or every payload is lost. A key record is written with an ordered sync before its pack record, so the commit's full sync makes both durable.
   - A record whose key is missing is unreadable and the payload counts as absent. Plaintext `CXBP` records from before P9 stay readable until `ctx migrate` (milestone 6e) re-encrypts them.
