@@ -710,6 +710,32 @@ fn handoff_drops_what_the_acceptor_may_not_read() {
         Response::HandoffBegun { id, .. } => id,
         other => panic!("{other:?}"),
     };
+    // The owner moves sec/s, which carol cannot read: her verdict must not
+    // depend on it (security review m4).
+    let sec = s
+        .actor
+        .snapshot()
+        .view(MAIN)
+        .logical_by_key("sec/s")
+        .unwrap();
+    raw(
+        s,
+        vec![b"sec v2".to_vec()],
+        vec![
+            // Not base: a verdict that read sec/s would no longer be valid.
+            Op::AddRevision {
+                logical: sec.into(),
+                content: h(b"sec v2"),
+                adopt_as_base: false,
+            },
+            Op::SetHead {
+                logical: sec.into(),
+                expected: f.rev["sec/s"].into(),
+                new: RevRef::New(0),
+            },
+        ],
+        [9; 16],
+    );
     let carol = start(s, CAROL);
     match s
         .handle(

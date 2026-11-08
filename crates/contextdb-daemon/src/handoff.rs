@@ -337,6 +337,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             // certificate itself is never validated for another principal.
             cert.entries
                 .retain(|e| self.may_read(me_p, e.logical, branch));
+            // The vector too, so the verdict depends only on what the
+            // acceptor may read (ADR 0017 §3.4; security review m4).
+            cert.vector
+                .retain(|v| self.may_read(me_p, v.logical, branch));
+            cert.principal = me_p;
         }
         let reply = (
             x.owner.clone(),
