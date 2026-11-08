@@ -475,3 +475,71 @@ mod jobs {
         let _ = Duration::ZERO;
     }
 }
+
+/// Security review m11: a key-log rewrite that failed inside the shred's
+/// commit is retried by `Service::purge` (no restart needed), and `ctx
+/// status` sees the result at once.
+#[test]
+fn a_failed_key_log_rewrite_is_retried_by_the_purge() {
+    use contextdb_daemon::{actor, service::Service};
+    use contextdb_store::{Durability, OpenOptions, SimDisk, Store, session::SessionLog};
+    let disk = SimDisk::new();
+    let dir = Path::new("/db");
+    let (store, _) = Store::open(
+        disk.clone(),
+        dir,
+        &OpenOptions {
+            create: true,
+            ..OpenOptions::default()
+        },
+    )
+    .unwrap();
+    let (log, events, _) = SessionLog::open(disk.clone(), dir, false, 1 << 20).unwrap();
+    let s = Service::new(actor::spawn(store).unwrap(), log, events).unwrap();
+    let admin = contextdb_daemon::service::Identity {
+        channel: Channel::Admin,
+        principal: PrincipalId(0),
+    };
+    let body = b"the zanzibar vendor holds the keys".to_vec();
+    let content = h(&body);
+    let r = s.handle(
+        admin,
+        Request::Raw {
+            blobs: vec![body],
+            batch: Batch::new(vec![Op::CreateLogical {
+                key: "k".into(),
+                kind: RecordKind::Fact,
+                scope_lane: "repo".into(),
+                content,
+                adopt_as_base: true,
+            }]),
+        },
+    );
+    assert!(matches!(r.response, Response::Committed { .. }), "{r:?}");
+    // The rewrite's rename fails; the shred's own commit never renames.
+    disk.fail_nth("rename", 0);
+    let mut b = Batch::new(vec![Op::ShredContent { content }]);
+    b.channel = Channel::Admin;
+    let r = s.handle(
+        admin,
+        Request::Raw {
+            blobs: vec![],
+            batch: b,
+        },
+    );
+    let Response::Committed { result } = r.response else {
+        panic!("{r:?}")
+    };
+    let pending = |s: &Service<SimDisk>| match s.handle(admin, Request::Status).response {
+        Response::Status { purge_pending, .. } => purge_pending,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(pending(&s), vec![result.epoch], "the key purge failed");
+    let state = s.purge().unwrap();
+    assert!(state.complete() && state.keys >= result.epoch, "{state:?}");
+    assert_eq!(pending(&s), Vec::<Epoch>::new());
+    for name in disk.list(&dir.join("keys")).unwrap() {
+        let bytes = disk.read(&dir.join("keys").join(&name)).unwrap();
+        assert!(!bytes.windows(32).any(|w| w == content), "{name}");
+    }
+}

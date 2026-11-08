@@ -772,9 +772,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let snap = self.actor.snapshot();
         let shredded = snap.kernel.shredded();
         let through = shredded.values().max().copied().unwrap_or(Epoch(0));
+        // The key log's own mark, after retrying a rewrite that failed
+        // inside its commit (security review m11).
+        let keys = self
+            .actor
+            .request(|reply| Message::KeyPurge { retry: true, reply })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(snap.key_purged);
         let mut state = PurgeState {
             through,
-            keys: snap.key_purged,
+            keys,
             ..PurgeState::default()
         };
         // What each projection must purge: contents shredded above its mark,
@@ -885,7 +893,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if shredded.is_empty() {
             return Vec::new();
         }
-        let mut marks = vec![snap.key_purged];
+        let keys = self
+            .actor
+            .request(|reply| Message::KeyPurge {
+                retry: false,
+                reply,
+            })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(snap.key_purged);
+        let mut marks = vec![keys];
         marks.extend(self.recall.lock().expect("recall").purged_through().ok());
         marks.extend(self.vectors.get().and_then(|v| v.purged_through().ok()));
         marks.extend(

@@ -90,6 +90,12 @@ pub enum Message {
         epoch: Epoch,
         reply: mpsc::Sender<Result<ContentHash, StoreError>>,
     },
+    /// The store's `key_log_purged_through`; with `retry`, an unfinished
+    /// key-log rewrite runs again first (ADR 0017 §8.4).
+    KeyPurge {
+        retry: bool,
+        reply: mpsc::Sender<Result<Epoch, StoreError>>,
+    },
     /// One `ctx_changes` page from the durable `diff_log` (ADR 0015 §8).
     Changes {
         branch: BranchId,
@@ -320,6 +326,14 @@ impl<D: Durability + Clone> Actor<D> {
             }
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
+            }
+            Message::KeyPurge { retry, reply } => {
+                let r = if retry {
+                    self.store.retry_key_purge()
+                } else {
+                    Ok(self.store.key_log_purged_through())
+                };
+                let _ = reply.send(r);
             }
             Message::Checksum { epoch, reply } => {
                 let _ = reply.send(self.store.checksum_at(epoch));

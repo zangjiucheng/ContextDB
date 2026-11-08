@@ -1042,6 +1042,15 @@ impl<D: Durability> Store<D> {
     }
     /// The highest shred epoch whose key-log purge completed (ADR 0017
     /// §8.4): its keys are in no file under `keys/`, durably.
+    /// Runs the key-log rewrite again when a shred's purge is unfinished (a
+    /// rewrite that failed inside its commit, security review m11), and
+    /// returns `key_log_purged_through`.
+    pub fn retry_key_purge(&mut self) -> Result<Epoch, StoreError> {
+        if self.keys_need_purge().map_err(io)? {
+            self.rewrite_keys().map_err(io)?;
+        }
+        Ok(self.key_purged)
+    }
     pub fn key_log_purged_through(&self) -> Epoch {
         self.key_purged
     }
