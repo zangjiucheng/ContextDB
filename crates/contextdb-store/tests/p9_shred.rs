@@ -429,3 +429,56 @@ fn t103_the_key_log_purge_survives_a_power_cut_at_every_step() {
         }
     }
 }
+
+/// G4 (ADR 0017 §11): a full disk during the key-log rewrite. Every write,
+/// append, sync, rename and unlink of the rewrite fails in turn. The shred
+/// commits (its log frame is durable before the rewrite starts), the purge
+/// is not claimed, and the next open, after a restart or a power cut,
+/// finishes it: the key is in no file, the payload reads `Shredded`, and
+/// the other payload reads back.
+#[test]
+fn g4_a_full_disk_during_the_key_log_rewrite_is_finished_at_open() {
+    let mut hit = 0;
+    for op in ["write", "append", "sync", "sync_dir", "rename", "remove"] {
+        for n in 0..64u32 {
+            let disk = SimDisk::new();
+            let mut store = open(&disk);
+            let secret = store.put_blob(b"the zanzibar vendor holds the keys").unwrap();
+            let kept = store.put_blob(b"rotate keys yearly").unwrap();
+            store
+                .commit(&Batch::new(vec![create("a", secret), create("b", kept)]))
+                .unwrap();
+            disk.fail_nth(op, n);
+            let Ok(r) = store.commit(&shred(&[secret])) else {
+                // The failure hit the commit itself, before the rewrite.
+                continue;
+            };
+            if store.key_log_purged_through() >= r.epoch {
+                // The n-th such operation is past the rewrite.
+                break;
+            }
+            hit += 1;
+            drop(store);
+            for power_cut in [false, true] {
+                let after = if power_cut {
+                    disk.crash(TailFate::Torn, u64::from(n))
+                } else {
+                    disk.restart()
+                };
+                let store = open(&after);
+                assert!(store.key_log_purged_through() >= r.epoch, "{op}#{n}");
+                assert_eq!(holds(&after, &secret), Vec::<String>::new(), "{op}#{n}");
+                assert_eq!(
+                    store.get_blob(&secret).unwrap(),
+                    Payload::Unavailable(Unavailable::Shredded)
+                );
+                assert_eq!(
+                    store.get_blob(&kept).unwrap(),
+                    Payload::Available(b"rotate keys yearly".into()),
+                    "{op}#{n} power_cut={power_cut}"
+                );
+            }
+        }
+    }
+    assert!(hit >= 5, "the faults reached the rewrite only {hit} times");
+}

@@ -47,3 +47,25 @@ pub fn plaintext_pack_record(bytes: &[u8]) -> Vec<u8> {
     r.extend_from_slice(bytes);
     r
 }
+/// Fuzz support (ADR 0017 §11 G4): runs the pack (`CXBP`/`CXBE`) and key-log
+/// (`CXKH`/`CXKY`) parsers over arbitrary bytes, with keys taken from the
+/// key records found, and checks what they accept.
+#[doc(hidden)]
+pub fn fuzz_record_parsers(data: &[u8]) {
+    let _ = keys::parse_header(data);
+    let found = keys::parse(data);
+    let map: std::collections::HashMap<_, _> = found.iter().copied().collect();
+    for (hash, offset, len, nonce) in pack::parse_all(data, &|h| map.get(h).copied()) {
+        let body = &data[offset as usize..offset as usize + len as usize];
+        match nonce {
+            // A plaintext record is valid only when its bytes hash to it.
+            None => assert_eq!(*blake3::hash(body).as_bytes(), hash),
+            // An encrypted one authenticates under its key and decrypts to
+            // bytes with its hash.
+            Some(n) => {
+                let pt = pack::open_sealed(&map[&hash], &hash, &n, body).expect("accepted");
+                assert_eq!(*blake3::hash(&pt).as_bytes(), hash);
+            }
+        }
+    }
+}

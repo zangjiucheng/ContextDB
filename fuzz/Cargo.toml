@@ -16,6 +16,8 @@ contextdb-mcp = { path = "../crates/contextdb-mcp" }
 contextdb-model = { path = "../crates/contextdb-model" }
 contextdb-hooks = { path = "../crates/contextdb-hooks" }
 contextdb-proto = { path = "../crates/contextdb-proto" }
+contextdb-store = { path = "../crates/contextdb-store" }
+blake3 = "=1.8.7"
 contextdb-anchors = { path = "../crates/contextdb-anchors" }
 contextdb-symbols = { path = "../crates/contextdb-symbols" }
 serde_json = "=1.0.151"
@@ -67,6 +69,20 @@ bench = false
 [[bin]]
 name = "symbols_parse"
 path = "fuzz_targets/symbols_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_principal"
+path = "fuzz_targets/ipc_principal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_records"
+path = "fuzz_targets/store_records.rs"
 test = false
 doc = false
 bench = false
