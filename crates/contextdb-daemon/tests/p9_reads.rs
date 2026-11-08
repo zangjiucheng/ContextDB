@@ -1736,3 +1736,92 @@ fn a_certificate_read_set_never_names_a_hidden_premise() {
         "{appended:?}"
     );
 }
+
+/// Security review M1 (ADR 0017 §5.7, §6.2 rule 7): a merge dry run
+/// (`ctx_what_if` with `ExpectHeads` and `Merge`) never reveals a hidden
+/// logical's head, and a merge's `certify` list never reveals whether a
+/// hidden record is CERTIFIED.
+#[test]
+fn a_merge_never_reveals_a_hidden_head_or_status() {
+    let f = fixture();
+    let s = &f.s;
+    let r = s
+        .handle(
+            BOB,
+            Request::BranchCreate {
+                name: "probe".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(!matches!(r, Response::Error { .. }), "{r:?}");
+    let session = start(s, BOB);
+    let hidden_head = f.rev["sec/s"];
+    let probe = s.actor.snapshot().kernel.branch_by_name("probe").unwrap();
+    for entry in [
+        LogicalRef::Key("sec/s".into()),
+        LogicalRef::Existing(
+            s.actor
+                .snapshot()
+                .view(MAIN)
+                .logical_by_key("sec/s")
+                .unwrap(),
+        ),
+    ] {
+        let r = s
+            .handle(
+                BOB,
+                Request::WhatIf {
+                    binding: Binding::root(session),
+                    ops: vec![
+                        Op::ExpectHeads {
+                            entries: vec![(entry.clone(), f.rev["pub/b"])],
+                            source: ReadSource::Client,
+                        },
+                        Op::Merge {
+                            source: probe,
+                            require_certified: false,
+                            certify: Vec::new(),
+                        },
+                    ],
+                    blobs: Vec::new(),
+                },
+            )
+            .response;
+        let text = format!("{r:?}");
+        assert!(
+            !text.contains("ReadSetConflict")
+                && !text.contains(&format!("RevisionId({})", hidden_head.0)),
+            "{entry:?}: {text}"
+        );
+    }
+    // `certify` naming a hidden record is refused for reading it (key
+    // existence is the §2.3 exception), never MergeNotCertified or Merged,
+    // whatever its status.
+    let merge = |certify: &str| {
+        let r = s
+            .handle(
+                BOB,
+                Request::Merge {
+                    binding: None,
+                    source: "main".into(),
+                    into: Some("probe".into()),
+                    require_certified: true,
+                    certify: vec![certify.into()],
+                    client_txn_id: None,
+                },
+            )
+            .response;
+        match r {
+            Response::Error { code, .. } => code,
+            other => format!("{other:?}")
+                .split([' ', '{'])
+                .next()
+                .unwrap()
+                .to_owned(),
+        }
+    };
+    assert_eq!(merge("sec/s"), "Unauthorized");
+    assert_eq!(merge("no/such-key"), "UnknownRef");
+}

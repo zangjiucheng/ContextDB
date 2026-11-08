@@ -787,7 +787,26 @@ impl BranchOracle {
         let tv = self.visible(t);
         let mut reads: BTreeMap<u32, u32> = BTreeMap::new();
         let mut read_error = None;
-        'reads: for op in &b.ops {
+        // ADR 0017 §5.7 (security review M1): a read of a logical the
+        // principal cannot read is refused before its revision resolves.
+        let principal_reads = |gl: u32, meta: &BTreeMap<u32, Metadata>| {
+            let owner = |p: u32| p < 16 || (0x5641_0000..=0x5641_FFFF).contains(&p);
+            let x = &self.logicals[gl as usize];
+            let dirs = meta.get(&gl).map(|m| m.dirs.clone()).unwrap_or_default();
+            owner(b.principal.0)
+                || x.owner == b.principal
+                || self.access.as_ref().is_some_and(|m| {
+                    m.authorized(b.principal, &x.key, &x.scope_lane, x.owner, &dirs)
+                        .0
+                })
+        };
+        let text = |l: &LogicalRef| match l {
+            LogicalRef::Existing(g) => format!("logical {}", g.0),
+            LogicalRef::Key(k) => k.clone(),
+            LogicalRef::New(n) => format!("new logical {n}"),
+        };
+        let target_meta = self.branches[t.0 as usize].state.metadata.clone();
+        'reads: for (n, op) in b.ops.iter().enumerate() {
             let Op::ExpectHeads { entries, .. } = op else {
                 continue;
             };
@@ -799,6 +818,16 @@ impl BranchOracle {
                     }
                     LogicalRef::New(_) => None,
                 };
+                if let Some(gl) = gl
+                    && !principal_reads(gl, &target_meta)
+                {
+                    read_error = Some(TxError::Unauthorized {
+                        op_index: n,
+                        reference: text(l),
+                        need: AccessNeed::Read,
+                    });
+                    break 'reads;
+                }
                 let (Some(gl), true) = (gl, tv[1].contains(&r.0)) else {
                     read_error = Some(TxError::UnknownRef);
                     break 'reads;
@@ -1269,7 +1298,22 @@ impl BranchOracle {
                     }
                     LogicalRef::New(_) => None,
                 };
-                v.push(g.ok_or(TxError::UnknownRef)?);
+                let g = g.ok_or(TxError::UnknownRef)?;
+                // Judged on the pre-merge target's metadata, or the
+                // source's for a newly visible logical (security review M1).
+                let meta = if tv[0].contains(&g) {
+                    &tstate.metadata
+                } else {
+                    &s.metadata
+                };
+                if !principal_reads(g, meta) {
+                    return Err(TxError::Unauthorized {
+                        op_index,
+                        reference: text(l),
+                        need: AccessNeed::Read,
+                    });
+                }
+                v.push(g);
             }
             // The first failing logical is the first by id.
             v.sort_unstable();

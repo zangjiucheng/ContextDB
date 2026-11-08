@@ -936,12 +936,51 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                         }
                         LogicalRef::New(_) => None,
                     };
-                    g.and_then(|g| {
-                        t.local(Kind::Logical, g)
-                            .or_else(|| new_local[0].get(&g).copied())
-                    })
-                    .map(LogicalId)
-                    .ok_or(TxError::UnknownRef)
+                    let lid = g
+                        .and_then(|g| {
+                            t.local(Kind::Logical, g)
+                                .or_else(|| new_local[0].get(&g).copied())
+                        })
+                        .map(LogicalId)
+                        .ok_or(TxError::UnknownRef)?;
+                    // A hidden logical in `certify` is refused, so a merge
+                    // never reports a hidden record's certification (ADR
+                    // 0017 §5.7; security review M1). A newly visible one
+                    // is judged on the source's record.
+                    let g = g.expect("resolved");
+                    let (rec, dirs) = match t.local(Kind::Logical, g) {
+                        Some(tl) => (
+                            t.db.logical_record(LogicalId(tl)),
+                            t.db.metadata(LogicalId(tl)).dirs,
+                        ),
+                        None => {
+                            let sl = LogicalId(s.local(Kind::Logical, g).expect("visible"));
+                            (s.db.logical_record(sl), s.db.metadata(sl).dirs)
+                        }
+                    };
+                    let allowed = crate::access::authorized(
+                        self.access.as_deref(),
+                        b.principal,
+                        &crate::access::LogicalFacts {
+                            key: &rec.key,
+                            lane: &rec.scope_lane,
+                            owner: rec.owner,
+                            dirs: &dirs,
+                        },
+                    )
+                    .allowed;
+                    if !allowed {
+                        return Err(TxError::Unauthorized {
+                            op_index,
+                            reference: match l {
+                                LogicalRef::Existing(g) => format!("logical {}", g.0),
+                                LogicalRef::Key(k) => k.clone(),
+                                LogicalRef::New(n) => format!("new logical {n}"),
+                            },
+                            need: AccessNeed::Read,
+                        });
+                    }
+                    Ok(lid)
                 })
                 .collect::<Result<BTreeSet<_>, _>>()
                 // The first failing logical is the first by id.
@@ -1072,7 +1111,25 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             ids: &branch.ids,
         };
         let mut out: BTreeMap<LogicalId, RevisionId> = BTreeMap::new();
-        for op in &b.ops {
+        // A read of a logical the principal cannot read is refused before
+        // the revision resolves and before the comparison, so a merge never
+        // reports a hidden head (ADR 0017 §5.7; security review M1).
+        let readable = |l: LogicalId| {
+            let r = t.db.logical_record(l);
+            let dirs = t.db.metadata(l).dirs;
+            crate::access::authorized(
+                self.access.as_deref(),
+                b.principal,
+                &crate::access::LogicalFacts {
+                    key: &r.key,
+                    lane: &r.scope_lane,
+                    owner: r.owner,
+                    dirs: &dirs,
+                },
+            )
+            .allowed
+        };
+        for (op_index, op) in b.ops.iter().enumerate() {
             let Op::ExpectHeads { entries, .. } = op else {
                 continue;
             };
@@ -1083,6 +1140,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     LogicalRef::New(_) => None,
                 }
                 .ok_or(TxError::UnknownRef)?;
+                if !readable(l) {
+                    return Err(TxError::Unauthorized {
+                        op_index,
+                        reference: match logical {
+                            LogicalRef::Existing(g) => format!("logical {}", g.0),
+                            LogicalRef::Key(k) => k.clone(),
+                            LogicalRef::New(n) => format!("new logical {n}"),
+                        },
+                        need: AccessNeed::Read,
+                    });
+                }
                 let r = t
                     .local(Kind::Revision, read.0)
                     .map(RevisionId)
