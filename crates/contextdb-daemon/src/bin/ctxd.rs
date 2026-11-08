@@ -1,4 +1,7 @@
-//! `ctxd <dir> [--allow-fs <name>]...`: one daemon per data directory (ADR 0008).
+//! `ctxd <dir> [--allow-fs <name>]... [--multi-user]`: one daemon per data
+//! directory (ADR 0008). `--multi-user` lets the committed access document
+//! map other uids (ADR 0017 §3); without it nobody but the store owner is
+//! served, whatever the document says.
 use contextdb_daemon::server::{Daemon, Options, StartError};
 use std::{path::PathBuf, process::ExitCode};
 
@@ -13,6 +16,7 @@ fn main() -> ExitCode {
                 Some(fs) => options.allow_fs.push(fs),
                 None => return usage(),
             },
+            "--multi-user" => options.multi_user = true,
             "-h" | "--help" => return usage(),
             "-V" | "--version" => {
                 println!("ctxd {}", env!("CARGO_PKG_VERSION"));
@@ -52,6 +56,6 @@ fn main() -> ExitCode {
     }
 }
 fn usage() -> ExitCode {
-    eprintln!("usage: ctxd <dir> [--allow-fs <name>]...");
+    eprintln!("usage: ctxd <dir> [--allow-fs <name>]... [--multi-user]");
     ExitCode::from(2)
 }

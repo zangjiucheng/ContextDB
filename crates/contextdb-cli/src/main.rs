@@ -99,9 +99,11 @@ Hooks and gating (P4, ADR 0010):
 Setup (one repository; binaries installed together, scripts/install.sh):
   ctx setup [--project ROOT] [--dir DATA] [--harness claude|codex|opencode|both|all] [--no-start]
                                        data dir, ctxd, project MCP config, hooks
-  ctx service install|uninstall|restart|status <dir> [--no-load]
+  ctx service install|uninstall|restart|status <dir> [--no-load] [--multi-user]
                                        launchd (macOS) / systemd --user service
-                                       keeping ctxd running
+                                       keeping ctxd running; --multi-user (install)
+                                       runs `ctxd --multi-user`, so the access
+                                       document may map other OS users
 Viewer:
   ctx ui <dir> [--port N]              read-only context graph in the browser
                                        (127.0.0.1 only, default port 7787)

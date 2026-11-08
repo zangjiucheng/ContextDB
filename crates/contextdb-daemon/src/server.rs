@@ -40,9 +40,9 @@ pub struct Options {
     /// debug builds honour it; release builds always ask the kernel.
     pub peer_uid: Option<PeerUidHook>,
     /// Whether the committed access document may map other uids (multi-user
-    /// mode). Off by default and never set by `ctxd` until read redaction
-    /// and write authorisation land (P9 milestones 3 and 4): before them a
-    /// mapped principal could read and write everything.
+    /// mode). Off by default; `ctxd --multi-user` (or `ctx service install
+    /// --multi-user`) turns it on. Starting in it requires the file-system
+    /// rules of ADR 0017 §3.2.
     pub multi_user: bool,
 }
 /// A replacement for `getpeereid` in tests (debug builds only).

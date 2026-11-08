@@ -422,7 +422,14 @@ fn xml(s: &str) -> String {
         .replace('>', "&gt;")
 }
 /// Unit file for this platform and where it goes.
-fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), String> {
+/// The user-service unit running `ctxd <dir>`; `multi_user` adds
+/// `--multi-user` (ADR 0017 §3).
+fn unit(
+    home: &Path,
+    dir: &Path,
+    ctxd: &Path,
+    multi_user: bool,
+) -> Result<(PathBuf, String), String> {
     let name = label(dir)?;
     let log = dir.join("ctxd.log");
     if cfg!(target_os = "macos") {
@@ -434,7 +441,7 @@ fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), Strin
 <dict>
   <key>Label</key><string>{name}</string>
   <key>ProgramArguments</key>
-  <array><string>{}</string><string>{}</string></array>
+  <array><string>{}</string><string>{}</string>{}</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>
@@ -446,6 +453,11 @@ fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), Strin
 "#,
             xml(utf8(ctxd)?),
             xml(utf8(dir)?),
+            if multi_user {
+                "<string>--multi-user</string>"
+            } else {
+                ""
+            },
             xml(utf8(&log)?),
             xml(utf8(&log)?)
         );
@@ -456,9 +468,10 @@ fn unit(home: &Path, dir: &Path, ctxd: &Path) -> Result<(PathBuf, String), Strin
     } else {
         let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
         let text = format!(
-            "[Unit]\nDescription=ContextDB daemon for {dir}\n\n[Service]\nExecStart={} {}\nUMask=0077\nRestart=on-failure\nRestartSec=30\nStandardOutput=append:{log}\nStandardError=append:{log}\n\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=ContextDB daemon for {dir}\n\n[Service]\nExecStart={} {}{}\nUMask=0077\nRestart=on-failure\nRestartSec=30\nStandardOutput=append:{log}\nStandardError=append:{log}\n\n[Install]\nWantedBy=default.target\n",
             quote(utf8(ctxd)?),
             quote(utf8(dir)?),
+            if multi_user { " --multi-user" } else { "" },
             dir = utf8(dir)?,
             log = utf8(&log)?
         );
@@ -485,11 +498,12 @@ fn uid() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-const SERVICE_USAGE: &str = "usage: ctx service install|uninstall|restart|status <dir> [--no-load]";
+const SERVICE_USAGE: &str =
+    "usage: ctx service install|uninstall|restart|status <dir> [--no-load] [--multi-user]";
 
 /// Writes the user-service unit for `dir`; its path.
-fn write_unit(dir: &Path, ctxd: &Path) -> Result<PathBuf, String> {
-    let (file, text) = unit(&home()?, dir, ctxd)?;
+fn write_unit(dir: &Path, ctxd: &Path, multi_user: bool) -> Result<PathBuf, String> {
+    let (file, text) = unit(&home()?, dir, ctxd, multi_user)?;
     replace(&file, &text)?;
     Ok(file)
 }
@@ -541,7 +555,7 @@ enum Daemon {
 /// says so.
 fn ensure_service(dir: &Path, ctxd: &Path) -> Result<Daemon, String> {
     let name = label(dir)?;
-    let (file, _) = unit(&home()?, dir, ctxd)?;
+    let (file, _) = unit(&home()?, dir, ctxd, false)?;
     if let Some(l) = lease::read_lease(&dir.join("ctxd.lease")).filter(lease::Lease::is_live) {
         if l.protocol != PROTOCOL_VERSION {
             return Err(format!(
@@ -561,7 +575,7 @@ fn ensure_service(dir: &Path, ctxd: &Path) -> Result<Daemon, String> {
             ))
         });
     }
-    let file = write_unit(dir, ctxd)?;
+    let file = write_unit(dir, ctxd, false)?;
     match load_unit(dir, &file) {
         Ok(true) if wait_live(dir, Duration::from_secs(10)) => Ok(Daemon::Service(format!(
             "started by service {name} (starts at login, restarts after a failure)"
@@ -610,7 +624,8 @@ pub fn service(args: &[String]) -> Result<u8, String> {
                     dir.display()
                 ));
             }
-            let file = write_unit(&dir, &ctxd)?;
+            let multi_user = args.iter().any(|a| a == "--multi-user");
+            let file = write_unit(&dir, &ctxd, multi_user)?;
             println!("wrote {}", file.display());
             if load {
                 if !load_unit(&dir, &file)? {
@@ -620,7 +635,7 @@ pub fn service(args: &[String]) -> Result<u8, String> {
             }
         }
         "uninstall" => {
-            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"))?;
+            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"), false)?;
             if load {
                 if mac {
                     let _ = run("launchctl", &["bootout", &format!("gui/{}/{name}", uid()?)]);
@@ -642,7 +657,7 @@ pub fn service(args: &[String]) -> Result<u8, String> {
         "restart" => {
             // After an upgrade: the new ctxd binary is picked up by the
             // service manager; a ctxd not run by the service is left alone.
-            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"))?;
+            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"), false)?;
             if !file.exists() {
                 return Err(format!(
                     "no service for {}: restart a manually started ctxd with ctx shutdown, then ctx setup",
@@ -666,7 +681,7 @@ pub fn service(args: &[String]) -> Result<u8, String> {
             println!("restarted {name}");
         }
         "status" => {
-            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"))?;
+            let (file, _) = unit(&home()?, &dir, Path::new("ctxd"), false)?;
             let lease = lease::read_lease(&dir.join("ctxd.lease")).filter(lease::Lease::is_live);
             println!(
                 "service {name}: {}",
@@ -867,8 +882,19 @@ mod tests {
     #[test]
     fn service_unit_restarts_only_after_failures() {
         let home = temp("home");
-        let (file, text) = unit(&home, Path::new("/data <x>"), Path::new("/bin/ctxd")).unwrap();
+        let (file, text) =
+            unit(&home, Path::new("/data <x>"), Path::new("/bin/ctxd"), false).unwrap();
         assert!(file.starts_with(&home));
+        assert!(!text.contains("--multi-user"));
+        // `ctx service install --multi-user` (ADR 0017 §3).
+        let (_, multi) = unit(&home, Path::new("/data <x>"), Path::new("/bin/ctxd"), true).unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(
+                multi.contains("<string>/data &lt;x&gt;</string><string>--multi-user</string>")
+            );
+        } else {
+            assert!(multi.contains("\"/data <x>\" --multi-user"));
+        }
         assert!(
             file.to_str()
                 .unwrap()

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`ctxd --multi-user`** (owner decision, 2026-11-08). This is the switch for multi-user mode; `ctx service install --multi-user` writes it into the service. Without it, an access document that names other principals maps nobody, as before. With it, the document maps them once the file-system rules of ADR 0017 §3.2 hold. Off by default; deployments are not changed.
 - **P9 milestone 6e: `ctx migrate` to format 5** (ADR 0017 §8.5, §10; T104). Every P9 store is fully encrypted; older stores need `ctx migrate` once, and openers refuse a migration that did not complete.
   - **The procedure**, under the store lock, success only at the end:
     0. pre-checks that change nothing: `personal:<x>` lanes with valid names, and free space for one copy of the plaintext packs and the projections;
