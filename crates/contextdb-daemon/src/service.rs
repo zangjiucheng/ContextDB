@@ -1749,6 +1749,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 batch.channel = id.channel;
                 batch.principal = id.principal;
+                if let Some(r) = certificate_reads(&batch.ops) {
+                    return r;
+                }
                 if let Err(r) = self.possession(id.principal, batch.branch, &batch.ops, &blobs) {
                     return r;
                 }

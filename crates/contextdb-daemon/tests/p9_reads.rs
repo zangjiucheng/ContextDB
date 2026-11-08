@@ -1615,3 +1615,124 @@ fn prop15_redaction_matches_the_reference() {
     assert!(hidden_seen > 0 && shown_seen > 0);
     assert!(why_cut > 0 && impact_cut > 0 && diff_cut > 0 && result_cut > 0);
 }
+
+/// Security review M2 (ADR 0017 §5.7), not reproduced: a certificate's
+/// vector holds the session's reads, so the read set the daemon appends
+/// for `expect_cert_valid` never contains a hidden premise. A commit after
+/// reading a record whose support rests on one neither fails nor names it.
+#[test]
+fn a_certificate_read_set_never_names_a_hidden_premise() {
+    let f = fixture();
+    let s = &f.s;
+    // pub/c (base) rests on sec/s, which bob cannot read.
+    let r = raw(
+        s,
+        vec![b"body of pub/c".to_vec()],
+        vec![Op::CreateLogical {
+            key: "pub/c".into(),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: h(b"body of pub/c"),
+            adopt_as_base: true,
+        }],
+        [3; 16],
+    );
+    let c = r.allocations.new_revisions[0];
+    let rule = raw(
+        s,
+        Vec::new(),
+        vec![Op::AddRule {
+            conclusion: RevRef::Existing(c),
+            incidences: vec![(RevRef::Existing(f.rev["sec/s"]), EdgeKind::Sem)],
+            enabled: true,
+        }],
+        [4; 16],
+    )
+    .allocations
+    .new_rules[0];
+    let sec = s
+        .actor
+        .snapshot()
+        .view(MAIN)
+        .logical_by_key("sec/s")
+        .unwrap();
+    raw(
+        s,
+        Vec::new(),
+        vec![Op::RecordValidation {
+            rule: rule.into(),
+            curvec_seen: vec![(sec, f.rev["sec/s"])],
+            verdict: Verdict::Verified,
+            validator: "admin".into(),
+            meta: None,
+            if_absent: false,
+        }],
+        [5; 16],
+    );
+    let session = start(s, BOB);
+    let env = read(s, BOB, session, key("pub/c"), Mode::Certified);
+    assert!(matches!(env.response, Response::Read { .. }), "{env:?}");
+    // The check issues the session's certificate.
+    let checked = s
+        .handle(
+            BOB,
+            Request::Check {
+                binding: Binding::root(session),
+                cert_id: None,
+                live_pos: Vec::new(),
+                action: None,
+                mode: None,
+                harness_version: String::new(),
+                strict: false,
+            },
+        )
+        .response;
+    assert!(matches!(checked, Response::Check { .. }), "{checked:?}");
+    let r = s
+        .handle(
+            BOB,
+            Request::Commit {
+                binding: Binding::root(session),
+                ops: vec![Op::CreateLogical {
+                    key: "pub/new".into(),
+                    kind: RecordKind::Fact,
+                    scope_lane: "repo".into(),
+                    content: h(b"a new body"),
+                    adopt_as_base: false,
+                }],
+                blobs: vec![b"a new body".to_vec()],
+                expect_cert_valid: true,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    let hidden = f.rev["sec/s"];
+    let text = format!("{r:?}");
+    assert!(
+        !text.contains("Unauthorized") && !text.contains(&format!("logical {}", hidden.0)),
+        "{text}"
+    );
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    // The appended read set holds what bob read, never the hidden premise.
+    let snap = s.actor.snapshot();
+    let row = snap.log.read_row(snap.epoch).unwrap().batch().unwrap();
+    let appended: Vec<LogicalId> = row
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::ExpectHeads {
+                entries,
+                source: ReadSource::Certificate(_),
+            } => Some(entries.iter().filter_map(|(l, _)| match l {
+                LogicalRef::Existing(l) => Some(*l),
+                _ => None,
+            })),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        !appended.is_empty() && !appended.contains(&sec),
+        "{appended:?}"
+    );
+}
