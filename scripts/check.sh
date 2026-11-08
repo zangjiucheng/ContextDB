@@ -15,3 +15,8 @@ cargo deny --all-features check
 # The R2 workspace is deliberately excluded from the product dependency graph.
 cargo fmt --manifest-path crates/contextdb-dd/Cargo.toml --check
 cargo check --manifest-path crates/contextdb-dd/Cargo.toml --locked
+
+# The fuzz crate is outside the workspace and built only by the nightly
+# fuzz job (cargo-fuzz, nightly toolchain); a type check here keeps its
+# targets compiling between nightly runs.
+cargo check --manifest-path fuzz/Cargo.toml --bins

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: a store lock released a moment ago could read as `Locked`.** `flock` belongs to the open file description, and a child process another thread is spawning holds a copy of every descriptor until its `exec`. So an immediate relock failed in about 0.3–2% of tries while git children were being spawned (on macOS and Linux, up to ~5 ms on an idle machine). `ctxd`, `doctor` and `migrate` now retry a held lock for up to 2 s before reporting `Locked`; a lock another process really holds is still refused. This was the intermittent `p8_g4` failure (`a_truncated_log_is_stale_not_modified`) on CI.
+- **Nightly gates repaired.** They had failed since P9's earlier milestones for three reasons:
+  - the three tests that switch the peer uid are ignored in release builds, where the hook is compiled out;
+  - the `mcp_json` fuzz target is updated for `Envelope.redaction`, and `scripts/check.sh` now type-checks the fuzz crate;
+  - `scripts/mutation-p4.sh` scales the test timeout with the unmutated baseline (at least 120 s), instead of a fixed 120 s that the baseline itself outgrew on a 2-core runner.
 - **P9 milestone 6d: the mirror after a shred** (ADR 0017 §8.4 item 5; T103). Protocol 7: `MirrorAction::Export` gains `rebuild`.
   - **`MirrorStale{PayloadGone}`.** `ctx mirror export` refuses a ref whose history holds a shredded payload, even with `--force`, because the backup `--force` keeps would hold it too. The check hashes the body (and the whole text) of every blob reachable from the tip. A history found clean is cached in `mirror.sqlite` with the last shred it was checked against, so only the first export after a shred scans. A deleted ref is not recreated on a cached commit that holds a shredded payload; the export starts a fresh history instead.
   - **`ctx mirror export --rebuild`** replaces the ref with one parentless commit of the current render, whatever the ref held (hand edits included), and deletes every `refs/contextdb-backup/` ref. Git keeps the old objects until `git reflog expire --expire=now --all && git gc --prune=now`. ContextDB prints that command but does not run it, because running it rewrites the user's repository.

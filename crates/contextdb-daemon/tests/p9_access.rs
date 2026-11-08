@@ -362,6 +362,10 @@ fn refused(path: &Path) -> bool {
 /// document maps nobody: the agent socket stays 0600 and other uids are
 /// refused.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the peer-uid hook is compiled out of release builds"
+)]
 fn without_multi_user_mode_the_document_maps_nobody() {
     let dir = base("off");
     let me = fsguard::current_uid();
@@ -380,6 +384,10 @@ fn without_multi_user_mode_the_document_maps_nobody() {
 /// With multi-user mode enabled the mapping follows the committed
 /// document: after `SetAccess`, after a revoking `SetAccess`, and at start.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the peer-uid hook is compiled out of release builds"
+)]
 fn multi_user_mode_maps_the_committed_document() {
     let dir = base("on");
     let me = fsguard::current_uid();

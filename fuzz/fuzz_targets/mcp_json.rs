@@ -17,10 +17,7 @@ impl Backend for Refuse {
                 detail: String::new(),
             },
         };
-        Ok(Envelope {
-            epoch: Epoch(0),
-            response,
-        })
+        Ok(Envelope::new(Epoch(0), response))
     }
 }
 fuzz_target!(|data: &[u8]| {

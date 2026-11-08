@@ -50,6 +50,8 @@ pub trait Durability: Send + Sync {
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>>;
 }
 
+/// How long [`StdDisk::lock`] retries a held lock before `WouldBlock`.
+pub const LOCK_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Production filesystem. With `full_sync` (the default), `sync` is `sync_all`,
 /// i.e. F_FULLFSYNC on Apple targets. `full_sync: false` uses plain fsync(2) and
 /// exists for the "fullfsync off" measurement only (ADR 0006 §10).
@@ -164,6 +166,13 @@ impl Durability for StdDisk {
     fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
     }
+    /// An exclusive `flock` on `path`. A lock released a moment ago can
+    /// still look held: `flock` belongs to the open file description, and a
+    /// child process another thread is spawning holds a copy of every
+    /// descriptor until its `exec` closes it (measured: up to ~5 ms on an
+    /// idle machine, in about 0.3–2% of immediate relocks with concurrent
+    /// spawns). So a held lock is retried for [`LOCK_GRACE`] before
+    /// `WouldBlock`; a lock another process really holds stays held.
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
@@ -172,13 +181,22 @@ impl Durability for StdDisk {
             .truncate(false)
             .write(true)
             .open(path)?;
-        file.try_lock().map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => {
-                io::Error::new(io::ErrorKind::WouldBlock, "store directory is locked")
+        let deadline = std::time::Instant::now() + LOCK_GRACE;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Box::new(StdLock(file))),
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "store directory is locked",
+                    ));
+                }
+                Err(std::fs::TryLockError::Error(e)) => return Err(e),
             }
-            std::fs::TryLockError::Error(e) => e,
-        })?;
-        Ok(Box::new(StdLock(file)))
+        }
     }
 }
 
@@ -602,5 +620,48 @@ impl Durability for SimDisk {
             state: self.state.clone(),
             path: path.to_path_buf(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A lock released while other threads spawn processes is taken again
+    /// at once (a child between fork and exec briefly holds it), and a lock
+    /// this process still holds is refused after the grace.
+    #[test]
+    fn a_released_lock_is_retaken_while_children_spawn() {
+        let dir = std::env::temp_dir().join(format!("ctx-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("LOCK");
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        let disk = StdDisk::default();
+        for _ in 0..2000 {
+            drop(disk.lock(&path).expect("relock"));
+        }
+        let held = disk.lock(&path).unwrap();
+        let start = std::time::Instant::now();
+        let again = disk.lock(&path).map(|_| ()).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::WouldBlock);
+        assert!(start.elapsed() >= LOCK_GRACE);
+        drop(held);
+        stop.store(true, Ordering::Relaxed);
+        for s in spawners {
+            s.join().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

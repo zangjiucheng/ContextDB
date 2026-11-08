@@ -602,6 +602,10 @@ fn t98_socket_layout_modes_and_endpoint() {
 /// agent socket only, the non-owner allowlist, and `AccessRevoked` once
 /// unmapped.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the peer-uid hook is compiled out of release builds"
+)]
 fn t98_mapped_and_unmapped_uids_and_revocation() {
     let dir = base("map");
     let (d, uid) = daemon(&dir);
