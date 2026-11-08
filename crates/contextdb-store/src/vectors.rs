@@ -113,9 +113,8 @@ impl VectorStore {
         for c in contents {
             tx.execute("DELETE FROM vectors WHERE content = ?1", params![&c[..]])?;
         }
-        crate::purge::set_through(&tx, through)?;
         tx.commit()?;
-        crate::purge::compact(&self.conn)
+        crate::purge::finish(&self.conn, through)
     }
     pub fn count(&self, model: &str) -> Sql<u64> {
         self.conn

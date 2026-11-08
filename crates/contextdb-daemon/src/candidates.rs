@@ -261,9 +261,8 @@ impl Candidates {
                 params![b.0, r.0],
             )?;
         }
-        contextdb_store::purge::set_through(&tx, through)?;
         tx.commit()?;
-        contextdb_store::purge::compact(&c)?;
+        contextdb_store::purge::finish(&c, through)?;
         Ok(n)
     }
     /// The last epoch whose heads were queried; `None` before the first run.

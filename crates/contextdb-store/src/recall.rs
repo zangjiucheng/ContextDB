@@ -228,8 +228,7 @@ impl RecallIndex {
         self.write(None, entries)?;
         self.conn
             .execute("INSERT INTO recall(recall) VALUES ('optimize')", [])?;
-        crate::purge::set_through(&self.conn, through)?;
-        crate::purge::compact(&self.conn)
+        crate::purge::finish(&self.conn, through)
     }
     pub fn watermark(&self) -> Sql<Epoch> {
         Ok(Epoch(

@@ -476,9 +476,8 @@ impl JobTable {
             )
             .map_err(sql)?;
         }
-        contextdb_store::purge::set_through(&tx, through).map_err(sql)?;
         tx.commit().map_err(sql)?;
-        contextdb_store::purge::compact(&c).map_err(sql)
+        contextdb_store::purge::finish(&c, through).map_err(sql)
     }
     /// Row counts per state, in [`JobState::ALL`] order.
     pub fn counts(&self) -> Result<[u64; 6], String> {
