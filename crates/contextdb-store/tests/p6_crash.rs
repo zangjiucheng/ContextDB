@@ -283,9 +283,15 @@ fn g4_migrate_2_to_3_interrupted_and_resumed() {
                         Store::open(crashed.clone(), Path::new(DIR), &OpenOptions::default())
                             .is_ok();
                     let swap = !crashed.exists(&Path::new(DIR).join("log"));
+                    // Since P9 a failure after the swap (steps 3 to 7 of ADR
+                    // 0017 §10) leaves a format-5 log in a store that still
+                    // refuses to open: the rerun skips step 2.
+                    let log_done = !swap
+                        && migrate::log_format(&crashed, Path::new(DIR)).unwrap()
+                            == Some(contextdb_store::log::FORMAT_VERSION);
                     let again = migrate::migrate(&crashed, Path::new(DIR))
                         .unwrap_or_else(|e| panic!("seed {seed} {op}#{n} {fate:?}: {e:?}"));
-                    if done {
+                    if done || log_done {
                         let v = contextdb_store::log::FORMAT_VERSION;
                         assert_eq!((again.from, again.to, again.frames), (v, v, 0));
                     } else {

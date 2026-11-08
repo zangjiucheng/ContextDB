@@ -32,6 +32,7 @@ pub fn plan_truncate_before(
     if epoch.0 == 0 {
         return Err(StoreError::Tx(TxError::UnknownRef));
     }
+    crate::migrate5::refuse_marked(disk, dir)?;
     let log_dir = dir.join("log");
     let mut plan = TruncationPlan {
         keep_through: Epoch(epoch.0 - 1),
@@ -127,6 +128,7 @@ pub fn truncate_before(
     plan: &TruncationPlan,
 ) -> Result<(), StoreError> {
     let _lock = crate::store::lock(disk, dir)?;
+    crate::migrate5::refuse_marked(disk, dir)?;
     // The log must still be exactly what the operator reviewed.
     if plan_truncate_before(disk, dir, Epoch(plan.keep_through.0 + 1))? != *plan {
         return Err(StoreError::PlanOutdated);

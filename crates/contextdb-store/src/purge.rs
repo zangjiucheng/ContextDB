@@ -16,6 +16,59 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub const PRAGMAS: &str = "PRAGMA secure_delete = ON;";
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS ctx_purge(id INTEGER PRIMARY KEY CHECK (id = 0), through INTEGER NOT NULL);";
 
+/// Body-bearing projections, in the data directory (ADR 0017 §8.5).
+pub const FILES: [&str; 4] = [
+    "recall.sqlite",
+    "vectors.sqlite",
+    "jobs.sqlite",
+    "candidates.sqlite",
+];
+/// The format a projection file was created or rebuilt at (ADR 0017 §10
+/// step 4): a file without `rebuilt_at_format = 5` may hold pre-P9
+/// plaintext in its free pages.
+pub const FORMAT: i64 = 5;
+const FORMAT_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS ctx_format(id INTEGER PRIMARY KEY CHECK (id = 0), rebuilt_at_format INTEGER NOT NULL);";
+
+/// Whether opening `path` creates the file: a projection created by this
+/// binary is stamped (see [`stamp`]) as its first write.
+pub fn is_fresh(path: Option<&std::path::Path>) -> bool {
+    path.is_none_or(|p| std::fs::metadata(p).map_or(true, |m| m.len() == 0))
+}
+/// Records `rebuilt_at_format = 5`.
+pub fn stamp(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(FORMAT_SCHEMA)?;
+    conn.execute(
+        "INSERT INTO ctx_format(id, rebuilt_at_format) VALUES (0, ?1)
+         ON CONFLICT(id) DO UPDATE SET rebuilt_at_format = excluded.rebuilt_at_format",
+        params![FORMAT],
+    )?;
+    Ok(())
+}
+/// Whether the projection at `path` needs no rebuild: absent, empty, or
+/// stamped `rebuilt_at_format = 5`.
+pub fn stamped(path: &std::path::Path) -> rusqlite::Result<bool> {
+    if is_fresh(Some(path)) {
+        return Ok(true);
+    }
+    // Not read-only: a WAL database opened read-only needs its `-shm`.
+    let conn = Connection::open(path)?;
+    let has: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'ctx_format'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has == 0 {
+        return Ok(false);
+    }
+    let v: Option<i64> = conn
+        .query_row(
+            "SELECT rebuilt_at_format FROM ctx_format WHERE id = 0",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(v == Some(FORMAT))
+}
 /// Sets `secure_delete` and creates the `purged_through` table.
 pub fn prepare(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(PRAGMAS)?;

@@ -178,11 +178,15 @@ const JUDGE_COLUMNS: &[(&str, &str)] = &[
 impl Candidates {
     /// Opens (or creates) the table; memory when `path` is `None`.
     pub fn open(path: Option<&Path>) -> Result<Self, String> {
+        let fresh = contextdb_store::purge::is_fresh(path);
         let conn = match path {
             Some(p) => Connection::open(p),
             None => Connection::open_in_memory(),
         }
         .map_err(|e| format!("{FILE}: {e}"))?;
+        if fresh {
+            contextdb_store::purge::stamp(&conn).map_err(|e| format!("{FILE}: {e}"))?;
+        }
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS candidates(

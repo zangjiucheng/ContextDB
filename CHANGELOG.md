@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **P9 milestone 6e: `ctx migrate` to format 5** (ADR 0017 §8.5, §10; T104). Every P9 store is fully encrypted; older stores need `ctx migrate` once, and openers refuse a migration that did not complete.
+  - **The procedure**, under the store lock, success only at the end:
+    0. pre-checks that change nothing: `personal:<x>` lanes with valid names, and free space for one copy of the plaintext packs and the projections;
+    1. a `MIGRATING-5` marker, synced;
+    2. the log, through the existing swap;
+    3. every plaintext pack segment and loose blob file re-encrypted into a new segment (keys first), synced, read back and checked before the old file is unlinked; shredded contents are dropped;
+    4. `recall`, `vectors`, `jobs` and `candidates` rebuilt with `VACUUM INTO` into a fresh file stamped `rebuilt_at_format = 5`, so their free pages and `-wal` files from before P9 hold no plaintext;
+    5. private modes and no ACLs;
+    6. a verification against the disk;
+    7. the marker removed.
+  - **Rerun.** Each step redoes only what its own check finds missing, so a rerun after a kill or power cut at any point completes. A store already complete reports "already at format 5" and changes nothing.
+  - **Refusals.** `ctxd`, `ctx` and `doctor` refuse a marked store with `MigrationIncomplete{step}` and "run `ctx migrate` again". A format-5 store without the marker is refused too if it holds a plaintext segment or loose blob (step 3) or an unstamped projection (step 4). That covers a lost marker and stores migrated by a milestone-2 build. New projection files are stamped when created.
 - **Fix: a store lock released a moment ago could read as `Locked`.** `flock` belongs to the open file description, and a child process another thread is spawning holds a copy of every descriptor until its `exec`. So an immediate relock failed in about 0.3–2% of tries while git children were being spawned (on macOS and Linux, up to ~5 ms on an idle machine). `ctxd`, `doctor` and `migrate` now retry a held lock for up to 2 s before reporting `Locked`; a lock another process really holds is still refused. This was the intermittent `p8_g4` failure (`a_truncated_log_is_stale_not_modified`) on CI.
 - **Nightly gates repaired.** They had failed since P9's earlier milestones for three reasons:
   - the three tests that switch the peer uid are ignored in release builds, where the hook is compiled out;

@@ -53,6 +53,8 @@ pub(crate) struct PackIndex {
     pub(crate) keys: HashMap<ContentHash, Key>,
     /// Shredded content hashes, checked before the packs (ADR 0017 §8.3).
     pub(crate) shredded: std::collections::BTreeSet<ContentHash>,
+    /// Segments holding a valid plaintext record (pre-P9).
+    pub(crate) plaintext: usize,
 }
 /// Whether a segment's bytes start with the encrypted-segment header.
 pub(crate) fn is_encrypted_segment(data: &[u8]) -> bool {
@@ -224,7 +226,14 @@ pub(crate) fn scan(
         let path = dir.join(name);
         let segment = index.segments.len() as u32;
         let keys = &index.keys;
-        for (hash, offset, len, nonce) in parse_all(&disk.read(&path)?, &|h| keys.get(h).copied()) {
+        let data = disk.read(&path)?;
+        let records = parse_all(&data, &|h| keys.get(h).copied());
+        // A torn or garbage segment without a valid plaintext record holds
+        // no plaintext payload.
+        if records.iter().any(|r| r.3.is_none()) {
+            index.plaintext += 1;
+        }
+        for (hash, offset, len, nonce) in records {
             index.map.insert(
                 hash,
                 Loc {

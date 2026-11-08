@@ -48,6 +48,11 @@ pub trait Durability: Send + Sync {
     /// Renames a directory; durable after `sync_dir` of its parent.
     fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn lock(&self, path: &Path) -> io::Result<Box<dyn LockGuard>>;
+    /// Bytes available to this user on the file system holding `dir`;
+    /// `None` when unknown (simulated disks).
+    fn free_space(&self, _dir: &Path) -> io::Result<Option<u64>> {
+        Ok(None)
+    }
 }
 
 /// How long [`StdDisk::lock`] retries a held lock before `WouldBlock`.
@@ -165,6 +170,12 @@ impl Durability for StdDisk {
     }
     fn rename_dir(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
+    }
+    fn free_space(&self, dir: &Path) -> io::Result<Option<u64>> {
+        let s = nix::sys::statvfs::statvfs(dir).map_err(io::Error::from)?;
+        Ok(Some(
+            (s.blocks_available() as u64).saturating_mul(s.fragment_size() as u64),
+        ))
     }
     /// An exclusive `flock` on `path`. A lock released a moment ago can
     /// still look held: `flock` belongs to the open file description, and a

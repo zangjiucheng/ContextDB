@@ -75,3 +75,52 @@ fn replay_snapshot_doctor_on_a_real_store() {
     assert_eq!(exported.batches.len(), committed);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// T104 through the binary (ADR 0017 §10): `ctx doctor` refuses a store
+/// marked mid-migration and names `ctx migrate`; `ctx migrate` completes
+/// (log, packs, modes) and a second run reports "already at format 5".
+#[test]
+fn migrate_completes_and_openers_refuse_a_marked_store() {
+    use contextdb_store::{Durability, migrate, migrate5};
+    let dir = std::env::temp_dir().join(format!("contextdb-cli-migrate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let disk = StdDisk::default();
+    let body = b"pre-p9 body".to_vec();
+    let batch = Batch::new(vec![Op::CreateLogical {
+        key: "k".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: *blake3::hash(&body).as_bytes(),
+        adopt_as_base: true,
+    }]);
+    migrate::write_format4(&disk, &dir, &[batch]).unwrap();
+    let blobs = dir.join("blobs");
+    disk.create_dir_all(&blobs).unwrap();
+    disk.write_new(
+        &blobs.join("pack-00000001"),
+        &contextdb_store::plaintext_pack_record(&body),
+    )
+    .unwrap();
+    disk.write_new(&dir.join(migrate5::MARKER), b"5\n").unwrap();
+    let d = dir.to_str().unwrap();
+    let (ok, out) = ctx(&["doctor", d]);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("MigrationIncomplete { step: 2 }") && out.contains("run `ctx migrate"),
+        "{out}"
+    );
+    let (ok, out) = ctx(&["migrate", d]);
+    assert!(ok, "{out}");
+    assert!(out.contains("migrated format 4 -> 5"), "{out}");
+    assert!(
+        out.contains("re-encrypted 1 records from 1 pack segments"),
+        "{out}"
+    );
+    assert!(!dir.join(migrate5::MARKER).exists());
+    let (ok, out) = ctx(&["migrate", d]);
+    assert!(ok && out.contains("already at format 5"), "{out}");
+    let (ok, out) = ctx(&["doctor", d]);
+    assert!(ok, "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

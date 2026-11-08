@@ -213,6 +213,44 @@ fn t103_a_shred_left_unpurged_is_purged_at_the_next_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T104 (daemon half, ADR 0017 §10): `ctxd` refuses a store marked
+/// mid-migration, and a store whose projection lacks the format stamp
+/// (created before P9); after `ctx migrate` it starts, with its records.
+#[test]
+fn t104_the_daemon_refuses_an_incomplete_migration() {
+    use contextdb_daemon::server::StartError;
+    use contextdb_store::{StdDisk, StoreError, migrate, migrate5, purge};
+    let dir = temp("migrate");
+    let (d, mut c) = start(&dir);
+    create(&mut c, "k", RecordKind::Fact, "kept across the migration");
+    d.stop();
+    drop(d);
+    std::fs::write(dir.join(migrate5::MARKER), b"5\n").unwrap();
+    match Daemon::start(&dir, &Options::default()) {
+        Err(StartError::Store(StoreError::MigrationIncomplete { step: 6 })) => {}
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("started mid-migration"),
+    }
+    migrate::migrate(&StdDisk::default(), &dir).unwrap();
+    // A projection file from before P9: no stamp.
+    let p = dir.join(purge::FILES[1]);
+    let _ = std::fs::remove_file(&p);
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch("CREATE TABLE old(x TEXT);")
+        .unwrap();
+    match Daemon::start(&dir, &Options::default()) {
+        Err(StartError::Store(StoreError::MigrationIncomplete { step: 4 })) => {}
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("started with an unstamped projection"),
+    }
+    migrate::migrate(&StdDisk::default(), &dir).unwrap();
+    let (d, mut c) = start(&dir);
+    assert_eq!(status(&mut c).0, Epoch(1), "the record survived");
+    d.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 mod jobs {
     //! T103's validator rows: the purge marks jobs `Skipped` and deletes
     //! their output; a call in flight when the payload is shredded has its

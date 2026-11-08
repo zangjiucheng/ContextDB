@@ -45,9 +45,13 @@ pub enum StoreError {
     SelfCheckFailed {
         revision: RevisionId,
     },
-    /// `log/` is missing while a migration's backup or staging log exists:
-    /// finish it with `ctx migrate` (review finding 3).
-    MigrationIncomplete,
+    /// A migration is not complete (ADR 0017 §10): `step` is the first step
+    /// whose check fails. `log/` missing while a migration's backup or
+    /// staging log exists is step 2 (review finding 3). Run `ctx migrate`
+    /// again.
+    MigrationIncomplete {
+        step: u8,
+    },
     /// No store at this path and `OpenOptions::create` is false.
     NotAStore,
     /// `main`'s local ids differ from the global ids (branches allocated
@@ -342,7 +346,7 @@ fn poison_key(disk: &dyn Durability, dir: &Path) -> String {
 fn hex(h: &ContentHash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
-fn unhex(s: &str) -> Option<ContentHash> {
+pub(crate) fn unhex(s: &str) -> Option<ContentHash> {
     if s.len() != 64 {
         return None;
     }
@@ -410,7 +414,7 @@ impl<D: Durability> Store<D> {
         // Never create `log/` over an interrupted migration: the acked history
         // is in the backup or staging log (review finding 3).
         if migration_incomplete(&disk, dir).map_err(io)? {
-            return Err(StoreError::MigrationIncomplete);
+            return Err(StoreError::MigrationIncomplete { step: 2 });
         }
         if !options.create && !disk.exists(&log_dir) {
             return Err(StoreError::NotAStore);
@@ -420,7 +424,12 @@ impl<D: Durability> Store<D> {
         disk.create_dir_all(dir).map_err(io)?;
         let lock = lock(&disk, dir)?;
         if migration_incomplete(&disk, dir).map_err(io)? {
-            return Err(StoreError::MigrationIncomplete);
+            return Err(StoreError::MigrationIncomplete { step: 2 });
+        }
+        // A store marked mid-migration is refused before anything else
+        // (ADR 0017 §10); the migration finishes it, never an opener.
+        if let Some(step) = crate::migrate5::marked_step(&disk, dir)? {
+            return Err(StoreError::MigrationIncomplete { step });
         }
         let key_dir = dir.join(keys::DIR);
         for d in [&log_dir, &blob_dir, &key_dir] {
@@ -454,10 +463,12 @@ impl<D: Durability> Store<D> {
         }
         let packs = pack::scan(&disk, &blob_dir, &names, keylog.keys).map_err(io)?;
         blobs.extend(packs.map.keys().copied());
+        let mut loose = 0usize;
         for name in names {
             match unhex(&name) {
                 Some(h) => {
                     blobs.insert(h);
+                    loose += 1;
                 }
                 None if pack::is_pack(&name) => {}
                 None => {
@@ -475,6 +486,16 @@ impl<D: Durability> Store<D> {
         }
         if let Some(format) = scan.older_format {
             return Err(StoreError::FormatMigrationRequired(format));
+        }
+        // A format-5 store without the marker is still checked (§10): a
+        // plaintext segment or loose blob, or a projection without the
+        // stamp, means the migration did not complete (a marker lost, or a
+        // milestone-2 header-only migration).
+        if packs.plaintext > 0 || loose > 0 {
+            return Err(StoreError::MigrationIncomplete { step: 3 });
+        }
+        if let Some(step) = crate::migrate5::unstamped(dir)? {
+            return Err(StoreError::MigrationIncomplete { step });
         }
         if let Some((epoch, fault)) = scan.broken {
             return Err(StoreError::ChainBroken { epoch, fault });

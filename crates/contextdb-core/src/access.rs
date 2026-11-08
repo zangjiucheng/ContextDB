@@ -69,7 +69,8 @@ pub struct LogicalFacts<'a> {
 const PERSONAL: &str = "personal:";
 const CODE: &str = "code:";
 
-fn valid_name(n: &str) -> bool {
+/// A principal name (ADR 0017 §4.2): 1 to 32 of `a-z`, `0-9`, `_`, `-`.
+pub fn valid_name(n: &str) -> bool {
     (1..=32).contains(&n.len())
         && n.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')

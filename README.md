@@ -180,7 +180,8 @@ The example builds a source → derived rule, retracts the source, and asserts t
 ctx replay <dir>        # open, replay and print the open report
 ctx doctor <dir>        # hash chain, full oracle check, blob check; --rebuild rebuilds projections
 ctx snapshot <dir>      # write an input-layer snapshot for faster cold starts
-ctx migrate <dir>       # migrate an older op_log format (keeps a backup)
+ctx migrate <dir>       # migrate an older store to format 5: log, encrypted packs,
+                        # rebuilt projections, modes (keeps a log backup; rerunnable)
 ctx export <dir>        # export as EventLog v0 JSONL
 ```
 

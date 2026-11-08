@@ -17,7 +17,16 @@ Milestone 3 is done: reads. Every response to a non-owner passes through one red
 
 Milestone 4 is done: writes. The kernel checks every op against the access document right after its refs resolve: `Read` on what it names, `Write` or `Curate` on the lane. An independent oracle reference matches it exactly on direct ops and on merges. The daemon checks proof of possession for every content hash. Branches belong to their creator, and merges into `main` or owner branches apply only what the merger could do directly (`MergeUnauthorized`). Tests: T60, T102, T107, T108, and PROP15's write half at 10,000 seeds. Egress (milestone 5) and crypto-shred (milestone 6) remain before multi-user mode is offered.
 
-Milestone 5 is done: egress. With an access document, the bodies of lanes whose egress is off reach only validators marked `local = true`; skipped work runs once egress turns on or a local validator is added. The embedder never receives them, and vector ranking and embedding candidates skip those heads. The mirror exports only egress lanes, and in multi-user mode only lanes every principal reads, into a `.git` others cannot read unless `--readable-ok` (T105, with recording mocks and a real repository). Crypto-shred (milestone 6) remains before multi-user mode is offered.
+Milestone 5 is done: egress. With an access document, the bodies of lanes whose egress is off reach only validators marked `local = true`; skipped work runs once egress turns on or a local validator is added. The embedder never receives them, and vector ranking and embedding candidates skip those heads. The mirror exports only egress lanes, and in multi-user mode only lanes every principal reads, into a `.git` others cannot read unless `--readable-ok` (T105, with recording mocks and a real repository).
+
+Milestone 6 is done: crypto-shred.
+- **Encryption.** Payloads are stored encrypted, under one key per content hash in an append-only key log.
+- **`ctx shred`** commits `ShredContent`. After that the key log is rewritten without the key, and every body-bearing projection is purged, with each step durable before `purged` is reported.
+- **The git mirror** reports `PayloadGone` and offers `--rebuild`.
+- **`ctx migrate` to format 5** re-encrypts older packs and rebuilds the projections, and succeeds only after a disk check. Openers refuse an incomplete migration.
+- **Tests:** T59, T103, T104, and PROP16 at 10,000 seeds.
+
+Verification (milestone 7) remains before multi-user mode is offered.
 
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;

@@ -159,7 +159,9 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         store.get_blob(&h).unwrap(),
         Payload::Available(b"same".to_vec())
     );
-    // Per-file blobs written before packs stay readable and present.
+    // Per-file blobs written before packs are plaintext: the store refuses
+    // to open until `ctx migrate` re-encrypts them (ADR 0017 §10), and then
+    // they are readable and present.
     drop(store);
     let legacy = *blake3::hash(b"legacy").as_bytes();
     let name: String = legacy.iter().map(|b| format!("{b:02x}")).collect();
@@ -167,6 +169,11 @@ fn blobs_are_idempotent_verified_and_required_t35() {
     disk.write_new(&blobs.join(&name), b"legacy").unwrap();
     disk.sync(&blobs.join(name)).unwrap();
     disk.sync_dir(&blobs).unwrap();
+    assert!(matches!(
+        open(&disk),
+        Err(StoreError::MigrationIncomplete { step: 3 })
+    ));
+    contextdb_store::migrate::migrate(&disk, Path::new(DIR)).unwrap();
     let (mut store, _) = open(&disk).unwrap();
     assert_eq!(
         store.get_blob(&legacy).unwrap(),
@@ -983,7 +990,10 @@ fn review3_interrupted_migration_is_refused_then_resumed() {
         .rename_dir(&log_dir, &root.join("log.migrating"))
         .unwrap();
     probe.sync_dir(root).unwrap();
-    assert!(matches!(open(&probe), Err(StoreError::MigrationIncomplete)));
+    assert!(matches!(
+        open(&probe),
+        Err(StoreError::MigrationIncomplete { step: 2 })
+    ));
     let report = migrate::migrate(&probe, root).unwrap();
     assert_eq!(report.to, log::FORMAT_VERSION);
     let (store, _) = open(&probe).unwrap();
@@ -1635,13 +1645,20 @@ fn g4_staged_harness_detects_a_missing_barrier() {
         let store = populated(&disk, 1);
         let p = format!("unordered-{seed}").into_bytes();
         let h = *blake3::hash(&p).as_bytes();
-        // Write the payload with no sync at all, then commit a frame using it.
-        let blobs = Path::new(DIR).join("blobs");
-        let name: String = h.iter().map(|b| format!("{b:02x}")).collect();
-        disk.write_new(&blobs.join(name), &p).unwrap();
+        // Write the payload (its key and encrypted record) with no sync at
+        // all, then commit a frame using it. Open syncs every segment before
+        // trusting it, so the barrier is removed by disabling syncs.
+        let (keyseg, packseg) = contextdb_store::encrypted_payload_files(&p);
+        let (keys, blobs) = (Path::new(DIR).join("keys"), Path::new(DIR).join("blobs"));
+        disk.write_new(&keys.join("keylog-00000099"), &keyseg)
+            .unwrap();
+        disk.write_new(&blobs.join("pack-00000099"), &packseg)
+            .unwrap();
+        disk.sync_dir(&keys).unwrap();
         disk.sync_dir(&blobs).unwrap();
         // Reopen so the store registers the unsynced payload.
         drop(store);
+        disk.disable_syncs();
         let (mut store, _) = open(&disk).unwrap();
         let b = Batch::new(vec![Op::CreateLogical {
             key: format!("u{seed}"),
@@ -1691,13 +1708,6 @@ fn put_blobs_is_durable_on_return_and_poisons_on_failed_barrier() {
     );
 }
 
-fn pack_record(bytes: &[u8]) -> Vec<u8> {
-    let mut r = b"CXBP".to_vec();
-    r.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    r.extend_from_slice(blake3::hash(bytes).as_bytes());
-    r.extend_from_slice(bytes);
-    r
-}
 fn create_with(key: &str, content: ContentHash) -> Batch {
     Batch::new(vec![Op::CreateLogical {
         key: key.into(),
@@ -1718,9 +1728,13 @@ fn g4_kill_restart_retry_never_loses_a_deduplicated_payload() {
         drop(populated(&disk, 1 + seed as usize % 3));
         let p = format!("payload-{seed}").into_bytes();
         let h = *blake3::hash(&p).as_bytes();
-        // The killed process: appended to a fresh segment, never synced.
+        // The killed process: its key and encrypted record appended to
+        // fresh segments, never synced.
+        let (keyseg, packseg) = contextdb_store::encrypted_payload_files(&p);
+        let keys = Path::new(DIR).join("keys").join("keylog-00000099");
+        disk.append(&keys, &keyseg).unwrap();
         let seg = Path::new(DIR).join("blobs").join("pack-00000099");
-        disk.append(&seg, &pack_record(&p)).unwrap();
+        disk.append(&seg, &packseg).unwrap();
         // Restart; the client's retry carries the payload again.
         let (mut store, _) = open(&disk).unwrap();
         store.stage_blobs(&[&p]).unwrap();

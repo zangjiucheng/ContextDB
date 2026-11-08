@@ -32,6 +32,15 @@ fn main() -> ExitCode {
             daemon.stop();
             ExitCode::SUCCESS
         }
+        Err(StartError::Store(contextdb_store::StoreError::MigrationIncomplete { step })) => {
+            eprintln!(
+                "ctxd: {} is mid-migration (MigrationIncomplete {{ step: {step} }}); \
+                 run `ctx migrate {}` again",
+                dir.display(),
+                dir.display()
+            );
+            ExitCode::from(2)
+        }
         Err(StartError::Locked) => {
             eprintln!("ctxd: another ctxd already serves {}", dir.display());
             ExitCode::from(3)

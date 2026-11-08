@@ -57,6 +57,9 @@ pub struct MigrationReport {
     /// Epochs whose re-derived result differs from the acked one, which is
     /// kept as `acked_result`.
     pub changed: Vec<Epoch>,
+    /// Steps 3 and 4 of the format-5 migration (ADR 0017 §10); `None` when
+    /// the store was already complete.
+    pub encryption: Option<crate::migrate5::Encryption>,
 }
 fn io(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
@@ -70,41 +73,105 @@ pub fn log_format(disk: &dyn Durability, dir: &Path) -> Result<Option<u32>, Stor
     let bytes = disk.read(first).map_err(io)?;
     Ok(log::parse_header(&bytes).map(|h| h.format))
 }
-/// Rewrites a format-0 or format-1 log as the current format. Frames are
-/// verified with their own format's rules first; any inconsistency aborts with
-/// the old log untouched. Format 0 results are re-derived (they lack
-/// `status_diff`); every migrated frame becomes its own group (format 2). Holds the
-/// store lock, and finishes a migration interrupted between its two renames.
+/// `ctx migrate` (ADR 0006 §7, ADR 0017 §10): the log to the current
+/// format, then the packs, projections and modes, success only after
+/// verification ([`crate::migrate5`]). Holds the store lock throughout,
+/// and resumes any interrupted migration.
 pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreError> {
+    migrate_with(
+        disk,
+        dir,
+        &crate::migrate5::NoModes,
+        &crate::migrate5::Faults::default(),
+    )
+}
+/// [`migrate`] with the caller's mode step and test faults.
+pub fn migrate_with(
+    disk: &dyn Durability,
+    dir: &Path,
+    modes: &dyn crate::migrate5::Modes,
+    faults: &crate::migrate5::Faults,
+) -> Result<MigrationReport, StoreError> {
     let _lock = crate::store::lock(disk, dir)?;
+    let marked = disk.exists(&dir.join(crate::migrate5::MARKER));
+    if !marked && !crate::store::migration_incomplete(disk, dir).map_err(io)? {
+        match log_format(disk, dir)? {
+            // A store with no commit has a current (empty) log.
+            f @ (None | Some(log::FORMAT_VERSION)) if disk.exists(&dir.join("log")) => {
+                // "Already at format 5" only when every step's check
+                // passes on disk, never from the log version alone.
+                if crate::migrate5::verify(disk, dir, modes)?.0.is_none() {
+                    return current(disk, dir, f.unwrap_or(log::FORMAT_VERSION));
+                }
+            }
+            Some(0..=4) => {}
+            Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
+            Some(f) => return Err(StoreError::FormatUnsupported(f)),
+            None => return Err(StoreError::Io("no log to migrate".into())),
+        }
+    }
+    crate::migrate5::run(disk, dir, modes, faults, &mut |faults| {
+        log_step(disk, dir, faults)
+    })
+}
+/// The report of a log already at the current format. A migration whose
+/// last step failed after the swap still lists what it changed, from its
+/// backup (review). Best effort: a log written since (a torn tail) leaves
+/// the list empty.
+fn current(disk: &dyn Durability, dir: &Path, f: u32) -> Result<MigrationReport, StoreError> {
+    let (backup, changed) = match newest_backup(disk, dir)? {
+        Some((v, name)) => {
+            let changed = changed_since(disk, dir, &dir.join(&name), v).unwrap_or_default();
+            (dir.join(name).display().to_string(), changed)
+        }
+        None => (String::new(), Vec::new()),
+    };
+    Ok(MigrationReport {
+        from: f,
+        to: f,
+        frames: 0,
+        backup,
+        changed,
+        encryption: None,
+    })
+}
+/// Step 2, decided from the log itself (ADR 0017 §10, "Rerunning"): a swap
+/// in progress is finished; an older log is migrated from the start; a log
+/// at the current format is left alone.
+fn log_step(
+    disk: &dyn Durability,
+    dir: &Path,
+    faults: &crate::migrate5::Faults,
+) -> Result<MigrationReport, StoreError> {
     if crate::store::migration_incomplete(disk, dir).map_err(io)? {
         return resume(disk, dir);
     }
-    let from = match log_format(disk, dir)? {
-        Some(f) if f == log::FORMAT_VERSION => {
-            // A migration whose last step failed after the swap still lists
-            // what it changed, from its backup (review). Best effort: a log
-            // written since (a torn tail) leaves the list empty.
-            let (backup, changed) = match newest_backup(disk, dir)? {
-                Some((v, name)) => {
-                    let changed = changed_since(disk, dir, &dir.join(&name), v).unwrap_or_default();
-                    (dir.join(name).display().to_string(), changed)
-                }
-                None => (String::new(), Vec::new()),
-            };
-            return Ok(MigrationReport {
-                from: f,
-                to: f,
-                frames: 0,
-                backup,
-                changed,
-            });
-        }
-        Some(f @ (0..=4)) => f,
-        Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
-        Some(f) => return Err(StoreError::FormatUnsupported(f)),
-        None => return Err(StoreError::Io("no log to migrate".into())),
-    };
+    match log_format(disk, dir)? {
+        Some(f) if f == log::FORMAT_VERSION => current(disk, dir, f),
+        None if disk.exists(&dir.join("log")) => current(disk, dir, log::FORMAT_VERSION),
+        Some(f @ (0..=4)) if faults.skip_log => Ok(MigrationReport {
+            from: f,
+            to: f,
+            frames: 0,
+            backup: String::new(),
+            changed: Vec::new(),
+            encryption: None,
+        }),
+        Some(f @ (0..=4)) => migrate_log(disk, dir, f),
+        Some(f) if f > log::FORMAT_VERSION => Err(StoreError::FormatTooNew(f)),
+        Some(f) => Err(StoreError::FormatUnsupported(f)),
+        None => Err(StoreError::Io("no log to migrate".into())),
+    }
+}
+/// Rewrites an older log as the current format. Frames are verified with
+/// their own format's rules first; any inconsistency aborts with the old log
+/// untouched. Format 0 results are re-derived (they lack `status_diff`);
+/// every migrated frame becomes its own group (format 2).
+fn migrate_log(
+    disk: &dyn Durability,
+    dir: &Path,
+    from: u32,
+) -> Result<MigrationReport, StoreError> {
     let old_dir = dir.join("log");
     let new_dir = dir.join("log.migrating");
     if disk.exists(&new_dir) {
@@ -189,6 +256,7 @@ pub fn migrate(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, Sto
         frames: rows.len() as u64,
         backup: backup.display().to_string(),
         changed,
+        encryption: None,
     })
 }
 /// Second half of an interrupted swap: `log.migrating` was synced before the
@@ -220,6 +288,7 @@ fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreErr
         frames: scan.frames.len() as u64,
         backup: dir.join(backup).display().to_string(),
         changed,
+        encryption: None,
     })
 }
 /// The newest `log.vN.bak`: an interrupted migration started from the newest

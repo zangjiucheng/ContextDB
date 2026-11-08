@@ -158,7 +158,11 @@ impl JobTable {
     /// Opens (creating) the table. Call [`JobTable::recover`] once at
     /// daemon start, while the data directory's lock is held.
     pub fn open(path: &Path) -> Result<Self, String> {
+        let fresh = contextdb_store::purge::is_fresh(Some(path));
         let conn = Connection::open(path).map_err(sql)?;
+        if fresh {
+            contextdb_store::purge::stamp(&conn).map_err(sql)?;
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(sql)?;
         conn.execute_batch(

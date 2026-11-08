@@ -25,10 +25,14 @@ fn from_blob(b: &[u8]) -> Vec<f32> {
 impl VectorStore {
     /// Opens (or creates) the projection; memory when `path` is `None`.
     pub fn open(path: Option<&Path>) -> Sql<Self> {
+        let fresh = crate::purge::is_fresh(path);
         let conn = match path {
             Some(p) => Connection::open(p)?,
             None => Connection::open_in_memory()?,
         };
+        if fresh {
+            crate::purge::stamp(&conn)?;
+        }
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS vectors(

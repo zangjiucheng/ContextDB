@@ -123,9 +123,20 @@ fn hex(id: &[u8]) -> String {
 fn open(dir: &Path) -> Result<Store<StdDisk>, String> {
     open_with(dir, &options(dir))
 }
+/// A store error for the user; a mid-migration store says what to run
+/// (ADR 0017 §10).
+fn store_err(what: &str, e: &contextdb_store::StoreError) -> String {
+    match e {
+        contextdb_store::StoreError::MigrationIncomplete { step } => format!(
+            "{what}: MigrationIncomplete {{ step: {step} }}: the migration to format 5 did not \
+             complete; run `ctx migrate <dir>` again"
+        ),
+        e => format!("{what}: {e:?}"),
+    }
+}
 fn open_with(dir: &Path, options: &OpenOptions) -> Result<Store<StdDisk>, String> {
     let (store, report) =
-        Store::open(StdDisk::default(), dir, options).map_err(|e| format!("open: {e:?}"))?;
+        Store::open(StdDisk::default(), dir, options).map_err(|e| store_err("open", &e))?;
     println!(
         "epoch={} replayed={} snapshot={:?} projection_watermark={} self_checked={}",
         store.epoch().0,
@@ -151,7 +162,7 @@ fn open_with(dir: &Path, options: &OpenOptions) -> Result<Store<StdDisk>, String
 fn open_quiet(dir: &Path) -> Result<Store<StdDisk>, String> {
     Store::open(StdDisk::default(), dir, &options(dir))
         .map(|(store, _)| store)
-        .map_err(|e| format!("open: {e:?}"))
+        .map_err(|e| store_err("open", &e))
 }
 fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
     // Projections are rebuildable: --rebuild clears them under the store lock.
@@ -201,7 +212,7 @@ fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
 fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
     let disk = StdDisk::default();
     let plan = doctor::plan_truncate_before(&disk, dir, Epoch(epoch))
-        .map_err(|e| format!("plan: {e:?}"))?;
+        .map_err(|e| store_err("plan", &e))?;
     println!("new tail: epoch {}", plan.keep_through.0);
     println!(
         "ACKED DATA LOSS: {} readable epochs {:?}{}",
@@ -221,7 +232,7 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
         return Ok(());
     }
     // Projections above the new tail no longer name the log; open clears them.
-    doctor::truncate_before(&disk, dir, &plan).map_err(|e| format!("truncate: {e:?}"))?;
+    doctor::truncate_before(&disk, dir, &plan).map_err(|e| store_err("truncate", &e))?;
     println!("truncated");
     Ok(())
 }
@@ -309,12 +320,42 @@ fn run_p3(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("migrate") => {
-            let r = migrate::migrate(&StdDisk::default(), dir(1)?)
-                .map_err(|e| format!("migrate: {e:?}"))?;
-            println!(
-                "migrated format {} -> {} ({} frames); backup {}",
-                r.from, r.to, r.frames, r.backup
-            );
+            let d = dir(1)?;
+            let r = migrate::migrate_with(
+                &StdDisk::default(),
+                d,
+                &PrivateModes,
+                &contextdb_store::migrate5::Faults::default(),
+            )
+            .map_err(|e| store_err("migrate", &e))?;
+            match &r.encryption {
+                None => println!("already at format {}; nothing changed", r.to),
+                Some(enc) => {
+                    println!(
+                        "migrated format {} -> {} ({} frames); backup {}",
+                        r.from, r.to, r.frames, r.backup
+                    );
+                    println!(
+                        "re-encrypted {} records from {} pack segments and {} loose blobs \
+                         ({} shredded dropped); rebuilt {}",
+                        enc.records,
+                        enc.segments,
+                        enc.loose,
+                        enc.dropped_shredded,
+                        if enc.projections.is_empty() {
+                            "no projection".to_owned()
+                        } else {
+                            enc.projections.join(", ")
+                        }
+                    );
+                    if enc.missing > 0 {
+                        println!(
+                            "warning: {} payloads the log references were already missing",
+                            enc.missing
+                        );
+                    }
+                }
+            }
             if !r.changed.is_empty() {
                 let epochs: Vec<String> = r.changed.iter().map(|e| e.0.to_string()).collect();
                 println!(
@@ -348,6 +389,26 @@ fn run_p3(args: &[String]) -> Result<(), String> {
 /// `ctx doctor <dir> --fix-modes` (ADR 0017 §3.2): private modes and no ACL
 /// on every entry of the data directory. Safe while ctxd runs; it never
 /// changes an owner, so foreign-owned entries are only reported.
+/// Step 5 of the format-5 migration (ADR 0017 §3.2): private modes, no
+/// ACLs, every entry owned by the store owner.
+struct PrivateModes;
+impl contextdb_store::migrate5::Modes for PrivateModes {
+    fn apply(&self, dir: &Path) -> Result<(), String> {
+        use contextdb_proto::fsguard;
+        let d = dir.canonicalize().map_err(|e| e.to_string())?;
+        fsguard::fix_modes(&d, fsguard::current_uid())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn check(&self, dir: &Path) -> Result<(), String> {
+        use contextdb_proto::fsguard;
+        let d = dir.canonicalize().map_err(|e| e.to_string())?;
+        match fsguard::walk(&d, fsguard::current_uid(), 1).first() {
+            Some(v) => Err(v.to_string()),
+            None => Ok(()),
+        }
+    }
+}
 fn fix_modes(d: &Path) -> Result<(), String> {
     use contextdb_proto::fsguard;
     let d = d
