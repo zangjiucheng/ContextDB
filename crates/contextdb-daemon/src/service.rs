@@ -1766,6 +1766,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 batch.channel = id.channel;
                 batch.principal = id.principal;
+                // Redacted with the view of the branch it ran on (security
+                // review m10).
+                crate::redact::note_branch(batch.branch);
                 if let Some(r) = certificate_reads(&batch.ops) {
                     return r;
                 }
@@ -1980,6 +1983,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 // Branches are not secret: an unknown source is InvalidMerge,
                 // after the batch-level BranchArchived (§9). Branches are
                 // never deleted, so no retry of a committed merge lands here.
+                // The reply is redacted with the target's view (security
+                // review m10).
+                crate::redact::note_branch(target);
                 let Some(source) = snap.kernel.branch_by_name(&source) else {
                     if snap
                         .kernel

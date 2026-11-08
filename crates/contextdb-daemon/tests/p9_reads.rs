@@ -1980,3 +1980,76 @@ fn resolving_needs_read_on_every_side() {
         format!("{hidden:?}").replace(&format!("artifact {}", theirs[0].0), "artifact N")
     );
 }
+
+/// Security review m10: `ImpactBatch` on a branch is redacted with that
+/// branch's view, so bob's own logical that exists only on his branch is
+/// not dropped as hidden.
+#[test]
+fn impact_batch_is_redacted_with_its_branch() {
+    let f = fixture();
+    let s = &f.s;
+    let r = s
+        .handle(
+            BOB,
+            Request::BranchCreate {
+                name: "mine".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(!matches!(r, Response::Error { .. }), "{r:?}");
+    let mine = s.actor.snapshot().kernel.branch_by_name("mine").unwrap();
+    // Bob's record, on his branch only.
+    let mut create = Batch::new(vec![Op::CreateLogical {
+        key: "pub/mine".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: h(b"mine v1"),
+        adopt_as_base: false,
+    }]);
+    create.branch = mine;
+    let r = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![b"mine v1".to_vec()],
+                batch: create,
+            },
+        )
+        .response;
+    let Response::Committed { result } = r else {
+        panic!("{r:?}")
+    };
+    let (l, old) = (
+        result.allocations.new_logicals[0],
+        result.allocations.new_revisions[0],
+    );
+    let mut probe = Batch::new(vec![
+        Op::AddRevision {
+            logical: l.into(),
+            content: h(b"mine v2"),
+            adopt_as_base: false,
+        },
+        Op::SetHead {
+            logical: l.into(),
+            expected: old.into(),
+            new: RevRef::New(0),
+        },
+    ]);
+    probe.branch = mine;
+    let r = s.handle(
+        BOB,
+        Request::ImpactBatch {
+            batch: probe,
+            blobs: vec![b"mine v2".to_vec()],
+        },
+    );
+    let Response::ImpactExact { result } = &r.response else {
+        panic!("{r:?}")
+    };
+    assert!(
+        result.net_delta.head_moves.iter().any(|(x, ..)| *x == l),
+        "{r:?}"
+    );
+}
