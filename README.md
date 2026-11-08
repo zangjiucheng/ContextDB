@@ -406,10 +406,77 @@ per_head = 5
 - **Concurrency-safe.** The ref moves only by compare-and-swap, so a concurrent export fails with `MirrorRaced` instead of overwriting.
 - **After a shred** the next export refuses with `MirrorStale` (`PayloadGone`) while the ref's history holds the payload. `--rebuild` replaces the history with one fresh commit and deletes every backup ref. Git keeps the old objects until you run `git reflog expire --expire=now --all && git gc --prune=now`.
 
+### Multi-user mode, egress and shred (P9)
+
+Several OS users on one machine can share a store. Each user is a **principal** that sees only the lanes it may read, and payloads can be erased cryptographically. Multi-user mode is **off unless you turn it on**. Without an access document, a store works exactly as in P8.
+
+**Setup** (the store owner, i.e. the user `ctxd` runs as):
+
+1. Write `.contextdb/access.toml`. A minimal one:
+
+   ```toml
+   version = 1
+   [principals.alice]          # the store owner: the uid ctxd runs as
+   uid = 501
+   [principals.bob]
+   uid = 502
+
+   [lanes.repo]
+   members = ["*members"]      # every principal in the document
+   writers = ["*members"]
+   curators = ["alice"]
+   egress = true               # bodies may leave the machine (validators, embedder, mirror)
+
+   [default_lane]              # every lane not listed: owner only (fail closed)
+   members = ["*owner"]
+   ```
+
+   Groups (`@billing`), dir grants, key-prefix denies, `code_lanes` and `personal:<name>` lanes are described in ADR 0017 §4.
+2. Run `ctx access apply <data dir>` (it reads `.contextdb/access.toml`; `--file` names another), then check with `ctx access show <data dir>` and `ctx access check <data dir> <principal> <key>`.
+3. Start the daemon with `ctxd <data dir> --multi-user`, or install it with `ctx service install <data dir> --multi-user`. Without the switch, a document that names other principals maps nobody.
+4. Multi-user mode checks the file system before it maps anyone:
+   - `<data>`, `<data>/run` and `<data>/run/shared` are 0711, and everything else is private;
+   - there are no ACLs, and every entry is owned by the store owner;
+   - each mapped uid can reach the shared socket.
+
+   `ctx doctor <data dir> --fix-modes` repairs modes and ACLs.
+
+**What other principals get.** Other users connect over the agent socket with MCP only: no hooks, outbox or observer (F8).
+- A record they may not read is `Unavailable`, and lists drop it and say how many were dropped.
+- Writes need `Write` on the lane, and asserting a base needs `Curate`.
+- Sending a content hash needs its bytes (proof of possession).
+- Branches belong to their creator. A merge into `main` applies only what the merger could do directly.
+- `ctx ui` needs its launch token while others are mapped. Restart `ctx ui` after a `SetAccess` that maps someone new.
+
+**Egress.** Once an access document exists, a lane with `egress = false` (personal lanes by default) keeps its bodies on the machine:
+- only validators marked `local = true` receive them;
+- the embedder skips them;
+- the git mirror exports only lanes that are egress and readable by every principal.
+
+**Shred.** `ctx shred <data dir> <key>[@rev] [--with-reviews] --yes` erases a payload. Payloads are encrypted, one key per content hash, so a shred:
+- deletes the key from the key log;
+- purges every projection (`recall`, `vectors`, `jobs`, `candidates`, with their `-wal` files);
+- reports `purged` only when all of that is durable.
+
+The git mirror then refuses with `PayloadGone` until `ctx mirror export --rebuild`. A shred does **not** reach the session log or outbox, text agents copied elsewhere, earlier backups or exports, swap, file-system snapshots, freed blocks or SSD remanence. `ctx shred` prints this list.
+
+**Upgrading.** A store from P8 or earlier must be migrated once, with `ctxd` stopped: `ctx migrate <data dir>`.
+- It re-encrypts the packs, rebuilds the projections without old free pages, and fixes modes.
+- It can be rerun after an interruption.
+- Until it completes, `ctxd`, `ctx` and `doctor` refuse the store (`MigrationIncomplete`).
+
+**Backups.** Back up `<data>/keys/` together with `blobs/` and `log/`: without the key log every payload is unreadable. A shredded payload stays readable in any backup taken before the shred.
+
+**Threat model, in short.**
+- Other OS users cannot read the store's files or impersonate the daemon.
+- Mapped principals see and change only what the access document allows.
+- Agents running as the **store owner's** uid are still trusted cooperatively, as before.
+- ADR 0017 §2 lists the guarantees and their limits: count side channels, key existence, and confirming a known text by its hash.
+
 ## Limits and non-goals
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.
-- **The trust boundary is cooperative**: an agent that can run a shell as the same OS user can uninstall hooks or connect to the admin socket directly; hard isolation, multi-principal permissions and right-to-erasure arrive in P9.
+- **The trust boundary is cooperative for the store owner's uid**: an agent that can run a shell as the same OS user can uninstall hooks or connect to the admin socket directly. Isolation between OS users, multi-principal permissions and crypto-shred are P9's multi-user mode (above).
 - **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P11); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication.
 - **TOCTOU**: there is still a window between the pre-action check and the actual write; Bash side effects are found only afterwards, by drift.
 
