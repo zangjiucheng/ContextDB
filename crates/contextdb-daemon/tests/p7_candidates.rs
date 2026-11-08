@@ -499,3 +499,179 @@ fn recall_reads_the_branch_rows() {
     assert!(recall(on_dev, "postgres").is_empty());
     assert_eq!(recall(on_main, "postgres").len(), 1);
 }
+
+/// P9 security review M3 and M4 (ADR 0017 §5.7): with a key-prefix deny,
+/// bob cannot learn the hidden side of a candidate pair from
+/// `conflict_open{from: candidate}` (the candidate answers as missing, and
+/// no hidden revision id appears), and a revision target on a hidden
+/// logical is `Unavailable` whatever the revision.
+#[test]
+fn a_hidden_side_is_never_revealed_by_open_or_by_revision_targets() {
+    use contextdb_daemon::principals::PrincipalMap;
+    use contextdb_proto::fsguard;
+    const BOB: Identity = Identity {
+        channel: Channel::Agent,
+        principal: PrincipalId(16),
+    };
+    let disk = SimDisk::new();
+    let s = service(&disk);
+    s.set_principals(
+        PrincipalMap::new(
+            Some("alice"),
+            fsguard::current_uid(),
+            [("bob".to_owned(), 4242, PrincipalId(16))],
+        )
+        .unwrap(),
+    );
+    let members: std::collections::BTreeSet<String> = ["*members".to_owned()].into();
+    let doc = AccessDoc {
+        version: 1,
+        owner: "alice".into(),
+        principals: [
+            ("alice".to_owned(), fsguard::current_uid()),
+            ("bob".to_owned(), 4242),
+        ]
+        .into(),
+        groups: Default::default(),
+        lanes: [(
+            "repo".to_owned(),
+            LaneEntry {
+                members: members.clone(),
+                writers: members,
+                deny: [("bob".to_owned(), "secret".to_owned())].into(),
+                ..LaneEntry::owner_only()
+            },
+        )]
+        .into(),
+        code_lanes: LaneEntry::code_default(),
+        personal_egress: false,
+        default_lane: LaneEntry::owner_only(),
+    };
+    let r = call(
+        &s,
+        ADMIN,
+        Request::SetAccess {
+            doc,
+            client_txn_id: None,
+        },
+    );
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    filler(&s);
+    let a = create(
+        &s,
+        MAIN,
+        "queue",
+        RecordKind::Decision,
+        "background jobs run on the rabbitmq broker",
+    );
+    let b = create(
+        &s,
+        MAIN,
+        "secret-queue",
+        RecordKind::Fact,
+        "background jobs never touch the rabbitmq broker",
+    );
+    settle(&s);
+    let id = listed(&s, None)
+        .into_iter()
+        .find(|i| i.sides.iter().any(|x| x.rev == a) && i.sides.iter().any(|x| x.rev == b))
+        .and_then(|i| i.candidate)
+        .expect("candidate a-b");
+    let session = match call(
+        &s,
+        BOB,
+        Request::SessionStart {
+            harness: "mcp".into(),
+            repo: "r".into(),
+            head_sha: "h".into(),
+            parent: None,
+            branch: None,
+            git_branch: None,
+        },
+    ) {
+        Response::Session { session } => session,
+        other => panic!("{other:?}"),
+    };
+    let open = |b_side: Option<Target>| Request::ConflictOpen {
+        binding: Some(Binding::root(session)),
+        branch: None,
+        a: Target::KeyRev {
+            key: "queue".into(),
+            rev: a,
+        },
+        b: b_side,
+        reason: "they disagree on the broker".into(),
+        evidence: Vec::new(),
+        from: Some(ConflictFrom::Candidate(id)),
+        expect_cert_valid: false,
+        client_txn_id: None,
+    };
+    let r = call(&s, BOB, open(None));
+    assert_eq!(code(&r), "UnknownRef", "{r:?}");
+    assert!(
+        !format!("{r:?}").contains(&format!("{}", b.0)) || b.0 == id as u32,
+        "{r:?}"
+    );
+    let r = call(
+        &s,
+        BOB,
+        open(Some(Target::KeyRev {
+            key: "secret-queue".into(),
+            rev: b,
+        })),
+    );
+    assert!(matches!(r, Response::Unavailable { .. }), "{r:?}");
+    // Revision targets on the hidden logical: the same answer for its own
+    // revision and for any other.
+    let hidden = s
+        .actor
+        .snapshot()
+        .view(MAIN)
+        .logical_by_key("secret-queue")
+        .unwrap();
+    for rev in [b, a, RevisionId(9_999)] {
+        for target in [
+            Target::Pinned {
+                logical: hidden,
+                rev,
+            },
+            Target::KeyRev {
+                key: "secret-queue".into(),
+                rev,
+            },
+        ] {
+            let r = call(
+                &s,
+                BOB,
+                Request::Why {
+                    target: target.clone(),
+                    depth: 1,
+                },
+            );
+            assert!(
+                matches!(r, Response::Unavailable { .. }),
+                "{target:?}: {r:?}"
+            );
+        }
+    }
+    // The store owner still opens it.
+    let r = call(
+        &s,
+        ADMIN,
+        Request::ConflictOpen {
+            binding: None,
+            branch: None,
+            a: Target::KeyRev {
+                key: "queue".into(),
+                rev: a,
+            },
+            b: None,
+            reason: "they disagree on the broker".into(),
+            evidence: Vec::new(),
+            from: Some(ConflictFrom::Candidate(id)),
+            expect_cert_valid: false,
+            client_txn_id: None,
+        },
+    );
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+}

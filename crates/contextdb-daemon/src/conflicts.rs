@@ -360,12 +360,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
             return err("InvalidArgument", "a Conflict needs a reason");
         }
         // Sides must be visible on the branch (resolution is on its view).
-        let side_a = match self.resolve_plain(&a, &view) {
+        // A side the caller cannot read is `Unavailable` before any other
+        // check (ADR 0017 §5.7; security review M3/M4).
+        let side_a = match self.resolve_plain(id.principal, &a, &view) {
+            Ok((l, _)) if !view.authorizes(id.principal, l) => {
+                return Response::Unavailable {
+                    target: crate::service::target_text(&a),
+                };
+            }
             Ok((_, r)) => r,
             Err(r) => return r,
         };
         let mut side_b = match &b {
-            Some(t) => match self.resolve_plain(t, &view) {
+            Some(t) => match self.resolve_plain(id.principal, t, &view) {
+                Ok((l, _)) if !view.authorizes(id.principal, l) => {
+                    return Response::Unavailable {
+                        target: crate::service::target_text(t),
+                    };
+                }
                 Ok((_, r)) => Some(r),
                 Err(r) => return r,
             },
@@ -375,8 +387,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
         // (when given) the other; an omitted `b` is filled in.
         if let Some(ConflictFrom::Candidate(n)) = from {
             use crate::candidates::{CandState, current};
+            // A candidate with a side the caller cannot read answers as one
+            // that does not exist (security review M4).
+            let visible = |r: RevisionId| {
+                view.revision_logical(r)
+                    .is_some_and(|l| view.authorizes(id.principal, l))
+            };
             let c = match self.candidates.get(n) {
-                Ok(Some(c)) if c.branch == branch => c,
+                Ok(Some(c)) if c.branch == branch && visible(c.a) && visible(c.b) => c,
                 Ok(_) => return err("UnknownRef", format!("no candidate {n} on this branch")),
                 Err(e) => return err("Internal", format!("candidates: {e}")),
             };

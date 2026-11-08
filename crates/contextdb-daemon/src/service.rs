@@ -441,7 +441,7 @@ fn content_hashes(ops: &[Op]) -> Vec<ContentHash> {
     out
 }
 /// A target as its sender wrote it, for `Unavailable` (ADR 0017 §5.7).
-fn target_text(t: &Target) -> String {
+pub(crate) fn target_text(t: &Target) -> String {
     match t {
         Target::Handle(h) => h.clone(),
         Target::Key(k) => k.clone(),
@@ -1709,7 +1709,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 ),
                 Err(r) => r,
             },
-            Request::Why { target, depth } => match self.resolve_plain(&target, db) {
+            Request::Why { target, depth } => match self.resolve_plain(id.principal, &target, db) {
                 Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
                     target: target_text(&target),
                 },
@@ -1719,17 +1719,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 },
                 Err(r) => r,
             },
-            Request::WhyNot { target, depth } => match self.resolve_plain(&target, db) {
-                Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
-                    target: target_text(&target),
-                },
-                Ok((_, r)) => match db.why_not(r, depth as usize) {
-                    Ok(why_not) => Response::WhyNot { why_not },
-                    Err(e) => err(&code(&e), format!("{e:?}")),
-                },
-                Err(r) => r,
-            },
-            Request::Impact { target } => match self.resolve_plain(&target, db) {
+            Request::WhyNot { target, depth } => {
+                match self.resolve_plain(id.principal, &target, db) {
+                    Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
+                        target: target_text(&target),
+                    },
+                    Ok((_, r)) => match db.why_not(r, depth as usize) {
+                        Ok(why_not) => Response::WhyNot { why_not },
+                        Err(e) => err(&code(&e), format!("{e:?}")),
+                    },
+                    Err(r) => r,
+                }
+            }
+            Request::Impact { target } => match self.resolve_plain(id.principal, &target, db) {
                 Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
                     target: target_text(&target),
                 },
@@ -2795,11 +2797,32 @@ impl<D: Durability + Clone + 'static> Service<D> {
         Ok(())
     }
     /// Target → (logical, revision) without session context (no handles).
+    /// A target → `(logical, revision)` for `principal`. A revision target
+    /// whose logical the principal cannot read is `Unavailable{target}`
+    /// whatever the revision, so answers never map revision ids to hidden
+    /// logicals (ADR 0017 §5.7; security review M3).
     pub(crate) fn resolve_plain(
         &self,
+        principal: PrincipalId,
         target: &Target,
         db: &BranchView<'_>,
     ) -> Result<(LogicalId, RevisionId), Response> {
+        let hidden = |l: Option<LogicalId>| {
+            l.is_some_and(|l| db.logical_info(l).is_some() && !db.authorizes(principal, l))
+        };
+        match target {
+            Target::Pinned { logical, .. } if hidden(Some(*logical)) => {
+                return Err(Response::Unavailable {
+                    target: target_text(target),
+                });
+            }
+            Target::KeyRev { key, .. } if hidden(db.logical_by_key(key)) => {
+                return Err(Response::Unavailable {
+                    target: target_text(target),
+                });
+            }
+            _ => {}
+        }
         let head = |l: LogicalId| {
             db.head(l)
                 .map(|r| (l, r))
@@ -3174,7 +3197,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     )),
                 }
             }
-            other => self.resolve_plain(other, db),
+            other => {
+                let principal = s.lock().expect("session").principal;
+                self.resolve_plain(principal, other, db)
+            }
         };
         let (l, r) = match resolved {
             Ok(v) => v,
