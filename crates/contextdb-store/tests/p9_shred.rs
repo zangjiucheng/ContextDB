@@ -443,7 +443,9 @@ fn g4_a_full_disk_during_the_key_log_rewrite_is_finished_at_open() {
         for n in 0..64u32 {
             let disk = SimDisk::new();
             let mut store = open(&disk);
-            let secret = store.put_blob(b"the zanzibar vendor holds the keys").unwrap();
+            let secret = store
+                .put_blob(b"the zanzibar vendor holds the keys")
+                .unwrap();
             let kept = store.put_blob(b"rotate keys yearly").unwrap();
             store
                 .commit(&Batch::new(vec![create("a", secret), create("b", kept)]))
