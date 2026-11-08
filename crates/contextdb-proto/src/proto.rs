@@ -233,13 +233,16 @@ pub enum MirrorAction {
     /// Export the branch (default `main`). `force` moves a modified ref
     /// after backing it up; `adopt` accepts an unknown tip that validates.
     /// `readable_ok` lets a multi-user store export into a repository whose
-    /// `.git` directory others can read (ADR 0017 §7).
+    /// `.git` directory others can read (ADR 0017 §7). `rebuild` replaces
+    /// the ref with a fresh one-commit history and deletes every backup ref
+    /// (ADR 0017 §8.4 item 5).
     Export {
         branch: Option<String>,
         project: String,
         force: bool,
         adopt: bool,
         readable_ok: bool,
+        rebuild: bool,
     },
     /// List hand edits of the branch's mirror as supersede proposals.
     Proposals {
@@ -263,6 +266,7 @@ impl Wire for MirrorAction {
                 force,
                 adopt,
                 readable_ok,
+                rebuild,
             } => {
                 0u8.encode(o);
                 branch.encode(o);
@@ -270,6 +274,7 @@ impl Wire for MirrorAction {
                 force.encode(o);
                 adopt.encode(o);
                 readable_ok.encode(o);
+                rebuild.encode(o);
             }
             Self::Proposals { branch, project } => {
                 1u8.encode(o);
@@ -298,6 +303,7 @@ impl Wire for MirrorAction {
                 force: Wire::decode(i)?,
                 adopt: Wire::decode(i)?,
                 readable_ok: Wire::decode(i)?,
+                rebuild: Wire::decode(i)?,
             },
             1 => Self::Proposals {
                 branch: Wire::decode(i)?,
@@ -3024,6 +3030,7 @@ mod tests {
                     force: true,
                     adopt: false,
                     readable_ok: false,
+                    rebuild: true,
                 },
             },
             Request::Mirror {

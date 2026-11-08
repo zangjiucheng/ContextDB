@@ -525,6 +525,7 @@ fn mirror_section(n: usize, epochs: usize, out: &mut Vec<String>) {
                         force: false,
                         adopt: false,
                         readable_ok: false,
+                        rebuild: false,
                     },
                 },
             )

@@ -933,10 +933,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 force,
                 adopt,
                 readable_ok,
+                rebuild,
                 ..
             } => {
                 m.readable_ok = readable_ok;
-                m.export(branch, force, adopt)
+                if rebuild {
+                    m.rebuild(branch)
+                } else {
+                    m.export(branch, force, adopt)
+                }
             }
             MirrorAction::Proposals { .. } => m.proposals(branch),
             MirrorAction::Status { .. } => m.status(),

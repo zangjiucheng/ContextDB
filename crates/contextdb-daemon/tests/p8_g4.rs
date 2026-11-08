@@ -157,6 +157,7 @@ fn mirror(c: &mut Client, repo: &Path) -> Result<MirrorReport, String> {
                 force: false,
                 adopt: false,
                 readable_ok: false,
+                rebuild: false,
             },
         })
         .unwrap();
@@ -275,6 +276,7 @@ fn kill_between_commit_tree_and_update_ref() {
             force: false,
             adopt: false,
             readable_ok: false,
+            rebuild: false,
         },
     });
     wait_crash(&mut child, "commit-tree");
@@ -311,6 +313,7 @@ fn kill_between_update_ref_and_the_cache_write() {
             force: false,
             adopt: false,
             readable_ok: false,
+            rebuild: false,
         },
     });
     wait_crash(&mut child, "update-ref");
@@ -478,6 +481,7 @@ fn export(s: &Service<SimDisk>, repo: &Path) -> Result<MirrorReport, String> {
                     force: false,
                     adopt: false,
                     readable_ok: false,
+                    rebuild: false,
                 },
             },
         )

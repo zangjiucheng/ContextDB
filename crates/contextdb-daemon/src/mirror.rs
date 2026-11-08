@@ -27,6 +27,13 @@
 //!   a lane's files for this reason carries `Ctx-Egress-Removed`. A
 //!   multi-user export refuses a repository whose `.git` others can read,
 //!   unless `readable_ok`.
+//! - **Shreds (ADR 0017 §8.4 item 5).** A ref whose history holds a file
+//!   whose body (or whole text) hashes to a shredded content is
+//!   `MirrorStale{PayloadGone}`, even with `--force`. A history found clean
+//!   is cached with the last shred epoch it was checked against.
+//!   `--rebuild` replaces the ref with one fresh commit and deletes every
+//!   `refs/contextdb-backup/` ref; git keeps the objects until a
+//!   `reflog expire` and `gc --prune=now`, which ContextDB does not run.
 use crate::actor::Snapshot;
 use contextdb_anchors::capture;
 use contextdb_core::BranchView;
@@ -59,6 +66,8 @@ pub enum MirrorError {
     Modified { reference: String, found: String },
     /// The tip names a log that no longer exists (`LogRewritten`).
     Stale { reference: String, found: String },
+    /// The ref's history holds a shredded payload (`PayloadGone`).
+    PayloadGone { reference: String, found: String },
     /// Another export moved the ref in between.
     Raced { reference: String },
     /// A multi-user export into a `.git` others can read (ADR 0017 §7).
@@ -70,7 +79,7 @@ impl MirrorError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Modified { .. } => "MirrorModified",
-            Self::Stale { .. } => "MirrorStale",
+            Self::Stale { .. } | Self::PayloadGone { .. } => "MirrorStale",
             Self::Raced { .. } => "MirrorRaced",
             Self::Readable { .. } => "MirrorReadable",
             Self::Failed(_) => "MirrorFailed",
@@ -85,6 +94,10 @@ impl MirrorError {
             Self::Stale { reference, found } => format!(
                 "{reference} points at {found}, exported from a log that no longer exists \
                  (LogRewritten); `--force` moves the ref after a backup"
+            ),
+            Self::PayloadGone { reference, found } => format!(
+                "{reference} (at {found}) holds a shredded payload in its history (PayloadGone); \
+                 `ctx mirror export --rebuild` replaces it with a fresh history"
             ),
             Self::Raced { reference } => {
                 format!("{reference} was moved by another export; nothing was changed")
@@ -275,6 +288,12 @@ pub fn body_of(text: &str) -> &str {
         None => text,
     }
 }
+/// [`body_of`] over bytes: a body need not be UTF-8.
+pub fn body_bytes(file: &[u8]) -> &[u8] {
+    file.strip_prefix(b"---\n")
+        .and_then(|r| (r.windows(5).position(|w| w == b"\n---\n")).map(|e| &r[e + 5..]))
+        .unwrap_or(file)
+}
 fn readme(info: &contextdb_core::BranchInfo) -> Vec<u8> {
     format!(
         "# ContextDB mirror: branch {} (b{})\n\n\
@@ -397,7 +416,10 @@ impl Cache {
                  epoch INTEGER NOT NULL, PRIMARY KEY (repo, branch));
              CREATE TABLE IF NOT EXISTS rev_epochs(rev INTEGER PRIMARY KEY, epoch INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS rev_watermark(
-                 id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, checksum BLOB NOT NULL);",
+                 id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, checksum BLOB NOT NULL);
+             CREATE TABLE IF NOT EXISTS clean(
+                 repo TEXT NOT NULL, branch INTEGER NOT NULL, commit_id TEXT NOT NULL,
+                 through INTEGER NOT NULL, PRIMARY KEY (repo, branch));",
         )
         .map_err(failed)?;
         Ok(Self { conn })
@@ -418,6 +440,34 @@ impl Cache {
                 "INSERT INTO tips(repo, branch, commit_id, epoch) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(repo, branch) DO UPDATE SET commit_id = excluded.commit_id, epoch = excluded.epoch",
                 params![repo, branch.0, commit, epoch.0 as i64],
+            )
+            .map(|_| ())
+            .map_err(failed)
+    }
+    /// The commit whose history was last found free of shredded payloads,
+    /// and the last shred epoch it was checked against.
+    pub fn clean(&self, repo: &str, branch: BranchId) -> Result<Option<(String, Epoch)>> {
+        self.conn
+            .query_row(
+                "SELECT commit_id, through FROM clean WHERE repo = ?1 AND branch = ?2",
+                params![repo, branch.0],
+                |r| Ok((r.get::<_, String>(0)?, Epoch(r.get::<_, i64>(1)? as u64))),
+            )
+            .optional()
+            .map_err(failed)
+    }
+    pub fn set_clean(
+        &self,
+        repo: &str,
+        branch: BranchId,
+        commit: &str,
+        through: Epoch,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO clean(repo, branch, commit_id, through) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(repo, branch) DO UPDATE SET commit_id = excluded.commit_id, through = excluded.through",
+                params![repo, branch.0, commit, through.0 as i64],
             )
             .map(|_| ())
             .map_err(failed)
@@ -751,6 +801,36 @@ impl Repo {
         }
         Ok(v)
     }
+    /// Every blob reachable from `commit`, once each.
+    pub fn history_blobs(&self, commit: &str) -> Result<Vec<Vec<u8>>> {
+        let ids = self.run(&["rev-list", "--objects", "--no-object-names", commit], &[])?;
+        let (ok, out) = self.raw(&["cat-file", "--batch"], ids.as_bytes())?;
+        if !ok {
+            return Err(failed("git cat-file --batch failed"));
+        }
+        // `<id> <type> <size>\n<bytes>\n` per object.
+        let mut blobs = Vec::new();
+        let mut at = 0;
+        while at < out.len() {
+            let nl = (out[at..].iter().position(|b| *b == b'\n'))
+                .ok_or_else(|| failed("cat-file: truncated header"))?;
+            let header = std::str::from_utf8(&out[at..at + nl]).map_err(failed)?;
+            at += nl + 1;
+            let mut parts = header.split(' ');
+            let (_, ty, size) = (parts.next(), parts.next(), parts.next());
+            let (Some(ty), Some(size)) = (ty, size) else {
+                return Err(failed(format!("cat-file: {header}")));
+            };
+            let size: usize = size.parse().map_err(failed)?;
+            let body =
+                (out.get(at..at + size)).ok_or_else(|| failed("cat-file: truncated object"))?;
+            if ty == "blob" {
+                blobs.push(body.to_vec());
+            }
+            at += size + 1;
+        }
+        Ok(blobs)
+    }
     /// A file of a tree-ish, as text.
     pub fn show(&self, treeish: &str, path: &str) -> Result<String> {
         let (ok, out) = self.raw(&["cat-file", "blob", &format!("{treeish}:{path}")], &[])?;
@@ -951,18 +1031,35 @@ impl<'a, D: Durability> Mirror<'a, D> {
         }
         Err(failed("could not name a backup ref"))
     }
-    /// `ctx mirror export` (ADR 0016 §8.1–§8.4).
-    pub fn export(&mut self, branch: BranchId, force: bool, _adopt: bool) -> Result<MirrorReport> {
-        let snap = self.snap;
-        let info = snap
-            .kernel
-            .branch(branch)
-            .ok_or_else(|| failed("unknown branch"))?
-            .info()
-            .clone();
-        let reference = format!("{REF_PREFIX}{}", branch.0);
-        let mut report = MirrorReport::default();
-        if snap.kernel.access().is_some_and(|a| a.multi_user()) && !self.readable_ok {
+    /// The last shred epoch, or `None` when nothing is shredded.
+    fn shred_mark(&self) -> Option<Epoch> {
+        self.snap.kernel.shredded().values().max().copied()
+    }
+    /// Whether `commit`'s history holds a shredded payload (ADR 0017 §8.4
+    /// item 5): a blob whose body, or whole text, hashes to a shredded
+    /// content. A history found clean is cached per branch.
+    fn payload_gone(&self, branch: BranchId, commit: &str) -> Result<bool> {
+        let Some(mark) = self.shred_mark() else {
+            return Ok(false);
+        };
+        if let Some((c, through)) = self.cache.clean(&self.key(), branch)?
+            && c == commit
+            && through >= mark
+        {
+            return Ok(false);
+        }
+        let shredded = self.snap.kernel.shredded();
+        let hit = (self.repo.history_blobs(commit)?.iter()).any(|b| {
+            shredded.contains_key(blake3::hash(b).as_bytes())
+                || shredded.contains_key(blake3::hash(body_bytes(b)).as_bytes())
+        });
+        if !hit {
+            self.cache.set_clean(&self.key(), branch, commit, mark)?;
+        }
+        Ok(hit)
+    }
+    fn check_readable(&self) -> Result<()> {
+        if self.snap.kernel.access().is_some_and(|a| a.multi_user()) && !self.readable_ok {
             use std::os::unix::fs::PermissionsExt;
             let dir = self.repo.git_dir()?;
             let mode = std::fs::metadata(&dir)
@@ -977,7 +1074,94 @@ impl<'a, D: Durability> Mirror<'a, D> {
                 });
             }
         }
+        Ok(())
+    }
+    /// `ctx mirror export --rebuild` (ADR 0017 §8.4 item 5): the branch's
+    /// render as one parentless commit, moved onto the ref whatever it
+    /// held, then every `refs/contextdb-backup/` ref deleted.
+    pub fn rebuild(&mut self, branch: BranchId) -> Result<MirrorReport> {
+        let snap = self.snap;
+        let info = snap
+            .kernel
+            .branch(branch)
+            .ok_or_else(|| failed("unknown branch"))?
+            .info()
+            .clone();
+        let reference = format!("{REF_PREFIX}{}", branch.0);
+        let mut report = MirrorReport::default();
+        self.check_readable()?;
         let found = self.repo.resolve(&reference)?;
+        let rendered = self.render_now(branch)?;
+        let tree = self.repo.write_tree(&rendered.files)?;
+        let b = snap.epoch;
+        let sum = snap
+            .log
+            .checksum_at(b)
+            .map_err(|e| failed(format!("{e:?}")))?;
+        let msg = message(&info, Epoch(1.min(b.0)), b, &sum);
+        let commit = self.repo.commit_tree(&tree, None, &msg)?;
+        if !self.repo.cas(&reference, &commit, found.as_deref())? {
+            if self.repo.resolve(&reference)? != found {
+                return Err(MirrorError::Raced { reference });
+            }
+            return Err(failed(format!(
+                "git update-ref {reference} failed with the ref unchanged (a held lock, or the disk?)"
+            )));
+        }
+        self.cache.set_tip(&self.key(), branch, &commit, b)?;
+        self.cache.set_clean(
+            &self.key(),
+            branch,
+            &commit,
+            self.shred_mark().unwrap_or(Epoch(0)),
+        )?;
+        report.lines.push(match &found {
+            Some(old) => format!(
+                "{reference} -> {commit} (branch {}, epochs ..{}): a fresh history replacing {old}",
+                info.name, b.0
+            ),
+            None => format!(
+                "{reference} -> {commit} (branch {}, epochs ..{}): a fresh history",
+                info.name, b.0
+            ),
+        });
+        for (r, id) in self.repo.refs("refs/contextdb-backup/")? {
+            if self.repo.delete_ref(&r, &id)? {
+                report.lines.push(format!("deleted {r} ({id})"));
+            } else {
+                report.lines.push(format!("warning: could not delete {r}"));
+            }
+        }
+        report.lines.push(
+            "git keeps the old objects until `git reflog expire --expire=now --all && git gc --prune=now`; \
+             ContextDB does not run it, because it rewrites the repository"
+                .into(),
+        );
+        Ok(report)
+    }
+    /// `ctx mirror export` (ADR 0016 §8.1–§8.4).
+    pub fn export(&mut self, branch: BranchId, force: bool, _adopt: bool) -> Result<MirrorReport> {
+        let snap = self.snap;
+        let info = snap
+            .kernel
+            .branch(branch)
+            .ok_or_else(|| failed("unknown branch"))?
+            .info()
+            .clone();
+        let reference = format!("{REF_PREFIX}{}", branch.0);
+        let mut report = MirrorReport::default();
+        self.check_readable()?;
+        let found = self.repo.resolve(&reference)?;
+        // A history holding a shredded payload is never extended, not even
+        // with `--force`: its backup would keep the payload too.
+        if let Some(t) = &found
+            && self.payload_gone(branch, t)?
+        {
+            return Err(MirrorError::PayloadGone {
+                reference,
+                found: t.clone(),
+            });
+        }
         let cached = self.cache.tip(&self.key(), branch)?;
         // The parent: `(commit, its last epoch)`.
         let parent: Option<(String, Epoch)> = match &found {
@@ -988,6 +1172,12 @@ impl<'a, D: Durability> Mirror<'a, D> {
                 Some((c, _)) if self.repo.has_commit(&c)? && !self.log_matches(&c)? => {
                     report.lines.push(format!(
                         "{reference} was deleted and its cached commit {c} names a log that no longer matches: created fresh"
+                    ));
+                    None
+                }
+                Some((c, _)) if self.repo.has_commit(&c)? && self.payload_gone(branch, &c)? => {
+                    report.lines.push(format!(
+                        "{reference} was deleted and its cached commit {c} holds a shredded payload: created fresh"
                     ));
                     None
                 }
@@ -1122,6 +1312,14 @@ impl<'a, D: Durability> Mirror<'a, D> {
         }
         crate::p8_crash_point("mirror-update-ref");
         self.cache.set_tip(&self.key(), branch, &commit, b)?;
+        // The new tree is rendered after every shred in the snapshot, so a
+        // clean parent (checked above) leaves a clean history.
+        self.cache.set_clean(
+            &self.key(),
+            branch,
+            &commit,
+            self.shred_mark().unwrap_or(Epoch(0)),
+        )?;
         report.lines.push(format!(
             "{reference} -> {commit} (branch {}, epochs {}..{})",
             info.name, a.0, b.0

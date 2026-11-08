@@ -403,6 +403,7 @@ per_head = 5
 - **Read-only.** It is never read back. If someone edits the ref, the next export refuses with `MirrorModified`, `ctx mirror proposals` lists the edits as supersede proposals for an agent to apply through `ctx_supersede`, and `--force` moves the ref after keeping a backup.
 - **Never pushed by ContextDB.** It contains every live record's full body. A plain `git push` leaves `refs/contextdb/*` alone, but `git push --mirror` and repository backup tools send it.
 - **Concurrency-safe.** The ref moves only by compare-and-swap, so a concurrent export fails with `MirrorRaced` instead of overwriting.
+- **After a shred** the next export refuses with `MirrorStale` (`PayloadGone`) while the ref's history holds the payload. `--rebuild` replaces the history with one fresh commit and deletes every backup ref. Git keeps the old objects until you run `git reflog expire --expire=now --all && git gc --prune=now`.
 
 ## Limits and non-goals
 

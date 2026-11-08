@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **P9 milestone 6d: the mirror after a shred** (ADR 0017 §8.4 item 5; T103). Protocol 7: `MirrorAction::Export` gains `rebuild`.
+  - **`MirrorStale{PayloadGone}`.** `ctx mirror export` refuses a ref whose history holds a shredded payload, even with `--force`, because the backup `--force` keeps would hold it too. The check hashes the body (and the whole text) of every blob reachable from the tip. A history found clean is cached in `mirror.sqlite` with the last shred it was checked against, so only the first export after a shred scans. A deleted ref is not recreated on a cached commit that holds a shredded payload; the export starts a fresh history instead.
+  - **`ctx mirror export --rebuild`** replaces the ref with one parentless commit of the current render, whatever the ref held (hand edits included), and deletes every `refs/contextdb-backup/` ref. Git keeps the old objects until `git reflog expire --expire=now --all && git gc --prune=now`. ContextDB prints that command but does not run it, because running it rewrites the user's repository.
 - **P9 milestone 6c: the purge after a shred** (ADR 0017 §8.2, §8.4; T103). After a shred commits, the daemon removes the payload from every file it controls, and `ctx shred` reports `purged` only once all of it is done.
   - **The key log** is rewritten on the writer thread without the shredded keys: a new generation is written and synced, renamed into place, the directory synced, every older segment unlinked, and the directory synced again. A rewrite interrupted at any point runs again when the store opens.
   - **The projections:**

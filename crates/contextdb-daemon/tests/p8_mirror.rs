@@ -161,6 +161,7 @@ fn export_with(
             force,
             adopt: false,
             readable_ok: false,
+            rebuild: false,
         },
     )
 }
@@ -528,6 +529,7 @@ fn t96_cache_loss_is_not_a_hand_edit() {
             force: false,
             adopt: true,
             readable_ok: false,
+            rebuild: false,
         },
     );
     assert_eq!(adopt.unwrap_err().0, "MirrorModified");
@@ -769,4 +771,149 @@ fn t97_an_unavailable_payload_renders_as_a_placeholder() {
         &["cat-file", "blob", &format!("{t}:repo/Fact/gone.md")],
     );
     assert!(body.ends_with("(payload unavailable)"), "{body}");
+}
+
+/// Every blob reachable from the refs under `prefix`.
+fn reachable_blobs(env: &Env, prefix: &str) -> Vec<String> {
+    let refs = git(&env.repo, &["for-each-ref", "--format=%(refname)", prefix]);
+    let mut out = Vec::new();
+    for r in refs.lines() {
+        let objs = git(&env.repo, &["rev-list", "--objects", r]);
+        for l in objs.lines() {
+            let id = l.split(' ').next().unwrap();
+            if git(&env.repo, &["cat-file", "-t", id]) == "blob" {
+                out.push(git(&env.repo, &["cat-file", "blob", id]));
+            }
+        }
+    }
+    out
+}
+
+/// T103 (mirror half, ADR 0017 §8.4 item 5): after a shred, a ref whose
+/// history holds the payload is `MirrorStale{PayloadGone}`, even with
+/// `--force`; a deleted ref is not recreated on such a commit; `--rebuild`
+/// writes one fresh commit and deletes every backup ref, after which no
+/// blob reachable from the mirror refs holds the text.
+#[test]
+fn t103_a_shredded_payload_makes_the_mirror_stale_until_rebuild() {
+    const SECRET: &str = "zanzibarquokka mirror secret";
+    let env = Env::new("t103");
+    let s = service(&env);
+    create(&s, "gone", SECRET);
+    create(&s, "kept", "an ordinary decision");
+    export(&s, &env, None).unwrap();
+    let first = tip(&env, 0).unwrap();
+    // A hand edit forced over leaves a backup ref that also holds the body.
+    let edited = hand_edit(
+        &env,
+        &first,
+        &[("repo/Decision/kept.md", Some("edited by hand\n"))],
+        "hand edit",
+    );
+    git(
+        &env.repo,
+        &["update-ref", &format!("{REF_PREFIX}0"), &edited, &first],
+    );
+    export_with(&s, &env, None, true).unwrap();
+    assert_eq!(
+        git(&env.repo, &["for-each-ref", "refs/contextdb-backup/"])
+            .lines()
+            .count(),
+        1
+    );
+    create(&s, "later", "after the backup");
+    export(&s, &env, None).unwrap();
+
+    match s
+        .handle(
+            ADMIN,
+            Request::Shred {
+                key: "gone".into(),
+                rev: None,
+                with_reviews: false,
+                confirm: true,
+                client_txn_id: None,
+            },
+        )
+        .response
+    {
+        Response::Shred { epoch: Some(_), .. } => {}
+        other => panic!("{other:?}"),
+    }
+    for force in [false, true] {
+        let (code, detail) = export_with(&s, &env, None, force).unwrap_err();
+        assert_eq!(code, "MirrorStale");
+        assert!(
+            detail.contains("PayloadGone") && detail.contains("--rebuild"),
+            "{detail}"
+        );
+    }
+    // A deleted ref is not recreated on the cached commit that holds it.
+    let stale = tip(&env, 0).unwrap();
+    git(
+        &env.repo,
+        &["update-ref", "-d", &format!("{REF_PREFIX}0"), &stale],
+    );
+    let report = export(&s, &env, None).unwrap();
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|l| l.contains("holds a shredded payload: created fresh")),
+        "{report:?}"
+    );
+    let fresh = tip(&env, 0).unwrap();
+    assert_eq!(git(&env.repo, &["rev-list", "--count", &fresh]), "1");
+    // The backup still holds it, until `--rebuild`.
+    assert!(
+        reachable_blobs(&env, "refs/contextdb-backup/")
+            .iter()
+            .any(|b| b.contains(SECRET))
+    );
+
+    let report = mirror(
+        &s,
+        MirrorAction::Export {
+            branch: None,
+            project: env.project(),
+            force: false,
+            adopt: false,
+            readable_ok: false,
+            rebuild: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|l| l.contains("git gc --prune=now")),
+        "{report:?}"
+    );
+    let rebuilt = tip(&env, 0).unwrap();
+    assert_eq!(git(&env.repo, &["rev-list", "--count", &rebuilt]), "1");
+    assert_eq!(
+        git(&env.repo, &["for-each-ref", "refs/contextdb-backup/"]),
+        ""
+    );
+    let blobs = reachable_blobs(&env, "refs/contextdb");
+    assert!(!blobs.is_empty() && blobs.iter().all(|b| !b.contains(SECRET)));
+    assert!(files(&env, &rebuilt).contains(&"repo/Decision/kept.md".to_owned()));
+    let gone = git(
+        &env.repo,
+        &[
+            "cat-file",
+            "blob",
+            &format!("{rebuilt}:repo/Decision/gone.md"),
+        ],
+    );
+    assert!(gone.ends_with("(payload unavailable)"), "{gone}");
+    // Exports go on as usual, also after the cache is lost (a rescan).
+    create(&s, "after", "after the rebuild");
+    export(&s, &env, None).unwrap();
+    std::fs::remove_file(env.data.join(mirror::FILE)).unwrap();
+    let _ = std::fs::remove_file(env.data.join(format!("{}-wal", mirror::FILE)));
+    let _ = std::fs::remove_file(env.data.join(format!("{}-shm", mirror::FILE)));
+    create(&s, "after2", "after the cache loss");
+    export(&s, &env, None).unwrap();
 }

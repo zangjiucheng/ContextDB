@@ -590,6 +590,7 @@ fn export(s: &Svc, repo: &Path, readable_ok: bool) -> Result<MirrorReport, Strin
                     force: false,
                     adopt: false,
                     readable_ok,
+                    rebuild: false,
                 },
             },
         )
