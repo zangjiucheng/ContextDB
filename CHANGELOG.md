@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **P9 milestone 6c: the purge after a shred** (ADR 0017 §8.2, §8.4; T103). After a shred commits, the daemon removes the payload from every file it controls, and `ctx shred` reports `purged` only once all of it is done.
+  - **The key log** is rewritten on the writer thread without the shredded keys: a new generation is written and synced, renamed into place, the directory synced, every older segment unlinked, and the directory synced again. A rewrite interrupted at any point runs again when the store opens.
+  - **The projections:**
+    - `recall.sqlite` re-indexes the affected records with empty text and merges its FTS segments;
+    - `vectors.sqlite` deletes their vectors, even when no embedder runs now;
+    - `jobs.sqlite` marks jobs that read the payload `skipped` and deletes their stored output;
+    - `candidates.sqlite` marks pairs with such a side skipped and deletes their output.
+
+    Each projection now opens with `secure_delete`, records its own `purged_through`, and truncates its WAL after a purge.
+  - **Races closed.** Indexer and embedder writes drop text that was shredded after they read it. A validator or judge call in flight at shred time has its output dropped (`Skipped`).
+  - **Status and recovery.** `ctx status` lists shred epochs whose purge is pending, and `ctxd` purges them at start. The session log and the outbox stay outside the guarantee, as `ctx shred` says.
 - **P9 milestone 6b: `ShredContent`** (ADR 0017 §8.3; T59, PROP16). op_log format 5 gains op tag 21; protocol 7 gains `Shred` and `ContentShredded`.
   - **`ctx shred <dir> <key>[@rev] [--with-reviews] [--yes]`** (admin). It lists every revision on every branch that shares the payload; with `--with-reviews` it also lists review payloads, validation metadata and resolution notes on those revisions. It refuses CodeAnchor descriptors and prints what a shred cannot reach. `--yes` commits the shred.
   - **No effect on derivation.** Topology, bases, heads, rules, statuses and digests are unchanged. The kernel records the shredded set globally and carries it in snapshots; older snapshots are ignored and replay starts earlier.

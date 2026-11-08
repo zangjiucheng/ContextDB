@@ -32,6 +32,9 @@ pub struct Snapshot<D: Durability> {
     /// Every branch (ADR 0013); readers use `main` until protocol 4.
     pub kernel: Kernel,
     pub log: LogReader<D>,
+    /// The highest shred epoch whose key-log purge completed (ADR 0017
+    /// §8.4), when this snapshot was published.
+    pub key_purged: Epoch,
 }
 impl<D: Durability> Snapshot<D> {
     /// `main`'s database. Protocol-3 readers use ids as global ids, which
@@ -224,6 +227,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         epoch: store.epoch(),
         kernel,
         log: store.log_reader(),
+        key_purged: store.key_log_purged_through(),
     };
     let epochs = Arc::new((Mutex::new(snapshot.epoch), Condvar::new()));
     let published = Arc::new(Published::new(snapshot));
@@ -439,6 +443,7 @@ impl<D: Durability + Clone> Actor<D> {
             epoch: newest.epoch(),
             kernel: newest,
             log: self.store.log_reader(),
+            key_purged: self.store.key_log_purged_through(),
         });
         let epoch = snapshot.epoch;
         self.spare = Some(self.published.swap(snapshot));

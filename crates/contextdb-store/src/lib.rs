@@ -9,6 +9,7 @@ pub mod log;
 pub mod migrate;
 mod pack;
 pub mod projection;
+pub mod purge;
 pub mod recall;
 pub mod session;
 #[doc(hidden)]

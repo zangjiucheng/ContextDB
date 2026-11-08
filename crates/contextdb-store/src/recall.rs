@@ -145,6 +145,7 @@ impl RecallIndex {
             None => Connection::open_in_memory()?,
         };
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        crate::purge::prepare(&conn)?;
         // A projection from before P7 (no branch rows) or before the row
         // map is dropped and rebuilt (the watermark goes with it).
         let exists = |name: &str| -> Sql<bool> {
@@ -210,6 +211,21 @@ impl RecallIndex {
         self.conn
             .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
             .map(|n| n as u64)
+    }
+    /// The last shred epoch purged from this projection (ADR 0017 §8.4).
+    pub fn purged_through(&self) -> Sql<Epoch> {
+        crate::purge::through(&self.conn)
+    }
+    /// Re-indexes the rows of logicals that showed a shredded payload (with
+    /// the payload now unavailable, their body, abstract and outline are
+    /// empty), merges the FTS segments so the old ones are freed (and
+    /// zeroed by `secure_delete`), records `through` and truncates the WAL.
+    pub fn purge(&mut self, entries: &[(LogicalId, Vec<Row>)], through: Epoch) -> Sql<()> {
+        self.write(None, entries)?;
+        self.conn
+            .execute("INSERT INTO recall(recall) VALUES ('optimize')", [])?;
+        crate::purge::set_through(&self.conn, through)?;
+        crate::purge::compact(&self.conn)
     }
     pub fn watermark(&self) -> Sql<Epoch> {
         Ok(Epoch(

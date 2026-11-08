@@ -315,6 +315,13 @@ pub struct Store<D: Durability> {
     /// key), and the next segment number (ADR 0017 §8.2).
     key_tail: Option<PathBuf>,
     key_next: u32,
+    /// The highest shred epoch the key log's newest generation covers
+    /// (its header's `purged_through`, ADR 0017 §8.4).
+    key_purged: Epoch,
+    /// G4/T103 fault injection: the next key-log rewrite stops after this
+    /// step (0 nothing written, 1 tmp synced, 2 renamed, 3 directory
+    /// synced, 4 unlinked).
+    key_rewrite_stop: Option<u8>,
     tail: Option<Tail>,
     proj: Projections,
     /// Set across apply/append; still true after a panic, which poisons.
@@ -438,6 +445,7 @@ impl<D: Durability> Store<D> {
         }
         let keylog = keys::load(&disk, &key_dir).map_err(io)?;
         let key_next = keys::next_number(&keylog);
+        let key_purged = keylog.generation.map_or(Epoch(0), |(_, through)| through);
         disk.sync_dir(&blob_dir).map_err(io)?;
         let mut blobs = BTreeSet::new();
         let names = disk.list(&blob_dir).map_err(io)?;
@@ -519,6 +527,8 @@ impl<D: Durability> Store<D> {
             pack_tail: None,
             key_tail: None,
             key_next,
+            key_purged,
+            key_rewrite_stop: None,
             tail: None,
             proj,
             in_flight: false,
@@ -632,7 +642,13 @@ impl<D: Durability> Store<D> {
         // Projection rows rolled forward are committed only after the
         // self-check accepted the state they came from (review N5).
         store.proj.end_bulk().map_err(sql)?;
-        store.packs.write().expect("pack index").shredded = store.db.shredded().clone();
+        store.packs.write().expect("pack index").shredded =
+            store.db.shredded().keys().copied().collect();
+        // A shred whose key-log rewrite did not complete is purged again
+        // before the store serves anything (ADR 0017 §8.2 recovery).
+        if store.keys_need_purge().map_err(io)? {
+            store.rewrite_keys().map_err(io)?;
+        }
         // A last segment with a valid header but no frames continues the chain.
         let last_segment = {
             let index = store.index.read().expect("log index");
@@ -923,7 +939,13 @@ impl<D: Durability> Store<D> {
             // A shred is readable as `Shredded` once durable (§8.3); the set
             // only grows, so its size tells whether this group added any.
             if self.db.shredded().len() != self.packs.read().expect("pack index").shredded.len() {
-                self.packs.write().expect("pack index").shredded = self.db.shredded().clone();
+                self.packs.write().expect("pack index").shredded =
+                    self.db.shredded().keys().copied().collect();
+                // The key-log step of the purge, on the writer thread, so
+                // no key is appended to an old segment during the copy. A
+                // failure leaves `key_log_purged_through` behind; the next
+                // open (or shred) runs it again.
+                let _ = self.rewrite_keys();
             }
             let mut from = start;
             for (k, (row, result)) in applied.iter().enumerate() {
@@ -996,6 +1018,94 @@ impl<D: Durability> Store<D> {
         self.disk.append(&path, bytes)?;
         self.disk.sync(&path)?;
         Ok((segment, start))
+    }
+    /// The highest shred epoch whose key-log purge completed (ADR 0017
+    /// §8.4): its keys are in no file under `keys/`, durably.
+    pub fn key_log_purged_through(&self) -> Epoch {
+        self.key_purged
+    }
+    /// The highest shred epoch committed (`Epoch(0)` without shreds).
+    pub fn last_shred(&self) -> Epoch {
+        self.db
+            .shredded()
+            .values()
+            .max()
+            .copied()
+            .unwrap_or(Epoch(0))
+    }
+    #[doc(hidden)]
+    pub fn stop_key_rewrite_at(&mut self, step: Option<u8>) {
+        self.key_rewrite_stop = step;
+    }
+    /// Whether a shred's key-log purge is unfinished: the newest generation
+    /// does not cover the last shred, a shredded key is still loaded, or a
+    /// `.tmp` or a segment older than the newest generation is left.
+    fn keys_need_purge(&self) -> std::io::Result<bool> {
+        let shredded = self.db.shredded();
+        if shredded.is_empty() {
+            return Ok(false);
+        }
+        if self.key_purged < self.last_shred() {
+            return Ok(true);
+        }
+        if (self.packs.read().expect("pack index").keys.keys()).any(|h| shredded.contains_key(h)) {
+            return Ok(true);
+        }
+        let newest = self.key_next.saturating_sub(1);
+        Ok((self.disk.list(&self.key_dir())?.iter())
+            .any(|n| n.ends_with(".tmp") || keys::number(n).is_some_and(|k| k < newest)))
+    }
+    /// The key-log rewrite (ADR 0017 §8.2): every key but the shredded
+    /// ones into `keylog-<gen>.tmp`, synced, renamed to generation `<gen>`,
+    /// the directory synced; then every older segment and `.tmp` unlinked
+    /// and the directory synced again, since an unlink is durable only once
+    /// its directory is. Only then does `key_log_purged_through` move.
+    fn rewrite_keys(&mut self) -> std::io::Result<()> {
+        let stop = |step: u8| -> std::io::Result<()> {
+            if self.key_rewrite_stop == Some(step) {
+                return Err(std::io::Error::other(format!("stopped after step {step}")));
+            }
+            Ok(())
+        };
+        stop(0)?;
+        let dir = self.key_dir();
+        let through = self.last_shred();
+        let generation = self.key_next;
+        let name = keys::segment_name(generation);
+        let tmp = dir.join(format!("{name}.tmp"));
+        let mut bytes = keys::header(keys::Kind::Generation, through);
+        {
+            let packs = self.packs.read().expect("pack index");
+            let shredded = self.db.shredded();
+            let mut kept: Vec<(&ContentHash, &keys::Key)> = (packs.keys.iter())
+                .filter(|(h, _)| !shredded.contains_key(*h))
+                .collect();
+            kept.sort();
+            for (h, k) in kept {
+                bytes.extend(keys::record(h, k));
+            }
+        }
+        self.disk.write_new(&tmp, &bytes)?;
+        self.disk.sync(&tmp)?;
+        stop(1)?;
+        self.disk.rename(&tmp, &dir.join(&name))?;
+        stop(2)?;
+        self.disk.sync_dir(&dir)?;
+        stop(3)?;
+        // From here the new generation is what loads; appends go after it.
+        self.key_next = generation + 1;
+        self.key_tail = None;
+        for n in self.disk.list(&dir)? {
+            if n.ends_with(".tmp") || keys::number(&n).is_some_and(|k| k < generation) {
+                self.disk.remove(&dir.join(n))?;
+            }
+        }
+        stop(4)?;
+        self.disk.sync_dir(&dir)?;
+        let shredded = self.db.shredded();
+        (self.packs.write().expect("pack index").keys).retain(|h, _| !shredded.contains_key(h));
+        self.key_purged = through;
+        Ok(())
     }
     /// Stores a payload; returns only after it is durable (ADR 0006 §5).
     pub fn put_blob(&mut self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
@@ -1512,6 +1622,15 @@ impl<D: Durability> LogReader<D> {
     /// immutable once staged, and content-addressed.
     pub fn read_blob(&self, hash: &ContentHash) -> Payload {
         read_payload(&self.disk, &self.dir, &self.packs, hash)
+    }
+    /// Whether `hash` is shredded now (ADR 0017 §8.3): the store's live set,
+    /// shared by every reader whatever its tail, durable before it shows.
+    pub fn is_shredded(&self, hash: &ContentHash) -> bool {
+        self.packs
+            .read()
+            .expect("pack index")
+            .shredded
+            .contains(hash)
     }
     pub fn tail(&self) -> Epoch {
         self.tail

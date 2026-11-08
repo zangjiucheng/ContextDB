@@ -26,14 +26,18 @@ pub enum JobState {
     Done = 2,
     Failed = 3,
     Superseded = 4,
+    /// A payload the job needs was shredded (`Skipped{shredded}`, ADR 0017
+    /// §8.4): its stored output is deleted and it never runs again.
+    Skipped = 5,
 }
 impl JobState {
-    pub const ALL: [JobState; 5] = [
+    pub const ALL: [JobState; 6] = [
         Self::Queued,
         Self::Running,
         Self::Done,
         Self::Failed,
         Self::Superseded,
+        Self::Skipped,
     ];
     fn from_i64(n: i64) -> Self {
         match n {
@@ -41,6 +45,7 @@ impl JobState {
             1 => Self::Running,
             2 => Self::Done,
             3 => Self::Failed,
+            5 => Self::Skipped,
             _ => Self::Superseded,
         }
     }
@@ -51,6 +56,7 @@ impl JobState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Superseded => "superseded",
+            Self::Skipped => "skipped",
         }
     }
 }
@@ -173,6 +179,7 @@ impl JobTable {
              CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, lease_until);",
         )
         .map_err(sql)?;
+        contextdb_store::purge::prepare(&conn).map_err(sql)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -447,13 +454,35 @@ impl JobTable {
             .optional()
             .map_err(sql)
     }
+    /// The last shred epoch purged from this table (ADR 0017 §8.4).
+    pub fn purged_through(&self) -> Result<Epoch, String> {
+        contextdb_store::purge::through(&self.conn()).map_err(sql)
+    }
+    /// Marks the rows `Skipped` (whatever their state, a running one too:
+    /// its token stops matching), deletes their stored output and error,
+    /// records `through` and truncates the WAL (ADR 0017 §8.4).
+    pub fn purge(&self, keys: &[JobKey], through: Epoch) -> Result<(), String> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(sql)?;
+        for k in keys {
+            tx.execute(
+                "UPDATE jobs SET state = 5, token = token + 1, outcome_meta = NULL, last_error = NULL
+                 WHERE claim_key = ?1",
+                params![&k[..]],
+            )
+            .map_err(sql)?;
+        }
+        contextdb_store::purge::set_through(&tx, through).map_err(sql)?;
+        tx.commit().map_err(sql)?;
+        contextdb_store::purge::compact(&c).map_err(sql)
+    }
     /// Row counts per state, in [`JobState::ALL`] order.
-    pub fn counts(&self) -> Result<[u64; 5], String> {
+    pub fn counts(&self) -> Result<[u64; 6], String> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached("SELECT state, count(*) FROM jobs GROUP BY state")
             .map_err(sql)?;
-        let mut out = [0; 5];
+        let mut out = [0; 6];
         for r in stmt
             .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
             .map_err(sql)?

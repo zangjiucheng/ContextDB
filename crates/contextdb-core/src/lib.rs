@@ -76,7 +76,7 @@ pub struct CommitContext<'a> {
     /// (ADR 0017 §6.1); `Some(None)` is a store without one.
     pub auth: Option<Option<&'a access::AccessState>>,
     /// Set by the kernel: the shredded content hashes (ADR 0017 §8.3).
-    pub shredded: Option<&'a std::collections::BTreeSet<ContentHash>>,
+    pub shredded: Option<&'a std::collections::BTreeMap<ContentHash, Epoch>>,
     /// Receives the revisions and rules the batch staged, in staging order,
     /// whether it commits or fails: the kernel gives them global ids.
     pub staged: Option<&'a std::cell::RefCell<Staged>>,

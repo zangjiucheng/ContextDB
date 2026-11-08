@@ -221,6 +221,7 @@ impl Candidates {
              UPDATE candidates SET judge = 0 WHERE judge = 1;",
         )
         .map_err(|e| format!("{FILE}: {e}"))?;
+        contextdb_store::purge::prepare(&conn).map_err(|e| format!("{FILE}: {e}"))?;
         Ok(Self {
             conn: Mutex::new(conn),
             limits: Mutex::new(CandidateLimits::default()),
@@ -235,6 +236,31 @@ impl Candidates {
     }
     fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().expect("candidates")
+    }
+    /// The last shred epoch purged from this table (ADR 0017 §8.4).
+    pub fn purged_through(&self) -> Sql<Epoch> {
+        contextdb_store::purge::through(&self.db())
+    }
+    /// Every pair with a side among `revisions` (on its branch) becomes
+    /// `Skipped` with its label, validator output and error deleted, a
+    /// running claim included (its token stops matching); records
+    /// `through` and truncates the WAL (ADR 0017 §8.4).
+    pub fn purge(&self, revisions: &[(BranchId, RevisionId)], through: Epoch) -> Sql<usize> {
+        let mut c = self.db();
+        let tx = c.transaction()?;
+        let mut n = 0;
+        for (b, r) in revisions {
+            n += tx.execute(
+                "UPDATE candidates SET judge = 4, judge_token = judge_token + 1,
+                     label = NULL, meta = NULL, error = NULL
+                 WHERE branch = ?1 AND (a_rev = ?2 OR b_rev = ?2)",
+                params![b.0, r.0],
+            )?;
+        }
+        contextdb_store::purge::set_through(&tx, through)?;
+        tx.commit()?;
+        contextdb_store::purge::compact(&c)?;
+        Ok(n)
     }
     /// The last epoch whose heads were queried; `None` before the first run.
     pub fn watermark(&self) -> Sql<Option<Epoch>> {
@@ -560,9 +586,26 @@ pub(crate) fn text<D: Durability>(
         outline: levels::outline_of(&bytes),
     })
 }
+/// Empties the text of rows whose payload is shredded now (ADR 0017
+/// §8.4). Called with the recall lock held, right before a write: rows read
+/// before a shred cannot bring its body back after the purge, which takes
+/// the same lock.
+pub(crate) fn scrub<D: Durability>(snap: &Snapshot<D>, entries: &mut [(LogicalId, Vec<Row>)]) {
+    for (_, rows) in entries.iter_mut() {
+        for row in rows.iter_mut() {
+            let content =
+                (snap.kernel.branch(row.branch)).and_then(|v| v.revision_content(row.rev).ok());
+            if content.is_some_and(|c| snap.log.is_shredded(&c)) {
+                row.body.clear();
+                row.abstract_ = levels::abstract_of(b"");
+                row.outline = levels::outline_of(b"");
+            }
+        }
+    }
+}
 /// The recall rows of logical `l`: `main`'s head, and each other live
 /// branch's head where it differs from `main`'s.
-fn rows_of<D: Durability>(snap: &Snapshot<D>, l: LogicalId) -> Vec<Row> {
+pub(crate) fn rows_of<D: Durability>(snap: &Snapshot<D>, l: LogicalId) -> Vec<Row> {
     let main_head = snap.kernel.branch(MAIN).and_then(|v| v.head(l));
     let mut texts: BTreeMap<RevisionId, Option<Text>> = BTreeMap::new();
     let mut out = Vec::new();
@@ -730,9 +773,11 @@ fn index_with<D: Durability>(
     match incremental {
         Some(m) => {
             let touched: BTreeSet<LogicalId> = m.into_iter().map(|(_, l)| l).collect();
-            let entries: Vec<(LogicalId, Vec<Row>)> =
+            let mut entries: Vec<(LogicalId, Vec<Row>)> =
                 touched.into_iter().map(|l| (l, rows_of(snap, l))).collect();
-            if let Err(e) = recall.lock().expect("recall").update(snap.epoch, &entries) {
+            let mut r = recall.lock().expect("recall");
+            scrub(snap, &mut entries);
+            if let Err(e) = r.update(snap.epoch, &entries) {
                 return fail(e);
             }
         }
@@ -751,11 +796,14 @@ fn index_with<D: Durability>(
             }
             let mut done = 0u64;
             for chunk in all.chunks(REBUILD_CHUNK) {
-                let entries: Vec<(LogicalId, Vec<Row>)> =
+                let mut entries: Vec<(LogicalId, Vec<Row>)> =
                     chunk.iter().map(|l| (*l, rows_of(snap, *l))).collect();
-                if let Err(e) = recall.lock().expect("recall").update_partial(&entries) {
+                let mut r = recall.lock().expect("recall");
+                scrub(snap, &mut entries);
+                if let Err(e) = r.update_partial(&entries) {
                     return fail(e);
                 }
+                drop(r);
                 done += chunk.len() as u64;
                 health.rebuilding(done, total);
                 crate::p8_crash_point("reindex-chunk");

@@ -137,6 +137,24 @@ impl Vectors {
         let pages = extra.map(|e| s.page_count().unwrap_or(0) + e);
         let _ = s.limit_pages(pages);
     }
+    /// The last shred epoch purged from `vectors.sqlite` (ADR 0017 §8.4).
+    pub fn purged_through(&self) -> Result<Epoch, String> {
+        (self.store.lock().expect("vectors"))
+            .purged_through()
+            .map_err(|e| e.to_string())
+    }
+    /// Deletes the vectors of shredded contents, from the file and the
+    /// cache (ADR 0017 §8.4).
+    pub fn purge(&self, contents: &[ContentHash], through: Epoch) -> Result<(), String> {
+        (self.store.lock().expect("vectors"))
+            .purge(contents, through)
+            .map_err(|e| e.to_string())?;
+        let mut c = self.cache.lock().expect("vector cache");
+        for x in contents {
+            c.map.remove(x);
+        }
+        Ok(())
+    }
     /// Vectors stored for the model.
     pub fn stored(&self) -> u64 {
         self.store
@@ -309,6 +327,7 @@ fn fill(
     v: &Vectors,
     todo: Vec<Todo>,
     access: &dyn Fn() -> Option<Arc<contextdb_core::access::AccessState>>,
+    shredded: &dyn Fn(&ContentHash) -> bool,
     stop: &AtomicBool,
 ) -> Option<Result<bool, String>> {
     let s = &v.settings;
@@ -332,9 +351,15 @@ fn fill(
             Err(e) => return Some(Err(format!("embedder: {e}"))),
         };
         let rows: Vec<(ContentHash, Vec<f32>)> = chunk.iter().map(|(c, _)| *c).zip(out).collect();
-        if let Err(e) = v.store.lock().expect("vectors").put(&v.model, &rows) {
+        // A content shredded during the call is not stored: checked with
+        // the store's lock held, which the purge takes too (ADR 0017 §8.4).
+        let mut store = v.store.lock().expect("vectors");
+        let rows: Vec<(ContentHash, Vec<f32>)> =
+            rows.into_iter().filter(|(c, _)| !shredded(c)).collect();
+        if let Err(e) = store.put(&v.model, &rows) {
             return Some(Err(format!("{}: {e}", contextdb_store::vectors::FILE)));
         }
+        drop(store);
         v.stats
             .embedded
             .fetch_add(rows.len() as u64, Ordering::Relaxed);
@@ -488,7 +513,8 @@ pub(crate) fn run<D: Durability>(
         // Never hold a snapshot across embedder calls (ADR 0008 §3.3).
         drop(snap);
         let access = || actor.snapshot().kernel.access().cloned().map(Arc::new);
-        match fill(&v, todo, &access, &stop) {
+        let shredded = |c: &ContentHash| actor.snapshot().log.is_shredded(c);
+        match fill(&v, todo, &access, &shredded, &stop) {
             None => return,
             Some(Ok(_)) => {}
             Some(Err(e)) => {

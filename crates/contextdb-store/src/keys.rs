@@ -42,7 +42,7 @@ pub(crate) enum Kind {
 pub(crate) fn is_segment(name: &str) -> bool {
     number(name).is_some()
 }
-fn number(name: &str) -> Option<u32> {
+pub(crate) fn number(name: &str) -> Option<u32> {
     let n = name.strip_prefix(PREFIX)?;
     (n.len() == 8 && n.bytes().all(|b| b.is_ascii_digit()))
         .then(|| n.parse().ok())

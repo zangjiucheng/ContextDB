@@ -4,7 +4,7 @@
 //! deleted file costs one embedding per live head.
 //!
 //! Vectors are stored unit-length, little-endian `f32`.
-use contextdb_model::ContentHash;
+use contextdb_model::{ContentHash, Epoch};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
@@ -38,6 +38,7 @@ impl VectorStore {
                  vector BLOB NOT NULL,
                  PRIMARY KEY (model, content)) WITHOUT ROWID;",
         )?;
+        crate::purge::prepare(&conn)?;
         Ok(Self { conn })
     }
     /// G4 fault injection: as `RecallIndex::limit_pages`.
@@ -96,6 +97,21 @@ impl VectorStore {
             "DELETE FROM vectors WHERE model != ?1 OR dims != ?2",
             params![model, dims as i64],
         )
+    }
+    /// The last shred epoch purged from this projection (ADR 0017 §8.4).
+    pub fn purged_through(&self) -> Sql<Epoch> {
+        crate::purge::through(&self.conn)
+    }
+    /// Deletes every model's vector of each shredded content, records
+    /// `through` and truncates the WAL.
+    pub fn purge(&mut self, contents: &[ContentHash], through: Epoch) -> Sql<()> {
+        let tx = self.conn.transaction()?;
+        for c in contents {
+            tx.execute("DELETE FROM vectors WHERE content = ?1", params![&c[..]])?;
+        }
+        crate::purge::set_through(&tx, through)?;
+        tx.commit()?;
+        crate::purge::compact(&self.conn)
     }
     pub fn count(&self, model: &str) -> Sql<u64> {
         self.conn

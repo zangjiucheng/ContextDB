@@ -217,6 +217,9 @@ pub enum Ran {
     /// A lane's egress turned off before the call: given back with no
     /// attempt used (ADR 0017 §7).
     SkippedEgress,
+    /// A payload the task held was shredded during the call: the output is
+    /// dropped and the job or pair is `Skipped` (ADR 0017 §8.4).
+    SkippedShredded,
     /// The store failed (not the job): given back with no attempt used.
     Requeued(String),
     /// The attempt failed (requeued or `Failed`).
@@ -725,6 +728,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             })
         })
     }
+    /// Whether any of `contents` is shredded now.
+    pub(crate) fn any_shredded(&self, contents: &[ContentHash]) -> bool {
+        let snap = self.actor.snapshot();
+        contents.iter().any(|c| snap.log.is_shredded(c))
+    }
     /// Whether an LLM call may start now; counts it if so.
     fn llm_permit(&self, cap: u32) -> bool {
         let mut w = self.llm_window.lock().expect("llm window");
@@ -789,6 +797,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Ok(t) => t,
             Err(e) => return self.fail(loaded, job, e),
         };
+        let contents = rule_contents(&view, &rule);
         drop(snap);
         // A task over the size cap fails before it takes an LLM permit
         // (review finding: the permit was spent with no call).
@@ -817,6 +826,11 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 Err(e) => return self.fail(loaded, job, e.to_string()),
             };
         crash_point("called");
+        // The token fence: output quoting a payload shredded meanwhile is
+        // dropped (ADR 0017 §8.4).
+        if self.any_shredded(&contents) {
+            return self.end(job, JobState::Skipped, None, None, Ran::SkippedShredded);
+        }
         if let Some((i, o)) = outcome.tokens {
             self.stats.tokens_in.fetch_add(i as u64, Ordering::Relaxed);
             self.stats.tokens_out.fetch_add(o as u64, Ordering::Relaxed);
@@ -1086,6 +1100,22 @@ pub(crate) fn egress_open<D: Durability>(snap: &Snapshot<D>, lanes: &BTreeSet<St
     lanes
         .iter()
         .all(|l| contextdb_core::access::egress(access, l))
+}
+/// The contents a rule job's task reads: the conclusion and each changed
+/// premise's asserted and current revisions.
+pub(crate) fn rule_contents(
+    view: &BranchView<'_>,
+    rule: &contextdb_core::RuleSemantic,
+) -> Vec<ContentHash> {
+    let mut revs = vec![rule.conclusion];
+    for ((_, a), (_, c)) in rule.asserted.iter().zip(&rule.current) {
+        if a != c {
+            revs.extend([*a, *c]);
+        }
+    }
+    revs.into_iter()
+        .filter_map(|r| view.revision_content(r).ok())
+        .collect()
 }
 /// The lanes a rule job's task reads: the conclusion's, and each changed
 /// premise's (the bodies `build_task` sends).

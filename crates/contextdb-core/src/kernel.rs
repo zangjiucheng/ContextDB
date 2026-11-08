@@ -22,7 +22,7 @@ use contextdb_model::*;
 use merge::SyncPoint;
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 pub use view::BranchView;
@@ -119,8 +119,9 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     syncs: Vec<SyncPoint<M, S>>,
     /// The committed access document (ADR 0017 §4), global.
     access: Option<Arc<AccessState>>,
-    /// Every shredded content hash (ADR 0017 §8.3), global.
-    shredded: Arc<BTreeSet<ContentHash>>,
+    /// Every shredded content hash and the epoch that shredded it (ADR
+    /// 0017 §8.3), global.
+    shredded: Arc<BTreeMap<ContentHash, Epoch>>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -209,9 +210,13 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     pub fn access(&self) -> Option<&AccessState> {
         self.access.as_deref()
     }
-    /// Every shredded content hash (ADR 0017 §8.3).
-    pub fn shredded(&self) -> &BTreeSet<ContentHash> {
+    /// Every shredded content hash and the epoch that shredded it (ADR
+    /// 0017 §8.3).
+    pub fn shredded(&self) -> &BTreeMap<ContentHash, Epoch> {
         &self.shredded
+    }
+    pub fn is_shredded(&self, content: &ContentHash) -> bool {
+        self.shredded.contains_key(content)
     }
     pub fn epoch(&self) -> Epoch {
         self.epoch
@@ -477,7 +482,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let set = Arc::make_mut(&mut self.shredded);
         for op in &b.ops {
             if let Op::ShredContent { content } = op {
-                set.insert(*content);
+                set.entry(*content).or_insert(epoch);
             }
         }
         Ok(Self::empty_result(epoch))
@@ -757,8 +762,8 @@ pub struct KernelSnapshot {
     pub syncs: Vec<(BranchId, BranchId, Epoch, u32)>,
     /// The access document and its ids (ADR 0017 §4).
     pub access: Option<AccessState>,
-    /// Every shredded content hash (ADR 0017 §8.3).
-    pub shredded: BTreeSet<ContentHash>,
+    /// Every shredded content hash and its shred epoch (ADR 0017 §8.3).
+    pub shredded: BTreeMap<ContentHash, Epoch>,
 }
 
 impl<M: Maintainer, S: StatsSink> Kernel<M, S> {

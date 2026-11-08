@@ -984,7 +984,9 @@ pub(crate) fn apply<S: StatsSink>(
 /// before `MissingBlob`.
 fn shredded(i: &Stage, content: &ContentHash) -> Result<(), TxError> {
     match i.shredded {
-        Some(set) if set.contains(content) => Err(TxError::ContentShredded { content: *content }),
+        Some(set) if set.contains_key(content) => {
+            Err(TxError::ContentShredded { content: *content })
+        }
         _ => Ok(()),
     }
 }

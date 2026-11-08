@@ -554,6 +554,52 @@ fn certificate_reads(ops: &[Op]) -> Option<Response> {
             )
         })
 }
+/// How far the purge of shreds has got (ADR 0017 §8.4): the last shred
+/// epoch, and the last one each part has purged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PurgeState {
+    pub through: Epoch,
+    pub keys: Epoch,
+    pub recall: Epoch,
+    pub vectors: Epoch,
+    pub jobs: Epoch,
+    pub candidates: Epoch,
+}
+impl PurgeState {
+    /// Every part covers the last shred.
+    pub fn complete(&self) -> bool {
+        [
+            self.keys,
+            self.recall,
+            self.vectors,
+            self.jobs,
+            self.candidates,
+        ]
+        .iter()
+        .all(|e| *e >= self.through)
+    }
+}
+/// The contents a validator job can hold: its rule's conclusion, every
+/// premise it asserted and the revisions of its current vector.
+fn job_contents<D: Durability>(
+    snap: &Snapshot<D>,
+    branch: BranchId,
+    rule: RuleId,
+    curvec: &HeadVector,
+) -> Vec<ContentHash> {
+    let Some(v) = snap.kernel.branch(branch) else {
+        return Vec::new();
+    };
+    let mut revs: Vec<RevisionId> = curvec.iter().map(|(_, r)| *r).collect();
+    if let Some((conclusion, incidences, refs)) = v.rule_parts(rule) {
+        revs.push(conclusion);
+        revs.extend(incidences.iter().map(|i| i.premise));
+        revs.extend(refs);
+    }
+    revs.into_iter()
+        .filter_map(|r| v.revision_content(r).ok())
+        .collect()
+}
 /// What `ctx shred` names (ADR 0017 §8.3): the content of `key` at `rev`
 /// (default: its head on `main`, else on the first branch that sees it),
 /// every revision sharing it on every branch, and with `with_reviews` the
@@ -717,6 +763,140 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Some(r) => r.lock().expect("recall reader"),
             None => self.recall.lock().expect("recall"),
         }
+    }
+    /// The purge of every committed shred (ADR 0017 §8.4), idempotent:
+    /// each body-bearing projection purges the shreds above its own
+    /// `purged_through`. Returns how far each part has got; the purge is
+    /// complete when every part covers `through`.
+    pub fn purge(&self) -> Result<PurgeState, String> {
+        let snap = self.actor.snapshot();
+        let shredded = snap.kernel.shredded();
+        let through = shredded.values().max().copied().unwrap_or(Epoch(0));
+        let mut state = PurgeState {
+            through,
+            keys: snap.key_purged,
+            ..PurgeState::default()
+        };
+        // What each projection must purge: contents shredded above its mark,
+        // and the revisions carrying them on every branch.
+        let above = |mark: Epoch| -> (Vec<ContentHash>, Vec<(BranchId, RevisionId, LogicalId)>) {
+            let contents: Vec<ContentHash> = (shredded.iter())
+                .filter(|(_, e)| **e > mark)
+                .map(|(c, _)| *c)
+                .collect();
+            let mut revs = Vec::new();
+            for info in snap.kernel.branches() {
+                let Some(v) = snap.kernel.branch(info.id) else {
+                    continue;
+                };
+                for c in &contents {
+                    for r in v.revisions_with_content(c) {
+                        if let Some(l) = v.revision_logical(r) {
+                            revs.push((info.id, r, l));
+                        }
+                    }
+                }
+            }
+            (contents, revs)
+        };
+        let sqlerr = |what: &str, e: &dyn std::fmt::Display| format!("{what}: {e}");
+        // recall.sqlite: the touched logicals re-indexed with empty text.
+        {
+            let mut recall = self.recall.lock().expect("recall");
+            let mark = recall.purged_through().map_err(|e| sqlerr("recall", &e))?;
+            if mark < through {
+                let (_, revs) = above(mark);
+                let logicals: BTreeSet<LogicalId> = revs.iter().map(|(_, _, l)| *l).collect();
+                let mut entries: Vec<_> = (logicals.into_iter())
+                    .map(|l| (l, crate::candidates::rows_of(&snap, l)))
+                    .collect();
+                crate::candidates::scrub(&snap, &mut entries);
+                recall
+                    .purge(&entries, through)
+                    .map_err(|e| sqlerr("recall", &e))?;
+            }
+            state.recall = recall.purged_through().map_err(|e| sqlerr("recall", &e))?;
+        }
+        // vectors.sqlite: also when no embedder runs now but the file is left.
+        let data = self.data_dir.lock().expect("data dir").clone();
+        if let Some(v) = self.vectors.get() {
+            let mark = v.purged_through()?;
+            if mark < through {
+                v.purge(&above(mark).0, through)?;
+            }
+            state.vectors = v.purged_through()?;
+        } else if let Some(path) = (data.as_ref())
+            .map(|d| d.join(contextdb_store::vectors::FILE))
+            .filter(|p| p.exists())
+        {
+            let mut v = contextdb_store::vectors::VectorStore::open(Some(&path))
+                .map_err(|e| sqlerr("vectors", &e))?;
+            let mark = v.purged_through().map_err(|e| sqlerr("vectors", &e))?;
+            if mark < through {
+                v.purge(&above(mark).0, through)
+                    .map_err(|e| sqlerr("vectors", &e))?;
+            }
+            state.vectors = v.purged_through().map_err(|e| sqlerr("vectors", &e))?;
+        } else {
+            state.vectors = through;
+        }
+        // jobs.sqlite: every job whose task holds a shredded payload.
+        if let Some(s) = self.validators.get() {
+            let mark = s.jobs.purged_through()?;
+            if mark < through {
+                let (contents, _) = above(mark);
+                let contents: BTreeSet<ContentHash> = contents.into_iter().collect();
+                let keys: Vec<_> = (s.jobs.all()?.into_iter())
+                    .filter(|j| {
+                        job_contents(&snap, j.branch, j.rule, &j.curvec)
+                            .iter()
+                            .any(|c| contents.contains(c))
+                    })
+                    .map(|j| j.key)
+                    .collect();
+                s.jobs.purge(&keys, through)?;
+            }
+            state.jobs = s.jobs.purged_through()?;
+        } else {
+            state.jobs = through;
+        }
+        // candidates.sqlite: every pair with a side carrying one.
+        let mark = self
+            .candidates
+            .purged_through()
+            .map_err(|e| sqlerr("candidates", &e))?;
+        if mark < through {
+            let revs: Vec<(BranchId, RevisionId)> =
+                above(mark).1.into_iter().map(|(b, r, _)| (b, r)).collect();
+            self.candidates
+                .purge(&revs, through)
+                .map_err(|e| sqlerr("candidates", &e))?;
+        }
+        state.candidates = self
+            .candidates
+            .purged_through()
+            .map_err(|e| sqlerr("candidates", &e))?;
+        Ok(state)
+    }
+    /// Shred epochs above the lowest mark of the key log and the
+    /// projections this daemon runs (ADR 0017 §8.4); read only.
+    fn purge_pending(&self, snap: &Snapshot<D>) -> Vec<Epoch> {
+        let shredded = snap.kernel.shredded();
+        if shredded.is_empty() {
+            return Vec::new();
+        }
+        let mut marks = vec![snap.key_purged];
+        marks.extend(self.recall.lock().expect("recall").purged_through().ok());
+        marks.extend(self.vectors.get().and_then(|v| v.purged_through().ok()));
+        marks.extend(
+            self.validators
+                .get()
+                .and_then(|s| s.jobs.purged_through().ok()),
+        );
+        marks.extend(self.candidates.purged_through().ok());
+        let low = marks.into_iter().min().unwrap_or(Epoch(0));
+        let pending: BTreeSet<Epoch> = shredded.values().filter(|e| **e > low).copied().collect();
+        pending.into_iter().collect()
     }
     /// The data directory, where `mirror.sqlite` lives.
     pub fn set_data_dir(&self, dir: std::path::PathBuf) {
@@ -1421,8 +1601,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Response::Committed { result } => Response::Shred {
                         targets,
                         epoch: Some(result.epoch),
-                        // The purge (keys, projections) is milestone 6c.
-                        purged: false,
+                        // `purged` only once the key log and every
+                        // projection cover the shred (ADR 0017 §8.4).
+                        purged: self
+                            .purge()
+                            .is_ok_and(|s| s.complete() && s.through >= result.epoch),
                     },
                     other => other,
                 }
@@ -1803,6 +1986,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 logicals: db.logical_count() as u64,
                 sessions: self.session_count() as u64,
                 index: self.index_report(snap.epoch),
+                purge_pending: self.purge_pending(&snap),
             },
             Request::TxnStatus { id: txn } => match self
                 .actor
@@ -2594,7 +2778,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 continue;
             }
             // A shredded hash proves nothing without its bytes (T107).
-            let readable = !snap.kernel.shredded().contains(&content)
+            let readable = !snap.kernel.is_shredded(&content)
                 && (view.revisions_with_content(&content).into_iter())
                     .filter_map(|r| view.revision_logical(r))
                     .any(|l| view.authorizes(p, l));

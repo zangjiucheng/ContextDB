@@ -246,6 +246,10 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
                 body: body(&snap, &view, r)?,
             })
         };
+        let contents: Vec<ContentHash> = [c.a, c.b]
+            .into_iter()
+            .filter_map(|r| view.revision_content(r).ok())
+            .collect();
         let task = match (item(c.a), item(c.b)) {
             (Ok(a), Ok(b)) => Task::pair(txn, c.branch, a, b),
             (Err(e), _) | (_, Err(e)) => return self.pair_fail(loaded, table, c, e),
@@ -286,6 +290,20 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
             Ok(o) => o,
             Err(e) => return self.pair_fail(loaded, table, c, e.to_string()),
         };
+        // The token fence (ADR 0017 §8.4): output quoting a side shredded
+        // during the call is dropped.
+        if self.any_shredded(&contents) {
+            return self.pair_end(
+                table,
+                c,
+                Judge::Skipped,
+                None,
+                None,
+                None,
+                None,
+                Ran::SkippedShredded,
+            );
+        }
         if let Some((i, o)) = outcome.tokens {
             self.stats.tokens_in.fetch_add(i as u64, Ordering::Relaxed);
             self.stats.tokens_out.fetch_add(o as u64, Ordering::Relaxed);

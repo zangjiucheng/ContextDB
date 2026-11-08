@@ -178,6 +178,13 @@ impl Daemon {
             }
             Err(e) => service.vectors_unavailable(e),
         }
+        // Shreds whose purge did not complete before the last stop are
+        // purged again, before any request is served (ADR 0017 §8.4).
+        match service.purge() {
+            Ok(s) if !s.complete() => eprintln!("ctxd: shred purge pending: {s:?}"),
+            Ok(_) => {}
+            Err(e) => eprintln!("ctxd: shred purge failed (retried at the next start): {e}"),
+        }
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);
         // `run` and `run/shared` are traversable by others (0711) only inside

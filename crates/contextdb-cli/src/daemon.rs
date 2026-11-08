@@ -73,6 +73,7 @@ pub fn run(cmd: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 logicals,
                 sessions,
                 index,
+                purge_pending,
             } = env.response
             {
                 println!(
@@ -80,6 +81,13 @@ pub fn run(cmd: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                     env.epoch.0
                 );
                 println!("{}", index_line(&index));
+                if !purge_pending.is_empty() {
+                    let list: Vec<String> = purge_pending.iter().map(|e| e.0.to_string()).collect();
+                    println!(
+                        "shred purge pending for epochs {} (completed at the next daemon start)",
+                        list.join(", ")
+                    );
+                }
             }
         }
         "why" | "why-not" | "impact" => {

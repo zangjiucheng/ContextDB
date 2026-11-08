@@ -985,7 +985,7 @@ fn t59_t107_shredded_payloads() {
     let before = s.actor.snapshot().view(MAIN).node(f.rev["pub/b"]).unwrap();
     let Response::Shred {
         epoch: Some(_),
-        purged: false,
+        purged: true,
         ..
     } = shred(s, ADMIN, "pub/b", false, true)
     else {
@@ -997,10 +997,7 @@ fn t59_t107_shredded_payloads() {
         before,
         "status unchanged"
     );
-    assert!(
-        !snap.kernel.shredded().contains(&h(&review)),
-        "no --with-reviews"
-    );
+    assert!(!snap.kernel.is_shredded(&h(&review)), "no --with-reviews");
     drop(snap);
     match s
         .handle(

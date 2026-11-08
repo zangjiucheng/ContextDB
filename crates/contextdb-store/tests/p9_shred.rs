@@ -143,7 +143,16 @@ fn t59_a_shred_changes_nothing_but_the_payload() {
     store.snapshot().unwrap();
     drop(store);
     let store = open(&disk);
-    assert_eq!(store.kernel().unwrap().shredded(), &BTreeSet::from([a]));
+    assert_eq!(
+        store
+            .kernel()
+            .unwrap()
+            .shredded()
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([a])
+    );
     assert_eq!(
         store.get_blob(&a).unwrap(),
         Payload::Unavailable(Unavailable::Shredded)
@@ -303,7 +312,16 @@ fn prop16_shreds_change_nothing_but_the_shredded_payloads() {
         }
         multi += usize::from(digests(&a).len() > 1);
         let check = |s: &Store<SimDisk>| {
-            assert_eq!(s.kernel().unwrap().shredded(), &shredded, "seed {seed}");
+            assert_eq!(
+                s.kernel()
+                    .unwrap()
+                    .shredded()
+                    .keys()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                shredded,
+                "seed {seed}"
+            );
             for c in contents(s) {
                 let p = s.get_blob(&c).unwrap();
                 if shredded.contains(&c) {
@@ -335,4 +353,79 @@ fn prop16_shreds_change_nothing_but_the_shredded_payloads() {
     eprintln!(
         "PROP16: {seeds} seeds, {shredded_total} shredded, {dropped} dropped, {multi} multi-branch"
     );
+}
+
+fn files_under(disk: &SimDisk, dir: &Path) -> Vec<(String, Vec<u8>)> {
+    (disk.list(dir).unwrap_or_default().into_iter())
+        .filter_map(|n| Some((n.clone(), disk.read(&dir.join(&n)).ok()?)))
+        .collect()
+}
+fn holds(disk: &SimDisk, hash: &ContentHash) -> Vec<String> {
+    files_under(disk, &Path::new(DIR).join("keys"))
+        .into_iter()
+        .filter(|(_, b)| b.windows(32).any(|w| w == hash))
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// T103, the key log (ADR 0017 §8.2): the rewrite stops after each of its
+/// steps, then the power is cut under every tail fate.
+/// - Before recovery, the durable disk is read without opening the store:
+///   once the rewrite completed, no file in `keys/` holds the shredded
+///   hash's key record; before that, `key_log_purged_through` never
+///   claimed the shred.
+/// - After recovery, the key is gone, the payload reads `Shredded`, other
+///   payloads read back, and the purge covers the shred.
+#[test]
+fn t103_the_key_log_purge_survives_a_power_cut_at_every_step() {
+    for step in [Some(0u8), Some(1), Some(2), Some(3), Some(4), None] {
+        for seed in 0..6u64 {
+            for fate in [TailFate::Torn, TailFate::ZeroFill, TailFate::OutOfOrder] {
+                let disk = SimDisk::new();
+                let mut store = open(&disk);
+                let secret = store
+                    .put_blob(b"the zanzibar vendor holds the keys")
+                    .unwrap();
+                let kept = store.put_blob(b"rotate keys yearly").unwrap();
+                store
+                    .commit(&Batch::new(vec![create("a", secret), create("b", kept)]))
+                    .unwrap();
+                assert!(!holds(&disk, &secret).is_empty(), "the key is on disk");
+                store.stop_key_rewrite_at(step);
+                let e = store.commit(&shred(&[secret])).unwrap().epoch;
+                let done = store.key_log_purged_through() >= e;
+                assert_eq!(done, step.is_none(), "{step:?}");
+                drop(store);
+                let after = disk.crash(fate, seed);
+                if done {
+                    assert_eq!(
+                        holds(&after, &secret),
+                        Vec::<String>::new(),
+                        "{step:?} seed {seed} {fate:?}: before recovery"
+                    );
+                }
+                let store = open(&after);
+                assert_eq!(
+                    holds(&after, &secret),
+                    Vec::<String>::new(),
+                    "{step:?} seed {seed} {fate:?}: after recovery"
+                );
+                assert!(store.key_log_purged_through() >= e);
+                assert_eq!(
+                    store.get_blob(&secret).unwrap(),
+                    Payload::Unavailable(Unavailable::Shredded)
+                );
+                assert_eq!(
+                    store.get_blob(&kept).unwrap(),
+                    Payload::Available(b"rotate keys yearly".into()),
+                    "{step:?} seed {seed} {fate:?}"
+                );
+                assert!(
+                    !files_under(&after, &Path::new(DIR).join("keys"))
+                        .iter()
+                        .any(|(n, _)| n.ends_with(".tmp"))
+                );
+            }
+        }
+    }
 }

@@ -1094,6 +1094,8 @@ pub enum Response {
         logicals: u64,
         sessions: u64,
         index: IndexReport,
+        /// Shred epochs whose purge has not completed (ADR 0017 §8.4).
+        purge_pending: Vec<Epoch>,
     },
     TxnStatus {
         committed: Option<(Epoch, CommitResult)>,
@@ -2391,12 +2393,14 @@ impl Wire for Response {
                 logicals,
                 sessions,
                 index,
+                purge_pending,
             } => {
                 12u8.encode(o);
                 revisions.encode(o);
                 logicals.encode(o);
                 sessions.encode(o);
                 index.encode(o);
+                purge_pending.encode(o);
             }
             Self::TxnStatus { committed } => {
                 13u8.encode(o);
@@ -2628,6 +2632,7 @@ impl Wire for Response {
                 logicals: Wire::decode(i)?,
                 sessions: Wire::decode(i)?,
                 index: Wire::decode(i)?,
+                purge_pending: Wire::decode(i)?,
             },
             13 => Self::TxnStatus {
                 committed: Wire::decode(i)?,
@@ -3322,6 +3327,7 @@ mod tests {
                         error: "disk full".into(),
                     },
                 },
+                purge_pending: vec![Epoch(9)],
             },
             Response::Recall {
                 items: Vec::new(),

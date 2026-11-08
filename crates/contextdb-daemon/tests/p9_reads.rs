@@ -1102,9 +1102,10 @@ fn t100_every_response_type_names_only_visible_ids() {
             logicals: 3,
             sessions: 0,
             index: IndexReport {
-            fts: IndexState::Disabled,
-            vectors: IndexState::Disabled,
-        },
+                fts: IndexState::Disabled,
+                vectors: IndexState::Disabled,
+            },
+            purge_pending: vec![],
         })
         .0,
         Response::Error { code, .. } if code == "ChannelRestricted"
