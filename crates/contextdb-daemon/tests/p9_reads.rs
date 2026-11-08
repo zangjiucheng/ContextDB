@@ -1915,3 +1915,68 @@ fn merge_allocations_never_name_hidden_objects() {
         "the merge did open a Conflict on sec/s"
     );
 }
+
+/// Security review m1 (ADR 0017 §6.2 rule 5): resolving needs `Read` on
+/// every target. Bob cannot close his half of a Conflict whose partner is
+/// hidden, and the answer is the one a hidden artifact gets.
+#[test]
+fn resolving_needs_read_on_every_side() {
+    let f = fixture();
+    let s = &f.s;
+    let r = s
+        .handle(
+            ADMIN,
+            Request::ConflictOpen {
+                binding: None,
+                branch: None,
+                a: Target::KeyRev {
+                    key: "pub/b".into(),
+                    rev: f.rev["pub/b"],
+                },
+                b: Some(Target::KeyRev {
+                    key: "sec/s".into(),
+                    rev: f.rev["sec/s"],
+                }),
+                reason: "they disagree".into(),
+                evidence: Vec::new(),
+                from: None,
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    let Response::Committed { result } = &r else {
+        panic!("{r:?}")
+    };
+    let snap = s.actor.snapshot();
+    let view = snap.view(MAIN);
+    let (mine, theirs): (Vec<ArtifactId>, Vec<ArtifactId>) = result
+        .allocations
+        .new_artifacts
+        .iter()
+        .copied()
+        .partition(|a| view.artifact(*a).unwrap().target == f.rev["pub/b"]);
+    drop(snap);
+    let session = start(s, BOB);
+    let resolve = |a: ArtifactId| {
+        s.handle(
+            BOB,
+            Request::Resolve {
+                binding: Some(Binding::root(session)),
+                branch: None,
+                artifacts: vec![a],
+                note: String::new(),
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response
+    };
+    let own = resolve(mine[0]);
+    let hidden = resolve(theirs[0]);
+    assert!(format!("{own:?}").contains("Unauthorized"), "{own:?}");
+    assert_eq!(
+        format!("{own:?}").replace(&format!("artifact {}", mine[0].0), "artifact N"),
+        format!("{hidden:?}").replace(&format!("artifact {}", theirs[0].0), "artifact N")
+    );
+}

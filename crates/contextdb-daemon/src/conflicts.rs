@@ -547,6 +547,32 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if ids.is_empty() {
             return err("InvalidArgument", "name at least one artifact");
         }
+        // Every target of what is resolved needs `Read` (ADR 0017 §6.2 rule
+        // 5): the artifact's own and its partners' (the other half of a
+        // Conflict pair carries the same document). Checked first, so a
+        // hidden artifact's type and state are not told apart either
+        // (security review m1).
+        for (n, a) in ids.iter().enumerate() {
+            let Some(x) = view.artifact(*a) else { continue };
+            let hidden = std::iter::once(x.target)
+                .chain(
+                    view.artifacts()
+                        .filter(|(_, y)| y.payload_hash == x.payload_hash)
+                        .map(|(_, y)| y.target),
+                )
+                .any(|r| {
+                    view.revision_logical(r)
+                        .is_none_or(|l| !view.authorizes(id.principal, l))
+                });
+            if hidden {
+                let e = TxError::Unauthorized {
+                    op_index: n,
+                    reference: format!("artifact {}", a.0),
+                    need: AccessNeed::Read,
+                };
+                return err(&crate::service::code(&e), format!("{e:?}"));
+            }
+        }
         for a in &ids {
             match view.artifact(*a) {
                 None => return err("UnknownRef", format!("no artifact {}", a.0)),
