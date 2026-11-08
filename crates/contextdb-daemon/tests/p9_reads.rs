@@ -1825,3 +1825,93 @@ fn a_merge_never_reveals_a_hidden_head_or_status() {
     assert_eq!(merge("sec/s"), "Unauthorized");
     assert_eq!(merge("no/such-key"), "UnknownRef");
 }
+
+/// Security review m3: a merge into bob's own branch that opens a Conflict
+/// on a hidden logical (and imports its revision) lists neither in bob's
+/// `Merged` allocations.
+#[test]
+fn merge_allocations_never_name_hidden_objects() {
+    let f = fixture();
+    let s = &f.s;
+    let r = s
+        .handle(
+            BOB,
+            Request::BranchCreate {
+                name: "mine".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(!matches!(r, Response::Error { .. }), "{r:?}");
+    let mine = s.actor.snapshot().kernel.branch_by_name("mine").unwrap();
+    let sec = s
+        .actor
+        .snapshot()
+        .view(MAIN)
+        .logical_by_key("sec/s")
+        .unwrap();
+    // The owner moves sec/s apart on both branches.
+    let revise = |branch: BranchId, body: &[u8]| {
+        let mut batch = Batch::new(vec![
+            Op::AddRevision {
+                logical: sec.into(),
+                content: h(body),
+                adopt_as_base: true,
+            },
+            Op::SetHead {
+                logical: sec.into(),
+                expected: f.rev["sec/s"].into(),
+                new: RevRef::New(0),
+            },
+        ]);
+        batch.branch = branch;
+        match s
+            .handle(
+                ADMIN,
+                Request::Raw {
+                    blobs: vec![body.to_vec()],
+                    batch,
+                },
+            )
+            .response
+        {
+            Response::Committed { result } => result.allocations.new_revisions[0],
+            other => panic!("{other:?}"),
+        }
+    };
+    let on_main = revise(MAIN, b"secret on main");
+    revise(mine, b"secret on mine");
+    let r = s
+        .handle(
+            BOB,
+            Request::Merge {
+                binding: None,
+                source: "main".into(),
+                into: Some("mine".into()),
+                require_certified: false,
+                certify: Vec::new(),
+                client_txn_id: None,
+            },
+        )
+        .response;
+    let Response::Merged { result, .. } = &r else {
+        panic!("{r:?}")
+    };
+    let snap = s.actor.snapshot();
+    let view = snap.view(mine);
+    for a in &result.allocations.new_artifacts {
+        let target = view.artifact(*a).unwrap().target;
+        assert_ne!(view.revision_logical(target), Some(sec), "{r:?}");
+    }
+    assert!(
+        !result.allocations.new_revisions.contains(&on_main),
+        "{r:?}"
+    );
+    // The owner's view of the same kind of merge does list the Conflict.
+    assert!(
+        view.artifacts()
+            .any(|(_, x)| view.revision_logical(x.target) == Some(sec)),
+        "the merge did open a Conflict on sec/s"
+    );
+}

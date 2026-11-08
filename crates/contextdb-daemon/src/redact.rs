@@ -169,6 +169,24 @@ impl<'a, 'v> Viewer<'a, 'v> {
         n += drop_hidden(&mut d.new_rules, |j| self.sees_rule(*j));
         n
     }
+    /// A merge's allocations name objects the merge imported, hidden ones
+    /// included (Conflicts it opened on hidden logicals): only visible ones
+    /// are kept (security review m3). A dry run's new ids are not in the
+    /// view yet, and are kept only for the store owner.
+    fn merge_allocations(&self, r: &mut CommitResult) -> u32 {
+        let a = &mut r.allocations;
+        let mut n = drop_hidden(&mut a.new_logicals, |l| self.sees(*l));
+        n += drop_hidden(&mut a.new_revisions, |x| self.sees_rev(*x));
+        n += drop_hidden(&mut a.new_rules, |j| self.sees_rule(*j));
+        n += drop_hidden(&mut a.new_artifacts, |x| {
+            self.is_owner()
+                || self
+                    .db
+                    .artifact(*x)
+                    .is_some_and(|art| self.sees_rev(art.target))
+        });
+        n
+    }
     fn merge(&self, m: &mut MergeReport) -> u32 {
         let mut n = drop_hidden(&mut m.moved_heads, |(l, _, _)| self.sees(*l));
         n += drop_hidden(&mut m.conflicts, |c| {
@@ -365,9 +383,16 @@ impl<'a, 'v> Viewer<'a, 'v> {
                 committed.as_mut().map_or(0, |(_, r)| self.result(r))
             }
             Response::WhatIf { result, merge } => {
-                self.result(result) + merge.as_mut().map_or(0, |m| self.merge(m))
+                let imported = if merge.is_some() {
+                    self.merge_allocations(result)
+                } else {
+                    0
+                };
+                imported + self.result(result) + merge.as_mut().map_or(0, |m| self.merge(m))
             }
-            Response::Merged { result, report } => self.result(result) + self.merge(report),
+            Response::Merged { result, report } => {
+                self.merge_allocations(result) + self.result(result) + self.merge(report)
+            }
             Response::Why { proof } => {
                 self.proof(proof, red);
                 0
