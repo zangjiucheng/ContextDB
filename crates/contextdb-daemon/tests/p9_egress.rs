@@ -625,20 +625,32 @@ fn t105_the_mirror_exports_only_egress_lanes_every_principal_reads() {
     std::fs::create_dir_all(&data).unwrap();
     s.set_data_dir(data);
     assert!(git(&repo, &["init", "-q"]).0);
+    let mut revs = Vec::new();
     for (lane, key) in [
         ("repo", "a"),
         ("secret", "b"),
         ("narrow", "c"),
         ("personal:bob", "d"),
     ] {
-        create(
+        revs.push(create(
             &s,
             lane,
             key,
             RecordKind::Decision,
             &format!("{SECRET} {key}"),
-        );
+        ));
     }
+    // repo/a rests on secret/b: its front matter must not name b once the
+    // secret lane is withheld (security review m6).
+    raw(
+        &s,
+        Vec::new(),
+        vec![Op::AddRule {
+            conclusion: RevRef::Existing(revs[0]),
+            incidences: vec![(RevRef::Existing(revs[1]), EdgeKind::Cur)],
+            enabled: true,
+        }],
+    );
     // No access document: every lane, as in P8.
     export(&s, &repo, false).unwrap();
     assert_eq!(
@@ -666,6 +678,18 @@ fn t105_the_mirror_exports_only_egress_lanes_every_principal_reads() {
     );
     let (_, bodies) = git(&repo, &["grep", "-c", SECRET, &format!("{REF_PREFIX}0")]);
     assert_eq!(bodies.lines().count(), 1, "only repo/a: {tree}");
+    let (_, a) = git(
+        &repo,
+        &[
+            "cat-file",
+            "blob",
+            &format!("{REF_PREFIX}0:repo/Decision/a.md"),
+        ],
+    );
+    assert!(
+        a.contains("premises_withheld: 1") && !a.contains("b@"),
+        "{a}"
+    );
     // Not cached: the tip validates by a replayed render at its epoch.
     let snap = s.actor.snapshot();
     let mut m = mirror::Mirror::new(&snap, &repo, None).unwrap();

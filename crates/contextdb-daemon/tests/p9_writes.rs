@@ -662,6 +662,37 @@ fn deps_and_carried_rules_on_hidden_logicals() {
     unauthorized(&r, "Read", "carry_rules");
     assert!(!detail(&r).contains(&format!("rev {}", f.rev["sec/s"].0)));
     assert_eq!(code(&supersede(false)), "ok");
+    // On a hidden logical, `carry_rules` changes nothing in the answer, so
+    // it says nothing about that head's rules (security review m2): sec/s
+    // concludes a rule over bill/x, which carol cannot read either.
+    let r = commit(
+        s,
+        OWNER_AGENT,
+        alice,
+        vec![rule(f.rev["sec/s"], &[f.rev["bill/x"]])],
+        vec![],
+    );
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let hidden = |carry| {
+        format!(
+            "{:?}",
+            s.handle(
+                CAROL,
+                Request::Supersede {
+                    binding: Binding::root(carol),
+                    logical: f.logical["sec/s"],
+                    body: b"probe".to_vec(),
+                    expected_head: f.rev["sec/s"],
+                    adopt_as_base: false,
+                    carry_rules: carry,
+                    reason: "probe".into(),
+                    client_txn_id: None,
+                },
+            )
+            .response
+        )
+    };
+    assert_eq!(hidden(true), hidden(false));
 }
 
 fn branch(s: &Svc, id: Identity, name: &str) -> Response {

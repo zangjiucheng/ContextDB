@@ -331,21 +331,38 @@ pub fn render<D: Durability>(
             .map(|s| format!("{s:?}"))
             .unwrap_or_else(|_| "Unavailable".into());
         let mut premises = BTreeSet::new();
+        // Premises in lanes the mirror does not export are counted, not
+        // named: their keys would reach every reader of the repository
+        // (ADR 0017 §7; security review m6). Without an access document
+        // every lane is mirrored and nothing changes.
+        let mut withheld_premises = 0usize;
         for (_, enabled, incid, refs) in view.rules_concluding(r) {
             if !enabled {
                 continue;
             }
             let name = |p: RevisionId| {
-                let k = (view.revision_logical(p))
-                    .and_then(|pl| view.logical_info(pl))
-                    .map_or_else(|| "?".to_owned(), |(k, ..)| k);
-                format!("{k}@{}", p.0)
+                let info = (view.revision_logical(p)).and_then(|pl| view.logical_info(pl));
+                match info {
+                    Some((_, _, lane)) if !contextdb_core::access::mirrored(access, &lane) => None,
+                    Some((k, ..)) => Some(format!("{k}@{}", p.0)),
+                    None => Some(format!("?@{}", p.0)),
+                }
             };
             for i in incid {
-                premises.insert(format!("{} ({:?})", name(i.premise), i.kind));
+                match name(i.premise) {
+                    Some(n) => {
+                        premises.insert(format!("{n} ({:?})", i.kind));
+                    }
+                    None => withheld_premises += 1,
+                }
             }
             for p in refs {
-                premises.insert(format!("{} (Ref)", name(p)));
+                match name(p) {
+                    Some(n) => {
+                        premises.insert(format!("{n} (Ref)"));
+                    }
+                    None => withheld_premises += 1,
+                }
             }
         }
         let mut text = String::from("---\n");
@@ -365,6 +382,9 @@ pub fn render<D: Durability>(
             for p in &premises {
                 text.push_str(&format!("  - {}\n", quote(p)));
             }
+        }
+        if withheld_premises > 0 {
+            text.push_str(&format!("premises_withheld: {withheld_premises}\n"));
         }
         text.push_str("---\n");
         let mut bytes = text.into_bytes();

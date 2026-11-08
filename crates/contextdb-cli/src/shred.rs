@@ -16,7 +16,10 @@ from the files the daemon controls. It does not reach:
   - text that agents copied into other records;
   - review payloads and notes, unless --with-reviews;
   - copies made earlier: backups, `ctx export` files, git mirror refs (see
-    `ctx mirror export --rebuild`), validators, embedders or anyone it was sent to.
+    `ctx mirror export --rebuild`), validators, embedders or anyone it was sent to;
+  - anything outside the live data directory's files: swap, file-system
+    snapshots and copy-on-write clones (APFS), freed file-system blocks, and
+    SSD remanence.
 Topology and statuses are unchanged; anyone holding the exact bytes can still
 confirm the content hash.";
 

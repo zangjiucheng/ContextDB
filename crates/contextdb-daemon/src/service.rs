@@ -3525,7 +3525,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 new: RevRef::New(0),
             },
         ];
-        if carry_rules {
+        // Rules are carried only from a head of a logical the principal
+        // reads; otherwise the kernel answers op 0 exactly as without
+        // `carry_rules`, so the request says nothing about a hidden head's
+        // rules (security review m2).
+        let carry = carry_rules && {
+            let view = snap.view(branch);
+            view.authorizes(id.principal, logical)
+                && view.revision_logical(expected_head) == Some(logical)
+        };
+        if carry {
             // Copy the old head's own justification only; dependents are never
             // rebound (SPEC §3.5 #2, ADR 0008 §0.3).
             let view = snap.view(branch);
