@@ -11,7 +11,7 @@ use contextdb_daemon::{
     service::{Identity, Service},
 };
 use contextdb_model::*;
-use contextdb_store::{OpenOptions, SimDisk, Store, session::SessionLog};
+use contextdb_store::{OpenOptions, SimDisk, Store, TailFate, session::SessionLog};
 use libfuzzer_sys::fuzz_target;
 use std::{
     collections::BTreeSet,
@@ -80,7 +80,7 @@ fn create(s: &Service<SimDisk>, key: &str, lane: &str, body: &str) {
     );
     assert!(format!("{:?}", r.response).starts_with("Committed"), "{r:?}");
 }
-/// The durable state every run starts from: an access document where bob
+/// The durable state every run starts from (each run on its own copy): an access document where bob
 /// reads `repo` but not `vault`, a record in each, and a rule from the
 /// visible record to the hidden one.
 fn base() -> &'static SimDisk {
@@ -121,7 +121,10 @@ fn base() -> &'static SimDisk {
         create(&s, "visible-fact", "repo", "a visible body");
         create(&s, HIDDEN_KEY, "vault", HIDDEN_BODY);
         stop(s);
-        disk.restart()
+        // A deep copy of the durable state: `restart` shares it, so writes
+        // of one run would reach the next (a branch bob created from an
+        // input holding a needle then read as a leak in a later run).
+        disk.crash(TailFate::Torn, 0)
     })
 }
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -138,7 +141,8 @@ fuzz_target!(|data: &[u8]| {
         Request::Recall { index_wait_ms, .. } => *index_wait_ms = 0,
         _ => {}
     }
-    let s = service(&base().restart());
+    // Every run starts from its own copy of the base state.
+    let s = service(&base().crash(TailFate::Torn, 0));
     let response = format!("{:?}", s.handle(BOB, request.clone()));
     stop(s);
     let sent = format!("{request:?}");
