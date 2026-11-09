@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.9.0 · Date: 2026-11-06 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.9.1 · Date: 2026-11-09 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -717,6 +717,10 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
   - **迁移**：op_log 格式 5（op tag 20 `SetAccess`、21 `ShredContent`）。`ctx migrate` 4 → 5 写持久标记 `MIGRATING-5` 后依次升级日志头、重新加密 pack、重建投影、施加权限，按磁盘实际状态校验（含日志为格式 5 且无交换进行）后才删除标记并报告成功；有标记或校验失败的存储拒绝打开（`MigrationIncomplete{step}`）；重跑按日志与各步检查续做，从不凭日志版本判定成功。
   - **协议 7**：必需；新增脱敏形状、`redacted`、`vector_size`、新错误、`SetAccess` / `AccessCheck` / `Shred` 请求、`handoff_begin{to}`、`ctx ui` token（F9）。
   - G6 在 macOS 上以两个本地用户进行（F5）。
+  - v1.9.1（实现说明，非语义变更）：
+    - **多用户开关**（owner 2026-11-08）：`ctxd --multi-user`（`ctx service install --multi-user` 写入服务单元）才允许访问文档映射其他 uid；未开启时文档中的其他主体一律不映射，行为与单用户相同。默认关闭。
+    - **recall 的 lane 预过滤**：可读 lane 能枚举（非 default lane 成员）且超过一半的 logical 在其外、本主体在其外不拥有 logical 时，bm25 查询在 FTS 内限于这些 lane（列过滤加精确检查）；该集合是 `Authorized` 的超集，逐项资格判定不变，结果与 PROP14 不变。
+    - **G5 测量主机**：按 owner 要求，P8 基线与 HEAD 在同一台远程 Linux 主机上测量，而非 P8 G5 所用的 M1 Pro；预算是相对值，比较仍成立。
 
 **Gate P9**
 - G2：T17、T17b、T58、T59、T60、S13-rows-e2e（UNAVAILABLE 行）、T98–T108（ADR 0017 §11）。
@@ -1403,6 +1407,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 1.6.9 | 2026-10-26 | P6 实现独立复核（ADR 0013 r0.7）：默认 `require_certified` merge 对冲突目标不是 head 的 logical 同样拒绝，`certify` 列表按 id 取第一个失败者；SD19 修正“布尔值单一 base 不会冲突”（跨 branch 去重可达）；ValidationRecord 冲突 payload 含 curvec；`ctx_commit` 幂等 hash 含 branch/channel/principal、不含 cert_id；`ctx_branch`、`ctx_merge` 接受 `client_txn_id`（§6.5） |
 | 1.6.13 | 2026-11-02 | ADR 0011 r0.7：daemon 单次实时采样的期限由 40 ms 改为 200 ms（hook 预算自 v1.6.11 起为 500 ms）。40 ms 在负载下会让什么都没改的锚点读成 `PENDING(ObservationLag)`。语义不变：缺证据仍为 lagging |
 | 1.6.14 | 2026-11-02 | ADR 0010 r3.5，P4 G6 审计后续 2、4、5：非 Empty 的警告按同一组过期读取只渲染一次（判定、命名读取与 git HEAD 都相同时，shell 等非编辑动作不再重复显示；文件编辑、deny 与新 commit 照常显示，每次判定仍记录）；drift 只渲染该 agent 上次报告之后新出现的路径，`ctx gate-report` 按会话去重计数；Claude Code 版本从 transcript 读取（hook 进程拿不到 `CLAUDE_CODE_EXECPATH`）。语义与协议不变 |
+| 1.9.1 | 2026-11-09 | P9 milestone 7（实现说明，非语义变更）：§5 P9 增加 `ctxd --multi-user` 开关（owner 2026-11-08，默认关闭）；recall 对可读 lane 少的主体在 FTS 内按 lane 预过滤（`Authorized` 的超集，资格与 PROP14 不变），修复其 10⁵ 记录时 p99 2.4 s；G5 在同一远程 Linux 主机上测量 P8 与 HEAD。 |
 | 1.9.0 | 2026-11-06 | P9 G0（ADR 0017 r0.5；独立复核 r0.1 8 blocker / 9 major / 9 minor，r0.2 闭环余 7 major / 12 minor（N1–N19）在 r0.3 关闭，再经两轮聚焦复核与三轮 owner 复核：merge 逐类授权、macOS ACL 与上级目录、personal lane 合成条目、key log 删除后的目录同步、迁移完成状态与重跑）；owner 确认 F1–F13 推荐项，F14 采用收窄的搬运规则。SD11 授权定义与 `entry(lane)`；SD13 渲染时脱敏；SD15 脱敏形状；SD19 两个全局 Op、branch 创建者、merge 授权；§5 P9 细化与 Gate；§6.1 输入契约 15；§6.2 新错误；§6.3 脱敏与撤销；§3.5 #7 与 §7 key log、`CXBE`、`purged_through`；§8.1 T13 按主体、T98–T108；§8.2 PROP15、PROP16；§10 威胁表。op_log 格式 5，协议 7。 |
 | 1.8.3 | 2026-11-06 | P8 milestone 7（G5 与实现复核，非语义变更）：§5 P8 bm25 排序窗口（2,048 行、按行 id、重建不变、分页在同一读快照内），使含高频词的查询不再随存储规模线性增长；资格、排序前过滤、`exhausted` 与短页规则不变。G5 基准的记录与查询词改为 Zipf 分布（s = 1，20,000 词），40 词均匀分布的密集词表只报告不作门槛（ADR 0016 §10 预算为初始值，可经 ADR 校准）。 |
 | 1.8.2 | 2026-11-04 | P8 milestone 4（ADR 0016 §6 实现说明）：§6.3 `ctx_supersede` 同内容回复由 T90 固定（`Committed`、head 自身、空 delta，消耗一个 epoch）。Summary 待验证计数的基准由“最近一次 Verified 记录”实现为“差异最少的 Verified 向量”：内核按向量而非时间保存 ValidationRecord，无法得知“最近”；两者在常见情形下相同，且当前向量已验证时计数恰为 0。witness 规则取结论为该 revision、含 Sem 前提的第一条 enabled 规则（按规则 id，即规范 witness 顺序）。 |

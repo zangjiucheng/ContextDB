@@ -26,7 +26,13 @@ Milestone 6 is done: crypto-shred.
 - **`ctx migrate` to format 5** re-encrypts older packs and rebuilds the projections, and succeeds only after a disk check. Openers refuse an incomplete migration.
 - **Tests:** T59, T103, T104, and PROP16 at 10,000 seeds.
 
-Verification (milestone 7) remains before multi-user mode is offered.
+Milestone 7 (verification) is in progress (SPEC v1.9.1):
+- **Passed:** G5 (on the remote Linux host, with a recall fix for principals who read few lanes) and G7.
+- **G8:** the README's multi-user section is written.
+- **G4:** the security review's Majors and Minors are fixed or declared, and a 24 h fuzz run is under way.
+- **Open:** G6 (two real macOS users) and G8's implementation review.
+
+Multi-user mode needs `ctxd --multi-user`, which is off by default.
 
 **P8 passed** (2026-11-06; G0 2026-11-04) ([P8 gate](gates/P8.md), [ADR 0016](adr/0016-p8-retrieval-packing-mirror.md) r0.3, SPEC v1.8.3). It took three review rounds; r0.1 had 0 blockers, 7 majors and 12 minors. P8 covers:
 - hybrid recall with status filtered before any cut;
