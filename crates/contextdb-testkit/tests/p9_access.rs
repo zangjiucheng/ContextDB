@@ -852,12 +852,69 @@ fn prop15_merge_refusals_match_the_reference() {
                 }
                 continue;
             }
+            // G8 review (tests): the policy, anchors and the other rows of
+            // §6.2.7, written by the store owner's admin and observer.
+            if g.coin(15) {
+                let mut b = admin(vec![Op::SetPolicy {
+                    policy: PolicyDoc {
+                        version: 1,
+                        require_deps: [[RecordKind::Decision, RecordKind::Plan][g.pick(2)]].into(),
+                    },
+                }]);
+                b.branch = on;
+                run(&b, &mut k, &mut o, &mut counts);
+                continue;
+            }
+            if g.coin(15) {
+                serial += 1;
+                let mut b = Batch::new(vec![Op::CreateLogical {
+                    key: format!("code:x/a{serial}"),
+                    kind: RecordKind::CodeAnchor,
+                    scope_lane: "code:x".into(),
+                    content: [serial as u8; 32],
+                    adopt_as_base: true,
+                }]);
+                b.branch = on;
+                b.channel = Channel::Observer;
+                run(&b, &mut k, &mut o, &mut counts);
+                continue;
+            }
             let v = k.branch(on).unwrap();
             let logicals: Vec<LogicalId> = v.logicals().collect();
             let heads: Vec<RevisionId> = logicals.iter().filter_map(|l| v.head(*l)).collect();
+            let rules: Vec<RuleId> = (0..64u32)
+                .map(RuleId)
+                .filter(|j| v.rule_enabled(*j).is_some())
+                .collect();
             let mut ops = Vec::new();
             for _ in 0..1 + g.pick(2) {
-                let op = match g.pick(6) {
+                let op = match g.pick(9) {
+                    6 => {
+                        serial += 1;
+                        Op::OpenArtifact {
+                            ty: ArtifactType::Conflict,
+                            target: heads[g.pick(heads.len())].into(),
+                            payload_hash: [serial as u8; 32],
+                        }
+                    }
+                    // Only rules that exist before the batch: an `Existing`
+                    // ref to a rule an earlier op of the same batch made is
+                    // resolved by the kernel on `main` but refused by the
+                    // branch oracle, a pre-P9 edge SPEC §6.1 leaves open
+                    // (declared in docs/gates/P9.md).
+                    7 if !rules.is_empty() => Op::SetRuleEnabled {
+                        rule: RuleRef::Existing(rules[g.pick(rules.len())]),
+                        enabled: g.coin(50),
+                    },
+                    7 => create(&mut g, &mut serial),
+                    8 => {
+                        let l = logicals[g.pick(logicals.len())];
+                        Op::SetHead {
+                            logical: LogicalRef::Existing(l),
+                            expected: v.head(l).unwrap_or(RevisionId(0)).into(),
+                            new: heads[g.pick(heads.len())].into(),
+                        }
+                    }
                     0 => create(&mut g, &mut serial),
                     1 => {
                         serial += 1;

@@ -42,6 +42,10 @@ struct Eligibility<'a, 'v, D: Durability> {
     /// it did not match, before it can be withheld or take a slot (ADR
     /// 0017 §5.3).
     viewer: crate::redact::Viewer<'a, 'v>,
+    /// F12's hygiene default: the store owner's agent-channel recall with
+    /// no scope leaves out other principals' personal lanes. `Some(owner's
+    /// name)` when it applies.
+    hygiene: Option<&'a str>,
     /// `Some(item)` for an eligible logical, `None` for an ineligible one.
     decided: BTreeMap<LogicalId, Option<Item>>,
     withheld: Vec<Item>,
@@ -88,6 +92,11 @@ impl<D: Durability + Clone + 'static> Eligibility<'_, '_, D> {
         if !self.lane.is_empty() && lane != self.lane {
             return false;
         }
+        if let Some(owner) = self.hygiene
+            && lane.strip_prefix("personal:").is_some_and(|n| n != owner)
+        {
+            return false;
+        }
         if !self.opts.kinds.is_empty() && !self.opts.kinds.contains(&kind) {
             return false;
         }
@@ -99,9 +108,12 @@ impl<D: Durability + Clone + 'static> Eligibility<'_, '_, D> {
             return true;
         }
         // An anchor covers its own path; any other revision, its anchor
-        // premises' paths.
-        let covered =
-            |r: RevisionId| (self.anchor_path(r)).is_some_and(|p| ranking::covers(dir, &p));
+        // premises' paths, only those the principal may read (ADR 0017
+        // §5.2; G8 review MI4: a hidden anchor's path must not decide).
+        let covered = |r: RevisionId| {
+            self.viewer.sees_rev(r)
+                && (self.anchor_path(r)).is_some_and(|p| ranking::covers(dir, &p))
+        };
         covered(head)
             || (self.db.rules_concluding(head).into_iter())
                 .flat_map(|(_, _, premises, _)| premises)
@@ -1575,7 +1587,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                             std::time::Duration::from_millis(index_wait_ms as u64),
                         );
                     }
-                    self.recall(b, &query, &scope, &opts, mode, limit as usize, &snap)
+                    self.recall(
+                        b,
+                        id.channel,
+                        &query,
+                        &scope,
+                        &opts,
+                        mode,
+                        limit as usize,
+                        &snap,
+                    )
                 }
                 Err(r) => r,
             },
@@ -2031,9 +2052,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     epoch,
                     result,
                     principal,
+                    branch,
                 })) if crate::principals::class(principal)
                     == crate::principals::class(id.principal) =>
                 {
+                    // Redacted with the view of the branch it committed on
+                    // (G8 review MI5: p's own batch on its branch).
+                    crate::redact::note_branch(branch);
                     Response::TxnStatus {
                         committed: Some((epoch, *result)),
                     }
@@ -2900,6 +2925,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
     fn recall(
         &self,
         (session, s, agent, _): Bound,
+        channel: Channel,
         query: &str,
         scope: &str,
         opts: &RecallOpts,
@@ -2924,6 +2950,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
             limit,
             live: &live,
             viewer: crate::redact::Viewer::new(principal, db),
+            hygiene: (db.access())
+                .filter(|_| channel == Channel::Agent && principal.is_store_owner())
+                .filter(|_| scope.is_empty())
+                .and_then(|a| a.name_of(principal)),
             decided: BTreeMap::new(),
             withheld: Vec::new(),
         };

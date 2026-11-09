@@ -89,6 +89,7 @@ fn idempotent_retry_and_txn_status_t18b() {
             epoch: first.epoch,
             result: Box::new(first.clone()),
             principal: PrincipalId(0),
+            branch: BranchId(0),
         }
     );
     assert_eq!(

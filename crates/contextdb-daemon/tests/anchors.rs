@@ -1514,3 +1514,113 @@ fn strict_full_check_on_a_branch_issues_from_the_branch() {
     strict(&s);
     s.handle(ADMIN, Request::Shutdown);
 }
+
+/// G8 review MI4 (ADR 0017 §5.2): with `code_lanes` restricted to the store
+/// owner, recall's `dir` filter decides only on anchors the principal may
+/// read, so a hidden anchor's path cannot be probed one prefix at a time.
+#[test]
+fn recall_dir_ignores_anchors_the_principal_cannot_read() {
+    use contextdb_daemon::principals::PrincipalMap;
+    use contextdb_proto::fsguard;
+    let f = Fixture::new();
+    f.write("a.rs", "a");
+    let s = f.service();
+    f.scan(&s, &["a.rs"]);
+    roots(&s);
+    s.set_principals(
+        PrincipalMap::new(
+            Some("alice"),
+            fsguard::current_uid(),
+            [("bob".to_owned(), 4242, PrincipalId(16))],
+        )
+        .unwrap(),
+    );
+    let members = |m: &[&str]| -> BTreeSet<String> { m.iter().map(|x| (*x).to_owned()).collect() };
+    let doc = AccessDoc {
+        version: 1,
+        owner: "alice".into(),
+        principals: [
+            ("alice".to_owned(), fsguard::current_uid()),
+            ("bob".to_owned(), 4242),
+        ]
+        .into(),
+        groups: BTreeMap::new(),
+        lanes: [(
+            "test".to_owned(),
+            LaneEntry {
+                members: members(&["*members"]),
+                writers: members(&["*members"]),
+                ..LaneEntry::owner_only()
+            },
+        )]
+        .into(),
+        code_lanes: LaneEntry {
+            members: members(&["*owner"]),
+            ..LaneEntry::owner_only()
+        },
+        personal_egress: false,
+        default_lane: LaneEntry::owner_only(),
+    };
+    let r = s
+        .handle(
+            ADMIN,
+            Request::SetAccess {
+                doc,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let bob = Identity {
+        channel: Channel::Agent,
+        principal: PrincipalId(16),
+    };
+    let recall = |id: Identity, dir: &str| -> Vec<String> {
+        let Response::Session { session } = s
+            .handle(
+                id,
+                Request::SessionStart {
+                    harness: "test".into(),
+                    repo: f.repo.root.to_str().unwrap().into(),
+                    head_sha: String::new(),
+                    parent: None,
+                    branch: None,
+                    git_branch: None,
+                },
+            )
+            .response
+        else {
+            panic!()
+        };
+        match s
+            .handle(
+                id,
+                Request::Recall {
+                    binding: Binding::root(session),
+                    query: "root-a".into(),
+                    scope: String::new(),
+                    mode: Mode::Advisory,
+                    limit: 10,
+                    index_wait_ms: 2_000,
+                    opts: RecallOpts {
+                        dir: Some(dir.into()),
+                        ..RecallOpts::default()
+                    },
+                },
+            )
+            .response
+        {
+            Response::Recall { items, .. } => items.into_iter().map(|i| i.key).collect(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(
+        recall(AGENT, "a.rs").contains(&"root-a".to_owned()),
+        "the owner's anchor path decides"
+    );
+    assert!(
+        !recall(bob, "a.rs").contains(&"root-a".to_owned()),
+        "a hidden anchor's path does not"
+    );
+    assert!(!recall(bob, "zzz").contains(&"root-a".to_owned()));
+}

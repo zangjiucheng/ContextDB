@@ -1076,3 +1076,233 @@ fn t59_t107_shredded_payloads() {
     let r = commit(s, OWNER_AGENT, alice, vec![mk("pub/z")], vec![]);
     assert_eq!(code(&r), "ContentShredded", "{r:?}");
 }
+
+/// G8 review MI5 (ADR 0017 §5.5): `TxnStatus` for bob's own batch on his
+/// own branch is redacted with that branch's view, so it answers what the
+/// commit answered (his batch is always authorised).
+#[test]
+fn txn_status_of_a_branch_commit_keeps_its_own_entries() {
+    let f = fixture();
+    let s = &f.s;
+    assert_eq!(code(&branch(s, BOB, "feat-mi5")), "ok");
+    let bob = session_on(s, BOB, Some("feat-mi5"), None);
+    let txn = [42; 16];
+    let committed = s
+        .handle(
+            BOB,
+            Request::Commit {
+                binding: Binding::root(bob),
+                ops: vec![create("pub/mi5", "repo", false)],
+                blobs: vec![body("pub/mi5")],
+                expect_cert_valid: false,
+                client_txn_id: Some(txn),
+            },
+        )
+        .response;
+    let Response::Committed { result } = committed else {
+        panic!("{committed:?}")
+    };
+    assert!(!result.status_diff.is_empty(), "{result:?}");
+    let status = s.handle(BOB, Request::TxnStatus { id: txn });
+    assert_eq!(
+        status.response,
+        Response::TxnStatus {
+            committed: Some((result.epoch, result.clone()))
+        }
+    );
+}
+
+/// G8 review MI6 (ADR 0017 F14, §6.2.7, T108): a non-owner's merge into
+/// `main` carries a new CodeAnchor as not base, though the observer had made
+/// it base on the source branch.
+#[test]
+fn t108_a_merged_anchor_arrives_not_base() {
+    let f = fixture();
+    let s = &f.s;
+    assert_eq!(code(&branch(s, BOB, "feat-anchor")), "ok");
+    let descriptor = b"an anchor descriptor".to_vec();
+    let mut batch = Batch::new(vec![Op::CreateLogical {
+        key: "code:repo/a.rs".into(),
+        kind: RecordKind::CodeAnchor,
+        scope_lane: "code:repo".into(),
+        content: h(&descriptor),
+        adopt_as_base: true,
+    }]);
+    batch.branch = BranchId(1);
+    let observer = Identity {
+        channel: Channel::Observer,
+        principal: PrincipalId(0),
+    };
+    let rr = s
+        .handle(
+            observer,
+            Request::Raw {
+                blobs: vec![descriptor],
+                batch,
+            },
+        )
+        .response;
+    assert_eq!(code(&rr), "ok", "{rr:?}");
+    let base_on = |branch: Option<&str>| {
+        let why = Request::Why {
+            target: Target::Key("code:repo/a.rs".into()),
+            depth: 1,
+        };
+        let request = match branch {
+            Some(b) => Request::OnBranch {
+                branch: BranchSel::Named(b.into()),
+                request: Box::new(why),
+            },
+            None => why,
+        };
+        match s.handle(ADMIN, request).response {
+            Response::Why { proof } => proof.explanation.base,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(base_on(Some("feat-anchor")), "base on the source");
+    let rr = merge(s, BOB, "feat-anchor", Some("main"));
+    assert_eq!(code(&rr), "ok", "{rr:?}");
+    assert!(!base_on(None), "not base on main");
+}
+
+/// T108, one case per row of ADR 0017 §6.2.7 (G8 review, tests). The store
+/// owner makes one change on an owner branch; bob merges it into `main`.
+/// What bob could not do directly is `MergeUnauthorized`; what is
+/// transported, or changes nothing, applies. A catch-up into bob's own
+/// branch carries all of it, and bob still reads only what he may.
+#[test]
+fn t108_one_case_per_row() {
+    let f = fixture();
+    let s = &f.s;
+    let r = |k: &str| f.rev[k];
+    // A lane bob reads but cannot write.
+    let mut d = doc();
+    d.lanes.insert(
+        "ro".into(),
+        LaneEntry {
+            members: set(&["*members"]),
+            writers: set(&["alice"]),
+            ..LaneEntry::owner_only()
+        },
+    );
+    let set = s
+        .handle(
+            ADMIN,
+            Request::SetAccess {
+                doc: d,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert_eq!(code(&set), "ok", "{set:?}");
+    let rr = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![body("ro/x")],
+                batch: Batch::new(vec![create("ro/x", "ro", false)]),
+            },
+        )
+        .response;
+    assert_eq!(code(&rr), "ok", "{rr:?}");
+    let on_branch = |name: &str, ops: Vec<Op>, blobs: Vec<Vec<u8>>| {
+        assert_eq!(code(&branch(s, OWNER_AGENT, name)), "ok");
+        let id = s.actor.snapshot().kernel.branch_by_name(name).unwrap();
+        let mut batch = Batch::new(ops);
+        batch.branch = id;
+        let rr = s.handle(ADMIN, Request::Raw { blobs, batch }).response;
+        assert_eq!(code(&rr), "ok", "{name}: {rr:?}");
+    };
+    let refused = |name: &str| {
+        let rr = merge(s, BOB, name, Some("main"));
+        assert_eq!(code(&rr), "MergeUnauthorized", "{name}: {rr:?}");
+        assert!(detail(&rr).contains("count"), "{rr:?}");
+    };
+    let policy = PolicyDoc {
+        version: 1,
+        require_deps: [RecordKind::Decision].into(),
+    };
+    // Policy: a change is the store owner's; an equal policy applies.
+    on_branch(
+        "row-policy",
+        vec![Op::SetPolicy {
+            policy: policy.clone(),
+        }],
+        vec![],
+    );
+    refused("row-policy");
+    on_branch(
+        "row-policy-same",
+        vec![Op::SetPolicy {
+            policy: PolicyDoc::default(),
+        }],
+        vec![],
+    );
+    assert_eq!(code(&merge(s, BOB, "row-policy-same", Some("main"))), "ok");
+    // A new revision (head) in a lane bob reads but cannot write.
+    on_branch(
+        "row-head",
+        vec![Op::AddRevision {
+            logical: LogicalRef::Key("ro/x".into()),
+            content: h(b"ro v2"),
+            adopt_as_base: false,
+        }],
+        vec![b"ro v2".to_vec()],
+    );
+    refused("row-head");
+    // An artifact on a hidden target.
+    on_branch(
+        "row-artifact",
+        vec![Op::OpenArtifact {
+            ty: ArtifactType::Conflict,
+            target: r("sec/s").into(),
+            payload_hash: h(b"why"),
+        }],
+        vec![b"why".to_vec()],
+    );
+    refused("row-artifact");
+    // A rule with a hidden premise.
+    on_branch("row-rule", vec![rule(r("pub/a"), &[r("sec/s")])], vec![]);
+    refused("row-rule");
+    // A rule bob could add (he reads its revisions and writes the
+    // conclusion's lane) applies.
+    on_branch("row-rule-ok", vec![rule(r("pub/a"), &[r("pub/b")])], vec![]);
+    assert_eq!(code(&merge(s, BOB, "row-rule-ok", Some("main"))), "ok");
+    // A base bit bob cannot curate.
+    on_branch(
+        "row-base",
+        vec![Op::AssertBase {
+            rev: r("pub/a").into(),
+        }],
+        vec![],
+    );
+    refused("row-base");
+
+    // Catch-up: everything above, plus another principal's personal record,
+    // merged into bob's own branch.
+    on_branch(
+        "row-all",
+        vec![
+            Op::SetPolicy { policy },
+            create("mine/carol", "personal:carol", true),
+            rule(r("pub/a"), &[r("sec/s")]),
+        ],
+        vec![body("mine/carol")],
+    );
+    assert_eq!(code(&branch(s, BOB, "bob-catchup")), "ok");
+    assert_eq!(code(&merge(s, BOB, "row-all", Some("bob-catchup"))), "ok");
+    let bob = session_on(s, BOB, Some("bob-catchup"), None);
+    let read = s
+        .handle(
+            BOB,
+            Request::Read {
+                binding: Binding::root(bob),
+                target: Target::Key("mine/carol".into()),
+                mode: Mode::Advisory,
+                level: None,
+            },
+        )
+        .response;
+    assert!(matches!(read, Response::Unavailable { .. }), "{read:?}");
+}

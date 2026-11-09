@@ -1230,6 +1230,13 @@ impl BranchOracle {
             if refused > 0 {
                 return Err(TxError::MergeUnauthorized { count: refused });
             }
+            // F14: new CodeAnchor objects arrive not base.
+            for &r in &new[1] {
+                let l = rev_logical(self, r);
+                if new[0].contains(&l) && anchor(self, l) {
+                    next.base.insert(r, false);
+                }
+            }
         }
         // The merged state, tried on a copy: cycles, certification, reads.
         let mut merged = self.clone();

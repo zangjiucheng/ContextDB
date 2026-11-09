@@ -344,6 +344,19 @@ fn prop16_shreds_change_nothing_but_the_shredded_payloads() {
         let a = open(&da);
         assert_eq!(digests(&a), before, "seed {seed}: replay");
         check(&a);
+        // `doctor` agrees (G8 review, tests): what `ctx doctor` checks, the
+        // derived state of every branch against the oracle on its inputs,
+        // holds after the replay; its unavailable payloads are exactly the
+        // shredded ones (`check`).
+        let kernel = a.kernel().unwrap();
+        for info in kernel.branches() {
+            let db = kernel.branch(info.id).unwrap().db();
+            assert!(
+                DerivedView::derived(db) == &contextdb_oracle::jacobi(&db.inputs()),
+                "seed {seed}, branch {}: doctor's oracle check",
+                info.name
+            );
+        }
         shredded_total += shredded.len();
     }
     assert!(
@@ -483,4 +496,33 @@ fn g4_a_full_disk_during_the_key_log_rewrite_is_finished_at_open() {
         }
     }
     assert!(hit >= 5, "the faults reached the rewrite only {hit} times");
+}
+
+/// G8 review MI3: a blob written after a completed purge appends a segment
+/// after the newest generation; that is not a leftover, so reopening the
+/// store does not rewrite the key log again.
+#[test]
+fn an_append_after_the_purge_does_not_rewrite_the_key_log_at_open() {
+    let disk = SimDisk::new();
+    let mut store = open(&disk);
+    let secret = store
+        .put_blob(b"the zanzibar vendor holds the keys")
+        .unwrap();
+    store
+        .commit(&Batch::new(vec![create("a", secret)]))
+        .unwrap();
+    let e = store.commit(&shred(&[secret])).unwrap().epoch;
+    assert!(store.key_log_purged_through() >= e);
+    let later = store.put_blob(b"written after the shred").unwrap();
+    store.commit(&Batch::new(vec![create("b", later)])).unwrap();
+    drop(store);
+    let keys = Path::new(DIR).join("keys");
+    let before = files_under(&disk, &keys);
+    assert!(before.len() >= 2, "a generation and an append: {before:?}");
+    let store = open(&disk);
+    assert_eq!(files_under(&disk, &keys), before, "no rewrite at open");
+    assert_eq!(
+        store.get_blob(&later).unwrap(),
+        Payload::Available(b"written after the shred".to_vec())
+    );
 }

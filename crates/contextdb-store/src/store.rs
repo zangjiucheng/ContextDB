@@ -272,6 +272,9 @@ pub enum TxnStatus {
         /// The committing principal (ADR 0017 §5.5: a non-owner sees only
         /// its own rows).
         principal: PrincipalId,
+        /// The branch the batch committed on (its result is redacted with
+        /// that branch's view).
+        branch: BranchId,
     },
     NotCommitted,
 }
@@ -322,6 +325,9 @@ pub struct Store<D: Durability> {
     /// The highest shred epoch the key log's newest generation covers
     /// (its header's `purged_through`, ADR 0017 §8.4).
     key_purged: Epoch,
+    /// The newest generation's segment number (0 before any rewrite): a
+    /// segment numbered below it is a leftover; above it, an append.
+    key_generation: u32,
     /// G4/T103 fault injection: the next key-log rewrite stops after this
     /// step (0 nothing written, 1 tmp synced, 2 renamed, 3 directory
     /// synced, 4 unlinked).
@@ -455,6 +461,7 @@ impl<D: Durability> Store<D> {
         let keylog = keys::load(&disk, &key_dir).map_err(io)?;
         let key_next = keys::next_number(&keylog);
         let key_purged = keylog.generation.map_or(Epoch(0), |(_, through)| through);
+        let key_generation = keylog.generation.map_or(0, |(n, _)| n);
         disk.sync_dir(&blob_dir).map_err(io)?;
         let mut blobs = BTreeSet::new();
         let names = disk.list(&blob_dir).map_err(io)?;
@@ -549,6 +556,7 @@ impl<D: Durability> Store<D> {
             key_tail: None,
             key_next,
             key_purged,
+            key_generation,
             key_rewrite_stop: None,
             tail: None,
             proj,
@@ -754,6 +762,7 @@ impl<D: Durability> Store<D> {
                     epoch: *epoch,
                     result: Box::new(row.acked().map_err(|e| StoreError::Io(e.to_string()))?),
                     principal: row.principal,
+                    branch: row.branch,
                 })
             }
             None => Ok(TxnStatus::NotCommitted),
@@ -1081,9 +1090,12 @@ impl<D: Durability> Store<D> {
         if (self.packs.read().expect("pack index").keys.keys()).any(|h| shredded.contains_key(h)) {
             return Ok(true);
         }
-        let newest = self.key_next.saturating_sub(1);
+        // Appends after the newest generation are not leftovers (G8 review
+        // MI3: comparing with the newest segment rewrote the whole log at
+        // every open once a blob followed a shred).
+        let generation = self.key_generation;
         Ok((self.disk.list(&self.key_dir())?.iter())
-            .any(|n| n.ends_with(".tmp") || keys::number(n).is_some_and(|k| k < newest)))
+            .any(|n| n.ends_with(".tmp") || keys::number(n).is_some_and(|k| k < generation)))
     }
     /// The key-log rewrite (ADR 0017 §8.2): every key but the shredded
     /// ones into `keylog-<gen>.tmp`, synced, renamed to generation `<gen>`,
@@ -1135,6 +1147,7 @@ impl<D: Durability> Store<D> {
         let shredded = self.db.shredded();
         (self.packs.write().expect("pack index").keys).retain(|h, _| !shredded.contains_key(h));
         self.key_purged = through;
+        self.key_generation = generation;
         Ok(())
     }
     /// Stores a payload; returns only after it is durable (ADR 0006 §5).

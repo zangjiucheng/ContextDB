@@ -326,6 +326,17 @@ impl<D: Durability + Clone + 'static> Service<D> {
         if matches!(state, ConflictState::Candidates | ConflictState::All) {
             items.extend(self.candidate_items(&view, scope));
         }
+        // ADR 0017 §5.8 (G8 review MA2): an item is listed only when every
+        // side is authorised. That is decided before the cut, so hidden
+        // items take no slot and `truncated` counts only visible ones. The
+        // redaction pass applies the same rule again as the last line.
+        let viewer = crate::redact::Viewer::new(id.principal, &view);
+        if !viewer.is_owner() {
+            items.retain(|c| {
+                c.sides.iter().all(|s| viewer.sees_rev(s.rev))
+                    && c.rule.is_none_or(|j| viewer.sees_rule(j))
+            });
+        }
         let limit = match limit {
             0 => DEFAULT_LIST,
             n => n.min(MAX_LIST),

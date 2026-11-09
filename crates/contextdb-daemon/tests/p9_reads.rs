@@ -2171,3 +2171,223 @@ fn recall_for_a_narrow_reader_skips_hidden_lanes_in_the_index() {
     let carol = start(&s, CAROL);
     assert_eq!(recall_text(&s, CAROL, carol, "needle", 10), ["carol/own"]);
 }
+
+/// G8 review MA2 (ADR 0017 §5.8): conflicts on hidden records take no slot
+/// before the cut, and `truncated` counts only what the principal sees.
+#[test]
+fn hidden_conflicts_take_no_slot_in_the_list() {
+    let s = service();
+    let mut keys: Vec<(String, &str)> = (0..60).map(|i| (format!("sec/{i}"), "secret")).collect();
+    keys.extend((0..3).map(|i| (format!("pub/{i}"), "repo")));
+    let body = |k: &str| format!("body of {k}").into_bytes();
+    let created = raw(
+        &s,
+        keys.iter().map(|(k, _)| body(k)).collect(),
+        keys.iter()
+            .map(|(k, lane)| Op::CreateLogical {
+                key: k.clone(),
+                kind: RecordKind::Fact,
+                scope_lane: (*lane).into(),
+                content: h(&body(k)),
+                adopt_as_base: true,
+            })
+            .collect(),
+        [8; 16],
+    );
+    raw(
+        &s,
+        vec![b"why".to_vec()],
+        (created.allocations.new_revisions.iter())
+            .map(|&r| Op::OpenArtifact {
+                ty: ArtifactType::Conflict,
+                target: RevRef::Existing(r),
+                payload_hash: h(b"why"),
+            })
+            .collect(),
+        [9; 16],
+    );
+    let list = |id: Identity, session: Option<SessionId>, limit: u32| match s
+        .handle(
+            id,
+            Request::Conflicts {
+                binding: session.map(Binding::root),
+                branch: None,
+                scope: None,
+                state: ConflictState::Open,
+                limit,
+            },
+        )
+        .response
+    {
+        Response::Conflicts { items, truncated } => (items.len(), truncated),
+        other => panic!("{other:?}"),
+    };
+    let carol = start(&s, CAROL);
+    assert_eq!(list(CAROL, Some(carol), 50), (3, false));
+    assert_eq!(list(CAROL, Some(carol), 2), (2, true));
+    assert_eq!(list(ADMIN, None, 50), (50, true));
+}
+
+/// F12 hygiene default (G8 review MI2): the store owner's agent-channel
+/// recall with no scope leaves out other principals' personal lanes. With
+/// the scope named it reads them (the owner sees everything), and bob still
+/// finds his own.
+#[test]
+fn owner_recall_without_scope_skips_others_personal_lanes() {
+    let s = service();
+    let recs = [
+        ("mine/b", "personal:bob"),
+        ("mine/a", "personal:alice"),
+        ("shared/x", "repo"),
+    ];
+    let body = |k: &str| format!("needle for {k}").into_bytes();
+    raw(
+        &s,
+        recs.iter().map(|(k, _)| body(k)).collect(),
+        recs.iter()
+            .map(|(k, lane)| Op::CreateLogical {
+                key: (*k).into(),
+                kind: RecordKind::Fact,
+                scope_lane: (*lane).into(),
+                content: h(&body(k)),
+                adopt_as_base: true,
+            })
+            .collect(),
+        [10; 16],
+    );
+    let scoped = |id: Identity, scope: &str| -> Vec<String> {
+        let session = start(&s, id);
+        match s
+            .handle(
+                id,
+                Request::Recall {
+                    binding: Binding::root(session),
+                    query: "needle".into(),
+                    scope: scope.into(),
+                    mode: Mode::Advisory,
+                    limit: 10,
+                    index_wait_ms: 2_000,
+                    opts: RecallOpts::default(),
+                },
+            )
+            .response
+        {
+            Response::Recall { items, .. } => {
+                let mut k: Vec<String> = items.into_iter().map(|i| i.key).collect();
+                k.sort();
+                k
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(scoped(OWNER_AGENT, ""), ["mine/a", "shared/x"]);
+    assert_eq!(scoped(OWNER_AGENT, "personal:bob"), ["mine/b"]);
+    assert_eq!(scoped(BOB, ""), ["mine/b", "shared/x"]);
+}
+
+/// PROP15 (recall) and PROP14 per principal (G8 review, tests): random
+/// access documents and records. Each principal's recall returns
+/// `min(limit, |authorised matches|)` items, all authorised, and all of
+/// them once the limit allows; with few readable rows this runs the lane
+/// pre-filter, with many it does not.
+#[test]
+fn prop15_recall_returns_min_limit_authorised_at_random() {
+    use contextdb_core::access::{AccessState, LogicalFacts};
+    let lanes = [
+        "repo",
+        "billing",
+        "secret",
+        "personal:bob",
+        "personal:carol",
+        "code:x",
+    ];
+    for seed in 0..12u64 {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let s = service();
+        let mut d = doc(&["*members"]);
+        d.lanes.clear();
+        for lane in ["repo", "billing", "secret"] {
+            let members: Vec<&str> = ["bob", "carol"]
+                .into_iter()
+                .filter(|_| rng.next_u32() % 3 != 0)
+                .collect();
+            let mut e = LaneEntry {
+                members: set(&members),
+                writers: set(&members),
+                ..LaneEntry::owner_only()
+            };
+            for m in &members {
+                if rng.next_u32() % 3 == 0 {
+                    e.deny.insert(((*m).to_owned(), format!("{lane}/d")));
+                }
+            }
+            d.lanes.insert(lane.to_owned(), e);
+        }
+        d.groups.clear();
+        set_access(&s, d.clone());
+        let state = AccessState::apply(None, &d).unwrap();
+        let n = 40 + rng.next_u32() as usize % 120;
+        let recs: Vec<(String, &str)> = (0..n)
+            .map(|i| {
+                let lane = lanes[rng.next_u32() as usize % lanes.len()];
+                let stem = lane.replace(':', "-");
+                let key = if rng.next_u32() % 4 == 0 {
+                    format!("{stem}/d{i}")
+                } else {
+                    format!("{stem}/k{i}")
+                };
+                (key, lane)
+            })
+            .collect();
+        let body = |k: &str| format!("needle {k}").into_bytes();
+        raw(
+            &s,
+            recs.iter().map(|(k, _)| body(k)).collect(),
+            recs.iter()
+                .map(|(k, lane)| Op::CreateLogical {
+                    key: k.clone(),
+                    kind: RecordKind::Fact,
+                    scope_lane: (*lane).into(),
+                    content: h(&body(k)),
+                    adopt_as_base: true,
+                })
+                .collect(),
+            [11; 16],
+        );
+        for (id, who) in [(BOB, PrincipalId(16)), (CAROL, PrincipalId(17))] {
+            let none = BTreeSet::new();
+            let visible: BTreeSet<String> = (recs.iter())
+                .filter(|(k, lane)| {
+                    state
+                        .authorized(
+                            who,
+                            &LogicalFacts {
+                                key: k,
+                                lane,
+                                owner: PrincipalId::STORE_OWNER,
+                                dirs: &none,
+                            },
+                        )
+                        .allowed
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            let session = start(&s, id);
+            for limit in [1u32, 5, 17, 100] {
+                let got = recall_text(&s, id, session, "needle", limit);
+                assert_eq!(
+                    got.len(),
+                    (limit as usize).min(visible.len()),
+                    "seed {seed} {who:?} limit {limit}"
+                );
+                assert!(
+                    got.iter().all(|k| visible.contains(k)),
+                    "seed {seed} {who:?}"
+                );
+                if limit as usize >= visible.len() {
+                    assert_eq!(got.into_iter().collect::<BTreeSet<_>>(), visible);
+                }
+            }
+        }
+    }
+}

@@ -82,27 +82,33 @@ pub struct LaneFilter {
     pub prefixes: Vec<String>,
 }
 impl LaneFilter {
-    /// `q` restricted, inside FTS5, to rows whose `scope` column holds one
-    /// of the lanes as a phrase or starts with a prefix's tokens (FTS5
-    /// splits `billing-notes` into `billing notes`). A superset of the
-    /// exact rule, which the SQL then applies. A lane or prefix with no
-    /// token gives no column filter (the exact check alone).
-    fn query(&self, q: &str) -> String {
+    /// An FTS5 expression for rows whose `scope` column holds one of the
+    /// lanes as a phrase, or starts with a prefix. Each lane is quoted whole
+    /// so FTS5 tokenizes it as it tokenized the row. A superset of the
+    /// exact rule, which the SQL then applies. `None` when a lane or prefix
+    /// has no ASCII letter or digit, since it may then have no token: the
+    /// exact check alone.
+    fn column(&self) -> Option<String> {
         let mut phrases = Vec::new();
         for (l, initial) in
             (self.lanes.iter().map(|l| (l, false))).chain(self.prefixes.iter().map(|p| (p, true)))
         {
-            let tokens: Vec<&str> = (l.split(|c: char| !c.is_alphanumeric()))
-                .filter(|t| !t.is_empty())
-                .collect();
-            if tokens.is_empty() {
-                return q.to_owned();
+            if !l.bytes().any(|b| b.is_ascii_alphanumeric()) {
+                return None;
             }
             let caret = if initial { "^" } else { "" };
-            phrases.push(format!("{caret}\"{}\"", tokens.join(" ")));
+            phrases.push(format!("{caret}\"{}\"", l.replace('"', "\"\"")));
         }
-        format!("({q}) AND scope : ({})", phrases.join(" OR "))
+        Some(format!("scope : ({})", phrases.join(" OR ")))
     }
+}
+/// A [`LaneFilter`] as SQL parameters: JSON arrays for the exact check and
+/// the FTS5 column expression.
+#[derive(Clone, Copy)]
+struct Only<'a> {
+    lanes: &'a str,
+    prefixes: &'a str,
+    column: Option<&'a str>,
 }
 /// `items` as a JSON array of strings, for `json_each`.
 fn json(items: &[String]) -> String {
@@ -414,20 +420,36 @@ impl RecallIndex {
         limit: usize,
         offset: usize,
     ) -> Sql<Vec<Hit>> {
-        let (q, only) = match lanes {
+        // The ranked query keeps `q` as its MATCH, so bm25 scores exactly
+        // what it scores without the filter, and restricts by rowid. The
+        // window bounds only count rows, so they intersect inside FTS5.
+        let (bounds, only) = match lanes {
             None => (q.to_owned(), None),
             Some(f) if f.lanes.is_empty() && f.prefixes.is_empty() => return Ok(Vec::new()),
-            Some(f) => (f.query(q), Some((json(&f.lanes), json(&f.prefixes)))),
+            Some(f) => {
+                let column = f.column();
+                let bounds = match &column {
+                    Some(c) => format!("({q}) AND {c}"),
+                    None => q.to_owned(),
+                };
+                (bounds, Some((json(&f.lanes), json(&f.prefixes), column)))
+            }
         };
-        let only = only.as_ref().map(|(l, p)| (l.as_str(), p.as_str()));
+        let only = (only.as_ref()).map(|(l, p, c)| Only {
+            lanes: l,
+            prefixes: p,
+            column: c.as_deref(),
+        });
         // The window bounds and the ranked query must see one state.
-        self.read_snapshot(|s| s.hits_in(&q, scope, only, branch, limit, offset))
+        self.read_snapshot(|s| s.hits_in(q, &bounds, scope, only, branch, limit, offset))
     }
+    #[allow(clippy::too_many_arguments)]
     fn hits_in(
         &self,
         q: &str,
+        bounds: &str,
         scope: &str,
-        only: Option<(&str, &str)>,
+        only: Option<Only<'_>>,
         branch: BranchId,
         limit: usize,
         offset: usize,
@@ -440,6 +462,7 @@ impl RecallIndex {
                AND rowid <= ?6 AND rowid >= ?7
                AND (?8 IS NULL OR scope IN (SELECT value FROM json_each(?8))
                     OR EXISTS (SELECT 1 FROM json_each(?9) WHERE substr(scope, 1, length(value)) = value))
+               AND (?10 IS NULL OR rowid IN (SELECT rowid FROM recall WHERE recall MATCH ?10))
              ORDER BY rank, rowid LIMIT ?4 OFFSET ?5",
         )?;
         while out.len() < limit {
@@ -447,12 +470,12 @@ impl RecallIndex {
             // ((k+1)·W − 1)-th; no k·W-th match means no window k.
             let hi = match k {
                 0 => i64::MAX,
-                _ => match self.nth_highest(q, scope, only, branch, k * RANK_WINDOW)? {
+                _ => match self.nth_highest(bounds, scope, only, branch, k * RANK_WINDOW)? {
                     Some(r) => r,
                     None => break,
                 },
             };
-            let lo = self.nth_highest(q, scope, only, branch, (k + 1) * RANK_WINDOW - 1)?;
+            let lo = self.nth_highest(bounds, scope, only, branch, (k + 1) * RANK_WINDOW - 1)?;
             let rows = ranked.query_map(
                 params![
                     q,
@@ -462,8 +485,9 @@ impl RecallIndex {
                     skip as i64,
                     hi,
                     lo.unwrap_or(i64::MIN),
-                    only.map(|o| o.0),
-                    only.map(|o| o.1)
+                    only.map(|o| o.lanes),
+                    only.map(|o| o.prefixes),
+                    only.and_then(|o| o.column)
                 ],
                 |r| {
                     Ok(Hit {
@@ -489,7 +513,7 @@ impl RecallIndex {
         &self,
         q: &str,
         scope: &str,
-        only: Option<(&str, &str)>,
+        only: Option<Only<'_>>,
         branch: BranchId,
         n: usize,
     ) -> Sql<Option<i64>> {
@@ -502,7 +526,7 @@ impl RecallIndex {
                  ORDER BY rowid DESC LIMIT 1 OFFSET ?4",
             )?
             .query_row(
-                params![q, scope, branch.0, n as i64, only.map(|o| o.0), only.map(|o| o.1)],
+                params![q, scope, branch.0, n as i64, only.map(|o| o.lanes), only.map(|o| o.prefixes)],
                 |r| r.get(0),
             )
             .optional()
@@ -721,6 +745,8 @@ mod tests {
             "code:repo",
             "x-code:repo",
             "l9",
+            "a\u{E000}b",
+            "a b",
         ];
         let n = RANK_WINDOW * 2 + 300;
         let entries: Vec<(LogicalId, Vec<Row>)> = (0..n as u32)
@@ -741,13 +767,18 @@ mod tests {
             .collect();
         idx.update(Epoch(1), &entries).unwrap();
         let filter = LaneFilter {
-            lanes: vec!["billing-notes".into(), "personal:bob".into(), "l9".into()],
+            lanes: vec![
+                "billing-notes".into(),
+                "personal:bob".into(),
+                "l9".into(),
+                "a\u{E000}b".into(),
+            ],
             prefixes: vec!["code:".into()],
         };
         let keep = |i: u32| {
             matches!(
                 scopes[i as usize % scopes.len()],
-                "billing-notes" | "personal:bob" | "l9" | "code:repo"
+                "billing-notes" | "personal:bob" | "l9" | "code:repo" | "a\u{E000}b"
             )
         };
         let want: Vec<u32> = (0..n as u32).filter(|&i| keep(i)).collect();
@@ -790,6 +821,159 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+    /// G8 review MA1: inside one window, a lane filter keeps the bm25 order
+    /// of the unfiltered query (its lane phrases are not scored), so a
+    /// row in a rare lane is not lifted above better matches.
+    #[test]
+    fn a_lane_filter_keeps_the_bm25_order() {
+        let mut idx = RecallIndex::open(None).unwrap();
+        let bodies = [
+            ("big", "needle hay hay hay"),
+            ("big", "needle needle hay"),
+            ("rare", "needle hay hay hay hay hay"),
+            ("big", "needle needle needle"),
+            ("big", "hay needle"),
+            ("other", "needle"),
+            ("rare", "needle needle hay hay"),
+        ];
+        let entries: Vec<(LogicalId, Vec<Row>)> = (bodies.iter().enumerate())
+            .map(|(i, (lane, body))| {
+                (
+                    LogicalId(i as u32),
+                    vec![row(
+                        0,
+                        i as u32,
+                        &format!("k{i}"),
+                        RecordKind::Decision,
+                        lane,
+                        body,
+                    )],
+                )
+            })
+            .collect();
+        idx.update(Epoch(1), &entries).unwrap();
+        let filter = LaneFilter {
+            lanes: vec!["big".into(), "rare".into()],
+            prefixes: Vec::new(),
+        };
+        for q in ["needle", "needle hay", "hay"] {
+            let all = logicals(idx.search_page(q, "", BranchId(0), 100, 0).unwrap());
+            let want: Vec<LogicalId> = (all.into_iter())
+                .filter(|l| bodies[l.0 as usize].0 != "other")
+                .collect();
+            let got = logicals(
+                idx.search_page_in(q, "", Some(&filter), BranchId(0), 100, 0)
+                    .unwrap(),
+            );
+            assert_eq!(got, want, "{q}");
+            let any = terms(q);
+            let all = logicals(idx.any_of_page(&any, "", BranchId(0), 100, 0).unwrap());
+            let want: Vec<LogicalId> = (all.into_iter())
+                .filter(|l| bodies[l.0 as usize].0 != "other")
+                .collect();
+            let got = logicals(
+                idx.any_of_page_in(&any, "", Some(&filter), BranchId(0), 100, 0)
+                    .unwrap(),
+            );
+            assert_eq!(got, want, "any {q}");
+        }
+    }
+    /// G8 review (tests): random rows, lanes and filters. The filtered
+    /// answer is the unfiltered one restricted to the filter's lanes, in the
+    /// same order within one window, as a set across windows.
+    #[test]
+    fn a_lane_filter_agrees_with_filtering_after_the_fact() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let lanes = [
+            "repo",
+            "billing-notes",
+            "personal:bob",
+            "code:x",
+            "code:y",
+            "l9",
+            "a\u{E000}b",
+        ];
+        let words = ["needle", "hay", "stack", "barn", "field"];
+        for round in 0..24 {
+            let mut idx = RecallIndex::open(None).unwrap();
+            let n = if round % 6 == 5 {
+                RANK_WINDOW + 400
+            } else {
+                40 + next() as usize % 200
+            };
+            let entries: Vec<(LogicalId, Vec<Row>)> = (0..n as u32)
+                .map(|i| {
+                    let lane = lanes[next() as usize % lanes.len()];
+                    let body: Vec<&str> = (0..1 + next() % 6)
+                        .map(|_| words[next() as usize % words.len()])
+                        .collect();
+                    (
+                        LogicalId(i),
+                        vec![row(
+                            0,
+                            i,
+                            &format!("k{i}"),
+                            RecordKind::Decision,
+                            lane,
+                            &body.join(" "),
+                        )],
+                    )
+                })
+                .collect();
+            let lane_of: Vec<&str> = entries
+                .iter()
+                .map(|(_, r)| lanes.iter().copied().find(|l| *l == r[0].scope).unwrap())
+                .collect();
+            idx.update(Epoch(1), &entries).unwrap();
+            let filter = LaneFilter {
+                lanes: (lanes.iter())
+                    .filter(|l| !l.starts_with("code:") && next() % 2 == 0)
+                    .map(|l| (*l).to_owned())
+                    .collect(),
+                prefixes: if next() % 2 == 0 {
+                    vec!["code:".into()]
+                } else {
+                    Vec::new()
+                },
+            };
+            let keep = |l: LogicalId| {
+                let lane = lane_of[l.0 as usize];
+                filter.lanes.iter().any(|x| x == lane)
+                    || filter.prefixes.iter().any(|p| lane.starts_with(p.as_str()))
+            };
+            let q = words[next() as usize % words.len()];
+            let all = logicals(idx.search_page(q, "", BranchId(0), 100_000, 0).unwrap());
+            let mut want: Vec<LogicalId> = all.into_iter().filter(|l| keep(*l)).collect();
+            let mut got = Vec::new();
+            let page = 1 + next() as usize % 300;
+            let mut offset = 0;
+            loop {
+                let hits = if filter.lanes.is_empty() && filter.prefixes.is_empty() {
+                    Vec::new()
+                } else {
+                    idx.search_page_in(q, "", Some(&filter), BranchId(0), page, offset)
+                        .unwrap()
+                };
+                let len = hits.len();
+                got.extend(logicals(hits));
+                if len < page {
+                    break;
+                }
+                offset += page;
+            }
+            if n >= RANK_WINDOW {
+                want.sort();
+                got.sort();
+            }
+            assert_eq!(got, want, "round {round} {filter:?} {q}");
+        }
     }
     fn common_rows(n: u32) -> Vec<(LogicalId, Vec<Row>)> {
         (0..n)

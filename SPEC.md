@@ -719,7 +719,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
   - G6 在 macOS 上以两个本地用户进行（F5）。
   - v1.9.1（实现说明，非语义变更）：
     - **多用户开关**（owner 2026-11-08）：`ctxd --multi-user`（`ctx service install --multi-user` 写入服务单元）才允许访问文档映射其他 uid；未开启时文档中的其他主体一律不映射，行为与单用户相同。默认关闭。
-    - **recall 的 lane 预过滤**：可读 lane 能枚举（非 default lane 成员）且超过一半的 logical 在其外、本主体在其外不拥有 logical 时，bm25 查询在 FTS 内限于这些 lane（列过滤加精确检查）；该集合是 `Authorized` 的超集，逐项资格判定不变，结果与 PROP14 不变。
+    - **recall 的 lane 预过滤**：可读 lane 能枚举（非 default lane 成员）且超过一半的 logical 在其外、本主体在其外不拥有 logical 时，bm25 查询在 FTS 内限于这些 lane（列过滤加精确检查）；该集合是 `Authorized` 的超集，逐项资格判定不变，结果集合与 PROP14 不变；排序查询保留原 MATCH、按 rowid 限制，bm25 分数与不过滤时相同；与 `scope` 一样，排序窗口只计入这些 lane 的行（P8 排序本已依赖不可读行，ADR 0017 §5.9）。
     - **G5 测量主机**：按 owner 要求，P8 基线与 HEAD 在同一台远程 Linux 主机上测量，而非 P8 G5 所用的 M1 Pro；预算是相对值，比较仍成立。
 
 **Gate P9**

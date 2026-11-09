@@ -783,6 +783,14 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             if refused > 0 {
                 return Err(TxError::MergeUnauthorized { count: refused });
             }
+            // F14: new CodeAnchor objects arrive not base (and unobserved,
+            // below), so they carry no base authority (G8 review MI6).
+            for &gr in &new_ids[1] {
+                let gl = s.logical_of(gr);
+                if new_ids[0].contains(&gl) && s.kind(gl) == Some(RecordKind::CodeAnchor) {
+                    base.insert(gr, false);
+                }
+            }
         }
         report.convergent = convergent;
         report.newly_visible = [0, 1, 2, 3].map(|k| new_ids[k].len());
