@@ -74,6 +74,55 @@ pub fn terms(text: &str) -> Vec<String> {
     out.dedup();
     out
 }
+/// Rows a reader may find (ADR 0017 §5.3): a scope equal to one of
+/// `lanes` or starting with one of `prefixes`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaneFilter {
+    pub lanes: Vec<String>,
+    pub prefixes: Vec<String>,
+}
+impl LaneFilter {
+    /// `q` restricted, inside FTS5, to rows whose `scope` column holds one
+    /// of the lanes as a phrase or starts with a prefix's tokens (FTS5
+    /// splits `billing-notes` into `billing notes`). A superset of the
+    /// exact rule, which the SQL then applies. A lane or prefix with no
+    /// token gives no column filter (the exact check alone).
+    fn query(&self, q: &str) -> String {
+        let mut phrases = Vec::new();
+        for (l, initial) in
+            (self.lanes.iter().map(|l| (l, false))).chain(self.prefixes.iter().map(|p| (p, true)))
+        {
+            let tokens: Vec<&str> = (l.split(|c: char| !c.is_alphanumeric()))
+                .filter(|t| !t.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                return q.to_owned();
+            }
+            let caret = if initial { "^" } else { "" };
+            phrases.push(format!("{caret}\"{}\"", tokens.join(" ")));
+        }
+        format!("({q}) AND scope : ({})", phrases.join(" OR "))
+    }
+}
+/// `items` as a JSON array of strings, for `json_each`.
+fn json(items: &[String]) -> String {
+    let quoted: Vec<String> = (items.iter())
+        .map(|l| {
+            let mut s = String::from("\"");
+            for c in l.chars() {
+                match c {
+                    '"' => s.push_str("\\\""),
+                    '\\' => s.push_str("\\\\"),
+                    c if (c as u32) < 0x20 => s.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => s.push(c),
+                }
+            }
+            s.push('"');
+            s
+        })
+        .collect();
+    format!("[{}]", quoted.join(","))
+}
 const SCHEMA: &str = "
     CREATE VIRTUAL TABLE IF NOT EXISTS recall USING fts5(
         key, kind, scope, body, logical UNINDEXED, branch UNINDEXED, rev UNINDEXED,
@@ -352,21 +401,33 @@ impl RecallIndex {
     /// `RANK_WINDOW` matches has one window, the plain bm25 order. Paging
     /// walks every window, so every match is still reached; the pages agree
     /// only within one read snapshot ([`RecallIndex::read_snapshot`]).
+    ///
+    /// `lanes`, when given, keeps only rows whose scope is one of them, and
+    /// does so inside FTS5 (a `scope` column filter, then an exact check),
+    /// so a reader of a few lanes never pages through the others' rows.
     fn hits(
         &self,
         q: &str,
         scope: &str,
+        lanes: Option<&LaneFilter>,
         branch: BranchId,
         limit: usize,
         offset: usize,
     ) -> Sql<Vec<Hit>> {
+        let (q, only) = match lanes {
+            None => (q.to_owned(), None),
+            Some(f) if f.lanes.is_empty() && f.prefixes.is_empty() => return Ok(Vec::new()),
+            Some(f) => (f.query(q), Some((json(&f.lanes), json(&f.prefixes)))),
+        };
+        let only = only.as_ref().map(|(l, p)| (l.as_str(), p.as_str()));
         // The window bounds and the ranked query must see one state.
-        self.read_snapshot(|s| s.hits_in(q, scope, branch, limit, offset))
+        self.read_snapshot(|s| s.hits_in(&q, scope, only, branch, limit, offset))
     }
     fn hits_in(
         &self,
         q: &str,
         scope: &str,
+        only: Option<(&str, &str)>,
         branch: BranchId,
         limit: usize,
         offset: usize,
@@ -377,6 +438,8 @@ impl RecallIndex {
             "SELECT logical, rev, bm25(recall) FROM recall
              WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
                AND rowid <= ?6 AND rowid >= ?7
+               AND (?8 IS NULL OR scope IN (SELECT value FROM json_each(?8))
+                    OR EXISTS (SELECT 1 FROM json_each(?9) WHERE substr(scope, 1, length(value)) = value))
              ORDER BY rank, rowid LIMIT ?4 OFFSET ?5",
         )?;
         while out.len() < limit {
@@ -384,12 +447,12 @@ impl RecallIndex {
             // ((k+1)·W − 1)-th; no k·W-th match means no window k.
             let hi = match k {
                 0 => i64::MAX,
-                _ => match self.nth_highest(q, scope, branch, k * RANK_WINDOW)? {
+                _ => match self.nth_highest(q, scope, only, branch, k * RANK_WINDOW)? {
                     Some(r) => r,
                     None => break,
                 },
             };
-            let lo = self.nth_highest(q, scope, branch, (k + 1) * RANK_WINDOW - 1)?;
+            let lo = self.nth_highest(q, scope, only, branch, (k + 1) * RANK_WINDOW - 1)?;
             let rows = ranked.query_map(
                 params![
                     q,
@@ -398,7 +461,9 @@ impl RecallIndex {
                     (limit - out.len()) as i64,
                     skip as i64,
                     hi,
-                    lo.unwrap_or(i64::MIN)
+                    lo.unwrap_or(i64::MIN),
+                    only.map(|o| o.0),
+                    only.map(|o| o.1)
                 ],
                 |r| {
                     Ok(Hit {
@@ -420,14 +485,26 @@ impl RecallIndex {
     }
     /// The `n`-th highest rowid among the matching rows (from 0), without
     /// scoring: FTS5 walks its doclists in rowid order.
-    fn nth_highest(&self, q: &str, scope: &str, branch: BranchId, n: usize) -> Sql<Option<i64>> {
+    fn nth_highest(
+        &self,
+        q: &str,
+        scope: &str,
+        only: Option<(&str, &str)>,
+        branch: BranchId,
+        n: usize,
+    ) -> Sql<Option<i64>> {
         self.conn
             .prepare_cached(
                 "SELECT rowid FROM recall
                  WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
+                   AND (?5 IS NULL OR scope IN (SELECT value FROM json_each(?5))
+                        OR EXISTS (SELECT 1 FROM json_each(?6) WHERE substr(scope, 1, length(value)) = value))
                  ORDER BY rowid DESC LIMIT 1 OFFSET ?4",
             )?
-            .query_row(params![q, scope, branch.0, n as i64], |r| r.get(0))
+            .query_row(
+                params![q, scope, branch.0, n as i64, only.map(|o| o.0), only.map(|o| o.1)],
+                |r| r.get(0),
+            )
             .optional()
     }
     /// Best-ranked rows matching every term of `text` among `main`'s and
@@ -446,8 +523,20 @@ impl RecallIndex {
         limit: usize,
         offset: usize,
     ) -> Sql<Vec<Hit>> {
+        self.search_page_in(text, scope, None, branch, limit, offset)
+    }
+    /// [`Self::search_page`] among the rows of `lanes` only, when given.
+    pub fn search_page_in(
+        &self,
+        text: &str,
+        scope: &str,
+        lanes: Option<&LaneFilter>,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
         match fts_query(text) {
-            Some(q) => self.hits(&q, scope, branch, limit, offset),
+            Some(q) => self.hits(&q, scope, lanes, branch, limit, offset),
             None => Ok(Vec::new()),
         }
     }
@@ -497,6 +586,18 @@ impl RecallIndex {
         limit: usize,
         offset: usize,
     ) -> Sql<Vec<Hit>> {
+        self.any_of_page_in(terms, scope, None, branch, limit, offset)
+    }
+    /// [`Self::any_of_page`] among the rows of `lanes` only, when given.
+    pub fn any_of_page_in(
+        &self,
+        terms: &[String],
+        scope: &str,
+        lanes: Option<&LaneFilter>,
+        branch: BranchId,
+        limit: usize,
+        offset: usize,
+    ) -> Sql<Vec<Hit>> {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
@@ -506,6 +607,7 @@ impl RecallIndex {
         self.hits(
             &format!("{{key body}} : ({})", q.join(" OR ")),
             scope,
+            lanes,
             branch,
             limit,
             offset,
@@ -602,6 +704,92 @@ mod tests {
         // Under one window the order is the plain bm25 order.
         let small = idx.search_page("x", "", BranchId(0), 10_000, 0).unwrap();
         assert!(small.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+    /// ADR 0017 §5.3, G5: a lane filter keeps exactly the rows whose scope
+    /// is one of its lanes or starts with one of its prefixes, whatever the
+    /// tokens look alike, and paging through it meets each once.
+    #[test]
+    fn a_lane_filter_is_exact_and_pages_like_a_scope() {
+        let mut idx = RecallIndex::open(None).unwrap();
+        let scopes = [
+            "billing-notes",
+            "billing_notes",
+            "x-billing-notes",
+            "billing-notes-old",
+            "personal:bob",
+            "personal:bobby",
+            "code:repo",
+            "x-code:repo",
+            "l9",
+        ];
+        let n = RANK_WINDOW * 2 + 300;
+        let entries: Vec<(LogicalId, Vec<Row>)> = (0..n as u32)
+            .map(|i| {
+                let scope = scopes[i as usize % scopes.len()];
+                (
+                    LogicalId(i),
+                    vec![row(
+                        0,
+                        i,
+                        &format!("k{i}"),
+                        RecordKind::Decision,
+                        scope,
+                        "common words here",
+                    )],
+                )
+            })
+            .collect();
+        idx.update(Epoch(1), &entries).unwrap();
+        let filter = LaneFilter {
+            lanes: vec!["billing-notes".into(), "personal:bob".into(), "l9".into()],
+            prefixes: vec!["code:".into()],
+        };
+        let keep = |i: u32| {
+            matches!(
+                scopes[i as usize % scopes.len()],
+                "billing-notes" | "personal:bob" | "l9" | "code:repo"
+            )
+        };
+        let want: Vec<u32> = (0..n as u32).filter(|&i| keep(i)).collect();
+        let any = vec!["common".to_owned(), "nothing".to_owned()];
+        for page in [7usize, 100, 1000] {
+            for phase in 0..2 {
+                let mut got = Vec::new();
+                let mut offset = 0;
+                loop {
+                    let hits = if phase == 0 {
+                        idx.search_page_in("common", "", Some(&filter), BranchId(0), page, offset)
+                    } else {
+                        idx.any_of_page_in(&any, "", Some(&filter), BranchId(0), page, offset)
+                    }
+                    .unwrap();
+                    let len = hits.len();
+                    got.extend(logicals(hits).into_iter().map(|l| l.0));
+                    if len < page {
+                        break;
+                    }
+                    offset += page;
+                }
+                got.sort_unstable();
+                assert_eq!(got, want, "page {page} phase {phase}");
+            }
+        }
+        // With a scope too, and with nothing to read.
+        let only_l9 = idx
+            .search_page_in("common", "l9", Some(&filter), BranchId(0), 10_000, 0)
+            .unwrap();
+        assert!(
+            only_l9
+                .iter()
+                .all(|h| scopes[h.logical.0 as usize % scopes.len()] == "l9")
+        );
+        assert!(!only_l9.is_empty());
+        let none = LaneFilter::default();
+        assert!(
+            idx.search_page_in("common", "", Some(&none), BranchId(0), 10, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
     fn common_rows(n: u32) -> Vec<(LogicalId, Vec<Row>)> {
         (0..n)

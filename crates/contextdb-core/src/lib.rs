@@ -384,6 +384,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn logical_count(&self) -> usize {
         self.logicals.len()
     }
+    /// Every scope lane with its number of logicals.
+    pub fn lane_census(&self) -> Vec<(&str, usize)> {
+        self.logicals.scope_census()
+    }
+    /// The scope lanes of the logicals `p` created.
+    pub fn owned_lanes(&self, p: PrincipalId) -> Vec<&str> {
+        self.logicals.owned_scopes(p)
+    }
     /// `(key, kind, scope_lane)` of a logical.
     /// The principal that created the logical (ADR 0017 §4.4 step 1).
     pub fn logical_owner(&self, l: LogicalId) -> Option<PrincipalId> {

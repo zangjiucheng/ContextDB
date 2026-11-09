@@ -2955,6 +2955,31 @@ impl<D: Durability + Clone + 'static> Service<D> {
         // on the session's branch (main rows the branch shadows drop out).
         let branch = db.info().id;
         let page = limit * 4 + 16;
+        // ADR 0017 §5.3, G5: a principal who cannot read most logicals
+        // pages only through the rows of its lanes. A superset of what
+        // `admit` allows (it still decides every hit); not used when it
+        // would skip less than half the rows (its cost would then outweigh
+        // the skipping) or when the principal owns a logical outside.
+        let lanes = contextdb_core::access::read_lanes(db.access(), principal)
+            .filter(|r| {
+                let (mut outside, mut total) = (0, 0);
+                for (lane, n) in db.lane_census() {
+                    total += n;
+                    if !r.contains(lane) {
+                        outside += n;
+                    }
+                }
+                outside * 2 > total && db.owned_lanes(principal).iter().all(|l| r.contains(l))
+            })
+            .map(|r| contextdb_store::recall::LaneFilter {
+                lanes: r.lanes.into_iter().collect(),
+                prefixes: if r.code {
+                    vec![contextdb_core::access::ReadLanes::CODE_PREFIX.to_owned()]
+                } else {
+                    Vec::new()
+                },
+            });
+        let lanes = lanes.as_ref();
         let mut by_text: Vec<LogicalId> = Vec::new();
         // One read snapshot for every page (P8 M7 review M1): a write
         // between pages would shift rows past a page boundary.
@@ -2964,9 +2989,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 let mut offset = 0;
                 loop {
                     let hits = if phase == 0 {
-                        index.search_page(query, scope, branch, page, offset)
+                        index.search_page_in(query, scope, lanes, branch, page, offset)
                     } else {
-                        index.any_of_page(&any, scope, branch, page, offset)
+                        index.any_of_page_in(&any, scope, lanes, branch, page, offset)
                     };
                     // An index error ends this ranker; its state is in
                     // the response's `index` report.

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix (G5): recall for a principal who reads few lanes.** The bm25 ranker skips hidden matches (ADR 0017 §5.3). A principal allowed to read about 1 % of the rows therefore paged, OFFSET by OFFSET, through nearly every match: at 10⁵ records its recall p99 was 2.4 s. Recall now restricts the FTS query to the lanes the principal may read: a `scope` column filter, then an exact lane check. This applies only when more than half the logicals lie outside those lanes and the principal owns none there. `admit` still decides every hit, so the answer is unchanged; PROP14 per principal holds as before. The lane set (`AccessState::read_lanes`) is a superset of `Authorized`, because grants and denies only narrow it. A member of the default lane, who may read any unlisted lane, gets no filter.
 - **`ctxd --multi-user`** (owner decision, 2026-11-08). This is the switch for multi-user mode; `ctx service install --multi-user` writes it into the service. Without it, an access document that names other principals maps nobody, as before. With it, the document maps them once the file-system rules of ADR 0017 §3.2 hold. Off by default; deployments are not changed.
 - **P9 milestone 6e: `ctx migrate` to format 5** (ADR 0017 §8.5, §10; T104). Every P9 store is fully encrypted; older stores need `ctx migrate` once, and openers refuse a migration that did not complete.
   - **The procedure**, under the store lock, success only at the end:

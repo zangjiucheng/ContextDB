@@ -144,6 +144,25 @@ impl LogicalArena {
     pub fn scope_lane(&self, l: LogicalId) -> &str {
         &self.scopes[self.scope[l.index()] as usize]
     }
+    /// Every lane with its number of logicals (lanes are interned, so this
+    /// counts ids, not strings).
+    pub fn scope_census(&self) -> Vec<(&str, usize)> {
+        let mut counts = vec![0usize; self.scopes.len()];
+        for &i in &self.scope {
+            counts[i as usize] += 1;
+        }
+        self.scopes.iter().map(String::as_str).zip(counts).collect()
+    }
+    /// The lanes of the logicals `p` created, without repeats.
+    pub fn owned_scopes(&self, p: PrincipalId) -> Vec<&str> {
+        let mut ids: Vec<usize> = (self.owner.iter().zip(&self.scope))
+            .filter(|(o, _)| **o == p)
+            .map(|(_, &i)| i as usize)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter().map(|i| self.scopes[i].as_str()).collect()
+    }
     fn key(&self, n: usize) -> &str {
         key_at(&self.keys, &self.key_end, n)
     }

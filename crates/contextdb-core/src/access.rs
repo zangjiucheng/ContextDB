@@ -366,6 +366,61 @@ impl AccessState {
         decide(true, Step::Allowed)
     }
 }
+/// The lanes a principal may read anything in, besides the logicals it
+/// owns ([`AccessState::read_lanes`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReadLanes {
+    /// Lanes by name: the document's lanes it is a member of and its own
+    /// personal lane.
+    pub lanes: BTreeSet<String>,
+    /// Every `code:` lane the document does not list (`code_lanes`).
+    pub code: bool,
+}
+impl ReadLanes {
+    pub fn contains(&self, lane: &str) -> bool {
+        self.lanes.contains(lane) || (self.code && lane.starts_with(CODE))
+    }
+    /// The prefix [`Self::code`] stands for.
+    pub const CODE_PREFIX: &'static str = CODE;
+}
+impl AccessState {
+    /// The lanes outside which `p` reads nothing but the logicals it owns,
+    /// when they can be listed: `None` for the store owner and for a member
+    /// of the default lane (any unlisted lane may then be readable). A
+    /// superset of what [`Self::authorized`] allows: grants and denies only
+    /// narrow it. Recall uses it to skip, inside the index, the rows `p`
+    /// could never read (ADR 0017 §5.3, G5).
+    pub fn read_lanes(&self, p: PrincipalId) -> Option<ReadLanes> {
+        if p.is_store_owner() {
+            return None;
+        }
+        let Some(name) = self.name_of(p) else {
+            return Some(ReadLanes::default());
+        };
+        let member = |e: &LaneEntry| expand(&self.doc, &e.members, None).contains(name);
+        if member(&self.doc.default_lane) {
+            return None;
+        }
+        let mut lanes: BTreeSet<String> = (self.doc.lanes.iter())
+            .filter(|(_, e)| member(e))
+            .map(|(l, _)| l.clone())
+            .collect();
+        lanes.insert(format!("{PERSONAL}{name}"));
+        Some(ReadLanes {
+            lanes,
+            code: member(&self.doc.code_lanes),
+        })
+    }
+}
+/// [`AccessState::read_lanes`]; without an access document a non-owner
+/// reads only the logicals it owns.
+pub fn read_lanes(state: Option<&AccessState>, p: PrincipalId) -> Option<ReadLanes> {
+    match state {
+        Some(s) => s.read_lanes(p),
+        None if p.is_store_owner() => None,
+        None => Some(ReadLanes::default()),
+    }
+}
 /// A write role of a lane entry (ADR 0017 §4.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -454,5 +509,115 @@ pub fn authorized(state: Option<&AccessState>, p: PrincipalId, l: &LogicalFacts<
             allowed: false,
             step: Step::Membership,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn set(xs: &[&str]) -> BTreeSet<String> {
+        xs.iter().map(|x| (*x).to_owned()).collect()
+    }
+    fn entry(members: &[&str]) -> LaneEntry {
+        LaneEntry {
+            members: set(members),
+            writers: set(members),
+            ..LaneEntry::owner_only()
+        }
+    }
+    /// Code lanes are written by the store owner only.
+    fn code(members: &[&str]) -> LaneEntry {
+        LaneEntry {
+            members: set(members),
+            ..LaneEntry::owner_only()
+        }
+    }
+    /// `read_lanes` is a superset of `authorized` (ADR 0017 §5.3, G5):
+    /// whatever `p` may read lies in its lanes or is its own.
+    #[test]
+    fn read_lanes_cover_every_authorized_logical() {
+        let principals: BTreeMap<String, u32> = [("o", 501), ("a", 1001), ("b", 1002), ("c", 1003)]
+            .into_iter()
+            .map(|(n, u)| (n.to_owned(), u))
+            .collect();
+        let mut narrowed = entry(&["a", "b"]);
+        narrowed.grants.insert("a".into(), set(&["src/x"]));
+        narrowed.deny.insert(("b".into(), "secret.".into()));
+        let lanes: BTreeMap<String, LaneEntry> = [
+            ("team", entry(&["a", "b"])),
+            ("all", entry(&["*members"])),
+            ("grp", entry(&["@g"])),
+            ("narrow", narrowed),
+            ("code:pinned", code(&["b"])),
+        ]
+        .into_iter()
+        .map(|(l, e)| (l.to_owned(), e))
+        .collect();
+        let docs = [
+            (LaneEntry::owner_only(), LaneEntry::code_default()),
+            (LaneEntry::owner_only(), LaneEntry::owner_only()),
+            (entry(&["c"]), code(&["a"])),
+        ];
+        let probe = [
+            "team",
+            "all",
+            "grp",
+            "narrow",
+            "code:pinned",
+            "code:repo",
+            "personal:a",
+            "personal:b",
+            "personal:zed",
+            "elsewhere",
+        ];
+        for (default_lane, code_lanes) in docs {
+            let doc = AccessDoc {
+                version: 1,
+                owner: "o".into(),
+                principals: principals.clone(),
+                groups: [("g".to_owned(), set(&["b", "c"]))].into(),
+                lanes: lanes.clone(),
+                code_lanes,
+                personal_egress: false,
+                default_lane,
+            };
+            let st = AccessState::apply(None, &doc).unwrap();
+            let ids: Vec<PrincipalId> = ["o", "a", "b", "c"]
+                .iter()
+                .map(|n| st.principal_of_name(n).unwrap())
+                .chain([PrincipalId(999)])
+                .collect();
+            for &p in &ids {
+                let Some(r) = st.read_lanes(p) else {
+                    continue;
+                };
+                for lane in probe {
+                    for owner in &ids {
+                        for key in ["k", "secret.k"] {
+                            for dirs in [set(&[]), set(&["src/x/y"]), set(&["other"])] {
+                                let facts = LogicalFacts {
+                                    key,
+                                    lane,
+                                    owner: *owner,
+                                    dirs: &dirs,
+                                };
+                                if st.authorized(p, &facts).allowed {
+                                    assert!(
+                                        *owner == p || r.contains(lane),
+                                        "{p:?} reads {lane} outside {r:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Without a document a non-owner reads only what it owns.
+        assert_eq!(
+            read_lanes(None, PrincipalId(999)),
+            Some(ReadLanes::default())
+        );
+        assert_eq!(read_lanes(None, PrincipalId::STORE_OWNER), None);
     }
 }

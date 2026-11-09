@@ -216,6 +216,14 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     pub fn logical_count(&self) -> usize {
         self.b.db.logical_count()
     }
+    /// Every scope lane of the branch's logicals with its count.
+    pub fn lane_census(&self) -> Vec<(&str, usize)> {
+        self.b.db.lane_census()
+    }
+    /// The scope lanes of the branch's logicals that `p` created.
+    pub fn owned_lanes(&self, p: PrincipalId) -> Vec<&str> {
+        self.b.db.owned_lanes(p)
+    }
     pub fn revision_count(&self) -> usize {
         self.b.db.revision_count()
     }

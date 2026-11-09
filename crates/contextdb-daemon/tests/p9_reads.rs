@@ -2079,3 +2079,95 @@ fn impact_batch_is_redacted_with_its_branch() {
         "{r:?}"
     );
 }
+
+fn recall_text(s: &Svc, id: Identity, session: SessionId, query: &str, limit: u32) -> Vec<String> {
+    match s
+        .handle(
+            id,
+            Request::Recall {
+                binding: Binding::root(session),
+                query: query.into(),
+                scope: String::new(),
+                mode: Mode::Advisory,
+                limit,
+                index_wait_ms: 2_000,
+                opts: RecallOpts::default(),
+            },
+        )
+        .response
+    {
+        Response::Recall { items, .. } => {
+            let mut keys: Vec<String> = items.into_iter().map(|i| i.key).collect();
+            keys.sort();
+            keys
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// G5 (ADR 0017 §5.3): a principal who cannot read most rows pages bm25
+/// through its own lanes only; the answer is the same as without that
+/// filter: every authorised match, its own logicals outside its lanes
+/// included (the filter is then off).
+#[test]
+fn recall_for_a_narrow_reader_skips_hidden_lanes_in_the_index() {
+    let s = service();
+    let mut keys = Vec::new();
+    let mut lanes = Vec::new();
+    for i in 0..300 {
+        keys.push(format!("noise/{i}"));
+        lanes.push("secret");
+    }
+    for i in 0..5 {
+        keys.push(format!("vis/{i}"));
+        lanes.push("repo");
+    }
+    let body = |k: &str| format!("needle common words for {k}").into_bytes();
+    raw(
+        &s,
+        keys.iter().map(|k| body(k)).collect(),
+        keys.iter()
+            .zip(&lanes)
+            .map(|(k, lane)| Op::CreateLogical {
+                key: k.clone(),
+                kind: RecordKind::Fact,
+                scope_lane: (*lane).into(),
+                content: h(&body(k)),
+                adopt_as_base: true,
+            })
+            .collect(),
+        [7; 16],
+    );
+    let carol = start(&s, CAROL);
+    let own = b"needle carol's own record".to_vec();
+    let r = s
+        .handle(
+            CAROL,
+            Request::Commit {
+                binding: Binding::root(carol),
+                ops: vec![Op::CreateLogical {
+                    key: "carol/own".into(),
+                    kind: RecordKind::Fact,
+                    scope_lane: "repo".into(),
+                    content: h(&own),
+                    adopt_as_base: false,
+                }],
+                blobs: vec![own],
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let visible = ["carol/own", "vis/0", "vis/1", "vis/2", "vis/3", "vis/4"];
+    assert_eq!(recall_text(&s, CAROL, carol, "needle", 10), visible);
+    assert_eq!(recall_text(&s, CAROL, carol, "needle", 3).len(), 3);
+    let bob = start(&s, BOB);
+    assert_eq!(recall_text(&s, BOB, bob, "needle", 10), visible);
+    let alice = start(&s, OWNER_AGENT);
+    assert_eq!(recall_text(&s, OWNER_AGENT, alice, "needle", 10).len(), 10);
+    // carol leaves `repo`: only her own logical, now outside her lanes.
+    set_access(&s, doc(&["alice", "bob"]));
+    let carol = start(&s, CAROL);
+    assert_eq!(recall_text(&s, CAROL, carol, "needle", 10), ["carol/own"]);
+}
