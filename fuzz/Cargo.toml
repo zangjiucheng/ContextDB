@@ -12,6 +12,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 contextdb-daemon = { path = "../crates/contextdb-daemon" }
+contextdb-cli = { path = "../crates/contextdb-cli" }
+contextdb-core = { path = "../crates/contextdb-core" }
 contextdb-mcp = { path = "../crates/contextdb-mcp" }
 contextdb-model = { path = "../crates/contextdb-model" }
 contextdb-hooks = { path = "../crates/contextdb-hooks" }
@@ -83,6 +85,13 @@ bench = false
 [[bin]]
 name = "store_records"
 path = "fuzz_targets/store_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "access_doc"
+path = "fuzz_targets/access_doc.rs"
 test = false
 doc = false
 bench = false

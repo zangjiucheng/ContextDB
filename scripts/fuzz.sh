@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../fuzz"
 seconds=${FUZZ_SECONDS:-3600}
 jobs=${FUZZ_JOBS:-8}
 mkdir -p ../results/fuzz
-targets=${FUZZ_TARGETS:-ipc_request ipc_principal store_records mcp_json hook_stdin patch_paths mcp_meta wire_records symbols_parse}
+targets=${FUZZ_TARGETS:-ipc_request ipc_principal store_records access_doc mcp_json hook_stdin patch_paths mcp_meta wire_records symbols_parse}
 pids=()
 for target in $targets; do
   cargo fuzz run "$target" --release -- -max_total_time="$seconds" -fork="$jobs" -ignore_crashes=0 \

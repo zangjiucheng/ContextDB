@@ -59,15 +59,8 @@ fn unhex16(s: &str) -> Option<[u8; 16]> {
     }
     (s.len() == 32).then_some(out)
 }
-pub(crate) fn table(src: &str) -> Result<toml::Table, String> {
-    src.parse::<toml::Table>().map_err(|e| format!("toml: {e}"))
-}
-pub(crate) fn only_keys(t: &toml::Table, allowed: &[&str], what: &str) -> Result<(), String> {
-    match t.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(k) => Err(format!("{what}: unknown key {k}")),
-        None => Ok(()),
-    }
-}
+pub(crate) use contextdb_cli::access_doc::only_keys;
+pub(crate) use contextdb_cli::access_doc::table;
 fn kind(name: &str) -> Result<RecordKind, String> {
     Ok(match name.to_ascii_lowercase().as_str() {
         "fact" => RecordKind::Fact,
