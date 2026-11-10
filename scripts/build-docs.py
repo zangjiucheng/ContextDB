@@ -4,7 +4,7 @@
 The repository's Markdown stays where it is; this copies it into one tree
 and rewrites relative links so they keep working there:
 
-- README.md -> index.md, README.zh-CN.md, SPEC.md, CHANGELOG.md -> site root
+- README.md -> index.md, SPEC.md, CHANGELOG.md -> site root
 - docs/**/*.md and docs/images (not docs/research, docs/results) -> site root
 - a link to another copied page or image keeps pointing at it
 - a link to anything else in the repository (source, scripts, research)
@@ -21,7 +21,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB = "https://github.com/zangjiucheng/ContextDB/blob/main/"
 ROOT_PAGES = {
     "README.md": "index.md",
-    "README.zh-CN.md": "README.zh-CN.md",
     "SPEC.md": "SPEC.md",
     "CHANGELOG.md": "CHANGELOG.md",
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Docs: a shorter README.** Install details and `ctx ui` moved to `docs/GETTING_STARTED.md`, the per-phase reference and crate table to `docs/REFERENCE.md`, and verification to `docs/DEVELOPMENT.md`. The README adds CI, docs, Rust and license badges and a "Built on" section with badges linking to the cited papers. The Chinese README is removed.
 - **Gate P9 passed (2026-11-10).** G6, the two-user macOS run, was skipped by owner decision; G5 accepts the narrow reader at up to +12.7 % at 10⁵ records (owner). See [the P9 gate](docs/gates/P9.md).
 - **P9 G8 implementation review fixes:**
   - **Recall.** The lane pre-filter no longer changes bm25 order: it restricts by rowid, and lane names are quoted whole. The store owner's agent-channel recall with no scope leaves out other principals' personal lanes (F12). Recall's `dir` filter ignores anchors the principal cannot read.
