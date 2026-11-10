@@ -26,9 +26,12 @@ Milestone 6 is done: crypto-shred.
 - **`ctx migrate` to format 5** re-encrypts older packs and rebuilds the projections, and succeeds only after a disk check. Openers refuse an incomplete migration.
 - **Tests:** T59, T103, T104, and PROP16 at 10,000 seeds.
 
-Milestone 7 (verification) is in progress (SPEC v1.9.1):
-- **Passed:** G4 (security review fixed or declared; 24 h fuzz of four targets with 0 crashes), G5 (on the remote Linux host, with a recall fix for principals who read few lanes), G7 and G8 (README multi-user section; implementation review fixed).
-- **Open:** G6 (two real macOS users).
+Milestone 7 (verification) is done. **Gate P9 passed (2026-11-10)** (SPEC v1.9.2):
+- **G1–G3:** `check.sh` at HEAD with SQLite 3.54.1 (RUSTSEC-2026-0459); PROP15, PROP16 and recall per principal at 10,000 seeds.
+- **G4:** security review fixed or declared; 24 h fuzz of four targets with 0 crashes.
+- **G5:** on the remote Linux host, with two recall fixes for principals who read few lanes; `narrow` at 10⁵ accepted at up to +12.7 % by the owner.
+- **G7, G8:** the earlier suites; README multi-user section; implementation review fixed.
+- **G6:** skipped by owner decision; no real two-user macOS run.
 
 Multi-user mode needs `ctxd --multi-user`, which is off by default.
 
