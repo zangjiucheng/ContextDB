@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-10
+
+P7, P8 and P9 pass their gates: semantic validation and conflicts; retrieval, packing and the git mirror; principals, permissions, egress and crypto-shred (optional multi-user mode, `ctxd --multi-user`, off by default).
+
+**Upgrade notes.** IPC protocol 7 and op_log format 5.
+- Stop `ctxd` with the old binaries (`ctx shutdown <dir>`), install all four new binaries together, and run `ctx migrate <dir>` once. It keeps the old log as `log.vN.bak`, re-encrypts the payload packs and rebuilds the projections; a store whose migration did not finish refuses to open until it is rerun.
+- Clients from 0.2.x cannot talk to a 0.3.0 daemon. Re-run `ctx hooks install` (or `ctx setup`), re-trust the hooks in Codex with `/hooks`, and restart Claude Code and OpenCode sessions.
+- Back up the data directory first: after the migration it holds a `keys/` log, and losing it loses every payload.
+- The bundled SQLite is 3.54.1 (RUSTSEC-2026-0459).
+
 - **Docs: a shorter README.** Install details and `ctx ui` moved to `docs/GETTING_STARTED.md`, the per-phase reference and crate table to `docs/REFERENCE.md`, and verification to `docs/DEVELOPMENT.md`. The README adds CI, docs, Rust and license badges and a "Built on" section with badges linking to the cited papers. The Chinese README is removed.
 - **Gate P9 passed (2026-11-10).** G6, the two-user macOS run, was skipped by owner decision; G5 accepts the narrow reader at up to +12.7 % at 10⁵ records (owner). See [the P9 gate](docs/gates/P9.md).
 - **P9 G8 implementation review fixes:**
