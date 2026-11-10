@@ -27,10 +27,8 @@ Milestone 6 is done: crypto-shred.
 - **Tests:** T59, T103, T104, and PROP16 at 10,000 seeds.
 
 Milestone 7 (verification) is in progress (SPEC v1.9.1):
-- **Passed:** G5 (on the remote Linux host, with a recall fix for principals who read few lanes) and G7.
-- **G8:** the README's multi-user section is written.
-- **G4:** the security review's Majors and Minors are fixed or declared, and a 24 h fuzz run is under way.
-- **Open:** G6 (two real macOS users) and G8's implementation review.
+- **Passed:** G4 (security review fixed or declared; 24 h fuzz of four targets with 0 crashes), G5 (on the remote Linux host, with a recall fix for principals who read few lanes), G7 and G8 (README multi-user section; implementation review fixed).
+- **Open:** G6 (two real macOS users).
 
 Multi-user mode needs `ctxd --multi-user`, which is off by default.
 
