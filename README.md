@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zangjiucheng/ContextDB/actions/workflows/ci.yml/badge.svg)](https://github.com/zangjiucheng/ContextDB/actions/workflows/ci.yml)
 [![Docs](https://github.com/zangjiucheng/ContextDB/actions/workflows/docs.yml/badge.svg)](https://zangjiucheng.github.io/ContextDB/)
-[![Rust 1.95](https://img.shields.io/badge/rust-1.95.0-orange)](rust-toolchain.toml)
+[![Rust 1.95](https://img.shields.io/badge/rust-1.95.0-orange)](https://github.com/zangjiucheng/ContextDB/blob/main/rust-toolchain.toml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **A context database with invalidation proofs, shared by multiple AI coding agents.**
