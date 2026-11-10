@@ -456,13 +456,18 @@ impl RecallIndex {
     ) -> Sql<Vec<Hit>> {
         let mut out = Vec::new();
         let (mut k, mut skip) = (offset / RANK_WINDOW, offset % RANK_WINDOW);
+        // The lane check comes first, before any column is read, and is
+        // `+rowid` so SQLite does not hand it to FTS5 as `rowid =`: that
+        // runs one FTS5 query per rowid, and bm25 recomputes its idf over
+        // the whole doclist each time (G5: 10⁵ rows, p99 25 ms → 370 ms).
         let mut ranked = self.conn.prepare_cached(
             "SELECT logical, rev, bm25(recall) FROM recall
-             WHERE recall MATCH ?1 AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
+             WHERE recall MATCH ?1
+               AND (?10 IS NULL OR +rowid IN (SELECT rowid FROM recall WHERE recall MATCH ?10))
                AND rowid <= ?6 AND rowid >= ?7
+               AND (?2 = '' OR scope = ?2) AND (branch = 0 OR branch = ?3)
                AND (?8 IS NULL OR scope IN (SELECT value FROM json_each(?8))
                     OR EXISTS (SELECT 1 FROM json_each(?9) WHERE substr(scope, 1, length(value)) = value))
-               AND (?10 IS NULL OR rowid IN (SELECT rowid FROM recall WHERE recall MATCH ?10))
              ORDER BY rank, rowid LIMIT ?4 OFFSET ?5",
         )?;
         while out.len() < limit {
