@@ -1,6 +1,6 @@
 # ADR 0018 — P10 team exchange (root / edge)
 
-Status: **Draft (r0.5), G0 not yet passed.** r0.1's review found 5
+Status: **Draft (r0.5), G0 not yet passed; open points decided (§0.1).** r0.1's review found 5
 blockers, 10 majors and 15 minors; r0.2's closure check closed most of them
 and found 3 blockers, 7 majors and 17 minors in r0.2's new join between the
 two stores; r0.3 replaced that join with ordinary local records, and its
@@ -57,6 +57,10 @@ embeddings or the git mirror; Sem premises and validators inside team
 knowledge (O6); code anchors in team knowledge (O1); recursion.
 
 ### 0.1 Open points (owner)
+
+**Decided 2026-11-16:** the owner chose the recommended option for O1, O2,
+O5 and O7; O3, O4 and O6 take the recommended option (presented to the
+owner, no objection). The options below are kept for the record.
 
 - **O1, code anchors in team knowledge.** Recommended: none in P10; team
   records name code in text or `Ref`. A later milestone anchors team
