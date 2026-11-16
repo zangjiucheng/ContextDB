@@ -335,6 +335,7 @@ name = "contextdb-team"
 version = "0.3.0"
 dependencies = [
  "blake3",
+ "contextdb-core",
  "contextdb-model",
  "ed25519-dalek",
  "sha2",

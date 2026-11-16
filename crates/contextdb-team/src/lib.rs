@@ -10,4 +10,6 @@ pub mod commit;
 pub mod doc;
 pub mod enc;
 pub mod ops;
+pub mod replica;
 pub mod sshsig;
+pub mod state;
