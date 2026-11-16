@@ -1,0 +1,20 @@
+[package]
+name = "contextdb-team"
+description = "P10 team exchange (ADR 0018, SPEC SD21): the team document, portable team ops (CXTB), the signed root chain and its frozen acceptance."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contextdb-model.workspace = true
+blake3 = "=1.8.7"
+sha2 = "=0.10.9"
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast"] }
+toml = { version = "=1.1.2", default-features = false, features = ["parse", "std", "serde"] }
+
+[dev-dependencies]

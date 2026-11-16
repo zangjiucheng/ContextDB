@@ -17,6 +17,7 @@ members = [
     "crates/contextdb-harness",
     "crates/contextdb-bench",
     "crates/contextdb-validate",
+    "crates/contextdb-team",
 ]
 default-members = [
     "crates/contextdb-model",
@@ -49,6 +50,7 @@ contextdb-anchors = { path = "crates/contextdb-anchors", version = "=0.3.0" }
 contextdb-symbols = { path = "crates/contextdb-symbols", version = "=0.3.0" }
 contextdb-daemon = { path = "crates/contextdb-daemon", version = "=0.3.0" }
 contextdb-validate = { path = "crates/contextdb-validate", version = "=0.3.0" }
+contextdb-team = { path = "crates/contextdb-team", version = "=0.3.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
