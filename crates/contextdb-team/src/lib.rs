@@ -6,9 +6,11 @@
 //! `accept_version`; nothing here reads a local store.
 
 pub mod b64;
+pub mod checkpoint;
 pub mod commit;
 pub mod doc;
 pub mod enc;
+pub mod gitobj;
 pub mod ops;
 pub mod replica;
 pub mod sshsig;

@@ -143,3 +143,60 @@ fn git_ssh_signed_commit_verifies_sha1() {
 fn git_ssh_signed_commit_verifies_sha256() {
     interop(ObjectFormat::Sha256);
 }
+
+/// In-process tree ids equal `git write-tree` for a checkpoint-shaped tree
+/// (nested directories, names that sort differently as directories).
+fn tree_ids_match_git(format: ObjectFormat) {
+    if !have("git") {
+        return;
+    }
+    let tmp =
+        std::env::temp_dir().join(format!("ctx-team-tree-{}-{:?}", std::process::id(), format));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let fmt = match format {
+        ObjectFormat::Sha1 => "sha1",
+        ObjectFormat::Sha256 => "sha256",
+    };
+    run(
+        &tmp,
+        &["git", "init", "-q", &format!("--object-format={fmt}"), "."],
+        None,
+    );
+    let files: Vec<(String, Vec<u8>)> = vec![
+        ("batch".into(), b"CXTB".to_vec()),
+        ("blobs/00ff".into(), b"one".to_vec()),
+        ("blobs/ab".into(), vec![0, 1, 2, 255]),
+        (
+            "blobs.x".into(),
+            b"sorts after the blobs/ directory".to_vec(),
+        ),
+        ("checkpoint/index".into(), b"CXTK".to_vec()),
+        ("checkpoint/state/000000".into(), vec![7; 3000]),
+        ("checkpoint/state/000001".into(), b"".to_vec()),
+        (
+            "checkpoint-".into(),
+            b"dash sorts before the slash".to_vec(),
+        ),
+    ];
+    for (p, b) in &files {
+        let path = tmp.join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b).unwrap();
+    }
+    run(&tmp, &["git", "add", "-A"], None);
+    let git_tree = run(&tmp, &["git", "write-tree"], None).trim().to_owned();
+    let ours = contextdb_team::gitobj::tree_id(format, &files).unwrap();
+    assert_eq!(commit::hex(&ours), git_tree);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn tree_ids_match_git_sha1() {
+    tree_ids_match_git(ObjectFormat::Sha1);
+}
+
+#[test]
+fn tree_ids_match_git_sha256() {
+    tree_ids_match_git(ObjectFormat::Sha256);
+}

@@ -64,6 +64,10 @@ impl RuleSpec {
             w.u8(tag).raw(h);
         }
     }
+    /// Decodes a rule written by [`Self::encode`] (CXTB and checkpoints).
+    pub fn decode_item(r: &mut Reader) -> Result<Self, DecodeError> {
+        Self::decode(r)
+    }
     fn decode(r: &mut Reader) -> Result<Self, DecodeError> {
         let conclusion = (path(r)?, r.array()?);
         let n = r.count(37)?;

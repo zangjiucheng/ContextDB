@@ -21,6 +21,7 @@ use contextdb_model::{
     PolicyDoc, PrincipalId, RecordKind, RevRef, RevisionId, RuleId, RuleRef, Summary, TxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The `accept_version`s this build implements.
 pub const SUPPORTED_ACCEPT_VERSIONS: &[u32] = &[1];
@@ -30,6 +31,8 @@ pub const SUPPORTED_ACCEPT_VERSIONS: &[u32] = &[1];
 /// the flattened tree (`batch`, `blobs/<hex>`).
 #[derive(Clone, Debug)]
 pub struct EntryInput<'a> {
+    /// The entry's commit id (hex), named by a successor's `Ctx-Compacts`.
+    pub oid: &'a str,
     pub seq: u64,
     pub first_in_generation: bool,
     pub commit: &'a [u8],
@@ -54,8 +57,6 @@ fn reject<T>(code: &'static str, detail: impl Into<String>) -> Result<T, Reason>
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stall {
     UnsupportedAcceptVersion(u32),
-    /// Generations and compaction are milestone 2.
-    Unimplemented(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +66,31 @@ pub enum Outcome {
     /// One decision per proposal, in `Ctx-Proposal` order.
     Decided(Vec<Result<(), Reason>>),
     Stall(Stall),
+    /// After an accepted `Compact`, entries appended to the terminal
+    /// generation are ignored: no decision, no sequence number (§8.6).
+    Ignored,
+    /// The next generation's first entry verified against the `Compact`.
+    Successor,
+    /// A first entry that is not the committed successor: the edge does not
+    /// follow it, and nothing changes.
+    InvalidSuccessor(Reason),
+}
+
+/// An accepted `Compact` awaiting its successor (`CompactPending`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub generation: u32,
+    pub tree: Vec<u8>,
+    pub digest: Hash,
+    pub compact_oid: String,
+    pub compact_seq: u64,
+}
+
+/// Why a checkpoint join failed: an object to fetch, or a verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinError {
+    Missing(String),
+    Invalid(Reason),
 }
 
 enum Fail {
@@ -103,15 +129,17 @@ pub struct Replica {
     seq: Option<u64>,
     shred: BTreeSet<Hash>,
     accepted: BTreeSet<(String, [u8; 16])>,
-    /// The blob set (§3.1) with each content's size.
-    blobs: BTreeMap<Hash, u64>,
+    /// The blob set (§3.1): the bytes of every non-shredded revision.
+    blobs: BTreeMap<Hash, Arc<Vec<u8>>>,
+    generation: u32,
+    pending: Option<Pending>,
     tags: BTreeMap<String, BTreeSet<String>>,
     revs: BTreeMap<(String, Hash), RevisionId>,
     rules: BTreeMap<RuleSpec, RuleId>,
 }
 
 struct Present<'a> {
-    replica: &'a BTreeMap<Hash, u64>,
+    replica: &'a BTreeMap<Hash, Arc<Vec<u8>>>,
     entry: &'a BTreeMap<Hash, Vec<u8>>,
 }
 
@@ -149,6 +177,8 @@ impl Replica {
             shred: BTreeSet::new(),
             accepted: BTreeSet::new(),
             blobs: BTreeMap::new(),
+            generation: 0,
+            pending: None,
             tags: BTreeMap::new(),
             revs: BTreeMap::new(),
             rules: BTreeMap::new(),
@@ -164,6 +194,16 @@ impl Replica {
     pub fn db(&self) -> &Db {
         &self.db
     }
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+    /// `Some` while an accepted `Compact` awaits its successor.
+    pub fn pending(&self) -> Option<&Pending> {
+        self.pending.as_ref()
+    }
+    pub fn blob(&self, h: &Hash) -> Option<&[u8]> {
+        self.blobs.get(h).map(|b| b.as_slice())
+    }
 
     pub fn key(&self, path: &str) -> String {
         format!("team/{}/{path}", hex(&self.team))
@@ -178,6 +218,27 @@ impl Replica {
     /// `accept(replica at parent, entry)`: decides the entry and, unless it
     /// stalls, applies the accepted proposals and advances the sequence.
     pub fn accept(&mut self, e: &EntryInput) -> Outcome {
+        if self.pending.is_some() {
+            return if e.first_in_generation {
+                match self.check_successor(e) {
+                    Ok(()) => {
+                        let p = self.pending.take().expect("pending");
+                        self.generation = p.generation;
+                        self.seq = Some(e.seq);
+                        Outcome::Successor
+                    }
+                    Err(r) => Outcome::InvalidSuccessor(r),
+                }
+            } else {
+                Outcome::Ignored
+            };
+        }
+        if e.first_in_generation && self.doc.is_some() {
+            return Outcome::InvalidSuccessor(Reason {
+                code: "NoCompact",
+                detail: "no accepted Compact".into(),
+            });
+        }
         let parsed = match self.check_entry(e) {
             Ok(p) => p,
             Err(Fail::Reject(r)) => {
@@ -187,6 +248,23 @@ impl Replica {
             Err(Fail::Stall(s)) => return Outcome::Stall(s),
         };
         let (author, ids, batch, blobs) = parsed;
+        if let [ops] = &batch.proposals[..]
+            && let [
+                TeamOp::Compact {
+                    generation,
+                    tree,
+                    digest,
+                },
+            ] = &ops[..]
+        {
+            let d = if self.accepted.contains(&(author.clone(), ids[0])) {
+                reject("DuplicateProposal", hex(&ids[0]))
+            } else {
+                self.decide_compact(e, &author, ids[0], *generation, tree, digest)
+            };
+            self.seq = Some(e.seq);
+            return Outcome::Decided(vec![d]);
+        }
         let mut decisions = Vec::with_capacity(ids.len());
         for (id, ops) in ids.iter().zip(&batch.proposals) {
             let d = if self.accepted.contains(&(author.clone(), *id)) {
@@ -211,9 +289,6 @@ impl Replica {
         &self,
         e: &EntryInput,
     ) -> Result<(String, Vec<[u8; 16]>, TeamBatch, BTreeMap<Hash, Vec<u8>>), Fail> {
-        if e.first_in_generation && e.seq != 0 {
-            return Err(Fail::Stall(Stall::Unimplemented("generations")));
-        }
         let c = commit::parse(e.commit, self.format)
             .or_else(|err| reject("Commit", format!("{err:?}")))?;
         let want_parents = usize::from(!e.first_in_generation);
@@ -379,9 +454,12 @@ impl Replica {
             self.tags.insert(path, tags);
         }
         for (_, h) in &st.new_revs {
-            if !self.shred.contains(h) && !st.shred.contains(h) {
-                let size = self.blob_size(h, entry_blobs);
-                self.blobs.entry(*h).or_insert(size);
+            if !self.shred.contains(h)
+                && !st.shred.contains(h)
+                && !self.blobs.contains_key(h)
+                && let Some(b) = entry_blobs.get(h)
+            {
+                self.blobs.insert(*h, Arc::new(b.clone()));
             }
         }
         for h in st.shred {
@@ -398,7 +476,7 @@ impl Replica {
     fn blob_size(&self, h: &Hash, entry: &BTreeMap<Hash, Vec<u8>>) -> u64 {
         self.blobs
             .get(h)
-            .copied()
+            .map(|b| b.len() as u64)
             .or_else(|| entry.get(h).map(|b| b.len() as u64))
             .unwrap_or(0)
     }
@@ -738,11 +816,276 @@ impl Replica {
                 }
                 st.shred.insert(*content);
             }
-            TeamOp::Compact { .. } => {
-                return Err(Fail::Stall(Stall::Unimplemented("Compact")));
-            }
+            TeamOp::Compact { .. } => return Err(rej("SoleOpRequired", "Compact")),
         }
         Ok(())
+    }
+
+    // ----- compaction (§8.6) -----
+
+    /// Σc: the state after an accepted `Compact` by `author` with proposal
+    /// id `id` at `seq` — the replica's state with that sequence number and
+    /// the id accepted, nothing else.
+    pub fn sigma_c(&self, author: &str, id: [u8; 16], seq: u64) -> Option<KeyedState> {
+        let mut s = self.keyed_state()?;
+        s.seq = seq;
+        s.accepted.insert((author.to_owned(), id));
+        Some(s)
+    }
+
+    /// `ckpt(Σ, g)` with this replica's blob bytes.
+    pub fn checkpoint_files(&self, state: &KeyedState, generation: u32) -> Vec<(String, Vec<u8>)> {
+        crate::checkpoint::encode(state, self.team, generation, |h| {
+            self.blobs
+                .get(h)
+                .map(|b| b.as_ref().clone())
+                .unwrap_or_default()
+        })
+    }
+
+    fn decide_compact(
+        &mut self,
+        e: &EntryInput,
+        author: &str,
+        id: [u8; 16],
+        generation: u32,
+        tree: &[u8],
+        digest: &Hash,
+    ) -> Result<(), Reason> {
+        let doc = self.doc.clone().expect("checked by check_entry");
+        if !doc.is_admin(author) {
+            return reject("AdminOnly", "Compact");
+        }
+        if generation != self.generation + 1 {
+            return reject("CompactGeneration", generation.to_string());
+        }
+        let sc = self.sigma_c(author, id, e.seq).expect("document");
+        if sc.digest() != *digest {
+            return reject("CompactDigest", hex(digest));
+        }
+        let size = sc.ckpt_size(|h| self.blobs.get(h).map_or(0, |b| b.len() as u64));
+        if size > doc.state_bytes {
+            return reject("TeamStateLimit", format!("{size} > {}", doc.state_bytes));
+        }
+        let files = self.checkpoint_files(&sc, generation);
+        match crate::gitobj::tree_id(self.format, &files) {
+            Ok(t) if t == tree => {}
+            Ok(_) => return reject("CompactTree", hex(tree)),
+            Err(_) => return reject("Sha1Collision", "checkpoint tree"),
+        }
+        self.accepted.insert((author.to_owned(), id));
+        self.pending = Some(Pending {
+            generation,
+            tree: tree.to_vec(),
+            digest: *digest,
+            compact_oid: e.oid.to_owned(),
+            compact_seq: e.seq,
+        });
+        Ok(())
+    }
+
+    /// The successor's own checks: a root commit with the committed tree,
+    /// naming the `Compact`, signed by an admin of Σc's document.
+    fn check_successor(&self, e: &EntryInput) -> Result<(), Reason> {
+        let p = self.pending.as_ref().expect("pending");
+        let doc = self.doc.as_ref().expect("document");
+        let c = commit::parse(e.commit, self.format)
+            .or_else(|err| reject("Commit", format!("{err:?}")))?;
+        let t = &c.trailers;
+        if !c.parents.is_empty() {
+            return reject("Parents", "a successor has no parent");
+        }
+        let (Some(team), Some(seq), Some(author), Some(av), Some(compacts)) =
+            (&t.team, t.seq, &t.author, t.accept_version, &t.compacts)
+        else {
+            return reject("Trailers", "missing trailer");
+        };
+        if t.batch_hash.is_some() || !t.proposals.is_empty() {
+            return reject("Trailers", "a successor carries no batch");
+        }
+        if *team != hex(&self.team) || av != doc.accept_version {
+            return reject("Trailers", "team or accept version");
+        }
+        if seq != p.compact_seq + 1 || e.seq != seq {
+            return reject("Seq", seq.to_string());
+        }
+        if *compacts != p.compact_oid {
+            return reject("Compacts", compacts.clone());
+        }
+        if c.tree != hex(&p.tree) {
+            return reject("CompactTree", c.tree.clone());
+        }
+        match crate::gitobj::tree_id(self.format, e.tree) {
+            Ok(t) if t == p.tree => {}
+            _ => return reject("CompactTree", "files"),
+        }
+        if !doc.is_admin(author) {
+            return reject("AdminOnly", "successor");
+        }
+        let sig = c.signature.as_ref().ok_or(Reason {
+            code: "Unsigned",
+            detail: String::new(),
+        })?;
+        sshsig::verify(sig, "git", &c.payload, &doc.keys_of(author))
+            .or_else(|err| reject("Signature", format!("{err:?}")))?;
+        Ok(())
+    }
+
+    /// A checkpoint joiner (§8.6, §8.7): given generation `g`'s first entry
+    /// out of band, verifies it and its checkpoint, rebuilds Σc and applies
+    /// the entry. The result equals a follower's replica after the same
+    /// entry, digest included.
+    pub fn join_checkpoint(
+        team: [u8; 16],
+        format: ObjectFormat,
+        commit_raw: &[u8],
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Self, JoinError> {
+        let inv = |code: &'static str, d: String| JoinError::Invalid(Reason { code, detail: d });
+        let map: BTreeMap<String, Vec<u8>> = files.iter().cloned().collect();
+        let dec = crate::checkpoint::decode(&map).map_err(|e| match e {
+            crate::checkpoint::CkptError::Missing(p) => JoinError::Missing(p),
+            crate::checkpoint::CkptError::Invalid(m) => inv("Checkpoint", m),
+        })?;
+        if dec.header.team != team {
+            return Err(inv("Team", "checkpoint team".into()));
+        }
+        let c = commit::parse(commit_raw, format).map_err(|e| inv("Commit", format!("{e:?}")))?;
+        let t = &c.trailers;
+        let (Some(tm), Some(seq), Some(author), Some(av), Some(_)) =
+            (&t.team, t.seq, &t.author, t.accept_version, &t.compacts)
+        else {
+            return Err(inv("Trailers", "missing trailer".into()));
+        };
+        let doc = &dec.state.doc;
+        if !c.parents.is_empty()
+            || t.batch_hash.is_some()
+            || !t.proposals.is_empty()
+            || *tm != hex(&team)
+            || av != doc.accept_version
+            || seq != dec.header.seq + 1
+        {
+            return Err(inv("Successor", "structure".into()));
+        }
+        if !SUPPORTED_ACCEPT_VERSIONS.contains(&doc.accept_version) {
+            return Err(inv("AcceptVersion", doc.accept_version.to_string()));
+        }
+        match crate::gitobj::tree_id(format, files) {
+            Ok(id) if hex(&id) == c.tree => {}
+            _ => return Err(inv("CompactTree", "files are not the commit's tree".into())),
+        }
+        if !doc.is_admin(author) {
+            return Err(inv("AdminOnly", "successor".into()));
+        }
+        let sig = c.signature.as_ref().ok_or(inv("Unsigned", String::new()))?;
+        sshsig::verify(sig, "git", &c.payload, &doc.keys_of(author))
+            .map_err(|e| inv("Signature", format!("{e:?}")))?;
+        let mut r = Self::from_state(team, format, &dec.state, &dec.blobs)
+            .map_err(|e| inv("Rebuild", e))?;
+        if r.digest() != Some(dec.header.digest) {
+            return Err(inv("CompactDigest", "rebuilt state".into()));
+        }
+        r.generation = dec.header.generation;
+        r.seq = Some(seq);
+        Ok(r)
+    }
+
+    /// Rebuilds a replica from a keyed state: records through the kernel's
+    /// input snapshot (no transaction checks, so a state legal when it was
+    /// built is never refused by a later scan), rules through ordinary
+    /// commits on top.
+    fn from_state(
+        team: [u8; 16],
+        format: ObjectFormat,
+        st: &KeyedState,
+        blobs: &BTreeMap<Hash, Vec<u8>>,
+    ) -> Result<Self, String> {
+        use contextdb_model::{Epoch, Inputs, Logical, Metadata, PolicyDoc as P, Revision};
+        let mut r = Self::new(team, format);
+        let mut inputs = Inputs {
+            policy: P {
+                version: 1,
+                require_deps: st.doc.require_deps.clone(),
+            },
+            ..Inputs::default()
+        };
+        for rec in &st.records {
+            let l = LogicalId(inputs.logicals.len() as u32);
+            inputs.logicals.push(Logical {
+                key: r.key(&rec.path),
+                kind: rec.kind,
+                scope_lane: r.lane(&rec.lane),
+                owner: PrincipalId::STORE_OWNER,
+                origin_branch: MAIN,
+                origin_epoch: Epoch(1),
+            });
+            inputs.metadata.push(Metadata::default());
+            let mut head = None;
+            for v in &rec.revisions {
+                let id = RevisionId(inputs.revisions.len() as u32);
+                inputs.revisions.push(Revision {
+                    logical: l,
+                    content: v.content,
+                    author: PrincipalId::STORE_OWNER,
+                    origin_branch: MAIN,
+                    origin_epoch: Epoch(1),
+                });
+                inputs.base.push(v.base);
+                r.revs.insert((rec.path.clone(), v.content), id);
+                if v.content == rec.head {
+                    head = Some(id);
+                }
+            }
+            inputs.heads.push(head.ok_or("record without its head")?);
+            if !rec.tags.is_empty() {
+                r.tags.insert(rec.path.clone(), rec.tags.clone());
+            }
+        }
+        r.db = Db::from_inputs(inputs, Epoch(1)).map_err(|e| format!("{e:?}"))?;
+        if !st.rules.is_empty() {
+            let mut ops = Vec::with_capacity(st.rules.len());
+            for (spec, enabled) in &st.rules {
+                let rev = |p: &str, h: &Hash| -> Result<RevRef, String> {
+                    r.revs
+                        .get(&(p.to_owned(), *h))
+                        .map(|id| RevRef::Existing(*id))
+                        .ok_or_else(|| format!("rule names an unknown revision of {p}"))
+                };
+                let mut incidences = Vec::with_capacity(spec.incidences.len());
+                for (p, e) in &spec.incidences {
+                    let k = match e {
+                        Edge::Pin(_) => EdgeKind::Pin,
+                        Edge::Cur(_) => EdgeKind::Cur,
+                        Edge::Ref(_) => EdgeKind::Ref,
+                    };
+                    incidences.push((rev(p, &e.content())?, k));
+                }
+                ops.push(Op::AddRule {
+                    conclusion: rev(&spec.conclusion.0, &spec.conclusion.1)?,
+                    incidences,
+                    enabled: *enabled,
+                });
+            }
+            let batch = Batch {
+                branch: MAIN,
+                principal: PrincipalId::STORE_OWNER,
+                channel: Channel::Admin,
+                client_txn_id: None,
+                ops,
+            };
+            let res = r.db.commit(&batch).map_err(|e| format!("rules: {e:?}"))?;
+            for (spec, j) in st.rules.keys().zip(&res.allocations.new_rules) {
+                r.rules.insert(spec.clone(), *j);
+            }
+        }
+        r.doc = Some(st.doc.clone());
+        r.shred = st.shred.clone();
+        r.accepted = st.accepted.clone();
+        r.seq = Some(st.seq);
+        for (h, b) in blobs {
+            r.blobs.insert(*h, Arc::new(b.clone()));
+        }
+        Ok(r)
     }
 
     // ----- the keyed state -----

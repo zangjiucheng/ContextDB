@@ -47,6 +47,7 @@ struct Chain {
 }
 
 struct Entry {
+    oid: String,
     seq: u64,
     first: bool,
     raw: Vec<u8>,
@@ -56,6 +57,7 @@ struct Entry {
 impl Entry {
     fn input(&self) -> EntryInput<'_> {
         EntryInput {
+            oid: &self.oid,
             seq: self.seq,
             first_in_generation: self.first,
             commit: &self.raw,
@@ -112,6 +114,7 @@ impl Chain {
         let mut tree = vec![("batch".to_owned(), batch)];
         tree.extend(blobs);
         let e = Entry {
+            oid: oid.clone(),
             seq: self.seq,
             first: self.parent.is_none(),
             raw,

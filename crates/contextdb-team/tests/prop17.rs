@@ -481,7 +481,9 @@ fn run(seed: u64, hist: &mut BTreeMap<String, u64>) {
                 tree.push((format!("blobs/{}", hex(&h)), bytes));
             }
         }
+        let oid = parent.clone().expect("set above");
         let input = EntryInput {
+            oid: &oid,
             seq,
             first_in_generation: seq == 0,
             commit: &raw,
@@ -552,7 +554,7 @@ fn run(seed: u64, hist: &mut BTreeMap<String, u64>) {
                     }
                 }
             }
-            Outcome::Stall(s) => panic!("seed {seed} seq {seq}: stall {s:?}"),
+            other => panic!("seed {seed} seq {seq}: unexpected {other:?}"),
         }
         // The keyed state equals the oracle's after every entry.
         let state = edges[0].keyed_state().expect("after genesis");
