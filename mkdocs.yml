@@ -63,6 +63,9 @@ nav:
       - 0013 P6 branches and transactions: adr/0013-p6-branches-transactions.md
       - 0014 OpenCode harness: adr/0014-opencode-harness.md
       - 0015 P7 validation and conflicts: adr/0015-p7-validation-conflicts.md
+      - 0016 P8 retrieval, packing and mirror: adr/0016-p8-retrieval-packing-mirror.md
+      - 0017 P9 principals, permissions and security: adr/0017-p9-principals-permissions-security.md
+      - 0018 P10 team exchange: adr/0018-p10-team-exchange.md
   - Gates:
       - P0: gates/P0.md
       - P1: gates/P1.md
@@ -73,4 +76,7 @@ nav:
       - P5b: gates/P5b.md
       - P6: gates/P6.md
       - P7: gates/P7.md
+      - P8: gates/P8.md
+      - P9: gates/P9.md
+      - P10: gates/P10.md
   - Changelog: CHANGELOG.md

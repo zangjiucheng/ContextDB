@@ -9,7 +9,7 @@
 
 When several agents (Claude Code, Codex, OpenCode and their subagents) work in the same repository at once, the decisions, conventions and plans they rely on keep changing. ContextDB stores that context, and the dependencies between items, as an AND/OR justification DAG. When an upstream item is superseded, retracted, or the code it refers to changes, everything downstream is marked **precisely** STALE or PENDING, while conclusions that still have other support are left alone. Before an agent writes a file or runs a command, it checks a certificate that the context it read is still valid.
 
-- **Specification**: [`SPEC.md`](SPEC.md) (v1.9.2, the only normative document; written mainly in Chinese with English systems terminology)
+- **Specification**: [`SPEC.md`](SPEC.md) (v1.10.0, the only normative document; written mainly in Chinese with English systems terminology)
 - **Documentation site**: <https://zangjiucheng.github.io/ContextDB/>
 - **Status**: P0–P9 have passed their gates; see [Phases and status](#phases-and-status)
 - **Harnesses**: Claude Code, Codex CLI and OpenCode 2.0, through MCP tools and hooks
@@ -39,7 +39,7 @@ None of the 18 open-source agent-memory projects examined at the source level ha
 | **certificate** | The set of items and revisions an agent read. Checked before an action: still valid, re-certifiable, or a list of the reads that are now out of date |
 | **code anchor** | A repository file as a first-class record; its revision is the Git blob OID of the raw worktree bytes. When the file changes, dependent decisions become STALE or PENDING according to their edge kind |
 
-The full semantics (SD1–SD19, the kind admission matrix, STALE reason precedence) are in SPEC §2; [`docs/SEMANTICS.md`](docs/SEMANTICS.md) maps every clause to its tests.
+The full semantics (SD1–SD21, the kind admission matrix, STALE reason precedence) are in SPEC §2; [`docs/SEMANTICS.md`](docs/SEMANTICS.md) records baseline test evidence, and SPEC §8 maps the current clauses to their tests.
 
 ## Architecture
 
@@ -102,8 +102,9 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P7 | Semantic validation and conflicts | ✅ passed |
 | P8 | Retrieval, packing and git mirroring | ✅ passed |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | ✅ passed (G6 two-user run skipped by owner decision) |
-| P10 | Mixed eager / lazy maintenance and scale | planned |
-| P11 | Recursive support and replication (research) | planned |
+| P10 | Git-root team exchange | [G0 passed](docs/gates/P10.md); implementation pending |
+| P11 | Mixed eager / lazy maintenance and scale | planned |
+| P12 | Recursive support (research) | planned |
 
 Evidence for every layer is in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) and [`docs/gates/`](docs/gates/).
 
@@ -111,7 +112,7 @@ Evidence for every layer is in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTA
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.
 - **The trust boundary is cooperative for the store owner's uid**: an agent that can run a shell as the same OS user can uninstall hooks or connect to the admin socket directly. Isolation between OS users, multi-principal permissions and crypto-shred are P9's multi-user mode ([reference](docs/REFERENCE.md#multi-user-mode-egress-and-shred-p9)).
-- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P11); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication.
+- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P12); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication (team exchange is designed in P10, pending implementation).
 - **TOCTOU**: there is still a window between the pre-action check and the actual write; Bash side effects are found only afterwards, by drift.
 
 ## Built on

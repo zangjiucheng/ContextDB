@@ -1,7 +1,8 @@
 # Executable semantics
 
-SPEC v1.4.1 is normative. This guide maps every semantic decision to executable
-P0/P1 evidence and explicitly identifies future behavior. The Rust API:
+SPEC v1.10.0 is normative. This guide records the P0/P1 executable baseline;
+SPEC §8 provides current traceability, including planned P10 tests. P10 G0 is
+design acceptance; its implementation and G1–G8 are pending. The baseline Rust API:
 `Db::commit(Batch)` returns allocations, epoch, NetDelta, l0_flips and status_diff;
 `DerivedView` exposes an exact full snapshot; point queries use local state/memo.
 CLI database commands are not exposed.
@@ -131,12 +132,13 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 | SD11 | L0/L1/L2, Pin-strict and Sem-head | T06abc, T15bc/d, T24 |
 | SD12 | ABA permitted; Evidence immutable | T16b-sem, T09i |
 | SD13 | Summary precedence, recursive reasons, semantic witness | S13-rows-fn, T15bc/d, T24 |
-| SD14 | Future Unknown/freshness never Certified | S13-rows-fn; live read integration P5/P10 |
+| SD14 | Future Unknown/freshness never Certified | S13-rows-fn; live read integration P5, lazy maintenance P11; team lag T113/T116 pending P10 |
 | SD15 | WHY active alternatives, Ref separate; WHY_NOT vectors | T63, T06a, T15bc/d |
 | SD16 | Global epoch, version-based verdict | T12, T62 oracle; strict certificate history P3 |
-| SD17 | Conflict=None P0; raw cyclic oracle lfp | T09u, T11 Motik; Conflict gate P7, recursive product P11 |
+| SD17 | Conflict=None P0; raw cyclic oracle lfp | T09u, T11 Motik; Conflict gate P7, recursive product P12 |
 | SD18 | Observer-only CodeAnchor/watermark inputs and dedup | T09h/q/r/t, T24; filesystem observer P5 |
 | SD19 | MAIN branch only; reserve origin branch data | T15e, T26; multi-branch product tests P6 |
+| SD21 | Git-root team exchange, replicas, mirrors and proposals | T109–T121, PROP17–PROP19 planned; P10 implementation pending |
 | SD20 | Conflict pairs per branch: both sides CONFLICTED until resolved or superseded; LLM only PendingReview | T78, T50, T84; P7 PROP1 with artifacts |
 | §2.5 A1–A7 | Kind admission, immutability, policy, channels | T09h–v, compile-fail model tests |
 | §6.1–6.2 | IDs/local refs, canonical identity and errors | T09p–v, T29, wire.rs round trips |

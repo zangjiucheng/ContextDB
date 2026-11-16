@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.9.2 · Date: 2026-11-10 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.10.0 · Date: 2026-11-16 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -17,10 +17,10 @@
 ## 目录
 
 1. 产品定义
-2. 规范性语义（SD1–SD19）与 Kind 准入矩阵
+2. 规范性语义（SD1–SD21）与 Kind 准入矩阵
 3. 系统架构、提交算法、禁止机制
 4. 验证体系（适用于所有阶段）
-5. 阶段计划（P0–P11）与各阶段 Gate
+5. 阶段计划（P0–P12）与各阶段 Gate
 6. 接口规范（Kernel API / 错误目录 / MCP / Certificate / Hooks / CLI）
 7. 数据与存储格式
 8. 测试目录（T-matrix + PROP）
@@ -66,7 +66,7 @@ ContextDB 是多个 AI coding agent 共用的、**带失效证明的上下文数
 ### 1.4 目标用户与部署形态
 
 - 主要用户：在同一仓库上同时运行多个 coding agent（Claude Code、Codex 等，含 subagent）的开发者与小团队。
-- 部署：**co-located**——每个仓库/数据目录一个本地守护进程 `ctxd`，agent 通过 MCP 与 hooks 访问。跨机器复制属于 P11 及以后，且必须单独声明保证。
+- 部署：**co-located，团队 lane 经 Git 分发**——每个 clone/数据目录一个本地 `ctxd`，agent 通过 MCP 与 hooks 访问。P10 的单根团队交换以共享 Git 仓库的签名链为 root，各 edge 维护独立 replica 与本地 mirrors（SD21），不需要远端 daemon。多主、实时或非 Git 复制不属于该保证，须另立规范。
 
 ---
 
@@ -120,13 +120,15 @@ S(r)             = base(r) ∨ support_count(r) > 0
 
 “No support” 只表示未被证明受支持，不是逻辑 False。
 
+P10：mirror 作为普通本地 premise 参与这些计数；其 head/base 是 replica 通道的显式输入（SD21），root 的规则不复制为本地规则。
+
 **SD4 规则 append-only。** 不提供物理删除；撤销用 `SetRuleEnabled(j,false)`。disabled 规则的 sat 位与 unsat 照常维护，重新启用 O(1) 且精确。
 
-**SD5 cycle 语义（P0–P10）。** cycle 图（每个 branch 一张，SD19）包含该 branch 可见的**所有规则（含 disabled）**，只计 PREMISE incidence，由两类边组成：
+**SD5 cycle 语义（P0–P11）。** cycle 图（每个 branch 一张，SD19）包含该 branch 可见的**所有规则（含 disabled）**，只计 PREMISE incidence，由两类边组成：
 - revision 边 `premise → conclusion`；
 - **Sem logical 边**：对每个 logical l 设虚拟节点 `V_l`；l 的每个 revision h 有边 `h → V_l`（revision 创建时加入），每个 Sem incidence `(p, j)` 有边 `V_{l(p)} → concl(j)`。原因是 SD11 的 Sem 字面量依赖 l(p) 的**当前 head**，而 head 可以移到 l 的任意 revision。`V_l` 只参与 cycle 检查与 rank，不是派生状态节点。
 
-图只增不减，故 enable / head 切换不可能制造环，批内逐条检查等价于检查最终图。self-loop 拒绝。经过不同 revision 的 logical 级环（`A@v1→B@v1→A@v2`）对 Pin/Cur 允许；若环上有 Sem incidence（`A@v1 -Sem→ B@1 → A@v2`），则经 `V_A` 成环而被拒绝。检测到环时整个事务拒绝，返回 `CycleDetected{op_index, path}`。递归支持见 SD17（P11）。
+图只增不减，故 enable / head 切换不可能制造环，批内逐条检查等价于检查最终图。self-loop 拒绝。经过不同 revision 的 logical 级环（`A@v1→B@v1→A@v2`）对 Pin/Cur 允许；若环上有 Sem incidence（`A@v1 -Sem→ B@1 → A@v2`），则经 `V_A` 成环而被拒绝。检测到环时整个事务拒绝，返回 `CycleDetected{op_index, path}`。递归支持见 SD17（P12）。
 
 **SD6 规范化。** premise 按 RevisionId 排序去重，保留最强类型（`Cur > Sem > Pin`）；同一 revision 若同时是 premise，其 `Ref` 丢弃。拒绝（错误名见 §6.2）：
 - 既无 premise 也无 `Ref`（应改用 AssertBase）→ `InvalidRule(EmptyPremises)`。只有 `Ref` 的规则（reference-only）被接受：它只记录引用（进 `refs_by_target`，可经 impact / why 查询），按 SD3 永不 active，不提供支持，结论仍需 base 或其他规则
@@ -137,7 +139,7 @@ S(r)             = base(r) ∨ support_count(r) > 0
 - premise kind 违反 §2.5 → `InvalidRule(ForbiddenPremise)`
 - 与已有规则 `(concl, canonical incidences)` 完全相同 → `DuplicateRule{existing, enabled}`（hash 索引 + 完整比较，不 silent reuse）
 
-**SD7 分层不变式。** 以下都是**输入层**，只有已提交的 Op 能写：heads、base、enabled、ValidationRecord、Policy、全部 Artifact 的 open/resolved 状态（经 `OpenArtifact` / `ResolveArtifact`；其中只有 Conflict 参与派生状态，SD17）、ObserverWatermark、metadata（标签、scope 收窄；不参与任何派生状态）。规则结论只能是 RevisionId，类型系统中无法表达“派生 head”。`Cur` 是 outlist 条件但只依赖更低层输入，kernel 是 stratified-positive，有唯一最小模型。派生状态是已提交输入的**纯函数**（不依赖墙钟、实时仓库状态）。auto-promote 只能作为客户端事务实现。
+**SD7 分层不变式。** 以下都是**输入层**，只有已提交的 Op 能写：logical 的不可变 `origin`、`MirrorAttach` 可见性、heads、base、enabled、ValidationRecord、Policy、全部 Artifact 的 open/resolved 状态（经 `OpenArtifact` / `ResolveArtifact`；其中只有 Conflict 参与派生状态，SD17）、ObserverWatermark、metadata（标签、scope 收窄；不参与任何派生状态）。规则结论只能是 RevisionId，类型系统中无法表达“派生 head”。`Cur` 是 outlist 条件但只依赖更低层输入，kernel 是 stratified-positive，有唯一最小模型。派生状态是已提交输入的**纯函数**（不依赖墙钟、实时仓库状态）。auto-promote 只能作为客户端事务实现。
 
 **SD8 批语义。**
 1. Op 在 staged 输入上**按顺序**执行，后 Op 可见前 Op 结果；CAS 比较该 Op 执行时的 staged 值。
@@ -179,13 +181,14 @@ L2(r) = ¬Conflicted(r) ∧ (base(r) ∨ ∃j: concl(j)=r, g2(j), ∀i lit2(j,i)
 `L2 ⊆ L1 ⊆ L0`。`Certified(r) = Current(r) ∧ L2(r) ∧ Authorized(principal, r)`；**P0–P8 中 `Authorized ≡ true`**（单主体模式，由 transport 信任边界保证），P9 起按 ACL 计算。
 
 - 指向已 supersede 的非 Evidence revision 的 `Pin`：L0 仍 SUPPORTED，但 `STALE(SupersededPinnedPremise)`——这堵住 §1.2 的失败场景。真正的历史固定引用用 Evidence 或 `Ref`。
+- **replica-origin mirror** 仍按本地 kind、currency 与 SD11 授权参与判定；只有 replica 通道能提供其输入，root 的认证不授予本地读权限（SD21）。
 - **CodeAnchor 不豁免 Pin-strict**：代码是会变的真相，Pin 到旧锚点正是需要被标为过期的情况；对锚点而言 Pin 与 Cur 在汇总层面效果相同（L0 不同）。历史引用代码用 `Ref` 或 Evidence 快照。
 - PENDING 沿 L2 传递；REJECTED 阻断 L1/L2 下游但不改变 S。
 - **Sem-head 条件**：Sem 依赖对新 head h 验证通过，只说明“内容仍适用”，不说明 h 本身仍受支持。h 被撤回（例如代码锚点文件被删除：observer 对当前 revision RetractBase）、失去支持或 PENDING 时，Sem 下游在对应层失败。旧 revision p 的 base 不会因 head 移动而撤销（SD1），所以只检查 p 不够。`curvec == A(j)` 时 `head(l(p)) = p`，条件退化为原式。
 
-**SD11 授权（v1.9.0，P9 G0，完整定义见 ADR 0017 §4.3–§4.5）。** `Authorized(p, l, b)` 按顺序判定：(1) owner（store owner，或 `owner(l) = p`）；(2) membership，lane 条目由同一个 `entry(lane)` 查找：访问文档列出的 lane → 合成的 `personal:<name>`（members = writers = curators = 该主体，egress 取 `[personal]`）→ 未知 personal 名为空条目 → `code:*` 用 `code_lanes` → `default_lane`（默认 `*owner`，fail-closed）；(3) visibility（personal）；(4) role，dir 授权只作用于 logical 的 `dirs`（`dirs` 按 branch 存储，故授权依赖 branch）；(5) ACL deny 前缀。授权**不传递**：读 r 不意味着可读 r 的 premise。派生快照与主体无关：L0/L1/L2、计数器与 digest 都不含授权；P0–P8 的 `Authorized ≡ true` 自 P9 起在渲染响应时计算（SD13）。
+**SD11 授权（v1.9.0，P9 G0，完整定义见 ADR 0017 §4.3–§4.5）。** `Authorized(p, l, b)` 按顺序判定：(1) owner（store owner，或 `owner(l) = p`）；(2) membership，lane 条目由同一个 `entry(lane)` 查找：访问文档列出的 lane → 合成的 `personal:<name>`（members = writers = curators = 该主体，egress 取 `[personal]`）→ 未知 personal 名为空条目 → `code:*` 用 `code_lanes` → `team:*` 用可选 `team_lanes` → `default_lane`（默认 `*owner`，fail-closed）；(3) visibility（personal）；(4) role，dir 授权只作用于 logical 的 `dirs`（`dirs` 按 branch 存储，故授权依赖 branch）；(5) ACL deny 前缀。授权**不传递**：读 r 不意味着可读 r 的 premise。派生快照与主体无关：L0/L1/L2、计数器与 digest 都不含授权；P0–P8 的 `Authorized ≡ true` 自 P9 起在渲染响应时计算（SD13）。
 
-**SD12 head 可回退（ABA 允许）与不可变 kind。** `SetHead` 可指向同一 logical 下任意已提交 revision；v1→v2→v1 后，Sem 状态因 `curvec == A(j)` 恢复 Verified。certificate 提供可选 `strict_no_aba`（§6.4）。**Evidence logical 只有一个 revision**：对 Evidence 的 `AddRevision` / `SetHead` 返回 `ImmutableKind`；因此 `Pin`→Evidence 在 main 上恒为 current，SD11 的 Evidence 豁免只在 branch 视角下才有实际差别。CodeAnchor 的写入规则见 SD18。
+**SD12 head 可回退（ABA 允许）与不可变 kind。** `SetHead` 可指向同一 logical 下任意已提交 revision；v1→v2→v1 后，Sem 状态因 `curvec == A(j)` 恢复 Verified。certificate 提供可选 `strict_no_aba`（§6.4）。**Evidence logical 只有一个 revision**：对 Evidence 的 `AddRevision` / `SetHead` 返回 `ImmutableKind`；因此 `Pin`→Evidence 在 main 上恒为 current，SD11 的 Evidence 豁免只在 branch 视角下才有实际差别。CodeAnchor 的写入规则见 SD18；replica-origin mirror 的 revision 身份同样为 `(logical, content)`，写入与同步受 SD21 约束，非 replica 通道不可移动其 head。
 
 **SD13 汇总 precedence**（参数：branch、epoch、principal；读取时另有 observation 维度）：
 
@@ -193,7 +196,7 @@ L2(r) = ¬Conflicted(r) ∧ (base(r) ∨ ∃j: concl(j)=r, g2(j), ∀i lit2(j,i)
 UNAVAILABLE（denied；不输出 payload/witness/WHY）
  > CONFLICTED
  > STALE(reason)        见下方 reason 规则
- > PENDING(reason)      reason ∈ {Semantic(L1∧¬L2), StructuralUnknown(SD14a), ObservationLag(SD14b)}
+ > PENDING(reason)      reason ∈ {Semantic(L1∧¬L2), StructuralUnknown(SD14a), ObservationLag(SD14b), ReplicationLag(SD21)}
  > CERTIFIED
 ```
 
@@ -215,18 +218,20 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 **SD13 补充（v1.9.0，ADR 0017 §4.5、§5.1）。** UNAVAILABLE（denied）在渲染响应时由唯一的 `redact()` 点计算；快照中 `Dimensions.authorized` 恒为 true，快照与 digest 不随读者变化。store owner 的响应不过滤。
 
 **SD14 UNKNOWN 的两种来源。**
-- (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P10 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
+- (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P11 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
 - (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest（P5b：symbol 锚点由其宿主文件的原始 OID 代表，`CTXPOS02` 头部记录生效（base 已断言）symbol 锚点所属各语言的 normaliser 版本（v1.6.10）；daemon 实时采样从不解析，宿主文件任何字节变化在 observer 下次扫描前为 lag，ADR 0012 §6）；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
 
-两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，若闭包内任一 scope 的 watermark 自签发后推进，判为 `Invalid`。
+两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，闭包内任一代码观测 scope 的 watermark 自签发后推进即 `Invalid`。P10 团队 mirror 的 scope 从不可变 origin 导出为 `team:<team-id>`；其读时 freshness 为 `ReplicationLag`，与代码的 `ObservationLag` 分开。团队 watermark 的普通推进不使 strict 证书失效，`gap: true` 才保守视为该团队所有 mirror 的 strict change；具体历史与 announce fence 见 SD21。`left` sentinel 表示已退出且 base 已撤销，不视为 lag。
 
-多个 PENDING 原因同时成立时，汇总原因依次为 ObservationLag、StructuralUnknown、Semantic；仍服从 SD13 的 UNAVAILABLE / CONFLICTED / STALE 优先级。P0 的 observation 恒为 N_A；未来维度只在纯函数 golden 中合成。
+多个 PENDING 原因同时成立时，汇总原因依次为 ObservationLag、ReplicationLag、StructuralUnknown、Semantic；仍服从 SD13 的 UNAVAILABLE / CONFLICTED / STALE 优先级。P0 的 observation 恒为 N_A；未来维度只在纯函数 golden 中合成。
 
 **SD15 WHY / WHY_NOT 与 witness。** WHY 返回 base 标记与**全部** active 规则；`Ref` 单独列为 non-supporting references。canonical witness：base 优先，否则 RuleId 最小的 active 规则；L1/L2 各用对应层 active 集。WHY_NOT 对每条规则列出：disabled、gate（附 A(j) 与 curvec）、每个失败 incidence（`Unsupported(p)`、`NotCurrent{p, head}`、`SupersededPinned{p, head}`），按深度上限递归。对 principal 未授权的 premise / 规则，仅输出 `Redacted{count}`，不输出 id、payload、witness。v1.9.0（ADR 0017 §5.2–§5.5）：条目按 key 读取而 logical 不可见时只回显调用者给出的 key，状态 UNAVAILABLE（不区分“不存在”）；WHY / WHY_NOT / IMPACT 另报告 `redacted_rules`；diff 形响应（commit 结果、WhatIf、Diff、changes、merge 报告）删去隐藏条目并附 `redacted: count`；证书响应不含 vector，只给 `vector_size`；错误只回显调用者自己的引用。
 
+**SD15 团队补充（P10）**：mirrors 只进入本地 FTS 与本地证书；`ctx_read` 可附 root status/sequence 和调用者可见的 proposal 标记。mirror 的 WHY 标注 root 状态，团队 WHY 用 `(key, content)`，不用 replica id；仍服从本地 P9 脱敏。队列、WHAT_IF 与 `conflicted{queue}` 的可见性见 SD21。
+
 **SD16 epoch 与时间。** 全局 u64，跨 branch 共用，成功提交才 +1。certificate 依赖版本向量，**从不依赖 epoch 相等**。只建模 transaction time；valid time 仅作 metadata（非目标）。
 
-**SD17 conflict 与递归预留。** P0–P5b 中 Conflict 恒为 NONE（字段保留）。P6 起（v1.6.8 owner 决定，ADR 0013 §6.4：merge 冲突须阻塞 CERTIFIED）open 的 Conflict artifact 是 L2 的 eager node gate，不影响 L0/L1（de Kleer：contradiction 检测始终 eager）。节点布局预留 `cnr/cr` 计数器、规则 flags 预留 `RECURSIVE` 位；oracle 用 least fixpoint，对有环输入同样正确，作为 P11 递归支持的 reference。
+**SD17 conflict 与递归预留。** P0–P5b 中 Conflict 恒为 NONE（字段保留）。P6 起（v1.6.8 owner 决定，ADR 0013 §6.4：merge 冲突须阻塞 CERTIFIED）open 的 Conflict artifact 是 L2 的 eager node gate，不影响 L0/L1（de Kleer：contradiction 检测始终 eager）。节点布局预留 `cnr/cr` 计数器、规则 flags 预留 `RECURSIVE` 位；oracle 用 least fixpoint，对有环输入同样正确，作为 P12 递归支持的 reference。
 
 **SD18 CodeAnchor（P5 起）。**
 1. logical 键 `code:<repo>/<path>[#<symbol>]`，kind = CodeAnchor。P5b 起 symbol 按 ADR 0012 §3 可逆编码到小写字母表（大写 → `-`+小写，`_` → `.`，段分隔 `:`，`#` 标记 trait / 哈希段；哈希段固定为对源文本去掉 ASCII 空白后 BLAKE3 的前 8 位小写十六进制，永不随 normaliser 改变）；文件路径不得再含 `#`；key 到路径的映射取自已提交的 descriptor，不拆分 key。
@@ -234,8 +239,10 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 3. **写入通道**：CodeAnchor logical 的 `CreateLogical / AddRevision / SetHead / AssertBase / RetractBase` 只接受可信 observer 通道（P3 起 daemon 按 transport 区分 `observer` 与 `agent` 通道，P9 之前即生效）；其他来源返回 `KindRestricted`。CodeAnchor 不得作为规则结论（§2.5）。
 4. **revision 身份**：以 `(logical, content)` 去重——相同内容复用已有 RevisionId（`SetHead` 回指），从而 ABA 恢复（SD12）对锚点成立；新锚点 revision 以 `adopt_as_base=true` 创建。
 5. **observer 分类**：内容未变 → no-op；内容变化 → `SetHead`（下游由各自 incidence kind 决定：`Cur` → STALE；`Sem` → PENDING；`Pin` → `STALE(SupersededPinnedPremise)`）；文件/symbol 消失或歧义（0 个或多个匹配）→ 对当前锚点 revision `RetractBase` + `AnchorBroken` artifact（P5b：同一文件中同一 symbol 路径的多处声明合并为一个 symbol，不再视为歧义；解析错误按局部规则：span 内无 ERROR/MISSING 且没有 ERROR 祖先即 Present（walk 4 起，其计入的同文件上下文项有错误、或其引用且无上下文项绑定的名字出现在所有 symbol span 之外的 ERROR 区域中时，同样视为有错误），按 Git 判定相对 HEAD 已修改（正在编辑）的文件为 unavailable，其余（已提交、未跟踪或 HEAD 未诞生）为 `Broken(parse-error)`，ADR 0012 §2、§4）；恢复时 `AssertBase`。observer **不按变化位置替依赖方选择状态**。git rename 识别为删除 + 新锚点，`AnchorBroken` 附带 rebind 建议。
-6. **watermark**：observer 以 `ObserverWatermark{scope, expected, position}` Op 推进（对当前值 CAS，失败 `WatermarkConflict`；非 observer 通道 `ChannelRestricted`）；多个 observer 来源（git hook、fs watch、PostToolUse）的提交经 CAS 串行化。freshness 判定见 SD14b。
+6. **watermark**：P10 起 `team:` scope 只接受 replica 通道（SD21），observer 不得写入；代码 scope 保持本项规则。observer 以 `ObserverWatermark{scope, expected, position}` Op 推进（对当前值 CAS，失败 `WatermarkConflict`；非 observer 通道 `ChannelRestricted`）；多个 observer 来源（git hook、fs watch、PostToolUse）的提交经 CAS 串行化。freshness 判定见 SD14b。
 7. P6 之前切换 git 分支会导致大量锚点翻转后再恢复（结果正确但有抖动），文档化；P6 起 branch 跟随 git branch。
+
+**SD18.3/18.6 团队补充（P10）**：replica origin 的保护独立于 kind，不把镜像伪装成 CodeAnchor；replica 与 observer 的 scope 和写入域不重叠。
 
 **SD19 Branch 与隔离语义（main 自 P0 起就是一个 branch；多 branch 在 P6 实施）。**
 - **物理全局、逻辑按 branch**：logical、revision、rule 的 arena 与 ID 全局分配，内容不可变；但每个对象带 `origin_branch` 与 `origin_epoch`。对象在 branch b 中**可见**，当且仅当其 origin 是 b、或是 b 的祖先且 `origin_epoch ≤ fork_epoch`、或已经被 merge 进 b。引用不可见对象 → `UnknownRef`。
@@ -252,7 +259,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - **branch 表**（全局输入）：`id, name（git ref 字符集，1–128 字节，main 保留）, parent, fork_epoch, state ∈ {Open, Archived}, syncs`。Op：`CreateBranch{name}`（在父 branch 的 batch 中且独占该 batch；fork_epoch = 该提交的 epoch）、`ArchiveBranch{name}`（在被归档 branch 上且独占；之后该 branch 的 batch → `BranchArchived`；main 不可归档；不支持删除）。
 - **按 branch 的状态**：heads、base、enabled、artifact open、`anchor_unobserved`、ValidationRecord、metadata、watermark、policy、可见集合与 sync points；派生状态（counting、L1/L2、cycle 图与 topo rank、ChangeLog、history、digest）亦按 branch。digest 不含 head currency；branch 表条目与 sync point 只计入**接收方** branch 的 digest。fork 为 O(1) 共享（COW），不复制历史。
 - **head currency 按 branch**：branch b 内，b 的 head 为 CURRENT，否则 SUPERSEDED；`BRANCH_ONLY` 仅在 main 的 current-mode 读取中标注“在 main 被取代、但是某个 open branch 的 head”的可见 revision，汇总为 `STALE(HeadSuperseded)`；历史 / 快照读取不报告 BRANCH_ONLY（T13）。b 中新建未合并的 revision 在 main 不可见（`UnknownRef`）。
-- **sync point 与 merge base**：fork 记 (parent, child) = parent@fork_epoch；merge S→T 记 {S, T} = S@merge_epoch。sync point 是输入（进快照、可重放），全部保留（P10 前不修剪）。merge 基点 B 为“同时被 S 与 T 当前包含”的 sync-point 状态中的极大者（包含关系沿 sync point 与 branch 自身历史传递）；多个极大者（criss-cross）时，对 S≠T 且各候选基值不一致的值一律判冲突（fail closed）。
+- **sync point 与 merge base**：fork 记 (parent, child) = parent@fork_epoch；merge S→T 记 {S, T} = S@merge_epoch。sync point 是输入（进快照、可重放），全部保留（P11 前不修剪）。merge 基点 B 为“同时被 S 与 T 当前包含”的 sync-point 状态中的极大者（包含关系沿 sync point 与 branch 自身历史传递）；多个极大者（criss-cross）时，对 S≠T 且各候选基值不一致的值一律判冲突（fail closed）。
 - **merge 三方分类**（逐 head、base、enabled、(rule, curvec) 的 ValidationRecord、artifact open、metadata 键、policy；“不存在”为独立取值）：S 未变 → 保留 T；仅 S 变 → 取 S；两边变且相同 → 收敛；两边变且不同 → 冲突。head 冲突：保留 T 的 head 并对其开 Conflict artifact；ValidationRecord 冲突：对规则结论 revision 开 Conflict；base / enabled / artifact open 冲突（criss-cross，或对象在 base 中不存在、两侧经跨 branch 去重各自可见）分别对该 revision / 规则结论 / artifact 目标开 Conflict；policy 冲突 → `MergeConflict{Policy}`（拒绝）；metadata 冲突不开 gating artifact（SD7），保留 T 的值并列入 merge 结果，dirs 按路径前缀求交、空结果视为冲突而不应用。冲突 artifact 按 (kind, logical id, rule id) 规范顺序打开，payload 由内核按规范编码导出（ValidationRecord 冲突的值以 curvec 开头）。
 - **merge 步骤**：可见性引入 → 按 RuleId 升序在 T 的 cycle 图上重检（`CycleDetected` 拒绝）→ 应用分类结果（head 移动对 T 的合并前 head 做 CAS；新可见规则与 revision 作为新对象 seed）→ 重算状态 → `require_certified` 检查 → 写 sync point → 类型化结果。`require_certified`（默认 true，D2）：`certify` 为空时，被 merge 移动 head 的 logical 与被 merge 开冲突的 logical 都须 CERTIFIED，否则 `MergeNotCertified`（按 logical id 取第一个失败者）；被 merge 开冲突的 logical 即使冲突目标不是其 head（base、规则结论、artifact 目标）也视为 CONFLICTED，含冲突的默认 merge 因此被拒。
 - **observer 域与 merge**：对 T 中已可见的 logical，merge 不取仅 observer 通道可写的状态（CodeAnchor 的 head / base、AnchorBroken、ObserverWatermark），因此 agent 通道可执行 merge。新可见的 CodeAnchor logical 以 S 的 head / base 作为初始观察，并置 `anchor_unobserved`：期间无论 watermark 如何都读作 `PENDING(ObservationLag)`（**SD14b 扩展**）；T 上提交覆盖该 scope 的 `ObserverWatermark` 时清除。
@@ -260,11 +267,50 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - **session 与 git（D1）**：session 起始时绑定显式给出的 branch，否则绑定与当前 git branch 同名且 open 的 branch，否则 main；整个 session 固定。observer 按其 worktree 当前 git branch 的同名 branch 提交，否则 main。git merge 后由显式 `ctx_merge` / `ctx merge` 认定。agent 可创建、提交与合并（含合并进 main）。
 - **P9 补充（v1.9.0，ADR 0017 §4.1、§6.2、§8.3）**：再加两个全局、不参与 merge、独占 batch、只接受 admin 的 Op：`SetAccess{AccessDoc}` 与 `ShredContent{content}`，帧都在 main 上。`CreateBranch` 记录创建者（batch 的 principal）；`ArchiveBranch` 只接受创建者或 store owner；session 自动绑定只选本主体或 store owner 创建的 open branch；在他人 branch 上提交 → `BranchOfAnotherPrincipal`（main 与 store owner 建的 branch 对所有 writer 开放）。**merge 授权（F14，owner 确认）**：合并进合并者自己创建的 branch，搬运所有可合并的变更，读取仍按 SD11 判定；合并进 main 或 store owner 建的 branch，每个被应用的变更须是合并者能在目标上直接执行的操作——实际改变目标 Policy 只能由 store owner 执行；ValidationRecord 原样搬运（精确 `(rule, curvec)`、原 `validator` 与 `meta`）；CodeAnchor 以非 base、`anchor_unobserved` 搬运，不带 base 权威；base 需 curator，规则需对结论与每个 premise 可读，artifact 需对每个目标可读并可写其一的 lane；任一失败整体拒绝 `MergeUnauthorized{count}`。检查在 merge 事务中、应用之前执行，dry run 与真实 merge 结果一致。
 
+**SD19 团队补充（P10）**：merge 分类与可见性引入均排除 replica-origin logical/revision/head/base/metadata；镜像只能由 replica 通道创建或 `MirrorAttach`，fork 继承后按 replica projection 追平。若被携带的本地规则引用目标 branch 尚不可见的镜像 revision，merge 在发布前拒绝 `MirrorLag`，daemon 先追平目标再尝试；归档 branch 不追平。`ShredContent` 的全局性不变，自动 team shred 的前置检查与独立 main batch 见 SD21。
+
 **SD20 Conflict 的形式定义（v1.7.0，P7 G0，回答 O4；完整定义见 ADR 0015 §2）。**
 - revision `a` 与 `b` 在 branch β 上的*矛盾*是输入层断言（SD7）“a 与 b 不能同时成立”，表示为在 β 上同一 batch 中开启的一对 open Conflict artifact（target 分别为 a、b，`payload_hash` 相同）；单边 Conflict（merge 冲突，或与库外事物的矛盾）只有一个 artifact。artifact 按 branch 存储，merge 按 P6 规则携带。
+- replica-origin logical 不得是任何 Conflict 的一侧（`ReplicaReadOnly`）；本地记录与团队记录的矛盾只能在本地侧记录单边 Conflict。
 - gate 同 SD17：`L2(r)` 另需 r 上无 open Conflict。`open_conflict` 是比 L2 更低层的输入事实，否定是分层的，最小模型唯一；L0、L1、sem、support 不受影响。
 - Conflict 指向 revision 而非 logical：supersede a 后 Conflict 留在 a，新 head 不受阻；另一侧 b 在解决前保持 CONFLICTED（`ctx_conflicts` 标注 `side superseded`）。
 - `not A` 从不作为记录存在；矛盾是两条记录之间的关系，只能作为输入断言。规则结论只能是 revision（SD7），任何推导都不能产生 Conflict；矛盾候选与 LLM 判断也从不开启 Conflict（只能写不 gate 的 PendingReview）。agent 与 admin 通道可开启与解决 Conflict（owner 决定 D3）。
+
+**SD21 团队交换（v1.10.0，P10 G0，ADR 0018 r0.6）。** 以下是规范性契约；实现与 G1–G8 尚待验证。
+
+1. **三个域与身份。** root 是共享 Git remote 的单根、append-only 签名链，不运行远端 daemon；每个 clone 的 edge 有独立本地 store。`<data>/teams/<team-id>/` 的单 branch replica 只重放 root，不读取本地 keys、policy、shred 集合、ACL 或 blobs。团队身份为文档中的 member 与 SSH key，不是任何 edge 的本地 principal。portable ops 只用 key、ContentHash 和期望值，不携带本地稠密 id。团队 id 为创建时选定、跨 compaction 不变的随机 128 bit；team key 为 `team/<32-hex-team-id>/<path>`，lane 为 `team:<id>/<lane>`。`team/` 与 `team:` 保留给 replica，join 遇到已有本地占用即拒绝。
+
+2. **链与位置。** ref 为 `refs/contextdb/team/<id>/g<n>`；拒绝 custom ref 的 host 可选 orphan branch `refs/heads/contextdb-team/<id>/g<n>`。tracking ref 为 `refs/contextdb/remotes/<remote>/team/<id>/*`。一代按 tip 到其受信任首提交的 first-parent path 定位；不达 trust anchor 即 `ReplicaDiverged`，缺对象为 `ReplicaIncomplete`。generation 0 首 entry sequence=0，后继按 first-parent 位置 +1；下一代首 entry 在 accepted Compact 后 +1。拒绝的 entry 仍占位置、推进 sequence，恶意/缺失/重复的 `Ctx-Team-Seq` 不决定后继编号。generation 0 的 genesis tree 只保存团队文档；后代首 entry 保存 checkpoint。首提交无 parent，其他 entry 恰有一个 parent。远端 ref 的 fast-forward/CAS 决定顺序，无 LWW/HLC 裁决。
+
+3. **封装、签名与资源上限。** 普通 entry 的 tree 恰为 `batch`（CXTB）与必要的 `blobs/<BLAKE3-hex>`。blob set 由链决定：accepted proposal 的未 shred revision 字节，加当前 entry 自带字节；只被拒绝 proposal 携带的字节不成为后继的可复用 blob。每个 blob 名必须等于其正文 BLAKE3。trailers 用严格 parser：`Ctx-Team`、`Ctx-Team-Seq`、`Ctx-Author`、`Ctx-Batch-Hash`、`Ctx-Accept-Version`，每个 proposal 一个随机 128 bit `Ctx-Proposal`；未知/非法重复拒绝。checkpoint 首 entry 用 `Ctx-Compacts`，不用 batch hash/proposal。author 与 committer 固定为 `ContextDB <team@contextdb>`、时间 `0 +0000`。签名为 SSH sshsig、namespace `git`、普通 `ssh-ed25519`，不接受 sk key/GPG；用 parent 文档的 member key 原位验证，无时间依赖选项；SHA-256 Git 仓库核验 `gpgsig-sha256`。普通 batch ≤1 MiB/1,000 ops，blob ≤1 MiB，entry 总计 ≤8 MiB，decode 前检查；下载本身可能已发生，不保证敌对巨大 entry 的可用性。
+
+4. **portable ops 与 accept。** team kind 仅 Decision、Plan、Fact、Convention、Evidence；允许 New、revision、CAS head、带 expected bit 的 base、带 expected flag 的 enabled、带 expected metadata hash 的 tags、规则与 disable+add 的 Rebind。premise 只允许 `Pin(content)`、`Cur(content seen)`、`Ref`，全部依赖/引用须为同一团队记录；Cur 在 root 判定时核对所见 head。无 Sem、Summary、CodeAnchor、validator、Conflict、branch 或本地全局 Op。`SetTeamAccess` 与 `Compact` 须独占 entry、仅 admin；`TeamShred` 仅 admin。团队文档含 version、accept_version、固定 id、admins、members/keys、lanes 的 writers/curators、A5 policy 与 limits；key 只属于一个 member，至少保留一名 admin，不能移除仍有记录的 lane；`*members`/`*admins` 为相应集合。root 全部 lane 对全部 member 可读，写与 curate 分开；replica 有从不签名/从不成为 member 的保留 owner，其他 id 按 P9 规则分配而不进入 keyed digest。文档变更从下一 entry 起生效。
+
+`accept(parent_replica, entry)` 是 accept_version 固定的纯函数：结构/大小 → 签名 → parent 文档中的 author/roles → decode → replica 上的 kernel 检查。entry-level 失败拒绝全部 proposal；否则每个 proposal 在前序 accepted 结果上独立作为 batch 决定，前一个被拒不回滚已 accepted 者。全部确定性错误（含每个 TxError、CapacityExceeded、TeamStateLimit）都是 Rejected；只有 I/O、缺对象、不支持的 accept_version 或 panic 才 stall。accepted member/proposal-id 集合参与去重；决定记入 replica op_log，rebuild 可重算。版本冻结 parser、拒绝顺序和 team support v1；P11 优化/P12 递归不得静默改变它。scratch accept 只用 replica Db 的 COW 副本。
+
+5. **team support 与 digest。** team status 在 head 上只有 certified/stale。令 `cur(p) ≡ head(l(p))=p`；`lit(j,i)=T(p_i) ∧ (kind_i≠Cur ∨ cur(p_i)) ∧ (kind_i≠Pin ∨ cur(p_i) ∨ kind(l(p_i))=Evidence)`，则 `T(r)=base(r) ∨ ∃j: concl(j)=r ∧ enabled(j) ∧ P(j)≠∅ ∧ ∀i∈P(j):lit(j,i)`，取 least fixpoint。Ref 不在 P 中，不提供支持；无 Sem/Conflict 时它等于 SD11 的 L1=L2。team digest 是 keyed canonical state 的 BLAKE3：按 key 排序的 kind/lane/tags/status、全部 revision `(content, base, shredded)` 的创建顺序与 head、规范规则及 enabled、团队文档/policy、shred set、accepted `(member, proposal id)` 集合、sequence；不含本地 id。相同链前缀和 accept_version 的所有 edge、checkpoint joiner 必须得到相同决定和 digest。
+
+6. **精确容量。** 普通 proposal 在其 sub-batch 后检查完整 canonical checkpoint 的准确编码大小；超限只拒绝该 proposal。`[limits] state_bytes` 默认1 GiB、最大4 GiB。key/lane≤256 B、tags≤64 KiB、rule≤1,024 个任意 incidence（编码≤320 KiB）、team doc≤512 KiB、member name≤64 B，违反分别为 InvalidKey/InvalidMetadata/InvalidRule/TeamDocTooLarge。普通 proposal 还预留一次未来 Compact 的 accepted-id 空间（64 B member 名上界）；Compact 消耗预留，只检查实际 Σc 的大小和格式上限，不再次预留另一 Compact。降低 limits 的 SetTeamAccess 也必须通过检查。
+
+7. **本地 mirror。** logical 新增不可变属性 `origin = Local | Replica{team}`，参与新对象的身份、快照和 digest；Local 编码为 absent，保持旧对象/op 编码与 digest。保护按 origin 而非 kind/key 判断：只有可信 `Channel::Replica`（store owner 身份）可创建、修订、改 head/base/tags、attach；其他通道不得写，报 ReplicaReadOnly。镜像不受本地 A5（包括 SetPolicy 全扫描）约束，不得作为本地规则结论、Rebind 目标或 Conflict 一侧。它保存全部已导入 revision，head=root head，只有 head 的 base 在 root certified 时为 true，旧 head 的 base 先撤销；只镜像 tags，不复制 dirs/规则，root 的 justification 留在 replica。payload 复制到本地加密 blob store；本地已 shred 的 hash 创建为 unavailable，不使 replica write 因 ContentShredded 失败。有效 catch-up 除容量/I/O 外不应被本地内容拒绝；失败只 stall 该 branch。
+
+8. **可见性与历史。** mirror 在全 store 创建一次，追平顺序 main 后按 id 的全部 open branches。`MirrorAttach{key, head, base}` 通过保留 key→replica-origin logical 的 kernel 索引，把已有 mirror 及其所需 revision 引入当前 branch 并设 head/base；不用于其他 logical，不分配第二个同 key logical。追平直接 diff 本 branch 与指定 root entry 的 replica projection，依次 attach/revisions、base retractions、head moves、base assertions、tags，最后以旧值 CAS 提交该 branch 的 `ObserverWatermark{scope: team:<id>, position: entry_oid, gap}`。每 branch 每 import 用一个净 batch，但从逐 entry delta 行走，只要某 mirror 的 `(head content, head base)` 会回到本 batch 内已有值（含起始值），就从该 entry 前拆批，使 head/base ABA 不消失。branch 起始位置不在 replica 保留的 per-entry log 时净批次置 `gap=true`。fork 继承父 mirror/watermark 后追平；merge 永不搬运 mirror 状态或可见性，引用未可见镜像的规则先报 MirrorLag。已归档 branch 不追平，依赖 mirror 永久为 ReplicationLag。已追平 branch 的 mirror 状态必须等于其 watermark 对应的 replica projection（PROP19）。
+
+9. **依赖、读取与 strict。** 本地 Pin/Cur/Sem/Ref 保持 SD2–SD11 语义；root supersede、retract 或失去 team certification 引起本地 mirror 输入变化，精确传播。mirrors 进入本地 recall、证书与 P9 响应；可选 `[team_lanes]` 为 team:* 的默认 entry，缺省回退 default_lane，缺少该节时 AccessDoc 的 canonical bytes/hash 不变。团队 member 身份从不授予本地读取权限。mirror 的 observation scope 为 origin 派生的 `team:<id>`，canonical L2 observation-support closure 包括它（Sem 同时访问 asserted premise 与当前 head，Ref 不访问）。lag 返回 PENDING(ReplicationLag)、证书 Unknown{lag}，不进 L0/L1/L2/digest。strict 对 mirror 使用本 branch head/base change log；普通 team watermark 前进不失效，无关团队变更保持 strict 有效；自 since_epoch 后的 `gap=true` 视为该团队所有 mirror 的 StrictChange。非 strict 不因 gap 本身失效；实际输入变化仍照常判断。
+
+10. **announce fence。** hook-running Git 在 reference-transaction 的 prepared 阶段、ref 可移动之前，追加 `(ref,new_oid,git_pid)` 到团队 announce 文件并 fsync。daemon 已监听时 hook 发送 announce，等待其在读锁保护的内存状态登记后 ACK（≤500 ms）；文件失败或已连接但 ACK 失败/超时，非零退出令 Git 中止整个 ref transaction。daemon 不在时持久文件为 fence；daemon 启动先监听再读文件，完成前不服务读取。announce 到 ref 被观测包含该 OID、aborted 撤回、或 git 进程退出且 ref 不含 OID 为止保持 pending。daemon 自己的 fetch 在读回 ref 前保持 in-flight。branch watermark≠daemon-observed active-generation tip、有 pending/in-flight 或 import 停止时立即 lag；旧 terminal generation 的 junk 不决定 live position。只对运行 hooks 的更新承诺该即时性；绕过 hooks 的 IDE/JGit/libgit2 更新可能在 `lag_check`（默认2 s）前仍读旧 CERTIFIED。oracle 分别建模 actual tip 与 observed tip/pending。prepared fence 失败可能阻止整个 fetch；可由 owner 用 hooks off 关闭团队组件并放弃即时保证。committed 通知导入；partial clone 的缺对象由用户环境 detached helper 以 rev-list 查缺、按 OID fetch，再通知 daemon。状态相等不重导入，descendant 导入，ancestor 忽略，missing 警告 RootMissing，非合法后继的 unrelated 停为 ReplicaDiverged。hook dispatcher 链接用户原 hook，并保留 preparing/prepared 的 veto。
+
+11. **提案队列与两层授权。** frontend 按写目标路由：全 team 为 proposal，混合 team/local 写目标拒绝 MixedTeamBatch；本地记录可依赖已 accepted mirror，不能依赖未发布 proposal（Unpublished）。团队 proposal 可依赖更早 queued proposal，scratch overlay 按队列顺序应用并记录依赖 id。第一层按连接的本地 principal 对全部读集、conclusion、premise、Ref、expected head、queue 依赖做 P9 Read，再对写 lane 做 Write，对 base 操作做 Curate；隐藏/不存在名不泄露状态，保留全局 key 占用例外。第二层才按绑定 SSH key 的 team member，在 replica 上检查 root roles。所有目标 lane 必须列入 team doc 且本地 egress 允许。队列为 `<data>/teams/<id>/proposals` 的 checksummed append-only frames，记录 author、依赖、状态；请求幂等使用整个 data directory 共用的 client_txn_id，团队请求与本地 batch 不得交叉复用该 id（TxnIdReuse）；root 的随机 proposal id 用于链上去重。回复 `proposed:<id>`，不修改任何本地 branch 的派生状态。队列 status、proposed marker、WHAT_IF 只列本地主体可读项；full-overlay 的隐藏队列冲突只报无名字/原因的 `conflicted{queue}`，这是已声明的存在性边界。
+
+12. **publish 与外部窗口。** hooks 只在用户环境 fetch/sign/push；store 读取、entry/tree 构造、scratch、queue 状态均由 daemon 单 writer 处理。join 由 store owner 执行，以带外 genesis/checkpoint OID 建立信任、拒绝重复 team id，并将 store 绑定到 listed SSH key（未给 --key 时使用用户 Git signing key）；强制 SSH signing 配置，不继承 OpenPGP 默认。pre-push 先做 ≤push_timeout 的同步，再跑 P5a gate；ReplicationLag 单独只警告（其他非 Valid 仍拒绝）。只有目标 team remote 名及 URL 匹配、可确定不是 dry-run 才发布；解析真实 push argv 的 `-n/--dry-run/--dry/-nv/--no-dry-run/--`，不能确认、alias 或读不到 argv 则跳过；--no-verify/无 hooks 只能手动 publish。禁止 dispatcher 删除 team refs 或上传 tracking refs。
+
+默认 publish=auto，输出提案列表后发布；队列有多个本地作者时自动转 confirm。固定本次 proposal 集合后，按 author 在当前 local AccessDoc epoch E 重新检查全部本地授权/egress；失败变 `conflicted{policy}`，依赖者为 conflicted{dependency}，恢复 policy 也不自动发出。confirm 或多 author 队列只列出并持久保存 set token（排序 proposal ids 的 BLAKE3）；owner 的 `publish --yes <token>` 只允许该集合的仍有效子集，新增项等待下次。随后按实际 signer、当前 replica tip 重建、scratch accept，按普通 entry 上限拆分。hook 本地签名后，daemon 在一次写中复核 E 与 proposal 状态并记录 published{commit}，这是授权线性化点；之前的 SetAccess 阻止发布，之后的 SetAccess 从下一次发布生效，已授权的在途 entry 仍可离机。然后外部 push；非 fast-forward 最多3次，重新 fetch/import 并重跑两层检查。daemon 不可达则跳过；team status 对超过 warn_after 的 proposal 或长期离线状态警告，不宣称离线新鲜度；默认失败不阻止代码 push，strict_push 例外；团队 entry 可能已发布而代码 push 随后失败。published 意味“可能在 remote”，不确定结果下一次 fetch 按 author/proposal-id 去重并恢复 queued 或读取决定；逐次状态转移写 queue frame。队列依赖被 conflicted/rejected/dropped 时逐级冲突；重新提议或 drop 由作者决定。
+
+13. **checkpoint 与换代。** generation 0 首 entry 的 OID 在 join 时由 admin 带外给出，后续仅追随 accepted Compact 的单向承诺。先选 Compact 的 author/proposal id，定义 Σc 为 tip 状态加该 id 到 accepted set、sequence +1；其中不记录 T/D/generation/OID。`T=ckpt(Σc,n+1)`、`D=digest(Σc)`，Compact 是独占、signed、CAS 的 `Compact{generation,checkpoint_tree:T,digest:D}`。accept 由现有 blob set 独立重建 Σc 并验证 generation、T、D；不 fetch 下一代。T 为固定格式的 Git tree：CXTK `checkpoint/index` 保存版本、team/generation/sequence/digest/总大小及每 chunk 的44 B索引；`checkpoint/state/000000...` 将 canonical items 按 digest 顺序贪心装入≤1 MiB chunk、不拆 item；`blobs/<hex>` 保存全部未 shred revision 的去重正文。`ckpt_size` 为 index+chunks+blobs 的准确字节数，独立于 generation；在4 GiB内≤8,193 chunks、index≤512 KiB。校验流式核对每 chunk/hash/length、blob名与正文、引用完整性和重建 digest；缺对象 stall，其余不匹配是无效后继。
+
+Compact accepted 后旧代 terminal，后附 entry 全部 ignored：无 sequence/decision log/digest/lag，只显示诊断计数。首提交 F 无 parent，以 T 为 whole tree，`Ctx-Compacts=C_oid`，sequence=C.sequence+1，无 proposal id，由 Σc 的任意 admin 签名并 push 到新 ref。follower 校验 F 后将 Σc 的 sequence 再+1；checkpoint joiner 从带外 F OID 读取并校验 Σc 后同样应用 F，因此二者 digest 相同。C accepted 而 F 未成功时为 CompactPending（已同步内容不 lag，publish 等待）；任意 admin `compact --resume` 从 Σc 重建相同 T，两个并发 resume 由 ref CAS 决定；被占用的非法 successor ref 不信任，admin 可显式 force-ref 恢复。prune 只由 admin 在保留期后删除旧 generations，默认不自动 prune；过期离线 edge 无法找到过渡则停为 ReplicaDiverged，owner 必须以带外 OID rejoin。rejoin 不得改变已有 mirror key 的 kind/lane（TeamKeyMismatch）。rebuild 从可用的最早受信任 generation 重放，不改本地 op_log；缺失 branch 历史置 gap。leave 先持久记录 leaving，阻止恢复导入，再逐 open branch 撤全部 mirror base、写 left watermark，确认后移除 replica/queue/refspec，mirror 历史留在本地日志。
+
+14. **shred 与安全边界。** TeamShred 将 hash 永久加入 root shred set，不影响拓扑/派生支持，禁止后续 reintroduce。导入 mirror 前，只有不存在任何非 mirror 本地记录持有该 hash 时，daemon 才以 owner 在 main 独占提交本地 ShredContent；否则两侧 payload 仍可读并在 team status 声明。local shred 不向 root 发布且不拒绝后续 mirror 写。root Git objects 是明文，remote/各 clone/备份仍可能保存正文，需 compaction+admin prune+各方 git gc 才可能移除，不承诺远端或其他 clone erasure。签名保证 listed key 与 role，不保证语义真实；remote 可隐瞒/回放/改写历史，已知 rewrite 停止，未 fetch 不知道新 root；巨大 entry 的下载、垃圾 entry、持续竞争和被移除 member 抢先 CAS 的可用性/撤销窗口均不在保证内。每个本地 store 的 kernel 真相仍为自身 op_log，root chain 是团队域真相，replica 是其可重建视图；未发布 proposal/announce/信任锚属于交换协议状态，不构成两个 store 对同一 kernel batch 的容错双写。
 
 ### 2.4 已决策的取舍（2026-10-19 用户确认，见 `docs/adr/0001-semantic-decisions.md`）
 
@@ -280,13 +326,14 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 | 规则 | 内容 | 测试 |
 |---|---|---|
-| A1 结论 kind | 禁止 Evidence、CodeAnchor 作为规则结论 | T09h |
+| A1 结论 kind | 禁止 Evidence、CodeAnchor 与任何 replica-origin logical 作为规则结论；MirrorAttach 仅是可见性输入（SD21） | T09h、T120 |
 | A2 premise kind | Summary 作为 premise 只能用 `Sem` incidence：摘要可以提供结构支持（SD2/SD3），但对它的任何使用都必须经过语义复核，摘要的 head 变化总是使下游 PENDING 而不是静默沿用；`Ref` 不是 premise、不传递状态，可指向任何 kind（含 Summary）；其余 kind 可作任意 premise | T09j |
 | A3 body 变化 | payload 只能经 `AddRevision` 改变；**不存在**修改 revision payload 的 Op。metadata（标签、scope 收窄）经 `SetMetadata` 原地修改，不参与任何派生状态 | T09k |
 | A4 导入断链 | importer（客户端组件，如外部导入工具）对前提全部无法解析的规则提交 `OpenArtifact{ImportBroken}`，不提交 `AddRule`；内核不级联 | T09l |
-| A5 policy 锚定 | P0 policy 模型：`Policy{require_deps: Set<Kind>}`（内联于 `SetPolicy`，规范 JSON 与 hash 见 §6.1 输入契约 8）。对 `require_deps` 中 kind 的 logical，在 batch 末尾检查：(a) 本 batch 新分配的每个 revision 必须是至少一条**本 branch 可见、enabled 且有 premise** 的规则的结论（只有 `Ref` 的规则不算）；(b) 这些 kind 的任何 revision 在本 batch 结束时都不得为 base（新建时 `adopt_as_base=true` 或本 batch 中 `AssertBase` 都违规）。因此这类条目只能经由依赖获得支持，依赖失效时必然失去支持，A5 是强制约束而不只是声明。违反时整个事务拒绝，返回 `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}`，不产生 artifact。之后禁用唯一规则是允许的，结果是该条目 STALE。`require_deps` 中的 kind 不能用作无依赖的根事实 | T09m、T09v |
+| A5 policy 锚定 | P0 policy 模型：`Policy{require_deps: Set<Kind>}`（内联于 `SetPolicy`，规范 JSON 与 hash 见 §6.1 输入契约 8）。对 `require_deps` 中 kind 的 logical，在 batch 末尾检查：(a) 本 batch 新分配的每个 revision 必须是至少一条**本 branch 可见、enabled 且有 premise** 的规则的结论（只有 `Ref` 的规则不算）；(b) 这些 kind 的任何 revision 在本 batch 结束时都不得为 base（新建时 `adopt_as_base=true` 或本 batch 中 `AssertBase` 都违规）。因此这类条目只能经由依赖获得支持，依赖失效时必然失去支持，A5 是强制约束而不只是声明。P10 replica-origin logical 豁免本地 A5，包括 SetPolicy 的全扫描（SD21）。违反时整个事务拒绝，返回 `PolicyViolation{kind, logical, reason: NoEnabledRule \| BaseNotAllowed}`，不产生 artifact。之后禁用唯一规则是允许的，结果是该条目 STALE。`require_deps` 中的 kind 不能用作无依赖的根事实 | T09m、T09v |
 | A6 不可变 kind | Evidence 只有一个 revision（SD12） | T09i |
-| A7 受限 kind | CodeAnchor 的写操作与 `ObserverWatermark` 只接受 observer 通道（SD18.3）；oracle 自 P0 起按 `Batch.channel` 执行 | T09h、T46a |
+| A7 受限 kind | CodeAnchor 与代码 scope watermark 只接受 observer；team scope watermark 只接受 replica，observer 不得写 team:（SD18.3、SD21）；oracle 按可信 Batch.channel 执行 | T09h、T46a、T109、T120 |
+| A8 replica origin | origin 不可变；只有 replica 通道可写 mirror；禁止本地规则结论、Rebind/Conflict 目标；merge 不搬运 mirror；MirrorAttach 只引入已有 replica-origin 对象 | T109、T120、T121、PROP13、PROP19 |
 
 ---
 
@@ -302,6 +349,7 @@ Claude Code / Codex ──hooks──> ctx-hook (static Rust bin) ──> local 
                                 ctxd daemon (one per repo / data dir)
                                 ├─ ownership lease (pid+starttime, flock capability probe)
                                 ├─ transport channels: agent | observer | admin (identity bound here)
+                                ├─ trusted internal replica channel (P10; store owner, no agent entry)
                                 ├─ commit actor (sole writer)
                                 │    staged ops → validate / CAS / cycle → net-delta propagate
                                 │    → append op_log (hash chain, durable) → publish snapshot + diff
@@ -310,7 +358,8 @@ Claude Code / Codex ──hooks──> ctx-hook (static Rust bin) ──> local 
                                 ├─ code-anchor observer (P5)
                                 ├─ projections: FTS5 (P3 basic) / hybrid + vectors (P8)
                                 ├─ validator job queue (P7)
-                                └─ git mirror exporter (P8)
+                                ├─ git mirror exporter (P8)
+                                └─ team replica / proposal queue / mirror catch-up (P10)
 CLI: ctx init | status | check | why | why-not | impact | log | diff | replay | doctor | reindex | mirror | gate-report
 ```
 
@@ -352,7 +401,7 @@ contextdb/
 - 索引：`rules_by_premise`（IncId）、`rules_by_concl`、`exact_by_rev`（Cur incidence by premise rev）、`pin_by_rev`（Pin incidence by premise rev，供 L1/L2 增量）、`sem_by_logical`、`refs_by_target`。
 - `CountingState`：`s`、`support`（per rev）、`unsat`、`counted`（per rule）、`sat`（per incidence）；预留 `cnr / cr`。
 - `TopoOrder`：P0 `NaiveTopo`，P1 Pearce-Kelly（兼做 cycle 检查与传播 rank）；节点包含 revision 与 SD5 的虚拟节点 `V_l`（在 l 首次出现 Sem incidence 时创建，补齐 l 现有 revision 的 `h → V_l` 边）。
-- 所有派生状态读取经 `DerivedView` trait（P0 起），以便 P3 替换为 COW snapshot、P10 替换为 lazy 实现。
+- 所有派生状态读取经 `DerivedView` trait（P0 起），以便 P3 替换为 COW snapshot、P11 替换为 lazy 实现。
 - **digest** = blake3(规范序列化(输入层全部内容) ‖ 规范序列化(DerivedSnapshot：s / support / unsat / counted / sat / sem / l1 / l2 / witness，按 id 排序))；不含 epoch 与 CommitStats。SD8、I3、T11、T29 中的 digest 均指此定义。
 - `Maintainer` trait：Counting（本系统）与研究 track 的 FullRecompute / NaiveBfs / JtmsTwoPhase / RevokeAll / TypedMaxLattice 共用 front-end（canon、CAS、cycle、net delta）。
 - `CommitStats`：seeds、nodes_popped、node_flips、incidences_visited（E_visited）、rules_reevaluated、rule_flips、heap_pushes、PK 计数、transient_resets。`NoStats` 零成本；计时器在 `timing` feature 后，保证计数器确定性。
@@ -420,6 +469,8 @@ commit(batch):
 13. 把事务外的 check-then-act（如 PreToolUse 校验后再写外部文件）**宣称为原子保证**。这类校验允许存在（P4 就是），但必须如实声明剩余窗口（§6.4 TOCTOU 声明）；ContextDB 内部的版本校验必须在提交事务内完成。
 14. LLM 自动写入 Rejected 或自动批准写入。
 
+P10 对 #7 的边界：单 store 的 kernel 输入仍只以其 op_log 为准。团队 root 是独立域的签名 Git 链，其 replica 可从受信任链/checkpoint 重建；mirror 通过本地 op_log 的显式 replica batch 生效。未发布 proposal 队列及其状态、join 信任锚/leave/announce 是交换协议的独立输入与恢复状态（SD21），不是对本地 kernel batch 的旁路双写。
+
 ---
 
 ## 4. 验证体系（适用于所有阶段）
@@ -468,7 +519,7 @@ commit(batch):
 
 ---
 
-## 5. 阶段计划（P0–P11）
+## 5. 阶段计划（P0–P12）
 
 依赖关系：
 
@@ -476,7 +527,7 @@ commit(batch):
 P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
                                     └→ P6 ─┘
 （P6 依赖 P5b；P7 依赖 P5b 与 P6；P8 依赖 P7）
-              P9（可与 P6–P8 并行，须在 P10 前完成）→ P10 → P11
+              P9（可与 P6–P8 并行，须在 P10 前完成）→ P10 团队交换 → P11 规模 → P12 递归（研究）
 研究 track R1–R4 自 P1 起并行（§9），共用 harness，不阻塞产品阶段
 ```
 
@@ -605,7 +656,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - revision = 工作树文件 `git hash-object`；`(logical, content)` 去重；分类见 SD18.5；`ObserverWatermark` Op。
 - 读取 / validate 时的 freshness 判定（SD14b）。
 - PreToolUse 启用**按路径过滤**：按 required root 的原始与当前 observation/path support 闭包并集筛选；保留原始 per-root proof 的日志关联与 strict 窗口，不重新签发以掩盖 ABA。未知路径、文件别名不确定、Bash 与未锚定根保守纳入全量检查（ADR 0011）。
-- Git range/pre-push 为点时检查：range 仅选路径；遍历所有相关当前 head，不限会话读集；签发时开始新的 strict 窗口，不宣称整个 Git range 的历史 ABA。pre-push 处理所有 ref pair；仅接受当前 HEAD 且全部注册文件原始字节/类型与该提交一致，其余 Unknown；所有非 Valid 结果硬门控（ADR 0011）。
+- Git range/pre-push 为点时检查：range 仅选路径；遍历所有相关当前 head，不限会话读集；签发时开始新的 strict 窗口，不宣称整个 Git range 的历史 ABA。pre-push 处理所有 ref pair；仅接受当前 HEAD 且全部注册文件原始字节/类型与该提交一致，其余 Unknown；所有非 Valid 结果硬门控（ADR 0011），P10 的单独 ReplicationLag 警告例外按 SD21 与 §6.5。
 
 **Gate P5a**
 - G2：T42a（锚定文件修改 → Cur 依赖 STALE、Sem 依赖 PENDING）、T42c（Pin 指向旧锚点 → `STALE(SupersededPinnedPremise)`）、T43（删除 → AnchorBroken + 下游 STALE）、T43b、T44（watermark 落后 → `PENDING(ObservationLag)` / certificate Unknown）、T46b（删除后以相同内容恢复 → 同一 RevisionId，下游恢复，计数器 == oracle）、T46c（PreToolUse 按路径过滤）、S13-rows-e2e（ObservationLag 行）。
@@ -685,7 +736,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
   - **packing**：token 估计 `ceil(bytes/4)`（响应中写明）；先计头部，不截断标签；装不下的项只计数 `omitted`，不给 handle、证书条目或账本条目；withheld 以头部形式在预算外列出。无 `budget_tokens` 与 `level` 时响应与 P7 相同（只有头部）。
   - **派生 Summary**：`premises{moved,total}` 取自 SD13 witness 规则，相对最近一次 **Verified** 记录的向量计算。**digest 早停**即 revision 按 `(logical, content)` 去重：同内容重录或回退回到同一 revision，下游向量不变、不入队、不写 ValidationRecord；不新增任何 ValidationRecord 写入者。
   - **embedding**（E1、E2）：外部命令适配器，默认关闭；向量为 SQLite BLOB 加内存缓存的暴力余弦检索，不引入 sqlite-vec；嵌入进程用最小环境与空工作目录。embedding 候选进入 P7 的候选表（`source = embedding|both`），按 branch 可见性过滤。
-  - **git 镜像**（E4）：ref 为 `refs/contextdb/b<branch-id>`，创建也用零 OID 做 CAS；树是该 branch 已提交状态的纯函数（不含全局 epoch 与读取时观测维度），段编码单射；trailer 增加 `Ctx-Branch`、`Ctx-Log-Checksum`；`Code-Commit` 取目标仓库 scope 的 ObserverWatermark。tip 先按缓存的 commit id 快速接受，未命中时重放到 `b` 重新渲染校验；不符 → `MirrorModified`（拒绝，`ctx mirror proposals` 列出 supersede 提案，`--force` 先备份），日志被改写 → `MirrorStale{LogRewritten}`。P9 shred / P10 GC 须报告 `MirrorStale{PayloadGone}`。
+  - **git 镜像**（E4）：ref 为 `refs/contextdb/b<branch-id>`，创建也用零 OID 做 CAS；树是该 branch 已提交状态的纯函数（不含全局 epoch 与读取时观测维度），段编码单射；trailer 增加 `Ctx-Branch`、`Ctx-Log-Checksum`；`Code-Commit` 取目标仓库 scope 的 ObserverWatermark。tip 先按缓存的 commit id 快速接受，未命中时重放到 `b` 重新渲染校验；不符 → `MirrorModified`（拒绝，`ctx mirror proposals` 列出 supersede 提案，`--force` 先备份），日志被改写 → `MirrorStale{LogRewritten}`。P9 shred / P11 GC 须报告 `MirrorStale{PayloadGone}`。
   - **E3**：G6 检索查询集由两个独立 agent 标注，不看任何系统输出。
 
 **Gate P8**
@@ -731,7 +782,25 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 
 ---
 
-### P10 — Eager / lazy 混合维护与规模
+### P10 — 团队交换（root / edge）
+
+**G0 passed（2026-11-16）**：ADR 0018 r0.6 accepted；语义与边界见 SD21，[gate 记录](docs/gates/P10.md)。这里只通过设计门，不表示实现已完成。
+
+**范围**：一个 Git 签名线性 root、每 edge 独立 replica、所有 open branch 上的受保护 mirrors；固定 accept_version 的 portable ops 与 team support v1；双层 P9 授权的提案队列、auto/confirm publish、当前策略复核；实际 hooks、prepared announce fence、per-branch catch-up/strict 历史与 gap；单向 checkpoint/compaction/trust anchor；plaintext Git shred 限制。O1–O7：团队无 CodeAnchor/Sem，无未发布 proposal 的本地依赖；custom ref 可回退 orphan branch；只显式 team lane 且 local egress 允许的内容外发；ReplicationLag 单独不拒绝 pre-push，先 bounded sync。无多主、实时/非 Git 同步或会话/validator/向量复制。
+
+**Gate P10**（全部为实施后义务，G0 除外）
+- G1：fmt、clippy `-D warnings`、workspace checks、依赖/许可证检查，含 SSH 与 portable/checkpoint parser 依赖。
+- G2：T109–T121（§8.1），含真实签名/OID、两代 compaction、partial clone、两层授权、confirm 集合、策略线性化窗口、实际 ref hook 与不可达对象检查。
+- G3：独立 oracle 的 PROP17、PROP19 各10,000固定 seeds；PROP18；PROP13 扩展 origin/MirrorAttach/MirrorLag，并回归既有不变量；所有 accept_version 的 golden chains 每 release 运行。
+- G4：fuzz CXTB、CXTK index/chunks、trailer、sshsig、team doc；publish/import/leave/compaction 全恢复点；敌对 stale/deleted/rewritten/oversized refs；announce 前后立即读取（不借助 lag_check 掩盖窗口）。
+- G5（初始、可经 ADR 校准）：remote Linux 导入10,000 entries≤60 s；同量 join 且10 open branches≤120 s；单 entry追平10 branches≤50 ms；local remote 上10 proposals发布增加≤2 s；reference-transaction 为 git commit 增加≤20 ms，移动team ref时 fsync+ACK≤50 ms；100 MiB checkpoint 的压缩/join时间与峰值内存报告；10⁴ mirrors 的 recall p99 相对相同记录数的本地 store≤+10%。报告 fsync、batch 数、COW 内存与额外 streaming buffer。
+- G6：先本机两 clone/两 signing keys/bare remote，再真实团队 remote；两 edge 的 agent 使用≥5天、≥50 accepted entries、≥2 members；每天 digest相等；零丢失 proposal（均可审计为accepted/rejected/conflicted/dropped）；每个root supersede/retract在一次fetch后通过probe显示另一edge STALE/unsupported；零因publish/lag阻断的代码push；最后一次import后不超过一次fetch仍有lag。
+- G7：此前阶段 G2/G3/G4 回归，尤其 P9、PROP13、PROP10/11 与 strict certificate。
+- G8：README/setup/threat model/CHANGELOG 与本 SPEC 同步；非实现者的独立实施复核；设计审阅不替代实施复核。
+
+---
+
+### P11 — Eager / lazy 混合维护与规模
 
 **目标**：在严格读取仍 fail-closed 的前提下降低维护成本，支持更大规模。
 
@@ -741,20 +810,20 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - 可选 Postgres 后端（排序加锁、SKIP LOCKED）用于团队服务器部署。
 - payload GC：只回收不被任何规则（premise/conclusion）、head、base、活证书引用的 revision 的 **payload blob**；拓扑与 op_log 永不删除；snapshot compaction 必须满足 PROP10。
 
-**Gate P10**
+**Gate P11**
 - G2：T61、S13-rows-e2e（StructuralUnknown 行）、T67（GC 后 PROP10 仍成立且被引用 payload 未回收）。
 - G3：lazy 模式下每次 STRICT 读 == oracle；PROP1 在 lazy 配置下重跑。
 - G5：1M revisions 规模 bench（与 P1 同口径），预算在 ADR 中设定。
 
 ---
 
-### P11 — 递归支持与复制（研究性）
+### P12 — 递归支持（研究性）
 
 **范围**
-- 允许正向递归：least fixpoint 语义；`cnr/cr` 计数器 + 动态 SCC 重分类（Hu-Motik-Horrocks 2018 假设静态分层，此处为研究缺口）；DRed / B/F 作为删除策略。SD5 在 P11 改写，须先过 G0。
-- 跨机复制不可变事件（ack watermark + content-key 去重；HLC 只用于事件排序，**不用于 head 裁决**）。
+- 允许正向递归：least fixpoint 语义；`cnr/cr` 计数器 + 动态 SCC 重分类（Hu-Motik-Horrocks 2018 假设静态分层，此处为研究缺口）；DRed / B/F 作为删除策略。SD5 在 P12 改写，须先过 G0。
+- P10 已限定单根 Git 团队交换；多主、实时或其他复制模式仍须另立规范，不能由本阶段递归支持推导出保证。
 
-**Gate P11**
+**Gate P12**
 - G2：T69（`X; X→A; A→B; B→A` 撤销 X 后 A、B 都失效）、T70（Motik et al. 2019 Example 5 引擎版）、T71（Hu-Motik-Horrocks 2018 Example 3 原版，含递归）。
 - G3：递归随机图上 == jacobi lfp oracle（10,000 seed）。
 - 复制的一致性保证需单独 spec，未写出前不得宣称。
@@ -779,7 +848,7 @@ tx.record_validation(rule, curvec_seen, verdict, validator, meta, if_absent)?;  
 tx.set_policy(policy_doc)?;                       // admin channel only
 tx.set_metadata(logical, tags, dirs)?;             // 不影响派生状态
 tx.open_artifact(ty, target, payload_hash)?; tx.resolve_artifact(id, note)?;   // note: P7
-tx.observer_watermark(scope, expected, position)?; // observer channel only
+tx.observer_watermark(scope, expected, position)?; // code scope: Observer; team scope: Replica (gap: P10)
 let committed: CommitResult = tx.commit()?;        // epoch, diff, stats
 
 db.current(logical, ReadMode::Snapshot(epoch))?;   // NodeStatus（逐维度 + summary）
@@ -791,36 +860,41 @@ db.certify(items, principal)?; db.validate_certificate(&cert, live_pos)?;
 
 Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不满足即 fail-closed）。`Snapshot(e)` 以 logical 为目标，返回 epoch e 时的 head 及其在 e 的 NodeStatus；`Historical(e)` 以 revision 为目标，返回该 revision 在 e 的 NodeStatus（不论当时是否为 head）及 payload 状态。目标在 e 尚不存在 → `UnknownRef`。`CertifiedCurrent` 以 logical 为目标，仅当当前 head 的 SD13 汇总为 CERTIFIED 时返回 head、NodeStatus 与 payload，否则返回 `NotCertified{logical, summary}` 且不输出 payload；按 handle 或 `logical@rev` 指定的 revision 若已不是 head，同样 `NotCertified`（T07e）。payload 不版本化，其状态按读取时刻报告。同一 (目标, mode) 的结果按 Wire 编码逐字节稳定（T13），无论来自内存历史、投影或日志重放（ADR 0006 §8）。
 
-**Op 全集**（`contextdb-model`，P0 起冻结，后续阶段只追加）：`CreateLogical{key, kind, scope_lane, content, adopt_as_base}`、`AddRevision{logical, content, adopt_as_base}`、`SetHead{logical, expected, new}`、`AssertBase{rev}`、`RetractBase{rev}`、`AddRule{conclusion, incidences, enabled}`、`SetRuleEnabled{rule, enabled}`、`Rebind{rule, from, to}`、`RecordValidation{rule, curvec_seen, verdict, validator}`、`SetPolicy{policy}`、`ObserverWatermark{scope, expected, position}`、`SetMetadata{logical, tags, dirs}`、`OpenArtifact{type, target, payload_hash}`、`ResolveArtifact{id}`。**没有**修改 revision payload 的 Op。
+**Op 全集**（`contextdb-model`，P0 起冻结，后续阶段只追加）：`CreateLogical{key, kind, scope_lane, content, adopt_as_base}`、`AddRevision{logical, content, adopt_as_base}`、`SetHead{logical, expected, new}`、`AssertBase{rev}`、`RetractBase{rev}`、`AddRule{conclusion, incidences, enabled}`、`SetRuleEnabled{rule, enabled}`、`Rebind{rule, from, to}`、`RecordValidation{rule, curvec_seen, verdict, validator}`、`SetPolicy{policy}`、`ObserverWatermark{scope, expected, position}`、`SetMetadata{logical, tags, dirs}`、`OpenArtifact{type, target, payload_hash}`、`ResolveArtifact{id}`。P10 追加 `MirrorAttach{key, head, base}`，CreateLogical 增加可选 origin、ObserverWatermark 增加 team scope 的 gap（格式 6；Local/无 gap 保持旧编码）。**没有**修改 revision payload 的 Op。
 
 **输入契约（规范性，P0 起；oracle 与 front-end 必须逐条相同）**
 
-1. **Batch**：`Batch{branch, principal, channel: Agent|Observer|Admin, client_txn_id: Option<[u8;16]>, ops}`。幂等语义（P2 起持久化）：
+1. **Batch**：`Batch{branch, principal, channel: Agent|Observer|Admin|Replica, client_txn_id: Option<[u8;16]>, ops}`。幂等语义（P2 起持久化）：
    - `client_txn_id` 在整个数据目录内唯一，只记录**已提交**事务：与该事务的 op_log 记录同时 durable，同时保存 batch 的 canonical hash 与 `CommitResult`。
    - 同一 id 再次提交：canonical hash 相同 → 返回原 `CommitResult`，不重复应用；hash 不同 → `TxnIdReuse{id}`。
    - 被拒事务不留任何记录（I3）。用同一 id 重试被拒的 batch 等于重新执行，因为被拒没有副作用，重试是安全的，结果可能不同。
+   - P10 提案与本地 batch 共用整个数据目录的 client_txn_id 域；proposal 的入队回复/状态通过 durable queue 恢复，不冒充本地 Committed；同 id 跨两域或不同请求内容复用均为 TxnIdReuse（SD21）。
    - `txn_status(id)` → `Committed{epoch, result}`，或 `NotCommitted`（从未提交、被拒、或崩溃前未 durable）。
 2. **引用**：`LogicalRef = Existing(LogicalId) | Key(String) | New(u16)`；`RevRef = Existing(RevisionId) | New(u16)`；`RuleRef = Existing(RuleId) | New(u16)`；`ArtifactRef = Existing(ArtifactId) | New(u16)`。`New(k)` 指本 batch 中**此前的 Op** 按顺序产生的第 k 个（从 0 计）同类对象：`CreateLogical` 产生 1 个 logical 和 1 个 revision；`AddRevision` 产生 1 个 revision（去重命中时仍占用序号 k，解析为已有 id）；`AddRule`、`Rebind` 各产生 1 个 rule；`OpenArtifact` 产生 1 个 artifact。同一 batch 内可以先 `OpenArtifact` 再 `ResolveArtifact{New(k)}`；对非 open 的 artifact 执行 Resolve → `ArtifactNotOpen{id}`。前向引用、越界或引用不可见对象（SD19）→ `UnknownRef`。
 3. **ID 分配**：每类 ID 全局稠密递增（下一个 = 当前 arena 长度），在 Op 执行时于 staged 状态分配，事务拒绝时随 arena 截断一并释放。ID 类型：`LogicalId / RevisionId / RuleId / ArtifactId (u32)`，溢出 → `CapacityExceeded`。`CommitResult` 返回 `new_logicals / new_revisions / new_rules / new_artifacts`，下标即 k。oracle 用同一规则分配，因此同一 EventLog 在所有 mode 中得到相同 ID。
 4. **content**：`ContentHash = blake3(payload bytes)`，32 字节。P0–P1 内核只保存 hash；P2 起 store 要求 blob 在提交前已写入，否则 `MissingBlob`。
-5. **revision 身份 = (logical, content)**，适用于所有 kind：`AddRevision` 的 content 与该 logical 已有 revision 相同时，返回已有 RevisionId，不分配新 ID；`adopt_as_base=true` 等价于对它 `AssertBase`。Evidence 先返回 `ImmutableKind`（检查顺序见 §6.2）。去重按**全局** `(logical, content)` 进行：命中的 revision 若在当前 branch 不可见（origin 为其他 branch），本 Op 同时把它**引入**当前 branch 的可见集合（记入 `branch_visibility`），只引入该 revision 本身，不引入其规则、base、validation（SD19，T73）。
+5. **revision 身份 = (logical, content)**，适用于所有 kind：`AddRevision` 的 content 与该 logical 已有 revision 相同时，返回已有 RevisionId，不分配新 ID；`adopt_as_base=true` 等价于对它 `AssertBase`。Evidence 先返回 `ImmutableKind`（检查顺序见 §6.2）。去重按**全局** `(logical, content)` 进行：命中的 revision 若在当前 branch 不可见（origin 为其他 branch），本 Op 同时把它**引入**当前 branch 的可见集合（记入 `branch_visibility`），只引入该 revision 本身，不引入其规则、base、validation（SD19，T73）。P10 mirror 还须通过 SD21 的 replica channel/origin 检查，不允许普通 AddRevision 借去重引入镜像。
 6. **CreateLogical**：
    - key 须匹配 `^[a-z0-9][a-z0-9._:/#-]{0,255}$`（不含 `@`，`@` 保留给 `logical@rev` 语法），否则 `InvalidKey`。以 `code:` 开头的 key 当且仅当 kind = CodeAnchor。
+   - P10 origin 为 Local 或 Replica{team}，创建后不可变；replica-origin 的 key/lane 必须属于同一 team 的保留命名空间。只有真实 replica channel 可声明该 origin；其余直接本地写的 team/ key 或 team: lane 为 ReservedNamespace，合法 team proposal 则按 SD21 路由队列。
    - key 全局唯一（跨 branch，SD19），已存在 → `LogicalExists{key}`。
    - 同时创建 logical 与第一个 revision，在 `batch.branch` 中把 head 设为该 revision，`adopt_as_base` 决定 base。kind 与 scope_lane 创建后不可变（scope 只能经 `SetMetadata` 收窄）。
 7. **通道**：
    - `SetPolicy` 只接受 Admin。
    - Observer 通道只能执行：`ObserverWatermark`；CodeAnchor logical 的写操作（SD18.3）；以及**目标为 CodeAnchor revision 的** `OpenArtifact{AnchorBroken}` / `ResolveArtifact`（仅限 AnchorBroken）。这样删除锚点的 `RetractBase + OpenArtifact(AnchorBroken) + ObserverWatermark` 可以在一个 observer batch 内原子提交（T09t）。
-   - `ObserverWatermark` 与 AnchorBroken 的 Open/Resolve 只接受 Observer。
+   - 代码 scope 的 ObserverWatermark 与 AnchorBroken 的 Open/Resolve 只接受 Observer。
+   - P10 Replica 仅接受 replica-origin 创建/修订/head/base/tags、MirrorAttach 与 team: watermark；origin 的持久化不依赖调用者自报 channel/principal。Observer 不可写 team: scope。SD21 的本地 shred 步骤由 daemon 另以 owner/Admin 在 main 独占提交，不扩展 Replica 的 Op allowlist。
    - 违反以上规则 → `ChannelRestricted{op, channel}`；非 Observer 通道对 CodeAnchor logical 的写操作 → `KindRestricted`。
-8. **Policy**：`SetPolicy{policy: PolicyDoc}` 内联正文，`PolicyDoc{version: 1, require_deps: BTreeSet<RecordKind>}`。content_hash = blake3(规范 JSON：键排序、无空白、kind 以名称字符串升序排列)。未知 version 或非法字段 → `InvalidPolicy`。Policy 按 branch 存储（SD19：fork 时继承，merge 时按三方差分合入）。A5 的检查在 batch 末尾执行，使用最终 staged policy；所谓“新 revision”只指本 batch **新分配**的 RevisionId（去重命中不算），且 Evidence 与 CodeAnchor 不受 A5 约束。
-9. **ObserverWatermark**：`scope: String`（≤ 256 字节），`position: Bytes`（≤ 64 字节，只比较相等），`expected: Option<Bytes>`（`None` 表示该 scope 尚无 watermark）。
+8. **Policy**：`SetPolicy{policy: PolicyDoc}` 内联正文，`PolicyDoc{version: 1, require_deps: BTreeSet<RecordKind>}`。content_hash = blake3(规范 JSON：键排序、无空白、kind 以名称字符串升序排列)。未知 version 或非法字段 → `InvalidPolicy`。Policy 按 branch 存储（SD19：fork 时继承，merge 时按三方差分合入）。A5 的检查在 batch 末尾执行，使用最终 staged policy；所谓“新 revision”只指本 batch **新分配**的 RevisionId（去重命中不算），且 Evidence、CodeAnchor 与 replica-origin logical 不受本地 A5 约束（含全扫描）。
+9. **ObserverWatermark**：`scope: String`（≤256字节），`position: Bytes`（≤64字节，只比较相等），`expected: Option<Bytes>`（None 表示尚无 watermark）。P10 team scope 只接受 Replica，另有 `gap: bool`（旧 Op 无 gap 等价 false）；gap 作为本 branch 的 strict history 输入随格式6持久化。普通 team watermark 不改变 mirror head/base，gap 也不参与 L0/L1/L2。
 10. **SetMetadata**：dirs 是相对目录路径集合；空集合表示未收窄。目录非空，不能包含空分段、`.`、`..` 或 `*`。已有 dirs 非空时，后续每个目录必须等于或位于某个已有目录之下，且不能恢复为空集合。非法或扩大范围返回 `InvalidMetadata`；tags 不参与派生状态。该错误在引用与通道检查之后、CAS 之前检查。
 11. **P0 EventLog v0**：每行规范 JSON 为 `{"version":0,"batch_hex":"..."}`；batch_hex 是 model 的规范小端二进制编码的十六进制。规范键顺序固定，支持空行，未知 version 拒绝。二进制按声明字段顺序编码，枚举 tag、集合长度与字节边界详见 `docs/EVENTLOG.md`。这是 P0 的测试 trace 格式，P2 durable op_log 另行版本化。P0 仅接受 MAIN branch，其他 branch 返回 UnknownRef。
 12. **Read set（P6）**：`ExpectHeads{entries, source: Client|Certificate(cert_id)}` 在 batch 末尾检查（A5 `PolicyViolation` 之后），逐项与**该 batch 之前**本 branch 已提交的 head 比较，不等 → `ReadSetConflict{logical, read, now}`；同一 logical 多个不同值或 `New` 引用 → `InvalidReadSet`；`source: Certificate` 只能由 daemon actor 追加（客户端提交 → `ChannelRestricted`）。`ctx_commit(expect_cert_valid=true)`：actor 在同组前序 batch 之后、本 batch 之前按完整证书判定校验（非 Valid/ValidRecertified 即拒绝；ValidRecertified 用新 vector），再追加 `ExpectHeads{Certificate}`；幂等以客户端 hash（客户端 ops + flag + batch 的 branch、channel、principal；不含 cert_id 与追加项，证书被 `ctx_check` 重新签发后重试仍返回原结果）判定并持久化于 op_log 帧；无会话证书时 `expect_cert_valid` 以 `Empty` 判定拒绝。
 13. **Branch Op（P6）**：`CreateBranch`、`ArchiveBranch` 须独占 batch，`Merge` 只能与 `ExpectHeads` 同 batch，否则 `SoleOpRequired`；`Merge` 不分配新 revision，A5 对其为空检查；merge 结果以 `CommitResult` 的版本化尾部返回（op_log 格式 3，ADR 0013 §8）。
 14. **验证元数据与格式 4（P7，ADR 0015 §3、§9）**：`RecordValidation` 增加 `meta`、`if_absent`，`ResolveArtifact` 增加 `note: Option<ContentHash>`。新字段都未设置时仍按原 tag（8、13）编码，用到新字段才用新 tag 18 `RecordValidation4`、19 `ResolveArtifact4`，因此格式 3 的 batch 在格式 4 下字节相同、`batch_hash` 不变。`MissingBlob` 扩展到 `meta` 与 `note`（随 batch 经 `Commit.blobs` 提交）；`OpenArtifact.payload_hash` 仍不检查。merge 比较 ValidationRecord 时不含 `meta`（只有 verdict 不同才冲突，仅 `meta` 改变视为未变，取自 source 的记录保留其 `meta`）。daemon 层（协议 5）：`RecordValidation` 只接受 Admin 通道与 validator worker 的进程内身份，agent 的 `Commit` / `WhatIf` / `ctx_commit` 携带它 → `ChannelRestricted`；内核通道规则不变。
 15. **主体与授权（P9，ADR 0017；op_log 格式 5）**：`SetAccess{doc: AccessDoc}` 与 `ShredContent{content}` 为 op tag 20、21，只接受 admin、全局、独占 batch（否则 `SoleOpRequired`），不能出现在 WHAT_IF 中；输入契约 8 的规范 JSON 与 hash 规则同样适用于 `AccessDoc`（非法 → `InvalidAccess`）。主体 id 0–15 与 `0x5641_xxxx` 保留。写入授权在内核事务中按 ADR 0017 §6.2 检查（缺权限 → `Unauthorized{op_index, ref, need}`），dry run（`WhatIf`、`ImpactBatch`）与提交同一谓词。非 owner 主体的 batch 须携带其引入的每个 content hash 字段（`content`、`note`、`payload_hash`、`meta`）的字节，除非该 hash 已属于其可读的 logical（ADR 0017 §6.3）；被 shred 的内容 → `ContentShredded{content}`。
+
+16. **P10 replica 与 portable proposal**：MirrorAttach 通过已提交的全局保留 key 索引解析不可见的已有 mirror，然后在当前 branch 原子引入所需可见性并设 head/base；非 replica origin 拒绝，不能作为普通跨 branch 引用豁免。格式6追加 Channel::Replica、origin、MirrorAttach 与 gap，格式5→6迁移只升级日志头/快照布局；Local absent 保持旧 canonical bytes/hash/digest。protocol8必需，新增 team 请求、proposed 回复、team_lanes 与 queue 状态；客户端与 daemon 协同升级。portable CXTB/checkpoint 的 frozen accept_version 与本地 op_log 格式是不同版本域。
 
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
@@ -833,7 +907,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `LogicalMismatch` | SetHead 的 revision 不属于该 logical；Rebind 的 to 与 from 不同 logical | `InvalidArgument` |
 | `ImmutableKind` | 对 Evidence 的 AddRevision / SetHead（SD12） | 同名 |
 | `KindRestricted` | 非 observer 通道写 CodeAnchor（SD18.3） | 同名 |
-| `ChannelRestricted{op, channel}` | §6.1 输入契约 7（SetPolicy 非 Admin、ObserverWatermark 非 Observer、Observer 通道执行其他 Op） | 同名 |
+| `ChannelRestricted{op, channel}` | §6.1 输入契约 7（SetPolicy 非 Admin、watermark 的 scope/channel 不匹配、受限通道执行 allowlist 外 Op） | 同名 |
 | `InvalidKey{key}` | §6.1 输入契约 6 | `InvalidArgument` |
 | `InvalidPolicy` | §6.1 输入契约 8 | 同名 |
 | `MissingBlob{content}` | P2 起 payload 未先写入 store | 同名 |
@@ -871,6 +945,16 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `SoleOpRequired{op}` | CreateBranch / ArchiveBranch 未独占，或 Merge 与 ExpectHeads 以外的 Op 同 batch | 同名 |
 | `InvalidMerge` / `MergeConflict{kind}` | merge 源不存在或等于目标；policy 不可合并 | 同名 |
 | `InvalidReadSet{logical}` | ExpectHeads 重复或 `New` 引用 | 同名 |
+| `ReservedNamespace` | P10：直接本地写占用 team/ key 或 team: lane（合法 proposal 由 frontend 路由） | 同名 |
+| `ReplicaReadOnly` | P10：非 replica 写 mirror，或把它作为本地规则结论/Rebind/Conflict 目标 | 同名 |
+| `MirrorLag` | P10：merge 携带的规则引用目标 branch 尚不可见的 mirror revision；先追平再执行 | 同名 |
+| `MixedTeamBatch` / `TeamDepOutside` / `Unpublished` | P10：team/local 写目标混合；team rule 依赖非团队记录；本地依赖未发布 proposal | 同名 |
+| `NotTeamMember` / `EgressDenied` | P10：绑定签名 key 非 listed member；本地当前策略不准外发 | 同名 |
+| `ReplicaStalled` / `ReplicaDiverged` / `ReplicaIncomplete` | P10：I/O/不支持版本/panic 导致停导；链改写；缺 Git 对象 | 同名 |
+| `TeamStateLimit` / `TeamDocTooLarge` / `ProposalTooLarge` | P10：逐 proposal checkpoint 容量、team doc 或普通 entry 限额超限 | 同名 |
+| `CompactPending` / `TeamKeyMismatch` | P10：等待受承诺的 successor；rejoin 改变已存在镜像 key 的 kind/lane | 同名 |
+
+**P10 检查顺序**：frontend 保留 P9 `logical_first` 对隐藏名的保护，解析合法写目标后、进入任何本地提交或 proposal queue 之前检查 MixedTeamBatch；只对可读输入进行两层授权与队列处理。kernel 在引用/Unauthorized 与 ChannelRestricted 后、KindRestricted 前检查 ReplicaReadOnly；CreateLogical 在 InvalidKey 后检查 ReservedNamespace。Merge 在分类与授权后、cycle/可见性发布前检查 MirrorLag，失败整个 merge 无痕。TeamStateLimit 在每个 portable proposal 的最终 staged state 上判定，失败不回滚同 entry 已 accepted 的 proposal。
 
 **P6 检查顺序**（v1.6.8，ADR 0013 §9）：幂等 → store 可编码性 → batch 级 `UnknownBranch → BranchArchived → SoleOpRequired` → 各 Op（ExpectHeads：`UnknownRef → ChannelRestricted → InvalidReadSet`；CreateBranch：`InvalidBranchName → BranchExists → CapacityExceeded{Branch}`；Merge：`InvalidMerge → MergeConflict{Policy} → CycleDetected → UnknownRef(certify)`）→ batch 末 `PolicyViolation → ReadSetConflict → MergeNotCertified`。
 
@@ -900,6 +984,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 
 所有工具返回逐维度状态，汇总遵守 SD13。
 
+**P10（protocol8）**：ctx_record/ctx_supersede/ctx_commit 的全团队写目标路由 SD21 proposal，返回 proposed id/状态而非本地 epoch；混合写拒绝。本地记录读取 accepted mirror 时仍使用本地 handle/revision/cert；未发布提案不能作本地依赖。team status/WHAT_IF 与 proposed 标记按本地主体过滤，隐藏 overlay 冲突只返回 conflicted{queue}；published 只表示可能已在 remote，最终 root accept/reject 以导入决定为准。
+
 **P9（v1.9.0，ADR 0017 §5）**：所有工具响应经唯一的 `redact()` 点脱敏（SD15 补充）；`ctx_recall` 的资格含授权，每个主体返回 `min(limit, |可读的合格项|)` 项；`ctx_read` 对不可读的 key 返回 UNAVAILABLE 且不给 payload，被 shred 的 payload 为 `payload: null, unavailable: "shredded"`；`ctx_handoff_begin` 增加 `to`，接受方读不到的条目只计入 `dropped_unauthorized`。证书响应不含 vector（`vector_size`）；访问文档撤销授权后，此前签发的证书与账本读取校验为 `Denied`。
 
 ### 6.4 Certificate
@@ -925,7 +1011,7 @@ Certificate {
 
 0. **日志关联**（P3）：若 `issued_epoch` 超过当前 op_log 尾部，或 op_log 在 `issued_epoch` 的帧校验和 ≠ `log_checksum_at_issue`（已 ack 的帧丢失或经 doctor 截断后 ID 被重新分配）→ `Invalid{LogMismatch}`，与 `Invalid` 同一优先级，并且不进入后续步骤。
 
-1. **strict 检查**（仅 `strict_no_aba=true`）：自各条目的 `since_epoch` 起（被多个条目的闭包共享的 vector 项取其中最早的 `since_epoch`），若 vector 中任一 logical 的 head 移动过（含移走再移回）、vector 中任一 revision 的 base 翻转过、或闭包内任一 scope 的 watermark 推进过 → 结果为 `Invalid{StrictChange}`；**不进入**第 4 步的重新认证，因此替代支持路径不能绕过 strict。
+1. **strict 检查**（仅 `strict_no_aba=true`）：自各条目的 `since_epoch` 起（被多个条目的闭包共享的 vector 项取其中最早的 `since_epoch`），若 vector 中任一 logical 的 head 移动过（含移走再移回）、vector 中任一 revision 的 base 翻转过、或闭包内任一代码 scope 的 watermark 推进过；P10 mirror 改为查该 branch 的 head/base 历史，team watermark 普通推进不计、gap=true 计 StrictChange（SD21）→ 结果为 `Invalid{StrictChange}`；**不进入**第 4 步的重新认证，因此替代支持路径不能绕过 strict。
 2. **逐条映射**：对每个 `required=true` 条目，按 SD13 计算其**当前** logical head 的汇总状态，再按下表映射。该表覆盖 SD13 的全部状态（totality 由 PROP11 检查）：
 
    | 当前汇总 | 条目结果 |
@@ -960,13 +1046,16 @@ Certificate {
 | PostToolUse（Edit/Write/Bash） | 写集合记录；锚点重算入队（Bash 的副作用只能经 git diff 事后检测） | 异步 |
 | Stop / PreCompact / SessionEnd | 冲刷 outbox；declared-vs-done drift → `DriftReport`（P4：session log 记录，A3） | — |
 | git post-commit / post-checkout / post-merge | observer 同步锚点 head 与 watermark | — |
-| pre-push / CI | `ctx check --strict --range origin/main..HEAD`（P5a 起；P4 为按会话 `--strict` 与可选 `--all`，ADR 0010 A4）；range 为点时证明、不声明 Git 范围历史 ABA；所有非 Valid（含 Unknown/Empty）→ 非零退出 | 唯一默认硬门控点 |
+| git reference-transaction（P10） | prepared 持久 announce 并等 daemon ACK，aborted 撤回，committed 通知导入；仅关注当前 joined team 的有效 generations | fence 失败可中止 ref transaction，含同次 fetch 的普通分支；无 hooks 的客户只承诺 lag_check 窗口 |
+| pre-push / CI | `ctx check --strict --range origin/main..HEAD`（P5a 起；P4 为按会话 `--strict` 与可选 `--all`，ADR 0010 A4）；range 为点时证明、不声明 Git 范围历史 ABA；所有非 Valid（含 Unknown/Empty）→ 非零退出；P10 先 bounded team sync，ReplicationLag 单独例外为警告，随后按 SD21 发布 | 唯一默认硬门控点；publish 失败默认不阻止代码 push，strict_push 例外 |
 
 ### 6.6 CLI
 
 `ctx init | status | check [--strict] | why | why-not | impact | log | diff | replay | doctor [--rebuild] | reindex [--fts|--vectors|--all] | mirror export|proposals|status|prune | gate-report <Pn>`（v1.8.0：`export-mirror` 改为 `ctx mirror` 子命令，ADR 0016 §8）
 
 P6：`ctx branch create|list|archive <dir> …`、`ctx merge <dir> <source> [--into B] [--no-require-certified] [--certify K …]`；`status / why / why-not / impact / diff / validate / policy apply` 接受 `--branch`。
+
+P10：`ctx team join <remote> --genesis <oid> [--key <ssh-pubkey>] | sync | status | why <key> | publish [--yes <set-token>] | leave | rebuild | compact [--resume] [--force-ref] | prune | rejoin --genesis <oid> | hooks off`。join/leave/rejoin、confirm publish、compaction 与 prune 的特权要求按 SD21；普通签名/push 只在开发者环境运行，daemon 不读取私人 signing key。fetch refspec 与 hooks 经 dispatcher 安装/移除，P8 mirror 子命令只显示 refs/contextdb/b*，团队 refs 由 team status 显示。
 
 ---
 
@@ -976,7 +1065,7 @@ P6：`ctx branch create|list|archive <dir> …`、`ctx merge <dir> <source> [--i
 op_log(epoch, branch, batch_blob, principal, channel, client_txn_id NULL /*唯一*/,
        client_hash /*格式 3：幂等用客户端 hash*/, batch_hash, result_blob, prev_checksum, checksum)   -- 唯一真相源：自有分段日志的帧（ADR 0006），一帧 = 一个完整已提交 batch；hash 链
 -- 以下表为 SQLite 中的可重建投影，带 projection_watermark(epoch)
-logicals(id, key UNIQUE, kind, scope_lane, dirs_json, owner, origin_branch, origin_epoch)
+logicals(id, key UNIQUE, kind, scope_lane, dirs_json, owner, origin /*Local absent | Replica{team}，P10*/, origin_branch, origin_epoch)
 revisions(id, logical_id, payload_ref /*blake3*/, content_hash, code_commit,
           author_principal, origin_branch, origin_epoch,
           UNIQUE(logical_id, content_hash))                                 -- 不可变；revision 身份 = (logical, content)
@@ -994,7 +1083,7 @@ diff_log 与 watermark_history 增加 branch 列；projection_schema(version)   
 incidences(rule_id, premise_rev, kind /*Pin|Cur|Sem|Ref*/)
 validation_records(branch, rule_id, curvec_hash, curvec_json, verdict, label, validator, prompt_sha256, epoch)
 policies(branch, epoch, content_hash, policy_json)                           -- 按 branch（SD19）；正文内联
-watermarks(branch, scope, position, epoch)
+watermarks(branch, scope, position, epoch, gap /*P10 team scope strict-history bit*/)
 artifacts(id, rev_id, branch, type, state /*open|resolved*/, info_hash, payload, epoch)
 sessions(id, parent_session, harness, repo, branch, head_sha, principal, started_epoch)
 read_ledger(session_id, agent_id NULL, logical_id, rev_id, layer, epoch, required)  -- append-only；agent_id 自 P4（ADR 0010 A9）
@@ -1010,6 +1099,8 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 
 - **op_log 不含 payload 正文**：`batch_blob` 是 Batch 的 canonical 编码，其中 revision 内容只以 ContentHash 出现；唯一的例外是 PolicyDoc（小、非敏感、内联）。payload 只存在 `blobs/`。因此对 blob 做 shred / GC 后，op_log 仍可完整重放：内核只依赖 hash，派生状态不受影响；该 revision 的 payload 状态为 `Unavailable(Shredded | Collected)`，读取返回该状态而非正文；blob 缺失或内容与 hash 不符分别为 `Unavailable(Missing)`、`Unavailable(Corrupt)`（读取时校验 blake3）。erasure 的覆盖范围在 P9 定义（v1.9.0，ADR 0017 §8）：pack 记录为加密的 `CXBE`，key 存于 `keys/keylog-NNNNNNNN`（`"CXKY" | content_hash | key | blake3 check`），shred 重写 key log 并清理投影；投影（recall、vectors、jobs、candidates）增加 `purged_through`，jobs 与 candidates 增加 `Skipped{egress | shredded}`；镜像经 `ctx mirror export --rebuild` 重新生成；备份、快照、swap、SSD 残留与已释放的文件系统块不在保证范围内。canonical 编码格式、durable 顺序与缺失 blob 的恢复行为由 ADR 0006 定稿（P2 G0）。
 - 内存内核是 op_log 的物化视图；除 op_log、blobs 与 session log 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。`sessions`、`read_ledger`、`certificates` 是 session log（ADR 0008 §4）的投影；session log 不参与内核状态。
+- **P10 交换域**：root 是 Git 中受信任的签名链；`teams/<id>/` replica 的日志/索引只物化其 accepted/rejected prefix，可从 chain/checkpoint 重建。`teams/<id>/proposals` 为作者未发布内容与 queued/published/accepted/rejected/conflicted/dropped/listed 状态的独立 checksummed append-only 输入；join trust anchor、leaving 状态与 announce 文件必须持久，publish.lock 只做协议互斥，remote CAS 决定 root 顺序。本地 mirror 变化仍写本地 op_log，不以复制 replica 文件代替提交。
+- **格式6 / protocol8（P10 设计）**：Local origin absent 保持既有 ops/对象/digest；新增 Replica origin、MirrorAttach、team watermark gap；日志5→6与snapshot迁移须过T119。CXTB 是 portable ops，CXTK 是 checkpoint，均受 frozen accept_version 控制。checkpoint 生成不含 Compact commit OID，Σc→T/D→Compact→F 为单向承诺，F再推进sequence；限额与恢复规则见 SD21。
 - EventLog（JSONL / bincode，带 version）是 op_log 的可移植导出；研究 track 的所有 baseline 消费同一份 EventLog。
 - 格式变更必须版本化并提供迁移，迁移有测试（T68）。
 
@@ -1160,17 +1251,30 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 | T106 | P9 | 无访问文档时 P8 测试全部通过；store owner 的响应与 P8 语义相同 |
 | T107 | P9 | 非 owner 用已知 hash 不带字节与用未知 hash 得到同样的 `MissingBlob`（所有 hash 字段、dry run 与提交）；被 shred 的字节 → `ContentShredded`；可读 logical 上的 hash 无需字节 |
 | T108 | P9 | branch 与 merge：SD19 P9 补充每一类各一例（合并进 main 时 Policy 变更、未 curate 的 base、隐藏目标的 artifact、隐藏 premise 的规则 → `MergeUnauthorized`；ValidationRecord 与锚点搬运并保留来源）；合并进自己的 branch 可追上 main；非创建者归档被拒；`BranchOfAnotherPrincipal` |
-| T61 | P10 | lazy 节点 STRICT 读不返回缓存 CERTIFIED |
+| T109 | P10 | portable round trip，无 local id；保留命名空间、A8、MixedTeamBatch、TeamDepOutside；禁止 Summary/CodeAnchor |
+| T110 | P10 | 两 clone+bare remote 的真实 fetch hook；tracking ref 各情况；重导入幂等；partial clone 按 OID 补齐前 ReplicaIncomplete |
+| T111 | P10 | 真实 pre-push 的 CAS 竞争重建、dry-run/alias/--no-verify/另一 remote、强制 SSH 配置、entry 拆分；当前 egress/author 权限与 epoch E 复核；confirm 固定集合不带后来入队项；remote cat-file 检查完整对象库（含不可达） |
+| T112 | P10 | 每种错误与结构拒绝后继续合法 entry，位置编号不受恶意 trailer 控制；未知版本/缺对象/I/O 停导；Ref-only 与 Pin-strict 固定案例 |
+| T113 | P10 | origin→team scope、每 branch lag、archive/left；禁用 lag_check 下立即读取：prepared announce、丢 committed notify、daemon 重启、ACK 超时、hookless 更新的声明边界 |
+| T114 | P10 | publish/import/leave/announce 与 compaction 两步之间的全部 crash 恢复；恢复后立即读，不等待轮询 |
+| T115 | P10 | 每个 open branch 的 Pin/Cur、root retract/失去认证/恢复、leave 的精确传播 |
+| T116 | P10 | head/base ABA、混合返回拆批、无关团队 entry 保持 strict 有效；长期离线/跨 Compact；rebuild 缺历史 gap→StrictChange |
+| T117 | P10 | team_lanes absent hash兼容；非 owner 对隐藏 mirror/queue 的 premise/Ref/readset/supersede 拒绝；Write不含Curate；队列/WHAT_IF无隐藏计数；local shred与root复用不stall；TeamShred遇本地同正文 |
+| T118 | P10 | 真实SSH/OID两代checkpoint，Σc/T/D与F后follower/joiner相等，Compact自身id去重；resume/竞争/占用ref；Compact后junk ignored；>8MiB、精确headroom（Compact不再预留）、逐proposal容量与格式边界；prune/离线 |
+| T119 | P10 | 格式5→6、Local absent兼容、protocol8、全部dispatcher hook与用户prepared veto |
+| T120 | P10 | fork前无mirror→MirrorAttach；merge不搬运镜像；非replica写/本地结论拒绝；A5全扫描豁免 |
+| T121 | P10 | merge缺镜像→MirrorLag并先追平；被拒proposal的blob须重传；terminal旧代不造成lag；root撤base、shred先于mirror创建、过大proposal/alias、leave中断 |
+| T61 | P11 | lazy 节点 STRICT 读不返回缓存 CERTIFIED |
 | T62 | P0/P3 | P0（oracle 版）：两个独立 InputModel 共用一个 epoch 计数器；oracle 的纯函数 `cert_verdict(vector, inputs, live_pos)` 签名不含 epoch，对 epoch 不同但 vector 与输入相同的两个状态给出相同判定。P3（引擎版）：同 branch 的无关提交推进 epoch 后证书仍 Valid，且 `validate` 的签名不含 epoch 参数（只以 issued_epoch 作 strict 区间下界）；跨 branch 部分随多 branch 在 P6 补齐 |
 | T63 | P0 | WHY 返回全部 active 规则，witness 与 oracle 一致，Ref 单列为 non-supporting |
 | T64 | P0 | SetHead 后旧 revision 的 base 不变 |
 | T65 | P3 | certificate 判定（§6.4）：Invalid 与 Unknown 同时成立 → Invalid；Pending 与 Unknown → Unknown；required 条目 CONFLICTED → Conflicted；PENDING(StructuralUnknown) → Pending；Sem head 移动并重新验证后 → ValidRecertified；strict 下 head 移动后虽有替代支持 → Invalid{StrictChange}（不得为 ValidRecertified） |
 | T66 | P4 | subagent 证书继承与回传 |
-| T67 | P10 | payload GC 后 PROP10 成立，被引用 payload 未回收 |
+| T67 | P11 | payload GC 后 PROP10 成立，被引用 payload 未回收 |
 | T68 | P2 | 旧格式 op_log 迁移后重放状态一致 |
-| T69–T71 | P11 | 递归：`X; X→A; A→B; B→A` 撤销 X；Motik 2019 Ex.5 引擎版；Hu-Motik-Horrocks 2018 Ex.3 原版 |
+| T69–T71 | P12 | 递归：`X; X→A; A→B; B→A` 撤销 X；Motik 2019 Ex.5 引擎版；Hu-Motik-Horrocks 2018 Ex.3 原版 |
 | S13-rows-fn | P0 | SD13 每一行对汇总函数的纯函数 golden（含 STALE reason 顺序、semantic 维度规则） |
-| S13-rows-e2e | P5a/P6/P7/P9/P10 | 各维度首次可达时的端到端行：ObservationLag（P5a）、BRANCH_ONLY（P6）、CONFLICTED（P7）、UNAVAILABLE（P9）、StructuralUnknown（P10） |
+| S13-rows-e2e | P5a/P6/P7/P9/P10/P11 | 各维度首次可达时的端到端行：ObservationLag（P5a）、BRANCH_ONLY（P6）、CONFLICTED（P7）、UNAVAILABLE（P9）、ReplicationLag（P10）、StructuralUnknown（P11） |
 | D1–D2 | R1 | D1：PACMI 式 max-lattice 在 `J1:A&B→D, J2:E→D` 撤销 A 时误降级 D（计 FI）；D2：RevokeAll(cascade=false) 在 Cur supersede 下漏失效（计 MI） |
 | D3–D4 | R3 | D3：多 key 单 snapshot 证书 vs PlanFence frontier（并发 race）；D4：supersede 触发失效 vs MemTX gate |
 
@@ -1194,10 +1298,14 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 - **PROP10** `rebuild_from_op_log == incremental`（P2）。
 - **PROP11** certificate 判定 == 由 oracle 以相同 `live_pos` 输入重算的判定（P3）。
 - **PROP12** anchors observer 输出 == 由 git 历史全量重算（P5a/P5b）。
-- **PROP13** branch 派生状态 == 在 branch 输入上运行 oracle（P6）。
+- **PROP13** branch 派生状态 == 在 branch 输入上运行 oracle（P6）；P10 扩展 origin、A8、MirrorAttach、MirrorLag 与 team scope，不以 replica mirror 直接写内存绕过 input model。
 - **PROP14** 检索（P8）：随机存储、查询、模式、预算与 level 下，certified 项在该 epoch 都是 CERTIFIED；advisory 标签等于 oracle summary；页面只在合格集耗尽时不足；packing 保持标签与顺序；重建后结果（集合与状态）相同。10,000 seed。
 - **PROP15** 授权（P9，ADR 0017 §11）：随机 `generate_p7` 历史与随机访问文档（2–5 个主体、组、shared 与 personal lane、dir 授权、deny、`curators = *writers`、`code_lanes`，中途撤销与 `SetMetadata`）。检查：`Authorized` 等于 `contextdb-oracle` 中独立的决策表参考；§5 的每种响应经 `redact` 后无隐藏 key、id、revision、rule 或 witness，计数等于参考；派生快照与 digest 与主体无关；每个主体的 recall 返回 `min(limit, |可读合格项|)` 项；写入拒绝（含 merge）等于参考；主体 id 不落在保留区间。10,000 seed。
 - **PROP16** shred（P9）：随机含 shred 的历史，与去掉 shred batch 并重编 epoch 的同一历史比较：拓扑、状态与 digest 在重编下相等；恰好被 shred 的内容为 `Shredded`；重放与 `doctor` 一致。10,000 seed。
+
+- **PROP17** team accept/support（P10）：多 member 的有效/无效链（拒绝后继续合法 entry）、随机本地历史下，各 edge 的 accepted proposal 与 keyed digest 等于独立 `contextdb-oracle` 中 accept_version1/team support v1，含 Ref-only 与 Pin 到旧 revision；10,000 seeds。
+- **PROP18** publish/import（P10）：scratch accept 通过时，发布后导入等于将相同 proposals 按顺序直接作用于 replica；包含 entry 拆分与 CAS 重建。
+- **PROP19** mirror/history（P10）：随机 import、catch-up、fork、merge、crash recovery、rebuild 后，watermark为s的open branch镜像等于replica@s；两追平点之间任一mirror `(head,base)` 有变化，本branch change log必须有对应变化，或有gap保守覆盖；10,000 seeds。
 
 **Coverage 门槛**（PROP1 suite 结束时断言）：≥5% tx 在同一 revision 上混合 head 与 base 翻转；≥5% 含 alternative-support save；≥3% cycle 拒绝；≥3% CAS 冲突；≥3% 同 tx 插入规则及其 premise；≥2% 触发 PK 慢路径（P1 起）。
 
@@ -1224,14 +1332,16 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | SD11 | T15b、T15c、T15d、T24、T42c、T43b |
 | SD12 | T16b-sem、T16b-cert、T09i |
 | SD13 | S13-rows-fn、S13-rows-e2e |
-| SD14 | T44、T61 |
+| SD14 | T44、T61、T113、T116 |
 | SD15 | T63、T17b、T06a |
 | SD16 | T62 |
 | SD17 | T11、T51 |
 | SD18 | T42a/b/c/d/e、T43、T43b、T44、T45、T45b、T46a/b/c/d/e |
 | SD19 | T14、T20a、T20b、T47、T72、T73、T75 |
-| §2.5 | T09h–m、T46a |
-| §6.1 输入契约 | T09p–v、T18b、T73 |
+| SD20 | T50、T78、T84 |
+| SD21 | T109–T121、PROP17–PROP19 |
+| §2.5 | T09h–m、T46a、T109、T120、PROP19 |
+| §6.1 输入契约 | T09p–v、T18b、T73、T109、T117、T119、T120 |
 | I5 | T18、T18b |
 
 ---
@@ -1255,7 +1365,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | R1 | P1 | `Maintainer` baseline 模式（NaiveBfs、JtmsTwoPhase、RevokeAll{cascade_on_supersede}、TypedMaxLattice）；`contextdb-workload`（chain、tree、hub、multi_support(p_alt)、modular、skewed_hotset、agent_scenario、ShapeStats）；`contextdb-harness`（EventLog replay、逐 epoch diff、minimizer）；D1、D2；H2a / H2b 首批图 |
 | R2 | R1 | DD baseline，起点 `docs/research/prototypes/ddproto`（differential-dataflow 0.25.1 / timely 0.31.0，encoding A/B，调优 worker / batch / arrangement）；DBSP 有条件（需含 Feldera #7284 修复的版本，或 0.349.0 + `docs/research/prototypes/dbsp-0.349.0-pr7284-backport.patch`；独立 toolchain）；H1 layout ablation |
 | R3 | P3 | 认证 baseline 与 stale_race 生成器（ρ、keyspace、d、λ、δ，trap/control 对）；D3、D4；H3 |
-| R4 | P10 | H4；端到端 baseline（GitMemory、Graphiti-structural / native 固定版本、CoMemBench 子集） |
+| R4 | P11 | H4；端到端 baseline（GitMemory、Graphiti-structural / native 固定版本、CoMemBench 子集） |
 
 **准入规则**：任何 baseline 必须在同一 EventLog 上通过逐 epoch oracle harness 才能进入比较（DBSP 0.349.0 实测在 2400 epoch 中错 117–118 个，这条规则不可省略）。不同保证级别不放进同一排名。
 
@@ -1292,10 +1402,15 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | 敏感内容需删除 | crypto-shred（ADR 0017 §8）：每内容一个 key，shred 重写 key log 并清理投影，purge 完成后 G-SHRED 成立；session log、outbox、他人复制的文本、已外发数据、备份 / 快照 / swap / SSD 与已释放块不在范围内；`content_hash` 确认攻击对 op_log 与投影的持有者成立，经 socket 由 proof of possession 关闭，需要时再引入 keyed hash | P9 |
 | 检索索引滞后绕过认证 | status 是排序前硬过滤（每个 ranker 内判定资格）；索引只用于候选发现；滞后只会漏项并报告 `Lagging` | P8 |
 | embedding 命令收到记录正文 | 默认关闭，由 owner 配置；最小环境、空工作目录、进程组与输出上限 | P8 |
-| 镜像 ref 含全部正文并被推送 | ContextDB 从不推送；普通 `git push` 不带 `refs/contextdb/*`，但 `--mirror` 与备份 / 镜像工具会带上——README 与导出输出说明；导出不写临时文件 | P8 |
+| 镜像 ref 含全部正文并被推送 | P8 的镜像 exporter 从不推送；P10 仅按 SD21 向 team remote 发布显式团队 entry；普通 `git push` 不带 `refs/contextdb/*`，但 `--mirror` 与备份 / 镜像工具会带上——README 与导出输出说明；导出不写临时文件 | P8 |
 | 镜像 proposals 中的文本注入 | proposals 是不可信数据，只供 agent 阅读；任何改动都经 agent 自己的 `ctx_supersede`（CAS、证书、门控） | P8 |
 | 外部 TOCTOU | 声明边界（§6.4）；建议条件写入 / 幂等 / 租约 | P4 |
 | IPC 解析漏洞 | 长度前缀帧、版本化、fuzz | P3 / P9 |
+| 伪造或改写团队链 | 带外 genesis/checkpoint OID；parent文档SSH签名/role；固定accept_version；位置编号、CAS、rewrite停导；remote不保证可用性/新鲜度 | P10 |
+| 未授权提案或已关闭 egress 仍外发 | 本地Read/Write/Curate与team signer双层检查；发布时再查当前AccessDoc；epoch E线性化边界；confirm固定集合；边界后的在途entry仍可发出 | P10 |
+| fetch 后丢通知而读取旧 CERTIFIED | prepared durable announce+daemon ACK，启动先监听再读文件，pending/in-flight即lag；绕过hooks有默认2秒采样窗口 | P10 |
+| 团队正文或 shred 历史泄露 | Git team objects为明文，仓库读者均可见；root/其他clone/备份不在local purge保证内；需compaction、prune、各方gc；非mirror持有同正文时不自动local shred | P10 |
+| 团队管理员或host拒绝服务 | 巨大对象下载、垃圾entry、持续CAS竞争、ref删除与过期generation可能停导；移除member前赢CAS的entry仍有效；fence失败可能中止fetch | P10 文档化 |
 
 **精度边界**：版本一致性 ≠ 语义真理；证明链 ≠ 来源独立性（多条 derivation 可共享同一错误证据，数量不等于置信度）；更新传播 ≠ 自动重新决策；普通 query ≠ action safety；不使用 action gate 的 client 不在保证范围内。
 
@@ -1307,7 +1422,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 - SQL / Cypher / 通用图查询语言。
 - 把 embedding 当作有效性证明。
 - 让 LLM 自动批准写入或替代 oracle 正确性测试。
-- 否定、默认逻辑、非单调规则、任意 ATMS 环境组合（P11 之后另立 spec）。
+- 否定、默认逻辑、非单调规则、任意 ATMS 环境组合（P12 之后另立 spec）。
 - valid time / bitemporal 查询（仅 metadata）。
 - 在内核中调用 LLM 或网络。
 - 宣称 exactly-once 投递（outbox 为 at-least-once + dedup）。
@@ -1327,13 +1442,13 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 7. **PK 最坏情况**：为旧 revision 补替代规则触发大范围重排；单独报告成本，备选整体 Kahn 重排。
 8. **Pin-strict 可用性**：文档化三种替代写法，并提供 lint。
 9. **规则不可删导致 cycle 图只增不减**：长期可能误判合法规则成环；已文档化，物理删除可在后续阶段引入（删除不会破坏拓扑序）。
-10. **单 writer 吞吐上限**：co-located 场景足够；如实报告饱和点；多机需 P11 单独 spec。
+10. **单 writer 吞吐上限**：co-located 场景足够；如实报告饱和点；团队跨机共享限定为 P10 的 SD21；通用复制需单独 spec。
 11. **macOS durability 成本**：fullfsync 显著增加提交延迟；两种设置都报告，默认开启。
 12. **外部 baseline 不稳定**：固定版本、manifest、harness 准入。
 
 ### 12.2 开放问题
 
-- **O1** P11 递归：动态 SCC 下计数器重分类的正确算法与成本。
+- **O1** P12 递归：动态 SCC 下计数器重分类的正确算法与成本。
 - **O2** ValidationRecord 按规则键控导致多条 Sem 规则需多次验证；是否改为 per-revision union 向量（P7 实测后决定）。
 - **O3**（v1.3 已解决）Sem premise 已 supersede 且对新 head h 验证通过时要求 `L1(h)` / `L2(h)`；成环问题由 SD5 的 `V_l` 边解决。
 - **O4**（v1.7.0 已解决）Conflict 的形式定义：见 SD20（ADR 0015 §2）。
@@ -1400,6 +1515,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 1.10.0 | 2026-11-16 | P10 G0：ADR 0018 r0.6 accepted，O1–O7确认；r0.5的1 blocker/5 major/4补充与r0.6的1 P1/3 P2闭环，Compact只消费一次预留。新增SD21（root签名链、frozen accept、replica/mirrors、队列双层授权、egress发布时复核、announce fence、strict历史/gap、Σc单向checkpoint与格式容量）；SD3/6/7/11–15/18–20和A8、API、错误、存储、T109–T121/PROP17–19、威胁边界同步。团队交换为P10，旧规模/GC为P11、递归为P12；计划格式6/protocol8，尚未实现；仅G0通过。 |
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
 | 1.6.5 | 2026-10-22 | P5b G0（ADR 0012 r0.3）：symbol key 可逆编码（哈希段为冻结的源文本哈希）、文件路径禁止 `#`；descriptor `CTXANC02` 与机械导出的 normaliser 版本（仅 migrate 跨版本）；同路径声明合并代替歧义；局部解析错误规则；宿主文件粒度的 `CTXPOS02` 位置，daemon 不解析；G6 改为 missed ≤ 文件级 + 2 个百分点（owner 决定），加权点估计；新增 T42d、T42e、T45b、T46d、T46e |
 | 1.6.6 | 2026-10-23 | P5b G6（ADR 0012 r0.7，owner 决定）：首次 G6 未达阈值（symbol FI 34.2%，missed +13.1 pp）。FI 阈值改为 ≤ 文件级 FI 的一半；symbol 预测 walk 3 加入同文件上下文（引用到的同文件 symbol、import 的来源路径绑定、模块级赋值）；以不重叠的新 symbol 与配对重测，抽样仅含父提交时 symbol 存在的配对；T42b 相应收窄 |

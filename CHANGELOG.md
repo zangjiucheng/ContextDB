@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **P10 G0 passed (2026-11-16).** ADR 0018 r0.6 is accepted and its §12 amendments are incorporated into SPEC v1.10.0: Git-root team exchange, replicas/mirrors, proposal authorisation and publishing, lag fences, strict history and compaction limits. Ordinary proposals reserve one Compact id; Compact checks its actual size. The previous scale/GC phase moves to P11 and recursion to P12. Implementation, format 6 / protocol 8 and G1–G8 remain pending; see [the P10 gate](docs/gates/P10.md).
+
 ## 0.3.0 — 2026-11-10
 
 P7, P8 and P9 pass their gates: semantic validation and conflicts; retrieval, packing and the git mirror; principals, permissions, egress and crypto-shred (optional multi-user mode, `ctxd --multi-user`, off by default).

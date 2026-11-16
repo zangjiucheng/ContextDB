@@ -1,6 +1,6 @@
 # ADR 0018 — P10 team exchange (root / edge)
 
-Status: **Draft (r0.6), G0 not yet passed; open points decided (§0.1).** The owner's full
+Status: **Accepted (r0.6), G0 passed 2026-11-16.** SPEC v1.10.0 incorporates §12; [P10 gate](../gates/P10.md) records the design acceptance. Implementation and G1–G8 remain pending. The owner's full
 review of r0.5 found 1 blocker, 5 majors and 4 further points (R5-B1,
 R5-M1–M5, R5-S1–S4), answered in r0.6 (§14); the owner's closure check
 of r0.6 found 1 P1 and 3 P2, answered in place (§14). r0.1's review found 5
@@ -10,8 +10,7 @@ two stores; r0.3 replaced that join with ordinary local records, and its
 closure check found 2 blockers, 9 majors and 17 minors in how mirrors fit
 the kernel (§14). r0.4 gave mirrors a replica origin the kernel enforces; its closure check
 found no blockers, 5 majors and 14 minors, answered in r0.5.
-Owner decisions of 2026-11-15 are in §0; the open points in §0.1 need the
-owner before G0.
+Owner decisions of 2026-11-15 are in §0. O1–O7 in §0.1 are confirmed; the owner authorised acceptance and SPEC v1.10.0 on 2026-11-16 after the closure review.
 
 ## 0. Scope and decisions taken
 
@@ -59,11 +58,11 @@ replication of a lane; replicating sessions, certificates, validator jobs,
 embeddings or the git mirror; Sem premises and validators inside team
 knowledge (O6); code anchors in team knowledge (O1); recursion.
 
-### 0.1 Open points (owner)
+### 0.1 Decisions (owner)
 
-**Decided 2026-11-16:** the owner chose the recommended option for O1, O2,
-O5 and O7; O3, O4 and O6 take the recommended option (presented to the
-owner, no objection). The options below are kept for the record.
+**Confirmed 2026-11-16:** O1–O7 take the recommended option. The owner
+authorised the final clarification, SPEC v1.10.0 and G0 acceptance after
+the closure review. The options below are kept for the record.
 
 - **O1, code anchors in team knowledge.** Recommended: none in P10; team
   records name code in text or `Ref`. A later milestone anchors team
@@ -960,12 +959,15 @@ a digest — and only the new generation's first commit names `Compact`.
     over 1 MiB together, so a checkpoint within 4 GiB has ≤ 8,193 chunks
     (six-digit names suffice) and an index ≤ 512 KiB, both checked before
     decoding with the total against `state_bytes`;
-  - **headroom for `Compact`**: the limit applies to the state a
-    compaction would produce. A proposal is rejected (`TeamStateLimit`) if
+  - **headroom for `Compact`**: an ordinary proposal reserves space for
+    one subsequent `Compact`. It is rejected (`TeamStateLimit`) if
     `ckpt_size` of the state after it, with one more accepted proposal id
-    of a 64-byte member name added (the `Compact` entry's own), exceeds
-    `state_bytes`. So `Compact` itself always fits, and any legal team
-    can be compacted.
+    of a 64-byte member name added (the future `Compact` entry's own),
+    exceeds `state_bytes`. `Compact` consumes that reserved space: its
+    capacity check is the actual `ckpt_size(Σc) ≤ state_bytes` and the
+    format bounds above; it does **not** reserve a second Compact id.
+    The reserve guarantee applies to states after ordinary proposals;
+    repeated compactions are still subject to their actual encoded size.
   **Verification is streaming**: the index first, then each chunk against
   its BLAKE3 and length as it is read, each blob's name against its bytes,
   every content an item names present unless shredded, and at the end the
@@ -1159,7 +1161,7 @@ Shred stays content-global, as in P9 (m8):
   everyone runs `git gc`. The orphan-branch fallback needs an admin to lift
   branch protection for that deletion. Declared in SPEC §10.
 
-## 12. SPEC changes (at G0)
+## 12. SPEC changes (landed in v1.10.0 at G0)
 
 - §5 phase plan: P10 = team exchange; P11 = the old P10; P12 = the recursion
   half of the old P11 (research). Text tied to the old numbers is reworded.
@@ -1312,7 +1314,7 @@ Shred stays content-global, as in P9 (m8):
   match Σc is rejected; `--resume` rebuilds the committed *T* (r0.6
   closure P1). A legal state larger than 8 MiB (R5-M5) is compacted and
   joined; a state at exactly the limit (with the `Compact` headroom) still
-  compacts; a proposal that would pass the limit is rejected while the
+  compacts by consuming the reserve, without reserving a second Compact id; a proposal that would pass the limit is rejected while the
   others of its entry stand; a
   checkpoint chunk with a wrong BLAKE3 or length, a missing blob and an
   index over `state_bytes` make an invalid successor; a missing object
@@ -1473,3 +1475,11 @@ Shred stays content-global, as in P9 (m8):
   `accept` checks *T* as well as *D*. P2 → §3.1 `TeamStateLimit` per
   proposal; §8.6 item, index, chunk-number bounds and the `Compact`
   headroom, `TeamDocTooLarge`; T111 checks objects with `cat-file`.
+
+- **Final closure and G0 (2026-11-16).** The r0.6 closure's P1 and three
+  P2 points are closed. The final review found no remaining blocker or
+  major; its non-blocking headroom wording is resolved above: ordinary
+  proposals reserve one Compact id, Compact consumes that reserve and
+  checks its actual Σc without reserving another. The owner authorised
+  SPEC v1.10.0, accepted status and G0; G1–G8 are not implementation
+  results of this design review.
