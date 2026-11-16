@@ -1,6 +1,8 @@
 # ADR 0018 — P10 team exchange (root / edge)
 
-Status: **Draft (r0.5), G0 not yet passed; open points decided (§0.1).** r0.1's review found 5
+Status: **Draft (r0.6), G0 not yet passed; open points decided (§0.1).** The owner's full
+review of r0.5 found 1 blocker, 5 majors and 4 further points (R5-B1,
+R5-M1–M5, R5-S1–S4), answered in r0.6 (§14). r0.1's review found 5
 blockers, 10 majors and 15 minors; r0.2's closure check closed most of them
 and found 3 blockers, 7 majors and 17 minors in r0.2's new join between the
 two stores; r0.3 replaced that join with ordinary local records, and its
@@ -134,6 +136,11 @@ Verified on git 2.56 (2026-11-15):
 - in a `--filter=blob:none` clone a plain fetch does not bring the team
   blobs, and `git fetch --no-filter` does.
 
+Verified on git 2.56 (2026-11-16): a `reference-transaction` hook that
+exits non-zero, or is killed (signal 9), in the `prepared` phase of a fetch
+aborts the update (`fatal: in 'prepared' phase, update aborted by the
+reference-transaction hook`); the tracking ref keeps its old value (§8.3).
+
 ## 2. Threat model
 
 ### 2.1 Parties
@@ -161,8 +168,9 @@ Verified on git 2.56 (2026-11-15):
   the team document at the parent lists for the member named in
   `Ctx-Author`, and that member's roles allow the op.
 - **G-TRUST.** An edge follows only a chain that starts at the genesis OID
-  it was given at join (out of band), and successors declared by a signed
-  `Compact` entry on a chain it follows (§8.6).
+  it was given at join (out of band), and successors that an accepted
+  `Compact` entry on a chain it follows commits to by tree and digest,
+  verified against both (§8.6).
 - **G-ORDER.** The root's order is the chain order. A head changes only by
   an entry whose expected values match the replica at its parent.
 - **G-LOCAL.** Only proposals into listed team lanes are ever written to
@@ -173,13 +181,27 @@ Verified on git 2.56 (2026-11-15):
   the head, and every dependent loses support when the record stops being
   certified at the root, e.g. its base is retracted there (§5.3).
 - **G-LAG.** A read whose support includes a mirror of team *T* is never
-  CERTIFIED while the edge has fetched a root it has not mirrored on that
-  branch, or while import is stopped (§8).
+  CERTIFIED while a tracking ref of *T* holds a root that is not mirrored
+  on that branch, provided the ref was moved by a git that ran the
+  ContextDB hooks, or by `ctxd` itself; nor while import is stopped (§8).
+  The ref cannot move before `ctxd` has durably learned the new root
+  (§8.3, the announce fence), so this holds at every instant, not after a
+  polling interval. Ref moves by clients that bypass the hooks are covered
+  only within `lag_check` (§2.3).
 
 ### 2.3 Not guaranteed (documented)
 
 - Freshness against the remote: an edge that has not fetched cannot know
   what it missed. `[team] warn_after` warns; it cannot fail closed offline.
+- Fetches that bypass the hooks (`core.hooksPath` overridden, JGit,
+  libgit2, IDE fetchers) move a tracking ref without the announce fence;
+  `ctxd` sees the new root within one `lag_check` (default 2 s), and until
+  then a read can be CERTIFIED on the older root (§8.3).
+- The fence fails closed: if `ctxd` is running but cannot record an
+  announce, or the announce file cannot be written, the hook aborts that
+  fetch's ref transaction (the whole fetch, normal branches included) with
+  a message; `ctx team hooks off` disables the component and the fence
+  with it (§8.3).
 - Availability under a hostile host or member: ref deletion, rewrites, a
   flood of rejected entries, or one huge entry can stop or slow progress
   (§8.6, §8.8). Custom refs cannot be branch-protected; teams that need it
@@ -210,13 +232,26 @@ Verified on git 2.56 (2026-11-15):
   generation of its team as
   `refs/contextdb/remotes/<remote>/team/<team-id>/*` through one added fetch
   refspec.
-- The chain within a generation is linear. `accept` checks that every entry
-  but the generation's first has exactly one parent, and the first none;
-  that `Ctx-Team-Seq` is the previous entry's plus one (it continues across
-  generations, N9).
+- **Positions and sequence numbers (R5-S1).** A generation's entries are
+  the commits on the first-parent path from its tip back to its first
+  entry, which must be the trust anchor the edge holds for that generation
+  (genesis, or the first entry a verified `Compact` named, §8.6); a path
+  that does not reach it is a rewrite (§8.2). Every commit on the path is an
+  entry with a **position**, and its sequence number is fixed by position
+  alone: the first entry of generation 0 is 0, and each entry is its
+  first parent's plus one; a generation's first entry is the `Compact`
+  entry's plus one (N9). Nothing an entry declares changes the numbering
+  of later entries.
+- `accept` rejects, as a structural check, an entry whose `Ctx-Team-Seq` is
+  absent or differs from its sequence number, an entry other than the
+  generation's first with more than one parent, and a generation's first
+  entry with any parent. A rejected entry keeps its position and number,
+  and its first-parent child is decided next as usual. No entry is ever
+  skipped: there is no "missing parent" case, since the path is defined by
+  first parents and an absent object stalls (`ReplicaIncomplete`).
 - **Genesis** (generation 0's first entry) holds the team document only. A
-  later generation's first entry holds a **checkpoint** (§8.6) and
-  `Ctx-Compacts: <OID of the Compact entry>`.
+  later generation's first entry holds a **checkpoint** (§8.6), as its
+  whole tree, and `Ctx-Compacts: <OID of the Compact entry>`.
 - Every other entry carries one or more **proposals**, each a separate
   sub-batch decided in order (§4.2). Its tree holds exactly `batch`
   (the portable ops of every sub-batch, §4.1, `CXTB` format) and `blobs/<hex>` for each
@@ -228,7 +263,8 @@ Verified on git 2.56 (2026-11-15):
 - Trailers, parsed by ContextDB's own strict parser (duplicates and unknown
   keys reject): `Ctx-Team`, `Ctx-Team-Seq`, `Ctx-Author`, `Ctx-Batch-Hash`,
   `Ctx-Accept-Version`, and one `Ctx-Proposal: <128-bit random id>` per
-  proposal in the entry.
+  proposal in the entry; on a later generation's first entry,
+  `Ctx-Compacts` instead of `Ctx-Batch-Hash` and `Ctx-Proposal`.
 - Author and committer must be exactly `ContextDB <team@contextdb>` at time
   0 +0000, and `Ctx-Accept-Version` must equal the team document's
   `accept_version`; otherwise the entry is rejected (m-N7).
@@ -237,8 +273,16 @@ Verified on git 2.56 (2026-11-15):
   verified in process against the team document at the parent, with no
   time-dependent options. GPG is not supported. In SHA-256 repositories the
   `gpgsig-sha256` header is the one checked.
-- **Limits**: `batch` ≤ 1 MiB and ≤ 1,000 ops, each blob ≤ 1 MiB, an entry
-  ≤ 8 MiB in all, checked before decoding.
+- **Limits of an ordinary entry**: `batch` ≤ 1 MiB and ≤ 1,000 ops, each
+  blob ≤ 1 MiB, the entry ≤ 8 MiB in all, checked before decoding. They do
+  not apply to a checkpoint, which has its own format and limits (§8.6).
+- **Team state limit (R5-M5).** The team document's
+  `[limits] state_bytes` (default 1 GiB) bounds the size of a checkpoint
+  of the replica's state (§8.6), computed exactly from the keyed state. An
+  ordinary entry is rejected (`TeamStateLimit`) if the state after it
+  would exceed the limit, so every accepted state can be compacted. A
+  `SetTeamAccess` that lowers the limit below the current state is
+  rejected the same way.
 
 ### 3.2 Why this makes the root decide
 
@@ -273,7 +317,8 @@ A team batch names nothing by local id:
   `Cur` premise records the content its proposer saw and is rejected if the
   head moved since (N7). `Rebind` is `disable` plus `add`.
 - **Others**: `SetTeamAccess` (sole op of its entry, admins), `TeamShred`
-  (admins, §11), `Compact` (sole op, admins, §8.6).
+  (admins, §11), `Compact{generation, checkpoint_tree, digest}` (sole op,
+  admins, §8.6).
 - **Not allowed**: CodeAnchor, Sem premises, ObserverWatermark,
   ValidationRecord, Conflict artifacts, branch ops, `SetAccess`,
   `ShredContent`.
@@ -302,7 +347,7 @@ commits on the replica) or `Rejected(reason)`.
   Any error the checks or the kernel return for the entry's content —
   every `TxError` of SPEC §6.1, `ImmutableKind`, `InvalidKey`, `UnknownRef`,
   `LogicalMismatch`, `PolicyViolation`, `InvalidMetadata`, `CapacityExceeded`
-  included — rejects. Import **stops** (`ReplicaStalled`) only on I/O
+  and `TeamStateLimit` included — rejects. Import **stops** (`ReplicaStalled`) only on I/O
   errors, missing objects (`ReplicaIncomplete`), an `accept_version` this
   edge does not implement, or a panic. So no crafted entry stops a team.
 - **`accept_version` freezes acceptance and team support (P7).** A version
@@ -324,10 +369,26 @@ commits on the replica) or `Rejected(reason)`.
 ### 4.3 The team digest and team status
 
 **Team status** of a record (under team support v1) has two values (Q4):
-`certified` if its head is supported — the head revision is base, or it is
-the conclusion of an enabled team rule whose premises are certified (for
-`Pin` premises, at the pinned content) — and `stale` otherwise. There is no
-separate "retracted" status: a root retraction is a `RetractBase` on the
+`certified` if `T(head)` holds and `stale` otherwise. On the replica's
+state, SPEC SD11's L1 restricted to Pin, Cur and Ref, with SD3's
+non-empty premise condition written out (R5-S2):
+
+```
+cur(p)    = head(l(p)) = p
+lit(j,i)  = T(p_i) ∧ (kind_i ≠ Cur ∨ cur(p_i))
+                   ∧ (kind_i ≠ Pin ∨ cur(p_i) ∨ kind(l(p_i)) = Evidence)   -- Pin-strict
+T(r)      = base(r) ∨ ∃ j: concl(j) = r ∧ enabled(j) ∧ P(j) ≠ ∅ ∧ ∀ i ∈ P(j): lit(j,i)
+```
+
+`T` is the least fixpoint; `P(j)` is the set of premise incidences, so a
+reference-only rule (`Ref` only) is never active and supports nothing
+(SD3), however its references stand. A `Pin` on a revision that is no
+longer its record's head fails `lit` (Pin-strict), so it supports nothing
+in team status, although SD3's `S` may still count it. With no Sem, no
+validators and no Conflicts in the replica (§4.4), L1 = L2 here and
+`T(head)` is exactly the replica's CERTIFIED summary of the head; SD21
+states team support v1 in this form. There is
+no separate "retracted" status: a root retraction is a `RetractBase` on the
 head, after which the record is `stale` unless a team rule still supports
 it.
 
@@ -431,13 +492,26 @@ each branch" fails with `LogicalExists` on the second branch (P1). So:
   base assertions and tags, in that order, plus
   `ObserverWatermark{scope: team:<team-id>, position: <entry OID>}` as a CAS
   on the branch's previous position;
-- **one net batch per branch per import** (Q5), except that when a mirror's
-  head returns within the import to a content it had earlier in that
-  import (a→b→a), the import is split at those entries so each head move is
-  its own batch and `strict_no_aba` sees it (m7). The replica logs a
-  per-entry delta of the keyed state, so the projection at any entry since
-  the last checkpoint is available; a join or a long-offline edge gets one
-  net batch per branch;
+- **one net batch per branch per import** (Q5), split so that no change to
+  a mirror cancels out inside a batch (R5-M3): if a mirror's pair
+  `(head content, base bit of the head)` returns within the import to a
+  value it had earlier in it — head a→b→a, or base true→false→true on an
+  unchanged head, or any mix — the batch is cut: walking the entries in
+  order, a new batch starts before any entry that would bring a mirror back
+  to a value it already had within the current batch (its value at the
+  batch's start included). So no departure is cancelled by a return in the
+  same batch, and each lands in the branch's change log (SPEC §6.4
+  history). The
+  replica logs a per-entry delta of the keyed state, so the projection at
+  every entry the replica imported is available; catching up from any
+  position in that log is split exactly, whatever the number of entries,
+  including a long-offline edge and an edge that followed a `Compact`;
+- **history gap**: when the branch's watermark position is not in the
+  replica's per-entry log (a `ctx team rebuild` that replayed from a later
+  checkpoint than the branch's position, a rejoin, a joiner whose mirrors
+  survived an earlier leave), the net batch cannot prove what happened in
+  between. Its watermark op then carries `gap: true`, which strict
+  validation treats as a change to every mirror of the team (§5.3);
 - **invariant** (checked by `ctx doctor` and after every catch-up in
   `paranoid` builds): on every open branch whose watermark is *s*, mirror
   state equals the replica projection at *s* (P2, m16, PROP19).
@@ -467,9 +541,28 @@ sets, WHY / WHY_NOT / IMPACT and the pre-push gate treat mirrors as local
 records (G-PREC).
 
 **Certificates.** A certificate binds mirror `(logical, revision)` pairs as
-for any record. A catch-up that leaves a mirror's head and base unchanged
-does not invalidate certificates that read it; only the watermark advances,
-and lag is decided at read time (P5).
+for any record, and lag is decided at read time (P5). For `strict_no_aba`
+(SPEC §6.4 step 1) the proof of "nothing happened" for a mirror comes from
+the branch's own change log, not from the team watermark (R5-M3):
+
+- the head-moved and base-flipped clauses apply to mirrors as to any
+  record; the split rule of §5.2 guarantees that every head move and base
+  flip of a mirror at the root since the last import is a separate local
+  change, so an ABA at the root, within one import or across several, is
+  seen;
+- the clause "a scope's watermark advanced" applies to code observation
+  scopes (SD14b) only. A `team:` scope's watermark advancing does **not**
+  invalidate a strict certificate, so a team entry about other records
+  leaves it valid; a `team:` watermark op with `gap: true` since the
+  entry's `since_epoch` is `Invalid{StrictChange}` for every vector item
+  that is a mirror of that team, since the history cannot prove the
+  mirror unchanged;
+- a non-strict certificate is unaffected by either; `gap` changes nothing
+  in L0/L1/L2.
+
+So a strict certificate over a mirror is Valid only when the branch's log
+proves, entry by entry since `since_epoch`, that the mirror's head and base
+never changed; where that proof is missing it is not Valid.
 
 ### 5.4 Reading team knowledge
 
@@ -496,12 +589,30 @@ form and hash as today (m11). No team member is ever a local principal.
 - Request idempotency uses the client transaction id under SPEC §6.1
   contract 1: unique per data directory, so a team proposal's id can never
   be reused by a local batch or the reverse (`TxnIdReuse`) (m13).
-- Egress is checked here: a proposal into a lane the local document marks
-  egress-off is refused (`EgressDenied`).
-- Roles: the WHAT_IF checks roles as the member bound to the store owner's
-  signing key (§9.2). In multi-user mode the actual signer is the pusher;
-  if that member lacks a role, the proposal becomes `conflicted` at publish
-  (m-N5).
+- **Two layers of authorisation (R5-M2).** A proposal is checked twice,
+  and both must pass; neither stands in for the other:
+  1. **Local layer**, as the requesting connection's local principal *P*
+     under the current local access document, with P9's own checks
+     (SPEC SD11 authorisation, `txn.rs` `Auth`), as if the proposal were a
+     local batch on the mirrors: `Read` on every record and revision it
+     names — a superseded head, a premise, a `Ref`, a rule's conclusion,
+     every `(key, content seen)` of its read set and every earlier queued
+     proposal it depends on (below) — then `Write` on the lane of every
+     record it creates or changes, and `Curate` where P9 requires it
+     (`adopt_as_base`, `AssertBase`, `RetractBase`). A name *P* cannot
+     read is refused `Unauthorized(Read)` exactly as P9 refuses it for a
+     local batch, before anything about the named record's existence or
+     state is used (`logical_first`). Granting an ordinary local writer the
+     curator role on a team lane is how the store owner delegates base
+     promotion through the signer; it is never implied.
+  2. **Team layer**, the scratch `accept` of §6.2 as the member bound to
+     the signing key, under the team document's roles (§9.2). In
+     multi-user mode the actual signer is the pusher; if that member lacks
+     a role, the proposal becomes `conflicted` at publish (m-N5).
+- **Egress (R5-M1).** A proposal into a lane the local document marks
+  egress-off is refused (`EgressDenied`). Egress, and the whole local
+  layer, are checked again at publish against the policy then in force
+  (§7.2); passing at enqueue is not a licence to leave the machine later.
 
 ### 6.2 Checking and storing
 
@@ -512,17 +623,46 @@ by a scratch `accept` on a clone of the replica with every earlier
 overlay, so a record an earlier queued proposal created or changed is
 seen as that proposal left it, and the dependency is recorded (Q16) — and appended to `<data>/teams/<team-id>/proposals`, an append-only
 queue with checksummed frames. Each proposal records the earlier proposals
-it depends on (any it reads or names). The reply is `proposed: <id>,
-publishes on the next git push`.
+it depends on (any it reads or names) and its local author *P*. The reply
+is `proposed: <id>, publishes on the next git push`.
+
+**Queue visibility (R5-M2).** A queued proposal is local data of its
+author, in the lanes it writes. *P* may read a queued record (and depend
+on it) only if *P* may read its lane under the local document, as for a
+local record; reading it requires the local layer of §6.1 over the
+proposal that created or changed it. The local layer resolves names
+against mirrors and *P*-readable queued records only:
+
+- naming a record that exists only in a queued proposal *P* cannot read
+  is refused `Unauthorized(Read)`, the same reply as for a hidden mirror,
+  so a reply never shows whether a hidden proposal exists;
+- creating a key that a hidden queued proposal also creates follows
+  SPEC's one existing exception, the global key namespace (SD19, T75):
+  `LogicalExists`, which says the key is taken and nothing else;
+- the scratch `accept` then runs on the full overlay. A rejection there
+  caused by a hidden proposal is reported to *P* as `conflicted{queue}`
+  with no key, reason or proposal named. This reveals that some queued
+  proposal conflicts with *P*'s, as P9's global key namespace already
+  reveals key use; declared in SD21;
+- `ctx team status`, `ctx_read`'s `proposed` marker and WHAT_IF replies to
+  *P* list only proposals *P* may read; counts of the others are not
+  shown.
 
 ### 6.3 States
 
 `queued` → `published{commit}` → `accepted` | `rejected{reason}`;
 `queued` → `conflicted{key, reason}` (§7.3) → `queued` (re-proposed) |
-`dropped`; `published` → `queued` when the outcome was unknown and a fetch
-shows the chain does not hold it (N7). A proposal whose dependency becomes
-`conflicted`, `rejected` or `dropped` becomes `conflicted{dependency}`
-itself (N7). Every transition is a queue frame.
+`dropped`; `published` → `queued` when the push was refused, or when the
+outcome was unknown and a fetch shows the chain does not hold it (N7).
+`published` is recorded at the publish linearization point (§7.2 step 7),
+just before the push, and means "may be on the remote". A proposal that
+fails the local layer at publish (§6.1: egress now off, its author no
+longer allowed to read, write or curate what it needs) becomes
+`conflicted{policy: <need>}` (R5-M1); it is never published later by
+itself, even if the policy is restored: its author re-proposes or drops
+it. A proposal whose dependency becomes `conflicted`, `rejected` or
+`dropped` becomes `conflicted{dependency}` itself (N7). Every transition
+is a queue frame.
 
 Proposals are shown by `ctx team status` and as `proposed` next to the
 mirror in `ctx_read`; they are never part of any branch's state (O3).
@@ -563,19 +703,49 @@ OpenPGP with `commit.gpgsign`, N8). The key is bound at join (§9.2).
    upload `refs/contextdb/remotes/*`.
 4. Take the publish lock `<data>/teams/<team-id>/publish.lock` (pid
    recorded; a dead holder's lock is broken).
-5. `ctxd` rebuilds every `queued` proposal on the replica tip (§7.3) and runs
-   the scratch `accept` on them in queue order, each as its own sub-batch,
-   exactly as import will (§4.2). `Cur(content seen)` is compared with the
-   state after the earlier sub-batches of the same entry (m1). Those that
-   pass go into **one entry**, split into several consecutive entries when
-   the limits of §3.1 would be exceeded. Because each entry's parent is the
-   tip just imported and `accept` is deterministic, the local outcome is
-   every edge's outcome.
-6. The hook signs and pushes `<commit>:refs/contextdb/team/<team-id>/g<n>`
-   with `core.hooksPath=/dev/null`; `ctxd` records `published`.
-7. On a non-fast-forward refusal, go back to 1's fetch and import, then 5,
-   at most 3 times in all.
-8. Print each proposal's outcome. The code push proceeds whatever happened,
+5. **Fix the publish set.** `ctxd` takes every `queued` proposal, in queue
+   order, and in one read of its state:
+   - **local layer (R5-M1, R5-M2)**: re-checks each against the local
+     access document now in force, at its epoch *E*, as its recorded
+     author (§6.1 layer 1, egress included). Failures become
+     `conflicted{policy}`, and their dependents follow (§6.3), before
+     anything else is done;
+   - **policy (R5-S4)**: if `publish = "confirm"`, or the remaining set
+     holds proposals of more than one local author (O5, m-N15), the hook
+     lists them with their authors and a **set token** (BLAKE3 of the
+     sorted proposal ids, stored with the ids as a `listed` queue frame)
+     and publishes nothing; the code push goes on.
+     `ctx team publish --yes <token>` (store owner) later publishes from
+     exactly that set: proposals queued after the listing are not in it,
+     and a proposal of the set that fails this step drops out with its
+     dependents. The published set is always a subset of the confirmed
+     one, never a superset;
+   - **team layer**: rebuilds the remaining ones on the replica tip
+     (§7.3) and runs the scratch `accept` on them in queue order, each as
+     its own sub-batch, exactly as import will (§4.2). `Cur(content seen)`
+     is compared with the state after the earlier sub-batches of the same
+     entry (m1). Those that pass go into **one entry**, split into several
+     consecutive entries when the limits of §3.1 would be exceeded.
+     Because each entry's parent is the tip just imported and `accept` is
+     deterministic, the local outcome is every edge's outcome.
+   Proposals queued after this step wait for the next publish.
+6. The hook signs the entry locally. Nothing has left the machine: the
+   commit and its objects are unreferenced, so no other push sends them.
+7. **Linearization point (R5-M1).** The hook asks `ctxd` to begin the
+   publish of that commit. In one write, `ctxd` checks that the local
+   access document is still at epoch *E* and that no proposal of the entry
+   changed state, and records them `published{commit}`; if either check
+   fails it refuses, and the hook goes back to 5 under the new policy.
+   A `SetAccess` committed before this write therefore stops the entry; one
+   committed after it applies from the next publish, and the entry in
+   flight, checked under the policy that was in force at the write, may
+   still go out. SD21 states this order.
+8. The hook pushes `<commit>:refs/contextdb/team/<team-id>/g<n>` with
+   `core.hooksPath=/dev/null`.
+9. On a non-fast-forward refusal, `ctxd` returns the entry's proposals to
+   `queued`, and the hook goes back to 1's fetch and import, then 5 (whose
+   local layer runs again), at most 3 times in all.
+10. Print each proposal's outcome. The code push proceeds whatever happened,
    unless `strict_push` (O5).
 
 `pre-push` does not run under `--no-verify` or from clients without hooks
@@ -601,8 +771,10 @@ pushed again; its outcome is read from the replica.
 
 | Point | State left | Recovery |
 |---|---|---|
-| Before the push | unreferenced commit object | ignored; next publish rebuilds |
+| Before step 7 | unreferenced commit object; proposals `queued` | ignored; next publish rebuilds and re-checks the local layer |
+| Between step 7 and the push | `published`, not on the remote | next fetch: absent → `queued`, then the next publish re-checks the local layer |
 | Push outcome unknown | `published`, maybe on the remote | next fetch: found → outcome from the replica; absent → `queued` |
+| Confirm listing shown, not confirmed | proposals `queued`; a `listed` frame | `--yes <token>` publishes from that frame's ids; an unknown token is refused |
 | Pushed, not imported | `published` | next import marks it accepted or rejected |
 | Lock holder killed | stale lock | broken by pid check |
 
@@ -613,7 +785,8 @@ name, running registered components in a fixed order, chaining the user's
 original hook with a backup. Components:
 
 - P5a: `post-commit`, `post-checkout`, `post-merge`, `pre-push` (gate);
-- P10: `reference-transaction` (notify, §8.1), `post-merge` (notify),
+- P10: `reference-transaction` (announce in `prepared`, withdraw in
+  `aborted`, notify in `committed`; §8.1, §8.3), `post-merge` (notify),
   `pre-push` (publish, §7.2).
 
 The fetch refspec is added with `git config --add` and removed on leave.
@@ -625,16 +798,20 @@ in `ctx team status` (m-N12).
 ### 8.1 Import steps
 
 1. `git fetch` (any fetch or pull) updates the tracking refs.
-2. The `reference-transaction` hook, on `committed` only and only for
-   `refs/contextdb/remotes/*/team/*`, notifies `ctxd`. In a partial clone, a
+2. The `reference-transaction` hook acts only on updates of
+   `refs/contextdb/remotes/*/team/*` for a team this store has joined. In
+   `prepared` it **announces** each new OID before the ref can move
+   (§8.3); in `aborted` it withdraws the announce; in `committed` it
+   notifies `ctxd` to import. In a partial clone, a
    plain fetch brings the team commits but not their blobs, and a later
    `--no-filter` fetch of the same refs brings nothing (P10, verified on
    git 2.56). So the hook starts, detached in the user's environment,
    `git rev-list --objects --missing=print` over the new team commits and
    fetches the missing objects by OID through the promisor remote
-   (`git fetch <remote> <oid>…`), then notifies `ctxd` again (Q13). It never vetoes: in `preparing` and `prepared` it
-   runs only the chained user hook and returns that hook's status (M8,
-   m-N2 of r0.2).
+   (`git fetch <remote> <oid>…`), then notifies `ctxd` again (Q13). The
+   hook vetoes only when it cannot make an announce durable (§8.3, §2.3);
+   otherwise it returns the chained user hook's status in `preparing` and
+   `prepared` (M8, m-N2 of r0.2).
 3. `ctxd` resolves the tracking refs through git, applies the cases of
    §8.2, and imports into the replica entry by entry (`accept`), each
    outcome one replica batch, so a crash leaves a prefix.
@@ -665,19 +842,47 @@ SD14b's mechanism, with the team as an observation scope (m12):
   (`Replica{team}` → `team:<team-id>`), not from its lane: `cert.rs`'s
   observation-support closure adds replica-origin logicals beside
   CodeAnchors (P5);
-- the live position is the newest fetched entry of the **newest
-  generation this edge follows**; older generations' refs are never
-  watched, so entries appended to them cannot cause lag (Q3). It is the
-  newest imported-or-fetched entry: `ctxd` keeps
-  it in memory, updated by the hook's notify, by its own fetches and every
-  `lag_check` (default 2 s) from the ref, so a read never spawns git
-  (m-N11);
-- a read whose canonical L2-witness closure contains a mirror of *T* on a
-  branch whose watermark differs from the live position, or while import is
-  stopped (`ReplicaStalled`, `ReplicaDiverged`, `ReplicaIncomplete`), is
-  `PENDING(ReplicationLag)` with certificate `Unknown{lag}`; direct reads
-  of a mirror are included (N5);
-- never stored in L0/L1/L2; the oracle checks it at read time only.
+- the live position is taken on the **newest generation this edge
+  follows**; older generations' refs are never watched, so entries
+  appended to them cannot cause lag (Q3). `ctxd` keeps it in memory, so a
+  read never spawns git (m-N11);
+- **the announce fence (R5-M4).** The fetched tip a read must not run
+  ahead of is the one in the tracking ref, which a hook-running git moves
+  only after the `prepared` phase. There the hook, for each new team OID:
+  1. appends `(ref, OID, pid of the git process)` to
+     `<data>/teams/<team-id>/announce` and fsyncs it;
+  2. if `ctxd`'s socket accepts a connection, sends the announce and waits
+     for its acknowledgement (≤ 500 ms); `ctxd` records it in memory under
+     the lock reads take, then acknowledges;
+  3. if 1 fails, or `ctxd` accepted the connection but did not
+     acknowledge in time, exits non-zero, so git aborts the ref update
+     (verified, §1); if no `ctxd` is listening, the file alone is the
+     fence.
+
+  `ctxd` binds its socket before it reads the announce file at start, and
+  serves no read before that; so an announce written after the read finds
+  the socket and is acknowledged. A crash anywhere in the hook before
+  step 3 returns leaves either no ref change (git aborts on the hook's
+  death) or a durable announce;
+- an announce is **pending** until `ctxd` sees the tracking ref contain
+  its OID (then it is the fetched tip), or the hook's `aborted` call
+  withdraws it, or its git process is gone and the ref does not contain
+  the OID (the transaction ended without it). `ctxd`'s own team fetches
+  (start, `ctx team sync`, the bounded sync of §7.2) mark the team
+  **fetch in flight** until the ref is read back;
+- **lag**: a read whose canonical L2-witness closure contains a mirror of
+  *T* on a branch is `PENDING(ReplicationLag)`, with certificate
+  `Unknown{lag}`, if the branch's watermark differs from the fetched tip
+  `ctxd` holds, or an announce of *T* is pending, or a fetch of *T* is in
+  flight, or import is stopped (`ReplicaStalled`, `ReplicaDiverged`,
+  `ReplicaIncomplete`); direct reads of a mirror are included (N5);
+- `lag_check` (default 2 s) re-reads the refs, catching ref moves that
+  bypassed the hooks (§2.3) and pending announces whose git process died;
+- never stored in L0/L1/L2. The oracle checks it at read time only, and its
+  input model has two positions per team: the **actual** tracking-ref tip
+  and the **daemon-observed** tip with the pending set. G-LAG is the
+  property that, for hook-running fetches, whenever the actual tip is not
+  mirrored on a branch, the observed state already shows lag.
 
 `ReplicationLag` joins SD13's PENDING reasons right after `ObservationLag`.
 
@@ -688,7 +893,10 @@ SD14b's mechanism, with the team as an observation scope (m12):
 | Replica entry not committed | replica at the previous entry | next import redoes it |
 | Replica ahead of a branch's mirrors | that branch's watermark behind; reads lag | next import or start writes the branch's batch (CAS on its watermark) |
 | Some branches written, others not | each branch consistent with its own watermark | the rest are written next |
-| Hook killed | nothing | next fetch, start or `ctx team sync` |
+| Hook killed in `prepared` before the announce is durable | git aborts the update; ref unchanged | nothing to recover |
+| Hook killed in `prepared` after the announce | durable announce; git aborts the update | announce pending until its git process is gone, then dropped (§8.3); reads lag meanwhile |
+| Ref moved, `committed` notify lost (hook killed, `ctxd` restarting) | announce pending, or recorded by `ctxd` at start; ref ahead of the replica | reads lag at once (R5-M4); next `lag_check`, start or `ctx team sync` imports |
+| Ref moved by a client without hooks | no announce | `lag_check` sees it within its interval (§2.3) |
 
 ### 8.5 Leaving and rebuilding
 
@@ -706,26 +914,87 @@ SD14b's mechanism, with the team as an observation scope (m12):
 
 ### 8.6 Compaction and history rewrites
 
-- A compaction is an admin `Compact{generation: n+1, checkpoint: <OID>}`
-  entry appended to generation *n*, naming the first entry of generation
-  *n+1*. `Compact` is terminal: entries appended to generation *n* after it
-  are **ignored** — not decided, not counted in the sequence, not part of
-  any digest — because generation *n+1* continues the sequence (Q3). Generation *n+1* is pushed to a **new ref**; the old ref
-  is not rewritten, so an edge that was offline sees `Compact` when it next
-  fetches and follows (N9).
-- The **checkpoint** holds everything `accept` reads (P9): the keyed team
+**Commitments run one way (R5-B1).** r0.5 had `Compact` name the first
+commit of generation *n+1* and that commit name `Compact`: since a git OID
+is a hash of the object's content, neither could be built first. Now
+`Compact` commits only to things that exist before it — a git **tree** and
+a digest — and only the new generation's first commit names `Compact`.
+
+- **The checkpoint** holds everything `accept` reads (P9): the keyed team
   state of §4.3 — every record with all its revisions and their bytes
   (except shredded ones), per-revision base, metadata, every rule with its
   `enabled` flag — plus the team document, the shred set, the accepted
-  `(member, proposal id)` pairs and the sequence number. It is signed by
-  the admin who wrote `Compact`.
-- An edge that imported generation *n* follows only if the checkpoint's
-  team digest equals its own at the `Compact` entry. A **joiner** that
-  starts at a later generation is given that generation's first-entry OID
-  out of band (§8.7), as genesis is.
+  `(member, proposal id)` pairs and the sequence number. It is a git tree,
+  a deterministic function of the replica state, so any admin computing it
+  from the same state gets the same tree OID:
+  - `checkpoint/index` (`CXTK` format, ≤ 1 MiB): `accept_version`, team
+    id, generation, sequence number, team digest, the total size, and for
+    each chunk its name, BLAKE3, byte length and item count;
+  - `checkpoint/state/<six digits>`: the canonical state as a sequence of
+    items (a record header, a revision, a rule, the team document, a shred
+    entry, an accepted proposal id) in digest order, packed greedily into
+    chunks of ≤ 1 MiB; an item is never split and is ≤ 1 MiB itself;
+  - `blobs/<hex>`: each content a non-shredded revision holds, once,
+    ≤ 1 MiB as for ordinary entries.
+
+  **Limits (R5-M5)**: the ordinary entry limits of §3.1 do not apply; the
+  index's total size must be ≤ the team document's `state_bytes`, and each
+  file within its bound, all checked before decoding. Accepted states
+  always fit (§3.1 `TeamStateLimit`), so any legal team can be compacted.
+  **Verification is streaming**: the index first, then each chunk against
+  its BLAKE3 and length as it is read, each blob's name against its bytes,
+  every content an item names present unless shredded, and at the end the
+  digest of the rebuilt state against the index's digest. A missing
+  object stalls (`ReplicaIncomplete`) and is fetched by OID (§8.1); any
+  other failure makes the commit an invalid successor (below). The format
+  is part of `accept_version`.
+- **Step 1, `Compact`.** An admin's `ctxd` computes the checkpoint tree
+  *T* and digest *D* from its replica at tip *t*, and the admin appends
+  `Compact{generation: n+1, checkpoint_tree: T, digest: D}` to generation
+  *n* (sole op, signed, pushed by CAS as any entry). `Compact` changes only
+  the sequence number; *D* is the team digest after it. `accept` rejects it
+  unless the author is an admin and *D* equals the replica's own digest
+  after it — a deterministic check that needs neither *T*'s objects nor
+  the next generation. A rejected `Compact` is an ordinary rejected entry,
+  and generation *n* goes on.
+- **Step 2, the first entry of *n+1*.** A root commit *F* with tree *T*,
+  `Ctx-Team-Seq` = the `Compact` entry's plus one,
+  `Ctx-Compacts: <OID of the Compact entry>`, the usual author and
+  `Ctx-Accept-Version`, signed by any admin of the team document at
+  `Compact`, pushed to the new ref `refs/contextdb/team/<team-id>/g<n+1>`.
+  The old ref is not rewritten, so an edge that was offline sees
+  `Compact` when it next fetches and follows (N9).
+- **Following.** After an accepted `Compact`, generation *n* is
+  **terminal**: its ref is no longer watched, and entries appended to it
+  after `Compact` are **ignored** (R5-S3) — not decided, given no sequence
+  number, never in the decision log or any digest, and no cause of lag
+  (Q3); `ctx team status` counts them as a diagnostic only. The edge then
+  takes generation *n+1*'s first entry as the root commit of the
+  first-parent path of `g<n+1>` and accepts it as successor only if its
+  tree is *T*, its `Ctx-Compacts` and sequence number are as above, its
+  signature verifies, and the checkpoint verifies with digest *D*, which
+  equals the edge's own digest (it accepted `Compact`). It records *F* as
+  its trust anchor and continues with *F*'s first-parent children.
+- **Between the steps.** With `Compact` accepted and no valid successor
+  yet, the team is `CompactPending`: reads do not lag (the edge has
+  mirrored everything up to `Compact`), publish waits, and
+  `ctx team status` says so. `ctx team compact --resume` (any admin)
+  rebuilds *T* from the replica at `Compact`, refuses if it differs from
+  the committed *T*, signs a new *F* and pushes it. Two admins resuming
+  at once: the second push is refused as non-fast-forward and the first
+  successor stands; both were valid. A `g<n+1>` whose root does not
+  verify (a squatted ref) is ignored with a warning, and an admin replaces
+  it with `ctx team compact --resume --force-ref`.
+- A **joiner** that starts at a later generation is given that
+  generation's first-entry OID out of band (§8.7), as genesis is, verifies
+  its signature against the team document in its checkpoint and the
+  checkpoint against the index's digest, and builds its replica from the
+  checkpoint.
 - The team id and `Ctx-Team-Seq` continue, so mirror keys and local
   dependents are unaffected. `ctx team rebuild` replays from the earliest
-  generation still on the remote.
+  generation still on the remote; if that is later than a branch's
+  watermark position, the branch's next catch-up has a history gap
+  (§5.2).
 - Old generations are deleted by an admin through `ctx team prune` (it runs
   git with `core.hooksPath=/dev/null`, since the dispatcher refuses team-ref
   deletions) after `retain_generations` (default: never automatically). An
@@ -804,8 +1073,12 @@ signs with that key. In multi-user mode, every local principal's proposals
 are published under the pusher's key: the WHAT_IF checks roles as the bound
 member, the queue records the local author, and `publish` becomes
 `confirm` while the queue holds proposals of more than one local principal
-(m-N15). Which local principals may propose into a team lane is set by the
-local P9 document's writers for that lane.
+(m-N15). Which local principals may propose, and what they may name, is
+set by the local P9 document alone (§6.1 layer 1): its writers and curators
+for the lane, and its read grants for everything the proposal names. The
+bound member's team roles (layer 2) only decide whether the root accepts
+the entry; that the member can read every team lane in the replica gives
+no local principal any read right (R5-M2).
 
 ## 10. Code anchors (O1)
 
@@ -845,9 +1118,14 @@ Shred stays content-global, as in P9 (m8):
 - §5 phase plan: P10 = team exchange; P11 = the old P10; P12 = the recursion
   half of the old P11 (research). Text tied to the old numbers is reworded.
 - §1.4: "co-located, with team lanes replicated through git".
-- **SD21, team knowledge** (SD20 is taken): the chain, the replica,
-  `accept` and its versions, team support v1 (§4.2, §4.3), the team digest,
-  replica-origin logicals and their catch-up, `ReplicationLag`.
+- **SD21, team knowledge** (SD20 is taken): the chain, positional
+  sequence numbers, the replica, `accept` and its versions, team support
+  v1 in the fixpoint form of §4.3, the team digest, the team state limit,
+  compaction with one-way commitments and the checkpoint format,
+  replica-origin logicals and their catch-up (split rule, history gap),
+  `ReplicationLag` with the announce fence, the two authorisation layers
+  of proposals, queue visibility and what a `conflicted{queue}` reply
+  reveals, and the publish linearization point.
 - SD3, SD6, SD7, SD11, SD12, SD15: logical origin; mirrors as records whose
   head, base and metadata are inputs of the replica channel; team kinds;
   reserved namespaces.
@@ -864,14 +1142,18 @@ Shred stays content-global, as in P9 (m8):
 - §6.1 contracts 1, 5, 6, 7 and 15: the client transaction id across team
   proposals and local batches; the replica channel's principal; origin in
   the op encoding.
-- §6.4: strict certificates over mirrors (a catch-up that leaves a mirror
-  unchanged does not invalidate).
+- §6.4 step 1: for mirrors, strict uses the branch's head and base
+  history (complete by §5.2's split rule); a `team:` watermark advance
+  does not count, a `team:` watermark op with `gap: true` does (§5.3).
 - §3.5 / §6 / §7 / §8.3: op_log format 6 (`Channel::Replica`, origin,
-  `MirrorAttach`, the `team:` scope for `ObserverWatermark`), protocol 8
+  `MirrorAttach`, the `team:` scope and the `gap` flag for
+  `ObserverWatermark`), protocol 8
   (team requests, proposal replies, `[team_lanes]`), errors
   `ReservedNamespace`, `ReplicaReadOnly`, `MixedTeamBatch`, `Unpublished`,
   `TeamDepOutside`, `ReplicaStalled`, `ReplicaDiverged`,
-  `ReplicaIncomplete`, `NotTeamMember`, `EgressDenied`.
+  `ReplicaIncomplete`, `NotTeamMember`, `EgressDenied`,
+  `TeamStateLimit`, `CompactPending`; queue states `conflicted{policy}`
+  and `conflicted{queue}`.
 - `[team_lanes]` is part of `AccessDoc`; an absent section leaves
   `SetAccess`'s canonical form and hash unchanged.
 - §10: the threat model of §2; P8's "ContextDB never pushes" is narrowed to
@@ -902,14 +1184,40 @@ Shred stays content-global, as in P9 (m8):
   unreadable command line skips publish; a push to another remote
   publishes nothing; signing uses SSH under an OpenPGP global config;
   several proposals in one entry are decided one by one; entry splitting at
-  the limits.
+  the limits. Policy at publish (R5-M1): enqueue, turn egress off, push —
+  the remote ref and the remote's object set gain nothing (checked with
+  `git rev-list --objects --all` on the bare remote for the proposal's
+  blob), the proposal is `conflicted{policy}` and its dependents
+  `conflicted{dependency}`; the same after a non-fast-forward retry; a
+  `SetAccess` committed between step 5 and step 7 stops the entry, one
+  after step 7 does not. Confirm (R5-S4): under `confirm`, and under
+  `auto` with two local authors, a plain push lists and sends nothing;
+  `--yes <token>` sends exactly the listed set, not a proposal queued
+  after the listing, and a listed proposal that fails step 5 drops out
+  with its dependents.
 - **T112** one corpus chain per `TxError` and per structural check: each is
   a rejection on every edge; an unknown `accept_version`, a missing object
-  and an injected I/O error stall.
+  and an injected I/O error stall. Every rejection chain continues with a
+  valid entry after the rejected one (R5-S1): a wrong, absent or
+  duplicated `Ctx-Team-Seq`, a merge commit (two parents) mid-chain, a
+  parent on a generation's first entry; the next entry is numbered by
+  position and accepted. Team status (R5-S2): a reference-only rule never
+  supports its conclusion; a `Pin` to a revision no longer its record's
+  head supports nothing; a `Pin` to an Evidence revision does.
 - **T113** lag: fetched not caught up, stalled, diverged, incomplete,
   archived branch, `left`; direct reads included; per-branch watermarks;
-  mirror scope from origin, not lane.
-- **T114** crash at every row of §7.4 and §8.4.
+  mirror scope from origin, not lane. The fence (R5-M4), each read issued
+  immediately, with `lag_check` disabled so it cannot help: the ref
+  updated and the `committed` notify suppressed → lag; the hook killed in
+  `prepared` before and after the announce → ref unchanged, and lag only
+  while the announce is pending; `ctxd` down during the fetch, then
+  started → lag before its first read; a `ctxd` that does not acknowledge
+  → the fetch fails; a fetch with hooks disabled → CERTIFIED until
+  `lag_check` runs (declared). The oracle compares actual and observed
+  tips.
+- **T114** crash at every row of §7.4 and §8.4, and between the two
+  compaction steps of §8.6; each read after a crash issued at once, not
+  after `lag_check`.
 - **T115** precise invalidation on every open branch: `Pin` dependents
   STALE and `Cur` dependents unsupported on a root supersede; all
   dependents unsupported on a root retraction or loss of certification;
@@ -917,14 +1225,42 @@ Shred stays content-global, as in P9 (m8):
 - **T116** certificates over mirrors: a→b→a across two imports and within
   one import is caught by `strict_no_aba`; a catch-up that changes nothing
   a certificate read leaves it valid; the pre-push gate under lag (O7) and
-  after the bounded sync.
+  after the bounded sync. Strict history (R5-M3): team entries about other
+  records leave a strict certificate Valid; a root `RetractBase` then
+  `AssertBase` on an unchanged head, in one import and across two, is
+  `Invalid{StrictChange}`; head ABA mixed with a base flip; an edge
+  offline for many entries that catches up in one import; after
+  following a `Compact`; after a `ctx team rebuild` from a later
+  checkpoint (history gap) → `Invalid{StrictChange}`, never Valid.
 - **T117** P9: `[team_lanes]` and its absent-section hash; non-owner
   redaction of mirrors; local shred of a mirror's bytes, then a root entry
   reusing them (no stall); `TeamShred` with bytes a local record holds.
-- **T118** compaction: an offline edge follows `Compact`; entries after
-  `Compact` rejected; checkpoint digest check; a joiner from a checkpoint
-  has the same team digest, including after a `SetHead` back to old
-  content; prune and an edge offline past it.
+  The local layer (R5-M2), by a non-owner *P* who can write lane A but not
+  read lane B: a proposal in A naming a mirror of B as premise, as `Ref`,
+  in its read set, or as the head it supersedes → `Unauthorized(Read)`,
+  byte-identical to the reply for a key that does not exist; the same for
+  a record that exists only in another principal's queued proposal in B;
+  `adopt_as_base` without the local curator role → refused; `ctx team
+  status` and WHAT_IF for *P* show neither the hidden proposal nor its
+  count; a collision with a hidden proposal at publish is
+  `conflicted{queue}` with nothing named. Egress off at enqueue →
+  `EgressDenied`.
+- **T118** compaction, with real signed objects and real OIDs throughout,
+  no placeholders (R5-B1): an admin creates two generations, pushes them to
+  a bare remote, and an online edge, an edge offline across the
+  compaction and a checkpoint joiner all follow, with equal team digests,
+  including after a `SetHead` back to old content. Entries appended to
+  the compacted generation after `Compact` are ignored (R5-S3): no
+  sequence number, no decision-log record, no digest change, no lag. A
+  `Compact` with a wrong digest or by a non-admin is rejected and the
+  generation continues. A crash between `Compact` and the successor push
+  → `CompactPending`, then `--resume` by another admin; two resuming
+  admins; a squatted `g<n+1>` ignored, then replaced with `--force-ref`.
+  A legal state larger than 8 MiB (R5-M5) is compacted and joined; a
+  checkpoint chunk with a wrong BLAKE3 or length, a missing blob and an
+  index over `state_bytes` make an invalid successor; a missing object
+  stalls until fetched; an entry that would exceed `state_bytes` is
+  `TeamStateLimit`. Prune, and an edge offline past it.
 - **T119** migration 5 → 6 and protocol 8; the hook dispatcher with a user
   hook chained in every hook name, including `reference-transaction`'s
   veto in `prepared`.
@@ -942,21 +1278,25 @@ Shred stays content-global, as in P9 (m8):
   non-replica op on a mirror is `ReplicaReadOnly`; a local `SetPolicy` full
   scan with base mirrors; a local rule concluding a mirror is refused.
 - **PROP17** (G3): random chains from several simulated members (valid and
-  invalid entries) applied to edges with random local histories: the same
-  accepted proposals and team digest on every edge, equal to an independent
-  oracle that implements `accept_version 1` and team support v1 over the
-  oracle's input model (in `contextdb-oracle`, not the kernel); 10,000
-  seeds.
+  invalid entries, invalid ones followed by valid ones; reference-only
+  rules and `Pin`s to old revisions among the rules) applied to edges with
+  random local histories: the same accepted proposals and team digest on
+  every edge, equal to an independent oracle that implements
+  `accept_version 1` and team support v1 over the oracle's input model
+  (in `contextdb-oracle`, not the kernel); 10,000 seeds.
 - **PROP18**: publish then import equals applying the proposals to the
   replica directly whenever the scratch `accept` passes.
 - **PROP19** (the mirror invariant): after every import, catch-up, fork,
   merge, crash recovery and rebuild in random histories, every open branch
   whose watermark is *s* has mirror state equal to the replica projection
-  at *s*; 10,000 seeds.
+  at *s*; and (R5-M3) whenever a team record's `(head, base)` changed at
+  some entry between two of a branch's catch-up positions, the branch's
+  change log records a head move or base flip of its mirror between those
+  catch-ups, unless a `gap` watermark covers them; 10,000 seeds.
 - **Golden corpus**: `tests/team-chains/` outcomes per `accept_version`,
   run by every release.
-- **G4**: fuzz `CXTB`, the trailer parser, `sshsig` verification and the
-  team document; kill points around import and publish; a remote that
+- **G4**: fuzz `CXTB`, the checkpoint index and chunks (`CXTK`), the
+  trailer parser, `sshsig` verification and the team document; kill points around import and publish; a remote that
   serves stale, deleted, rewritten, oversized or garbage refs.
 - **G5** (initial budgets, ADR-calibrated):
   - import of 10,000 entries into the replica ≤ 60 s on the remote Linux
@@ -968,7 +1308,12 @@ Shred stays content-global, as in P9 (m8):
     and fsyncs per import (branches × entries) and copy-on-write memory
     reported;
   - publish adds ≤ 2 s to `git push` for ten proposals on a local remote;
-  - the `reference-transaction` hook adds ≤ 20 ms to `git commit`;
+  - the `reference-transaction` hook adds ≤ 20 ms to `git commit`, and
+    its announce (fsync and acknowledgement, §8.3) ≤ 50 ms to a fetch that
+    moves a team ref;
+  - compacting and joining a team at 100 MiB of state, time and peak
+    memory reported (streaming verification keeps memory independent of
+    the checkpoint size);
   - recall p99 with 10⁴ mirrors within +10 % of the same store without
     them (same record count).
 - **G6** (pass criteria): two clones on one machine with two signing keys
@@ -1034,3 +1379,33 @@ Shred stays content-global, as in P9 (m8):
   §5.2 `MirrorAttach{key, head, base}`, `main` first; Q8 → §12; Q9 → §5.1
   tags only; Q10 → §5.1; Q11 → §6.2, §7.2; Q12 → §8.5; Q13 → §8.1, §8.7;
   Q14 → §8.7; Q15 → §12; Q16 → §6.2; Q17 → §2.3; Q18 → §13 T121, G5, G6.
+- **r0.5 → r0.6** (the owner's full review of r0.5, 2026-11-16: 1 blocker,
+  5 majors, 4 further points; recommended keeping the root/edge and git
+  transport architecture):
+  - R5-B1 (`Compact` and the next generation's first commit named each
+    other's OIDs, which cannot be built) → §8.6: `Compact` commits to the
+    checkpoint tree and digest, which exist first; only the successor
+    names `Compact`; push order, `CompactPending`, `--resume`, squatted
+    refs; §4.1; T118 with real objects.
+  - R5-M1 (egress checked only at enqueue) → §6.1, §6.3
+    `conflicted{policy}`, §7.2 steps 5 and 7: the local layer re-checked
+    at publish, a linearization point that fixes which `SetAccess` wins;
+    §7.4; T111.
+  - R5-M2 (no local Read check on what a proposal names; the signer's
+    team rights stood in for the caller's) → §6.1 two layers, §6.2 queue
+    visibility and `conflicted{queue}`, §9.2; T117.
+  - R5-M3 (strict certificates against team watermarks and net batches)
+    → §5.2 the split rule over `(head, base)` and the `gap` flag, §5.3
+    strict from the branch's own change log; §12 §6.4; T116, PROP19.
+  - R5-M4 (G-LAG had a window between a ref update and the notify) →
+    §8.3 the announce fence in `prepared` (git's abort verified, §1),
+    pending announces, fetch in flight, the oracle's two tips; G-LAG and
+    §2.3 narrowed only for hook-less fetches; §8.4; T113, T114.
+  - R5-M5 (no size rule for checkpoints) → §8.6 checkpoint format,
+    limits and streaming verification, §3.1 `state_bytes` and
+    `TeamStateLimit` so every accepted state can be compacted; T118, G4,
+    G5.
+  - R5-S1 → §3.1 positional sequence numbers, T112; R5-S2 → §4.3 team
+    status in fixpoint form with `P(j) ≠ ∅` and Pin-strict, T112, PROP17;
+    R5-S3 → §8.6 ignored entries, T118; R5-S4 → §7.2 step 5 confirm and
+    the set token, §7.4, T111.
