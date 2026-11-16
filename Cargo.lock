@@ -337,7 +337,10 @@ dependencies = [
  "blake3",
  "contextdb-core",
  "contextdb-model",
+ "contextdb-oracle",
  "ed25519-dalek",
+ "rand_chacha",
+ "rand_core 0.9.5",
  "sha2",
  "toml",
 ]

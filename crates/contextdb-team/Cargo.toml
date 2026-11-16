@@ -19,3 +19,6 @@ ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std
 toml = { version = "=1.1.2", default-features = false, features = ["parse", "std", "serde"] }
 
 [dev-dependencies]
+contextdb-oracle.workspace = true
+rand_chacha = "=0.9.0"
+rand_core = "=0.9.5"
