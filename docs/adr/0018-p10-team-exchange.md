@@ -2,7 +2,8 @@
 
 Status: **Draft (r0.6), G0 not yet passed; open points decided (§0.1).** The owner's full
 review of r0.5 found 1 blocker, 5 majors and 4 further points (R5-B1,
-R5-M1–M5, R5-S1–S4), answered in r0.6 (§14). r0.1's review found 5
+R5-M1–M5, R5-S1–S4), answered in r0.6 (§14); the owner's closure check
+of r0.6 found 1 P1 and 3 P2, answered in place (§14). r0.1's review found 5
 blockers, 10 majors and 15 minors; r0.2's closure check closed most of them
 and found 3 blockers, 7 majors and 17 minors in r0.2's new join between the
 two stores; r0.3 replaced that join with ordinary local records, and its
@@ -277,12 +278,15 @@ reference-transaction hook`); the tracking ref keeps its old value (§8.3).
   blob ≤ 1 MiB, the entry ≤ 8 MiB in all, checked before decoding. They do
   not apply to a checkpoint, which has its own format and limits (§8.6).
 - **Team state limit (R5-M5).** The team document's
-  `[limits] state_bytes` (default 1 GiB) bounds the size of a checkpoint
-  of the replica's state (§8.6), computed exactly from the keyed state. An
-  ordinary entry is rejected (`TeamStateLimit`) if the state after it
-  would exceed the limit, so every accepted state can be compacted. A
-  `SetTeamAccess` that lowers the limit below the current state is
-  rejected the same way.
+  `[limits] state_bytes` (default 1 GiB, at most 4 GiB) bounds the size
+  of a checkpoint of the replica's state, with room for the `Compact`
+  that would produce it (§8.6). The check is **per proposal**, like every
+  kernel check (§4.2, m1): after each proposal's sub-batch, that proposal
+  alone is rejected (`TeamStateLimit`) if the limit would be exceeded;
+  proposals of the same entry accepted before it stay accepted, and later
+  ones are decided on the state without it (r0.6 closure P2). A
+  `SetTeamAccess` that lowers the limit below what the current state needs
+  is rejected the same way.
 
 ### 3.2 Why this makes the root decide
 
@@ -924,23 +928,44 @@ a digest — and only the new generation's first commit names `Compact`.
   state of §4.3 — every record with all its revisions and their bytes
   (except shredded ones), per-revision base, metadata, every rule with its
   `enabled` flag — plus the team document, the shred set, the accepted
-  `(member, proposal id)` pairs and the sequence number. It is a git tree,
-  a deterministic function of the replica state, so any admin computing it
-  from the same state gets the same tree OID:
-  - `checkpoint/index` (`CXTK` format, ≤ 1 MiB): `accept_version`, team
-    id, generation, sequence number, team digest, the total size, and for
-    each chunk its name, BLAKE3, byte length and item count;
-  - `checkpoint/state/<six digits>`: the canonical state as a sequence of
-    items (a record header, a revision, a rule, the team document, a shred
-    entry, an accepted proposal id) in digest order, packed greedily into
-    chunks of ≤ 1 MiB; an item is never split and is ≤ 1 MiB itself;
+  `(member, proposal id)` pairs and the sequence number. The checkpoint of
+  a state Σ for generation *g*, `ckpt(Σ, g)`, is a git tree (in the
+  repository's object format) and a deterministic function of Σ and *g*
+  alone, so anyone computing it from the same inputs gets the same tree
+  OID:
+  - `checkpoint/index` (`CXTK` format): `accept_version`, team id,
+    *g*, Σ's sequence number, `digest(Σ)`, the total size, and for
+    each chunk, in number order, its BLAKE3, byte length and item count
+    (44 bytes per chunk);
+  - `checkpoint/state/<six digits>`, numbered from `000000`: the canonical
+    state as a sequence of items (a record header, a revision, a rule, the
+    team document, a shred entry, an accepted proposal id) in digest
+    order, packed greedily into chunks of ≤ 1 MiB; an item is never split;
   - `blobs/<hex>`: each content a non-shredded revision holds, once,
     ≤ 1 MiB as for ordinary entries.
 
-  **Limits (R5-M5)**: the ordinary entry limits of §3.1 do not apply; the
-  index's total size must be ≤ the team document's `state_bytes`, and each
-  file within its bound, all checked before decoding. Accepted states
-  always fit (§3.1 `TeamStateLimit`), so any legal team can be compacted.
+  **Limits (R5-M5).** The ordinary entry limits of §3.1 do not apply. The
+  format's bounds hold by construction for every state `accept` can
+  reach (r0.6 closure P2):
+  - **items**: every item is ≤ 1 MiB because the team ops bound their
+    parts: a key or lane ≤ 256 bytes, a record's tags ≤ 64 KiB, a team
+    rule ≤ 1,024 incidences of any kind (≤ 320 KiB encoded), the team
+    document ≤ 512 KiB, a member name ≤ 64 bytes; an op that would exceed
+    one is rejected (`InvalidMetadata`, `InvalidRule(TooManyPremises)`,
+    `TeamDocTooLarge`) whatever the entry's other limits;
+  - **size**: `ckpt_size(Σ)` (independent of *g*) is the exact byte total of the index, the
+    chunks and the blobs, computed by the encoder without building the
+    tree. `state_bytes` ≤ 4 GiB (a team document above it is rejected);
+  - **chunks and index**: greedy packing leaves any two consecutive chunks
+    over 1 MiB together, so a checkpoint within 4 GiB has ≤ 8,193 chunks
+    (six-digit names suffice) and an index ≤ 512 KiB, both checked before
+    decoding with the total against `state_bytes`;
+  - **headroom for `Compact`**: the limit applies to the state a
+    compaction would produce. A proposal is rejected (`TeamStateLimit`) if
+    `ckpt_size` of the state after it, with one more accepted proposal id
+    of a 64-byte member name added (the `Compact` entry's own), exceeds
+    `state_bytes`. So `Compact` itself always fits, and any legal team
+    can be compacted.
   **Verification is streaming**: the index first, then each chunk against
   its BLAKE3 and length as it is read, each blob's name against its bytes,
   every content an item names present unless shredded, and at the end the
@@ -948,22 +973,38 @@ a digest — and only the new generation's first commit names `Compact`.
   object stalls (`ReplicaIncomplete`) and is fetched by OID (§8.1); any
   other failure makes the commit an invalid successor (below). The format
   is part of `accept_version`.
-- **Step 1, `Compact`.** An admin's `ctxd` computes the checkpoint tree
-  *T* and digest *D* from its replica at tip *t*, and the admin appends
+- **One state, Σc (r0.6 closure P1).** Everything below is computed from
+  the single **post-`Compact` state** Σc: the replica state at the tip *t*
+  that `Compact` extends, with exactly two changes — the sequence number
+  becomes the `Compact` entry's (*t*'s plus one), and the `Compact` entry's
+  `(member, proposal id)` joins the accepted set, as any accepted
+  proposal's does (so publish idempotency of §7.4 covers it). `Compact`
+  records nothing else in the state: not *T*, *D*, the generation or any
+  OID, so Σc is known before the entry is built. Then *T* =
+  `ckpt(Σc, n+1)` and *D* = `digest(Σc)`; *n+1* is the generation the
+  entry extends plus one, known to every edge.
+- **Step 1, `Compact`.** An admin's `ctxd` picks the proposal id, derives
+  Σc from its replica at *t*, computes *T* and *D*, and the admin appends
   `Compact{generation: n+1, checkpoint_tree: T, digest: D}` to generation
-  *n* (sole op, signed, pushed by CAS as any entry). `Compact` changes only
-  the sequence number; *D* is the team digest after it. `accept` rejects it
-  unless the author is an admin and *D* equals the replica's own digest
-  after it — a deterministic check that needs neither *T*'s objects nor
-  the next generation. A rejected `Compact` is an ordinary rejected entry,
-  and generation *n* goes on.
+  *n* (sole op, one `Ctx-Proposal`, signed, pushed by CAS as any entry).
+  `accept` derives the same Σc from its own replica and the entry, and
+  accepts only if the author is an admin, the generation field is *n+1*,
+  *D* = `digest(Σc)` and *T* = `ckpt(Σc, n+1)`'s tree OID: deterministic, from bytes every edge holds (the
+  blob set), needing neither the next generation nor any fetch. Checking
+  *T* as well as *D* means an accepted `Compact` always has a valid
+  successor. A rejected `Compact` is an ordinary rejected entry: it keeps
+  its position and sequence number, its proposal id is not accepted, and
+  generation *n* goes on.
 - **Step 2, the first entry of *n+1*.** A root commit *F* with tree *T*,
   `Ctx-Team-Seq` = the `Compact` entry's plus one,
   `Ctx-Compacts: <OID of the Compact entry>`, the usual author and
-  `Ctx-Accept-Version`, signed by any admin of the team document at
-  `Compact`, pushed to the new ref `refs/contextdb/team/<team-id>/g<n+1>`.
-  The old ref is not rewritten, so an edge that was offline sees
-  `Compact` when it next fetches and follows (N9).
+  `Ctx-Accept-Version`, no `Ctx-Proposal`, signed by any admin of the team
+  document in Σc, pushed to the new ref
+  `refs/contextdb/team/<team-id>/g<n+1>`. *F* takes the next position and
+  changes nothing but the sequence number: the state after *F* is Σc with
+  the sequence number one higher, on every edge. The old ref is not
+  rewritten, so an edge that was offline sees `Compact` when it next
+  fetches and follows (N9).
 - **Following.** After an accepted `Compact`, generation *n* is
   **terminal**: its ref is no longer watched, and entries appended to it
   after `Compact` are **ignored** (R5-S3) — not decided, given no sequence
@@ -971,25 +1012,30 @@ a digest — and only the new generation's first commit names `Compact`.
   (Q3); `ctx team status` counts them as a diagnostic only. The edge then
   takes generation *n+1*'s first entry as the root commit of the
   first-parent path of `g<n+1>` and accepts it as successor only if its
-  tree is *T*, its `Ctx-Compacts` and sequence number are as above, its
-  signature verifies, and the checkpoint verifies with digest *D*, which
-  equals the edge's own digest (it accepted `Compact`). It records *F* as
-  its trust anchor and continues with *F*'s first-parent children.
+  tree is *T*, its `Ctx-Compacts` and sequence number are as above, and
+  its signature verifies. Its replica already is Σc, whose checkpoint is
+  *T* by the check at `Compact`, so it need not read the checkpoint. It
+  applies *F* (sequence number plus one), records *F* as its trust anchor
+  and continues with *F*'s first-parent children.
 - **Between the steps.** With `Compact` accepted and no valid successor
   yet, the team is `CompactPending`: reads do not lag (the edge has
   mirrored everything up to `Compact`), publish waits, and
   `ctx team status` says so. `ctx team compact --resume` (any admin)
-  rebuilds *T* from the replica at `Compact`, refuses if it differs from
-  the committed *T*, signs a new *F* and pushes it. Two admins resuming
+  takes Σc — the replica after the accepted `Compact`, which is Σc by
+  definition — rebuilds `ckpt(Σc, n+1)` (equal to the committed *T*, which
+  `accept` checked; a mismatch is a bug and is refused), signs a new *F*
+  and pushes it. Two admins resuming
   at once: the second push is refused as non-fast-forward and the first
   successor stands; both were valid. A `g<n+1>` whose root does not
   verify (a squatted ref) is ignored with a warning, and an admin replaces
   it with `ctx team compact --resume --force-ref`.
 - A **joiner** that starts at a later generation is given that
-  generation's first-entry OID out of band (§8.7), as genesis is, verifies
-  its signature against the team document in its checkpoint and the
-  checkpoint against the index's digest, and builds its replica from the
-  checkpoint.
+  generation's first-entry OID out of band (§8.7), as genesis is. It
+  verifies *F*'s signature against the team document in the checkpoint,
+  rebuilds Σc from the checkpoint with the streaming checks above (the
+  index's sequence number is the `Compact` entry's, and its digest
+  `digest(Σc)`), then applies *F* exactly as a follower does. Follower and
+  joiner thus hold the same state and digest from *F* on.
 - The team id and `Ctx-Team-Seq` continue, so mirror keys and local
   dependents are unaffected. `ctx team rebuild` replays from the earliest
   generation still on the remote; if that is later than a branch's
@@ -1152,7 +1198,7 @@ Shred stays content-global, as in P9 (m8):
   `ReservedNamespace`, `ReplicaReadOnly`, `MixedTeamBatch`, `Unpublished`,
   `TeamDepOutside`, `ReplicaStalled`, `ReplicaDiverged`,
   `ReplicaIncomplete`, `NotTeamMember`, `EgressDenied`,
-  `TeamStateLimit`, `CompactPending`; queue states `conflicted{policy}`
+  `TeamStateLimit`, `TeamDocTooLarge`, `CompactPending`; queue states `conflicted{policy}`
   and `conflicted{queue}`.
 - `[team_lanes]` is part of `AccessDoc`; an absent section leaves
   `SetAccess`'s canonical form and hash unchanged.
@@ -1185,9 +1231,13 @@ Shred stays content-global, as in P9 (m8):
   publishes nothing; signing uses SSH under an OpenPGP global config;
   several proposals in one entry are decided one by one; entry splitting at
   the limits. Policy at publish (R5-M1): enqueue, turn egress off, push —
-  the remote ref and the remote's object set gain nothing (checked with
-  `git rev-list --objects --all` on the bare remote for the proposal's
-  blob), the proposal is `conflicted{policy}` and its dependents
+  the remote ref and the remote's object set gain nothing — checked on
+  the bare remote with `git cat-file -e` for the entry's commit, tree and
+  every blob OID the entry would have held (computed locally), and by
+  comparing the complete object enumeration
+  `git cat-file --batch-all-objects --batch-check` before and after,
+  which, unlike `rev-list --objects --all`, includes unreachable objects
+  (r0.6 closure P2) — the proposal is `conflicted{policy}` and its dependents
   `conflicted{dependency}`; the same after a non-fast-forward retry; a
   `SetAccess` committed between step 5 and step 7 stops the entry, one
   after step 7 does not. Confirm (R5-S4): under `confirm`, and under
@@ -1256,7 +1306,14 @@ Shred stays content-global, as in P9 (m8):
   generation continues. A crash between `Compact` and the successor push
   → `CompactPending`, then `--resume` by another admin; two resuming
   admins; a squatted `g<n+1>` ignored, then replaced with `--force-ref`.
-  A legal state larger than 8 MiB (R5-M5) is compacted and joined; a
+  The follower's and the joiner's state and digest are equal after *F*;
+  the `Compact`'s proposal id is in the accepted set on both, and *F*
+  consumes one sequence number; a `Compact` whose *T* or *D* does not
+  match Σc is rejected; `--resume` rebuilds the committed *T* (r0.6
+  closure P1). A legal state larger than 8 MiB (R5-M5) is compacted and
+  joined; a state at exactly the limit (with the `Compact` headroom) still
+  compacts; a proposal that would pass the limit is rejected while the
+  others of its entry stand; a
   checkpoint chunk with a wrong BLAKE3 or length, a missing blob and an
   index over `state_bytes` make an invalid successor; a missing object
   stalls until fetched; an entry that would exceed `state_bytes` is
@@ -1409,3 +1466,10 @@ Shred stays content-global, as in P9 (m8):
     status in fixpoint form with `P(j) ≠ ∅` and Pin-strict, T112, PROP17;
     R5-S3 → §8.6 ignored entries, T118; R5-S4 → §7.2 step 5 confirm and
     the set token, §7.4, T111.
+- **r0.6 closure** (owner, 2026-11-16: 1 P1, 3 P2): P1 (*T* computed
+  before `Compact`, *D* after it, `--resume` after it) → §8.6 one
+  post-`Compact` state Σc for *T*, *D*, `accept`, `--resume` and joiners;
+  `Compact`'s proposal id accepted; *F* consumes one sequence number;
+  `accept` checks *T* as well as *D*. P2 → §3.1 `TeamStateLimit` per
+  proposal; §8.6 item, index, chunk-number bounds and the `Compact`
+  headroom, `TeamDocTooLarge`; T111 checks objects with `cat-file`.
