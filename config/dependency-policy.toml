@@ -45,8 +45,11 @@ reviewed_external = ["serde", "serde_json", "blake3"]
 # ADR 0010 §1: toml parses policy.toml and gating.toml in the CLI only
 # (parse + serde features, no serde_derive); serde_json edits harness hook
 # configs (ctx hooks install); blake3 hashes the policy and gating sources.
+# ADR 0018 §2.3, §7.2 (P10): nix, the version pinned workspace-wide, with
+# `process` (getppid: the pre-push hook reads git's command line for a dry
+# run) and `fs` (flock: the publish lock), since `unsafe` is forbidden.
 [cli]
-reviewed_external = ["toml", "serde_json", "blake3"]
+reviewed_external = ["toml", "serde_json", "blake3", "nix"]
 
 # ADR 0010 §1: light clients must not link the store or SQLite.
 [anchors]
