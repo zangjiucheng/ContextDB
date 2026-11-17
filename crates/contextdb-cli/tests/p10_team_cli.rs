@@ -633,6 +633,16 @@ fn p10_ctx_team_compact_resume_follow_and_prune() {
         status_field(&out, "digest"),
         "{sb}\n{out}"
     );
+    // B's real hooks announced the Compact on g0 and the successor on g1:
+    // both resolve, so reads over the team have a position and do not lag
+    // (review N1: an announce on the terminal generation lagged every read
+    // for good).
+    {
+        let live = db.service.actor.team_live.lock().unwrap();
+        let l = live.values().next().unwrap();
+        assert!(l.pending.is_empty(), "{:?}", l.pending);
+        assert!(l.position().is_some());
+    }
     // Publishing goes on in generation 1.
     propose("two");
     run_git(&b, &["fetch", "-q", "origin"]);

@@ -149,6 +149,10 @@ pub struct TeamStore {
     /// Every decided proposal: `(member, proposal id)` → its outcome, from
     /// the entries imported (the publish side reads its outcomes here).
     decisions: BTreeMap<(String, [u8; 16]), Result<(), Reason>>,
+    /// Rejected entries by commit id, signed or not: the publisher of an
+    /// entry knows its own commit id, so it reads its outcome here even when
+    /// the entry's signature failed (review M1).
+    rejected: BTreeMap<String, Reason>,
     /// The projection after every entry this edge decided (§5.2): what
     /// catch-up splits by. Rebuilt by the log replay at open.
     history: History,
@@ -245,9 +249,20 @@ impl TeamStore {
 
     fn open_with(dir: &Path, restore: bool) -> Result<Self, StoreError> {
         let aside = dir.join("log.rebuild");
+        let anchor_aside = dir.join("anchor.rebuild");
         if restore && aside.exists() {
+            // The anchor first: the log alone left aside is put back at the
+            // next open (a rebuild that followed a successor moved the
+            // anchor; review M2).
+            if anchor_aside.exists() {
+                std::fs::rename(&anchor_aside, dir.join("anchor"))?;
+                File::open(dir)?.sync_all()?;
+            }
             std::fs::rename(&aside, dir.join("log"))?;
             File::open(dir)?.sync_all()?;
+        } else if restore && anchor_aside.exists() {
+            // A rebuild that finished and crashed before this was removed.
+            std::fs::remove_file(&anchor_aside)?;
         }
         let text = std::fs::read_to_string(dir.join("anchor"))?;
         let field = |k: &str| -> Result<String, StoreError> {
@@ -291,6 +306,7 @@ impl TeamStore {
             last: None,
             log,
             decisions: BTreeMap::new(),
+            rejected: BTreeMap::new(),
             history: History::default(),
         };
         for f in frames {
@@ -319,7 +335,7 @@ impl TeamStore {
         match (f.kind, out) {
             (Kind::Successor, Outcome::Successor) => self.anchor = f.oid.clone(),
             (Kind::Entry, o @ (Outcome::Decided(_) | Outcome::EntryRejected(_))) => {
-                self.record_decisions(&f.commit, &o)
+                self.record_decisions(&f.oid, &f.commit, &o)
             }
             (_, o) => {
                 return Err(StoreError::Corrupt(format!(
@@ -353,8 +369,13 @@ impl TeamStore {
         drop(old);
         let log = dir.join("log");
         let aside = dir.join("log.rebuild");
+        let anchor_aside = dir.join("anchor.rebuild");
+        // The anchor is copied aside before the log moves: `open` restores
+        // both, anchor first, while `log.rebuild` exists.
+        write_atomic(&anchor_aside, &std::fs::read(dir.join("anchor"))?)?;
         if log.exists() {
             std::fs::rename(&log, &aside)?;
+            File::open(dir)?.sync_all()?;
         }
         let built = (|| -> Result<(Self, Status), StoreError> {
             let objs = repo.read_entry(&anchor).map_err(StoreError::Git)?;
@@ -373,14 +394,21 @@ impl TeamStore {
         })();
         match built {
             Ok(v) => {
+                // Durable before anything uses the new history (catch-up
+                // runs after this returns): the old log is never put back
+                // under branches caught up from the new one (review M2).
                 let _ = std::fs::remove_file(&aside);
+                File::open(dir)?.sync_all()?;
+                let _ = std::fs::remove_file(&anchor_aside);
                 Ok(v)
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&log);
+                std::fs::rename(&anchor_aside, dir.join("anchor"))?;
                 if aside.exists() {
                     std::fs::rename(&aside, &log)?;
                 }
+                File::open(dir)?.sync_all()?;
                 Err(e)
             }
         }
@@ -435,7 +463,10 @@ impl TeamStore {
         Ok(())
     }
 
-    fn record_decisions(&mut self, commit: &[u8], o: &Outcome) {
+    fn record_decisions(&mut self, oid: &str, commit: &[u8], o: &Outcome) {
+        if let Outcome::EntryRejected(r) = o {
+            self.rejected.insert(oid.to_owned(), r.clone());
+        }
         let Some((author, ids)) = proposers(self.format, commit) else {
             return;
         };
@@ -454,6 +485,10 @@ impl TeamStore {
             // DuplicateProposal of an accepted one.
             self.decisions.entry((author.clone(), *id)).or_insert(d);
         }
+    }
+    /// Why the entry `oid` was rejected, if an import rejected it.
+    pub fn rejected_entry(&self, oid: &str) -> Option<&Reason> {
+        self.rejected.get(oid)
     }
     /// The outcome of `(member, proposal id)`, if an imported entry decided
     /// it.
@@ -633,7 +668,7 @@ impl TeamStore {
                 });
                 match out {
                     o @ (Outcome::Decided(_) | Outcome::EntryRejected(_)) => {
-                        self.record_decisions(&objs.commit, &o)
+                        self.record_decisions(oid, &objs.commit, &o)
                     }
                     Outcome::Stall(s) => return Ok(Status::Stalled(format!("{oid}: {s:?}"))),
                     other => return Err(StoreError::Corrupt(format!("{oid}: {other:?}"))),

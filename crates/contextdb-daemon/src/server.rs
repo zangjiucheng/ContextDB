@@ -264,11 +264,34 @@ impl Daemon {
             listeners.push((listener, identity, *name));
             sockets.push(path);
         }
+        // The lease and discovery record go out before the announce files are
+        // read (review N3): a hook that finds no lease writes its announce to
+        // the file alone, so the file must be read after any such hook ran.
+        // The public discovery record (ADR 0017 §3.2): no pid, no paths.
+        lease::write_endpoint(
+            &run.join("shared").join(lease::ENDPOINT),
+            &lease::Endpoint {
+                protocol: proto::PROTOCOL_VERSION,
+                socket: "agent.sock".into(),
+                owner_uid: uid,
+            },
+        )?;
+        let lease_path = dir.join("ctxd.lease");
+        let pid = std::process::id();
+        lease::write_lease(
+            &lease_path,
+            &Lease {
+                pid,
+                start_time: lease::process_start_time(pid).unwrap_or_default(),
+                protocol: proto::PROTOCOL_VERSION,
+                sockets: sockets.clone(),
+            },
+        )?;
         // P10 (ADR 0018 §8.3): the sockets are bound before the announce
         // files are read, and nothing is served before that (review finding
-        // 3): an announce written after this read finds a socket and waits in
-        // its backlog for the acknowledgement; until resolved, reads over the
-        // team lag.
+        // 3): an announce written after this read finds the lease and a
+        // socket, and waits in its backlog for the acknowledgement; until
+        // resolved, reads over the team lag.
         if let Ok(entries) = std::fs::read_dir(dir.join(crate::team::TEAMS_DIR)) {
             for e in entries.flatten() {
                 let Some(team) = e
@@ -324,26 +347,6 @@ impl Daemon {
                     }
                 })?;
         }
-        // The public discovery record (ADR 0017 §3.2): no pid, no paths.
-        lease::write_endpoint(
-            &run.join("shared").join(lease::ENDPOINT),
-            &lease::Endpoint {
-                protocol: proto::PROTOCOL_VERSION,
-                socket: "agent.sock".into(),
-                owner_uid: uid,
-            },
-        )?;
-        let lease_path = dir.join("ctxd.lease");
-        let pid = std::process::id();
-        lease::write_lease(
-            &lease_path,
-            &Lease {
-                pid,
-                start_time: lease::process_start_time(pid).unwrap_or_default(),
-                protocol: proto::PROTOCOL_VERSION,
-                sockets: sockets.clone(),
-            },
-        )?;
         {
             // Leftover outbox streams (ended sessions, hooks that ran out of
             // budget) are delivered at start and every 30 s (ADR 0010 §5.2).

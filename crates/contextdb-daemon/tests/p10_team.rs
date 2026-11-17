@@ -1341,9 +1341,14 @@ fn an_announce_is_dropped_only_by_a_ref_read_after_its_process_ended() {
     }
     let mut w = World::new("announce-race");
     let (a1, ba) = blob(b"a1");
-    let t0 = w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
     w.push();
     w.fetch();
+    let repo = Repo::open(&w.edge).unwrap();
+    let dir = w.tmp.join("ann-dir");
+    let mut store =
+        TeamStore::create(&dir, TEAM, ObjectFormat::Sha1, "origin", &w.genesis()).unwrap();
+    store.import(&repo).unwrap();
     // T1 is fetched (the ref moved), its git process is gone, and the
     // replica is still at T0: a ref read before the process ended said T0.
     let (b1, bb) = blob(b"b1");
@@ -1355,23 +1360,37 @@ fn an_announce_is_dropped_only_by_a_ref_read_after_its_process_ended() {
     child.wait().unwrap();
     let live = team::LiveMap::default();
     let tracking = format!("refs/contextdb/remotes/origin/team/{}/g0", hex(&TEAM));
-    live.lock()
-        .unwrap()
-        .entry(TEAM)
-        .or_default()
-        .pending
-        .insert((tracking.clone(), t1.clone()), dead);
-    let dir = w.tmp.join("ann-dir");
-    std::fs::create_dir_all(&dir).unwrap();
-    let repo = Repo::open(&w.edge).unwrap();
-    team::resolve_announces(&dir, TEAM, &repo, Some(&t0), &live);
+    let pend = |refname: &str, oid: &str| {
+        live.lock()
+            .unwrap()
+            .entry(TEAM)
+            .or_default()
+            .pending
+            .insert((refname.to_owned(), oid.to_owned()), dead);
+    };
+    pend(&tracking, &t1);
+    // Review N1, M4: refs import never follows resolve at once — another
+    // remote's, and a generation that is not the one followed.
+    pend(
+        &format!("refs/contextdb/remotes/other/team/{}/g0", hex(&TEAM)),
+        &t1,
+    );
+    pend(
+        &format!("refs/contextdb/remotes/origin/team/{}/g5", hex(&TEAM)),
+        &t1,
+    );
+    team::resolve_announces(&store, &repo, &live);
+    let left: Vec<String> = (live.lock().unwrap()[&TEAM].pending.keys())
+        .map(|(r, _)| r.clone())
+        .collect();
     assert_eq!(
-        live.lock().unwrap()[&TEAM].pending.len(),
-        1,
+        left,
+        vec![tracking.clone()],
         "the ref holds T1: still pending"
     );
     // Once the replica has T1, it resolves.
-    team::resolve_announces(&dir, TEAM, &repo, Some(&t1), &live);
+    store.import(&repo).unwrap();
+    team::resolve_announces(&store, &repo, &live);
     assert!(live.lock().unwrap()[&TEAM].pending.is_empty());
 }
 

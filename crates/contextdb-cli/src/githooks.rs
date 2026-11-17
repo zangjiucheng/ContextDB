@@ -143,13 +143,16 @@ pub fn register(hooks: &Path, component: Component, remove: bool) -> Result<(), 
         // `reference-transaction` runs for every ref update, three times per
         // transaction: the script itself chains the user's hook and starts
         // `ctx` only for a team tracking ref in a state that matters (G5).
+        // `ctx` replaces the hook shell (a here-document, not a pipeline,
+        // whose last element would run in a forked subshell): its parent is
+        // git, whose pid the announce records (review N2).
         let script = if name == "reference-transaction" {
             format!(
                 "{HEADER}input=$(cat)\n\
                  if [ -x {b} ]; then printf '%s\\n' \"$input\" | {b} \"$@\" || exit $?; fi\n\
                  case \"$1\" in prepared|aborted|committed) ;; *) exit 0 ;; esac\n\
                  case \"$input\" in *refs/contextdb/remotes/*) ;; *) exit 0 ;; esac\n\
-                 printf '%s\\n' \"$input\" | exec {exe} git-hook {name} {hooks} --chained \"$@\"\n",
+                 exec {exe} git-hook {name} {hooks} --chained \"$@\" <<CTXEOF\n$input\nCTXEOF\n",
                 b = quote(&backup)?,
                 exe = quote(&exe)?,
                 hooks = quote(hooks)?,
@@ -367,6 +370,55 @@ fn parent_of(_: u32) -> Option<u32> {
 /// Whether `git <args>` is a dry-run push, by git's option grammar:
 /// `Some(true)` dry, `Some(false)` a real push, `None` when the command is
 /// not literally `push` (an alias) or cannot be parsed (§7.2 step 3).
+/// The long options of `git push` (git 2.4x, `git push -h`), negatable
+/// ones with their `no-` form.
+const PUSH_LONG: &[&str] = &[
+    "verbose",
+    "quiet",
+    "repo",
+    "all",
+    "branches",
+    "mirror",
+    "delete",
+    "tags",
+    "dry-run",
+    "porcelain",
+    "force",
+    "force-with-lease",
+    "force-if-includes",
+    "recurse-submodules",
+    "thin",
+    "receive-pack",
+    "exec",
+    "set-upstream",
+    "progress",
+    "prune",
+    "follow-tags",
+    "signed",
+    "atomic",
+    "push-option",
+];
+
+/// The `git push` long option `name` names: itself, or the one option it
+/// is a unique prefix of; `None` when it is unknown or ambiguous.
+fn push_long_option(name: &str) -> Option<String> {
+    let names: Vec<String> = PUSH_LONG
+        .iter()
+        .flat_map(|o| [(*o).to_owned(), format!("no-{o}")])
+        .chain(["verify", "no-verify", "ipv4", "ipv6"].map(str::to_owned))
+        .collect();
+    if names.iter().any(|n| n == name) {
+        return Some(name.to_owned());
+    }
+    let mut hits = names
+        .into_iter()
+        .filter(|n| !name.is_empty() && n.starts_with(name));
+    match (hits.next(), hits.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
 pub fn is_dry_run(args: &[String]) -> Option<bool> {
     // Global options before the subcommand; those taking a value.
     let mut i = 1;
@@ -390,21 +442,25 @@ pub fn is_dry_run(args: &[String]) -> Option<bool> {
             break;
         }
         if let Some(long) = a.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or("");
-            if name == "no-dry-run" {
-                dry = false;
-            } else if name == "d" {
-                // Ambiguous in git (`--dry-run`, `--delete`): cannot tell.
-                return None;
-            } else if name.len() >= 2 && "dry-run".starts_with(name) {
-                // `--dr`, `--dry`, `--dry-r`, … : git's unique abbreviations.
-                dry = true;
-            } else if matches!(name, "repo" | "receive-pack" | "exec" | "push-option")
-                && !long.contains('=')
-            {
-                // These take the next argument as their value; `--signed`
-                // takes one only as `--signed=<value>` (review finding 1).
-                j += 1;
+            let (name, value) = match long.split_once('=') {
+                Some((n, _)) => (n, true),
+                None => (long, false),
+            };
+            // git's parse-options: an exact name, else a unique prefix of
+            // one (`--dr`, `--pu`, `--no-dr`); an ambiguous prefix is an
+            // error git reports before pushing — here, cannot tell.
+            match push_long_option(name)?.as_str() {
+                "dry-run" => dry = true,
+                "no-dry-run" => dry = false,
+                // These take the next argument as their value unless given
+                // as `--opt=value`; `--signed` and `--force-with-lease` take
+                // one only after `=` (review finding 1, review M5).
+                "repo" | "recurse-submodules" | "receive-pack" | "exec" | "push-option"
+                    if !value =>
+                {
+                    j += 1
+                }
+                _ => {}
             }
         } else if let Some(short) = a.strip_prefix('-').filter(|s| !s.is_empty()) {
             for c in short.chars() {
@@ -453,6 +509,18 @@ mod tests {
             ("git push --signed --dry-run origin", Some(true)),
             ("git push --signed=if-asked -n origin", Some(true)),
             ("git push --push-option -n origin", Some(false)),
+            // Review M5: abbreviated value options take the next argument,
+            // abbreviated negations count, ambiguity cannot tell.
+            ("git push --pu -n origin", Some(false)),
+            ("git push --rep -n origin", Some(false)),
+            ("git push --receiv -n origin", Some(false)),
+            ("git push --ex -n origin", Some(false)),
+            ("git push --recurse-submodules -n origin", Some(false)),
+            ("git push --pu=x -n origin", Some(true)),
+            ("git push -n --no-dr origin", Some(false)),
+            ("git push --no-d origin", None),
+            ("git push --force-with-lease -n origin", Some(true)),
+            ("git push --unknown-option origin", None),
             ("git -c core.x=1 -C /tmp push -n", Some(true)),
             ("git p -n", None),
             ("git --dry-run", None),
@@ -493,6 +561,71 @@ mod tests {
             b"#!/bin/sh\necho theirs\n"
         );
         assert!(!dir.join("reference-transaction").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review N2: the process the `reference-transaction` script starts for
+    /// a team ref is the hook's own process (its parent is git, whose pid
+    /// the announce records), and it gets the input unchanged.
+    #[test]
+    fn the_team_hook_replaces_the_hook_shell() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ctx-hook-pid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let team = Component {
+            name: "team".into(),
+            data: PathBuf::from("/data"),
+            repo: None,
+        };
+        register(&dir, team, false).unwrap();
+        let hook = dir.join("reference-transaction");
+        let script = std::fs::read_to_string(&hook).unwrap();
+        let exe =
+            crate::p4::shell_quote(std::env::current_exe().unwrap().to_str().unwrap()).unwrap();
+        assert!(script.contains(&exe), "{script}");
+        let stub = dir.join("stub");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\necho $PPID > {o}\ncat > {i}\n",
+                o = dir.join("ppid").display(),
+                i = dir.join("input").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&hook, script.replace(&exe, stub.to_str().unwrap())).unwrap();
+        let input = format!(
+            "{} {} refs/contextdb/remotes/origin/team/{}/g0\n",
+            "0".repeat(40),
+            "1".repeat(40),
+            "ab".repeat(16)
+        );
+        let mut child = std::process::Command::new(&hook)
+            .arg("prepared")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let ppid: u32 = std::fs::read_to_string(dir.join("ppid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            ppid,
+            std::process::id(),
+            "the hook's caller, not a subshell's"
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("input")).unwrap(), input);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -391,6 +391,19 @@ pub fn reconcile(
                     detail: r.detail.clone(),
                 },
             )),
+            // Our own entry, rejected without deciding its proposals (its
+            // signature failed, e.g. a key the team document lacks): the
+            // commit id is the one this edge pushed (review M1).
+            None if store.rejected_entry(commit).is_some() => {
+                let r = store.rejected_entry(commit).expect("rejected");
+                changes.push((
+                    p.id,
+                    State::Rejected {
+                        code: r.code.to_owned(),
+                        detail: r.detail.clone(),
+                    },
+                ));
+            }
             None => {
                 let landed = tip
                     .as_ref()

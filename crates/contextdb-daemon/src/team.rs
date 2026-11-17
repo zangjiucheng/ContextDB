@@ -309,16 +309,13 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
     {
         eprintln!("ctxd: team {}: reconcile: {e}", hex(&team));
     }
-    // The position reads compare with. With a `Compact` pending (§8.6) the
-    // terminal generation's ref is not watched — entries appended to it are
-    // ignored and no cause of lag (Q3): the tip is the successor's ref if
-    // it exists, else the last decided entry (review finding 8).
+    // The position reads compare with. With a `Compact` pending (§8.6) no
+    // ref is watched: entries appended to the terminal generation are
+    // ignored (Q3), and a successor's state is Σc, already mirrored — a
+    // squatted successor ref must not lag reads either. The tip is the last
+    // decided entry (review finding 8, review N1).
     let tip = match j.store.replica().pending() {
-        Some(p) => repo
-            .resolve(&j.store.tracking_ref(p.generation))
-            .ok()
-            .flatten()
-            .or_else(|| j.store.tip().map(str::to_owned)),
+        Some(_) => j.store.tip().map(str::to_owned),
         None => repo
             .resolve(&j.store.tracking_ref(j.store.replica().generation()))
             .ok()
@@ -336,7 +333,7 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
         e.tip = tip.clone();
         e.stopped = stopped.or_else(|| (!caught.is_empty()).then(|| caught.clone()));
     }
-    resolve_announces(j.store.dir(), team, &repo, j.store.tip(), live);
+    resolve_announces(&j.store, &repo, live);
     refresh_proposed(j, live);
     format!("{} {status:?}{caught}", hex(&team))
 }
@@ -941,7 +938,8 @@ fn pid_alive(pid: u32) -> bool {
 /// done when the tracking ref contains its OID, or when its git process is
 /// gone and the ref does not contain it (the transaction ended without
 /// it). Git runs outside the lock reads take.
-pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str>, live: &LiveMap) {
+pub fn resolve_announces(store: &TeamStore, repo: &Repo, live: &LiveMap) {
+    let (dir, team, tip) = (store.dir(), store.team(), store.tip());
     let pending: Vec<Announce> = {
         let l = live.lock().expect("team live");
         l.get(&team)
@@ -961,13 +959,25 @@ pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str
         return;
     }
     let within = |oid: &str, t: &str| t == oid || repo.is_ancestor(oid, t).unwrap_or(false);
-    // Resolved: the replica (and so every branch) has the OID; or its git
-    // process is gone and the ref, read again now, does not contain it —
-    // the transaction ended without it. A ref read before the process
-    // exited is never used for that (review finding 2).
+    // The tracking refs of this team on its remote: `<prefix><generation>`.
+    let ours = store.tracking_ref(0);
+    let prefix = &ours[..ours.len() - 1];
+    let watched = store.replica().generation();
+    let compacting = store.replica().pending().is_some();
+    // Resolved: a ref import does not follow — another remote's, another
+    // generation's, or any while a `Compact` is pending (its appended
+    // entries are ignored, its successor's state is already mirrored; Q3,
+    // review N1 and M4); or the replica (and so every branch) has the OID;
+    // or its git process is gone and the ref, read again now, does not
+    // contain it — the transaction ended without it. A ref read before the
+    // process exited is never used for that (review finding 2).
     let resolved: Vec<Announce> = pending
         .into_iter()
         .filter(|a| {
+            let generation = (a.refname.strip_prefix(prefix)).and_then(|g| g.parse::<u32>().ok());
+            if compacting || generation != Some(watched) {
+                return true;
+            }
             if tip.is_some_and(|t| within(&a.oid, t)) {
                 return true;
             }
@@ -1057,8 +1067,9 @@ pub fn shred_todo(k: &Kernel, replica: &Replica) -> BTreeSet<ContentHash> {
         .collect()
 }
 
-/// Which of `hashes` a `ResolveArtifact` note in the op log names (notes
-/// live only there), read through `row`.
+/// Which of `hashes` a `ResolveArtifact` note or a `RecordValidation`'s
+/// metadata in the op log names (notes live only there), read through
+/// `row`.
 pub fn notes_in_log(
     last: Epoch,
     row: impl Fn(Epoch) -> Result<contextdb_store::log::LogRow, StoreError>,
@@ -1068,10 +1079,18 @@ pub fn notes_in_log(
     for e in 1..=last.0 {
         let batch = (row(Epoch(e))?.batch()).map_err(|e| StoreError::Io(format!("{e:?}")))?;
         for op in &batch.ops {
-            if let Op::ResolveArtifact { note: Some(n), .. } = op
-                && hashes.contains(n)
+            // A note lives only here; a ValidationRecord's metadata too, once
+            // a later record for the same (rule, vector) replaced it in the
+            // state (review M3).
+            let held = match op {
+                Op::ResolveArtifact { note: Some(n), .. } => Some(n),
+                Op::RecordValidation { meta: Some(m), .. } => Some(m),
+                _ => None,
+            };
+            if let Some(h) = held
+                && hashes.contains(h)
             {
-                found.insert(*n);
+                found.insert(*h);
             }
         }
     }

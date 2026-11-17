@@ -606,6 +606,12 @@ pub fn reference_transaction(data: &Path, state: &str, input: &str) -> Result<()
             let (_old, new, refname) = (p.next()?, p.next()?, p.next()?);
             let team = tracking_team(refname)?;
             let dir = teams.iter().find(|(t, _)| *t == team)?.1.as_path();
+            // Only the team's own remote: another remote's refs never move
+            // its replica (review M4).
+            let remote = anchor_field(dir, "remote").ok()?;
+            refname
+                .starts_with(&format!("refs/contextdb/remotes/{remote}/team/"))
+                .then_some(())?;
             (!zero(new)).then_some((team, dir, refname, new))
         })
         .collect();

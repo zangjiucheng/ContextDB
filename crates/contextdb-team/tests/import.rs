@@ -335,10 +335,21 @@ fn import_restart_and_torn_log() {
     // A rebuild interrupted after the old log was set aside: open puts it
     // back over the partial new one.
     drop(s);
+    // The rebuild had also moved the anchor (as following a successor does):
+    // the anchor set aside is put back first (review M2).
+    let anchor = std::fs::read_to_string(dir.join("anchor")).unwrap();
+    std::fs::write(dir.join("anchor.rebuild"), &anchor).unwrap();
+    std::fs::write(
+        dir.join("anchor"),
+        anchor.replace(&genesis, &"f".repeat(40)),
+    )
+    .unwrap();
     std::fs::rename(dir.join("log"), dir.join("log.rebuild")).unwrap();
     std::fs::write(dir.join("log"), b"").unwrap();
     let mut s = TeamStore::open(&dir).unwrap();
     assert!(!dir.join("log.rebuild").exists());
+    assert!(!dir.join("anchor.rebuild").exists());
+    assert_eq!(std::fs::read_to_string(dir.join("anchor")).unwrap(), anchor);
     assert_eq!(s.replica().digest(), p.replica.digest());
     assert_eq!(s.history().entries.len(), 4);
     // More entries later.
@@ -665,7 +676,7 @@ fn a_rejected_entry_decides_proposals_only_when_its_author_signed_it() {
     // and bob's proposal stays undecided.
     let (a, ba) = blob(b"a");
     let forged = [p.next_id; 16];
-    p.entry(
+    let forged_entry = p.entry(
         &ALICE,
         "bob",
         vec![vec![new_op("k/a", a)]],
@@ -699,6 +710,12 @@ fn a_rejected_entry_decides_proposals_only_when_its_author_signed_it() {
     let mut s = TeamStore::create(&dir, TEAM, ObjectFormat::Sha1, "origin", &genesis).unwrap();
     assert_eq!(s.import(&repo).unwrap(), Status::Imported(3));
     assert_eq!(s.decision("bob", &forged), None);
+    // The entry's own outcome, by commit id, for the edge that pushed it
+    // (review M1).
+    assert!(
+        s.rejected_entry(&forged_entry)
+            .is_some_and(|r| r.code == "Signature")
+    );
     assert!(
         matches!(s.decision("bob", &own), Some(Err(r)) if r.code == "BatchHash"),
         "{:?}",
@@ -708,6 +725,7 @@ fn a_rejected_entry_decides_proposals_only_when_its_author_signed_it() {
     drop(s);
     let s = TeamStore::open(&dir).unwrap();
     assert_eq!(s.decision("bob", &forged), None);
+    assert!(s.rejected_entry(&forged_entry).is_some());
     assert!(s.decision("bob", &own).is_some());
 }
 
