@@ -365,6 +365,25 @@ fn p10_ctx_team_create_publish_join() {
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    // T119: the user's own reference-transaction hook is chained and its
+    // veto stands (here on B, whose join installed the dispatcher).
+    let veto = b.join(".git/hooks/reference-transaction.contextdb-original");
+    std::fs::write(&veto, "#!/bin/sh\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&veto, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let target = format!("refs/contextdb/remotes/origin/team/{team}/g0");
+    let update = || {
+        Command::new("git")
+            .current_dir(&b)
+            .args(["update-ref", "refs/heads/vetoed", &target])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!update(), "the chained hook's veto must stand");
+    std::fs::remove_file(&veto).unwrap();
+    assert!(update(), "without the veto the same update goes through");
     // Deleting the team ref, or pushing tracking refs, is refused.
     let o = Command::new("git")
         .current_dir(&a)
