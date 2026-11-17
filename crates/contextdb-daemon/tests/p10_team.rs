@@ -1560,3 +1560,107 @@ fn a_team_shred_keeps_bytes_a_local_artifact_or_note_holds() {
     assert!(!k.is_shredded(&p), "an artifact payload is kept");
     assert!(!k.is_shredded(&n), "a resolution note is kept");
 }
+
+/// T117 (read redaction through the daemon): with `[team_lanes]` naming
+/// bob only, carol's read of a mirror is UNAVAILABLE with the key echoed,
+/// and bob reads it.
+#[test]
+fn t117_a_mirror_is_unavailable_to_a_principal_without_read_on_team_lanes() {
+    use contextdb_daemon::principals::PrincipalMap;
+    use contextdb_proto::fsguard;
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("t117r");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    s.set_principals(
+        PrincipalMap::new(
+            Some("alice"),
+            fsguard::current_uid(),
+            [
+                ("bob".to_owned(), 4242, PrincipalId(16)),
+                ("carol".to_owned(), 4243, PrincipalId(17)),
+            ],
+        )
+        .unwrap(),
+    );
+    let bob_only: std::collections::BTreeSet<String> = ["bob".to_owned()].into();
+    let doc = AccessDoc {
+        version: 1,
+        owner: "alice".into(),
+        principals: [
+            ("alice".to_owned(), fsguard::current_uid()),
+            ("bob".to_owned(), 4242),
+            ("carol".to_owned(), 4243),
+        ]
+        .into(),
+        groups: Default::default(),
+        lanes: Default::default(),
+        code_lanes: LaneEntry::code_default(),
+        personal_egress: false,
+        default_lane: LaneEntry::owner_only(),
+        team_lanes: Some(Box::new(LaneEntry {
+            members: bob_only.clone(),
+            writers: bob_only,
+            ..LaneEntry::owner_only()
+        })),
+    };
+    let r = s
+        .handle(
+            ADMIN,
+            Request::SetAccess {
+                doc,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let read_as = |who: Identity| {
+        let sid = match s
+            .handle(
+                who,
+                Request::SessionStart {
+                    harness: "test".into(),
+                    repo: "r".into(),
+                    head_sha: "h".into(),
+                    parent: None,
+                    branch: None,
+                    git_branch: None,
+                },
+            )
+            .response
+        {
+            Response::Session { session } => session,
+            other => panic!("{other:?}"),
+        };
+        s.handle(
+            who,
+            Request::Read {
+                binding: Binding::root(sid),
+                target: Target::Key(key("k/a")),
+                mode: Mode::Advisory,
+                level: None,
+            },
+        )
+        .response
+    };
+    let bob = Identity {
+        channel: Channel::Agent,
+        principal: PrincipalId(16),
+    };
+    let carol = Identity {
+        channel: Channel::Agent,
+        principal: PrincipalId(17),
+    };
+    assert_eq!(read_as(carol), Response::Unavailable { target: key("k/a") });
+    assert!(
+        matches!(read_as(bob), Response::Read { .. }),
+        "{:?}",
+        read_as(bob)
+    );
+}

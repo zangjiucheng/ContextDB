@@ -302,6 +302,29 @@ fn p10_ctx_team_create_publish_join() {
     run(&a, &["push", "-q", "other", "HEAD:refs/heads/main"]);
     let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
     assert!(status_a.contains("Queued"), "{status_a}");
+    // A push whose command line cannot be read (git run under another
+    // name, so no ancestor is `git`): publish is skipped with a warning,
+    // the push itself goes through.
+    let exec_path = git(&tmp, &["--exec-path"]);
+    let g = tmp.join("g");
+    std::os::unix::fs::symlink(Path::new(exec_path.trim()).join("git"), &g).unwrap();
+    let o = Command::new(&g)
+        .current_dir(&a)
+        .args(["push", "origin", "HEAD:refs/heads/main"])
+        .envs(ident)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("could not read the push's arguments"), "{out}");
+    let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(status_a.contains("Queued"), "{status_a}");
+    std::fs::write(a.join("f.txt"), "y").unwrap();
+    run(&a, &["add", "f.txt"]);
+    run(
+        &a,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "c2"],
+    );
     // The real push publishes it (pre-push: sync, gate, publish).
     let out = run(&a, &["push", "origin", "HEAD:refs/heads/main"]);
     assert!(out.contains("published 1 proposal"), "{out}");
