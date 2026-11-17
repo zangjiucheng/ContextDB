@@ -339,14 +339,17 @@ pub fn refused(queue: &mut Queue, prepared: &Prepared) -> std::io::Result<()> {
     )
 }
 
-/// After an import: published proposals take their outcome from the
-/// decided entries; one the tracking ref's chain does not hold is queued
-/// again (the push did not land).
+/// After an import: a pending proposal the chain decided takes its outcome
+/// (whatever its local state, so an outcome is never lost to a requeue);
+/// a published one the tracking ref's chain does not hold is queued again
+/// (the push did not land) — only with `requeue`, i.e. when no publish is
+/// in flight between its step 7 and its push.
 pub fn reconcile(
     store: &TeamStore,
     queue: &mut Queue,
     member: &str,
     repo: &Repo,
+    requeue: bool,
 ) -> std::io::Result<usize> {
     let tip = repo
         .resolve(&store.tracking_ref(store.replica().generation()))
@@ -354,6 +357,20 @@ pub fn reconcile(
         .flatten();
     let mut changes = Vec::new();
     for p in &queue.proposals {
+        if p.state == State::Queued {
+            match store.decision(member, &p.id) {
+                Some(Ok(())) => changes.push((p.id, State::Accepted)),
+                Some(Err(r)) => changes.push((
+                    p.id,
+                    State::Rejected {
+                        code: r.code.to_owned(),
+                        detail: r.detail.clone(),
+                    },
+                )),
+                None => {}
+            }
+            continue;
+        }
         let State::Published { commit } = &p.state else {
             continue;
         };
@@ -370,7 +387,7 @@ pub fn reconcile(
                 let landed = tip
                     .as_ref()
                     .is_some_and(|t| repo.is_ancestor(commit, t).unwrap_or(false));
-                if !landed {
+                if !landed && requeue {
                     changes.push((p.id, State::Queued));
                 }
             }

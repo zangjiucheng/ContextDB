@@ -267,6 +267,26 @@ fn p10_ctx_team_create_publish_join() {
     assert!(out.contains("dry run"), "{out}");
     let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
     assert!(status_a.contains("Queued"), "{status_a}");
+    // Q11: a git alias for `push -n` publishes nothing. Git runs the alias
+    // of a builtin as a new `git push -n`, which the hook reads as a dry
+    // run; where only the alias is visible, the subcommand is not
+    // literally `push` and publish is skipped with a warning.
+    let out = run(
+        &a,
+        &[
+            "-c",
+            "alias.pn=push -n",
+            "pn",
+            "origin",
+            "HEAD:refs/heads/main",
+        ],
+    );
+    assert!(
+        out.contains("dry run") || out.contains("could not read the push's arguments"),
+        "{out}"
+    );
+    let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(status_a.contains("Queued"), "{status_a}");
     // The real push publishes it (pre-push: sync, gate, publish).
     let out = run(&a, &["push", "origin", "HEAD:refs/heads/main"]);
     assert!(out.contains("published 1 proposal"), "{out}");

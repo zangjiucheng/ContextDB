@@ -423,6 +423,16 @@ pub fn publish(
     let cfg = TeamConfig::load(&dir)?;
     let remote = anchor_field(&dir, "remote")?;
     let repo = Repo::open(&cfg.repo).map_err(|e| format!("{e:?}"))?;
+    // Step 4: the publish lock, held until the outcome is known; the kernel
+    // releases a dead holder's. `ctxd` never requeues while it is held.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("publish.lock"))
+        .map_err(|e| e.to_string())?;
+    let _held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|_| format!("team {}: another publish is running", hex(&team)))?;
     let mut c = connect(data, "admin.sock")?;
     for _ in 0..3 {
         // A fetch and import first: the entry's parent is the tip.
@@ -747,18 +757,6 @@ pub fn pre_push_publish(data: &Path, remote: &str, url: &str) -> u8 {
                 continue;
             }
         }
-        // Step 4: the publish lock; the kernel releases a dead holder's.
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(dir.join("publish.lock"));
-        let Ok(lock) = lock else { continue };
-        let Ok(_held) = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
-        else {
-            eprintln!("ContextDB: team {}: another publish is running", hex(&team));
-            continue;
-        };
         if let Err(e) = publish(data, team, None, false) {
             eprintln!("ContextDB: team {}: publish failed: {e}", hex(&team));
             if cfg.strict_push {

@@ -303,7 +303,9 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
     j.status = status.clone();
     // Published proposals take their outcome from what was decided, or go
     // back to the queue when the chain does not hold them (§7.4).
-    if let Err(e) = contextdb_team::publish::reconcile(&j.store, &mut j.queue, &j.cfg.member, &repo)
+    let requeue = !publish_in_flight(j.store.dir());
+    if let Err(e) =
+        contextdb_team::publish::reconcile(&j.store, &mut j.queue, &j.cfg.member, &repo, requeue)
     {
         eprintln!("ctxd: team {}: reconcile: {e}", hex(&team));
     }
@@ -941,4 +943,20 @@ where
         w.commit(&b)?;
     }
     Ok(kept)
+}
+
+/// Whether a publish holds `<team dir>/publish.lock` (between its step 7
+/// and its push nothing may requeue its proposals). The lock is a `flock`,
+/// released by the kernel when its holder dies.
+pub fn publish_in_flight(dir: &Path) -> bool {
+    use nix::fcntl::{Flock, FlockArg};
+    let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("publish.lock"))
+    else {
+        return false;
+    };
+    Flock::lock(f, FlockArg::LockExclusiveNonblock).is_err()
 }

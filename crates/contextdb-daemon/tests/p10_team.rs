@@ -468,6 +468,22 @@ fn p10_daemon_imports_routes_and_lags() {
         vec![b"l".to_vec()],
     );
     assert_eq!(code(&r), "MixedTeamBatch", "{r:?}");
+    // Q11: a proposal over an entry's limits is refused at enqueue.
+    let big = vec![7u8; (1 << 20) + 1];
+    let r = commit(
+        &s,
+        sid,
+        vec![Op::CreateLogical {
+            origin: Origin::Local,
+            key: key("k/big"),
+            kind: RecordKind::Decision,
+            scope_lane: format!("team:{}/main", hex(&TEAM)),
+            content: *blake3::hash(&big).as_bytes(),
+            adopt_as_base: false,
+        }],
+        vec![big],
+    );
+    assert_eq!(code(&r), "ProposalTooLarge", "{r:?}");
     // A queued proposal on a mirror is marked on reads of it (§6.3).
     let r = commit(
         &s,
@@ -1228,5 +1244,92 @@ fn t117_team_shred_local_shred_and_q6_order() {
             .view(MAIN)
             .logical_by_key(&key("k/reuse"))
             .is_some()
+    );
+}
+
+#[test]
+fn an_import_during_a_publish_never_loses_the_outcome() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("race");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let sid = session(&s);
+    let dir = w.tmp.join("data").join(team::TEAMS_DIR).join(hex(&TEAM));
+    let propose = |path: &str| {
+        let body = path.as_bytes().to_vec();
+        match commit(
+            &s,
+            sid,
+            vec![Op::CreateLogical {
+                origin: Origin::Local,
+                key: key(path),
+                kind: RecordKind::Decision,
+                scope_lane: format!("team:{}/main", hex(&TEAM)),
+                content: *blake3::hash(&body).as_bytes(),
+                adopt_as_base: false,
+            }],
+            vec![body],
+        ) {
+            Response::Proposed { .. } => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    let entry = |r: Response| match r {
+        Response::TeamPrepared { entry: Some(e), .. } => e,
+        other => panic!("{other:?}"),
+    };
+    // With the publish lock held, an import between step 7 and the push
+    // (`lag_check`, a notify) leaves the proposal published.
+    propose("p1");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("publish.lock"))
+        .unwrap();
+    let held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive).unwrap();
+    let e = entry(prepare_entry(&s, None, false));
+    let oid = sign_entry(&w, &e);
+    assert!(matches!(begin(&s, &oid), Response::TeamLines { .. }));
+    sync(&s);
+    assert!(
+        queue_states(&s).iter().any(|l| l.contains("Published")),
+        "{:?}",
+        queue_states(&s)
+    );
+    push_entry(&w, &oid, &e);
+    w.fetch();
+    sync(&s);
+    drop(held);
+    assert!(
+        queue_states(&s).iter().all(|l| l.contains("Accepted")),
+        "{:?}",
+        queue_states(&s)
+    );
+    // Without the lock the proposal is requeued — and still takes its
+    // outcome once the chain holds it.
+    propose("p2");
+    let e = entry(prepare_entry(&s, None, false));
+    let oid = sign_entry(&w, &e);
+    assert!(matches!(begin(&s, &oid), Response::TeamLines { .. }));
+    sync(&s);
+    assert!(
+        queue_states(&s).iter().any(|l| l.contains("Queued")),
+        "{:?}",
+        queue_states(&s)
+    );
+    push_entry(&w, &oid, &e);
+    w.fetch();
+    sync(&s);
+    assert!(
+        queue_states(&s).iter().all(|l| l.contains("Accepted")),
+        "{:?}",
+        queue_states(&s)
     );
 }

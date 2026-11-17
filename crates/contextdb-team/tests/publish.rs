@@ -246,7 +246,7 @@ impl World {
     fn sync(&mut self) {
         ok(&self.edge, &["fetch", "-q", "origin"]);
         self.store.import(&self.repo).unwrap();
-        publish::reconcile(&self.store, &mut self.queue, "alice", &self.repo).unwrap();
+        publish::reconcile(&self.store, &mut self.queue, "alice", &self.repo, true).unwrap();
     }
 
     fn state(&self, id: &[u8; 16]) -> State {
