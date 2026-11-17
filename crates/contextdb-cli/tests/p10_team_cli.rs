@@ -201,6 +201,89 @@ fn p10_ctx_team_create_publish_join() {
     ]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("already joined"), "{out}");
+    // Through the hooks. A second team write on A, then a code push.
+    let body = b"plans live in team:main".to_vec();
+    let content = *blake3::hash(&body).as_bytes();
+    let r = da
+        .service
+        .handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(sid),
+                ops: vec![Op::CreateLogical {
+                    origin: Origin::Local,
+                    key: format!("team/{team}/conv/plans"),
+                    kind: RecordKind::Convention,
+                    scope_lane: format!("team:{team}/main"),
+                    content,
+                    adopt_as_base: false,
+                }],
+                blobs: vec![body],
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
+    std::fs::write(a.join("f.txt"), "x").unwrap();
+    let ident = [
+        ("GIT_AUTHOR_NAME", "t"),
+        ("GIT_AUTHOR_EMAIL", "t@t"),
+        ("GIT_COMMITTER_NAME", "t"),
+        ("GIT_COMMITTER_EMAIL", "t@t"),
+    ];
+    let run = |dir: &Path, args: &[&str]| {
+        let o = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .envs(ident)
+            .output()
+            .unwrap();
+        let text =
+            String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "git {args:?}: {text}");
+        text
+    };
+    run(&a, &["add", "f.txt"]);
+    run(
+        &a,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "c"],
+    );
+    // A dry run publishes nothing.
+    let out = run(&a, &["push", "-n", "origin", "HEAD:refs/heads/main"]);
+    assert!(out.contains("dry run"), "{out}");
+    let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(status_a.contains("Queued"), "{status_a}");
+    // The real push publishes it (pre-push: sync, gate, publish).
+    let out = run(&a, &["push", "origin", "HEAD:refs/heads/main"]);
+    assert!(out.contains("published 1 proposal"), "{out}");
+    let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(!status_a.contains("Queued"), "{status_a}");
+    // B fetches: reference-transaction announces and notifies; ctxd
+    // imports without anyone asking.
+    run(&b, &["fetch", "-q", "origin"]);
+    let key = format!("team/{team}/conv/plans");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let snap = db.service.actor.snapshot();
+        if snap.view(MAIN).logical_by_key(&key).is_some() {
+            break;
+        }
+        drop(snap);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B never imported {key}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Deleting the team ref, or pushing tracking refs, is refused.
+    let o = Command::new("git")
+        .current_dir(&a)
+        .args(["push", "origin", &format!(":refs/contextdb/team/{team}/g0")])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("append-only"));
     drop(da);
     drop(db);
     let _ = std::fs::remove_dir_all(&tmp);

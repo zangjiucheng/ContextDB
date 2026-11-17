@@ -3,6 +3,7 @@
 mod access;
 mod anchors;
 mod daemon;
+mod githooks;
 mod p4;
 mod setup;
 mod shred;
@@ -259,6 +260,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             access::run(dir(2)?, &rest)
         }
         Some("shred") => shred::run(dir(1)?, &args[2..]),
+        Some("git-hook") => githooks::run(&args[1..]),
         Some("team") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             let mut rest = vec![sub];

@@ -300,6 +300,17 @@ fn join(
         }
     };
     println!("joined team {} as {member}", hex(&team));
+    // The hooks: announce, notify, publish (§7.5).
+    let hooks = crate::githooks::hooks_dir(repo_dir)?;
+    crate::githooks::register(
+        &hooks,
+        crate::githooks::Component {
+            name: "team".into(),
+            data: data.canonicalize().map_err(|e| e.to_string())?,
+            repo: None,
+        },
+        false,
+    )?;
     // A running ctxd opens it now; otherwise at its next start.
     match connect(data, "admin.sock") {
         Ok(mut c) => {
@@ -384,4 +395,259 @@ pub fn publish(
         }
     }
     Err("the team ref kept moving: not published after 3 attempts".into())
+}
+
+// ----- the team component of the hook dispatcher (§7.2, §7.5, §8.1, §8.3) -----
+
+/// Every joined team of `data`: `(id, its directory)`.
+fn joined(data: &Path) -> Vec<([u8; 16], PathBuf)> {
+    let mut v: Vec<([u8; 16], PathBuf)> = std::fs::read_dir(data.join(TEAMS_DIR))
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| Some((commit::parse_id128(e.file_name().to_str()?)?, e.path())))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// The admin socket of a running `ctxd`, with every read and write bounded
+/// by `timeout`; `None` when no `ctxd` runs for `data`.
+fn connect_within(
+    data: &Path,
+    timeout: std::time::Duration,
+) -> Option<contextdb_proto::client::Client> {
+    let l = contextdb_proto::lease::read_lease(&data.join("ctxd.lease"))
+        .filter(contextdb_proto::lease::Lease::is_live)?;
+    let path = l.sockets.iter().find(|s| s.ends_with("admin.sock"))?;
+    contextdb_proto::client::Client::connect_timeout(path, timeout).ok()
+}
+
+/// `refs/contextdb/remotes/<remote>/team/<hex>/g<n>` → the team id.
+fn tracking_team(refname: &str) -> Option<[u8; 16]> {
+    let rest = refname.strip_prefix("refs/contextdb/remotes/")?;
+    let (_, rest) = rest.split_once("/team/")?;
+    let (hex, generation) = rest.split_once('/')?;
+    generation.strip_prefix('g')?.parse::<u32>().ok()?;
+    commit::parse_id128(hex)
+}
+
+/// `reference-transaction` (§8.1, §8.3): in `prepared` announce every new
+/// team OID, durably and then to `ctxd`; in `aborted` withdraw it; in
+/// `committed` ask for an import. `Err` only when an announce cannot be
+/// made durable, or `ctxd` accepted it but did not acknowledge in time.
+pub fn reference_transaction(data: &Path, state: &str, input: &str) -> Result<(), String> {
+    let teams = joined(data);
+    let zero = |o: &str| o.bytes().all(|b| b == b'0');
+    let moves: Vec<([u8; 16], &Path, &str, &str)> = input
+        .lines()
+        .filter_map(|l| {
+            let mut p = l.split(' ');
+            let (_old, new, refname) = (p.next()?, p.next()?, p.next()?);
+            let team = tracking_team(refname)?;
+            let dir = teams.iter().find(|(t, _)| *t == team)?.1.as_path();
+            (!zero(new)).then_some((team, dir, refname, new))
+        })
+        .collect();
+    if moves.is_empty() {
+        return Ok(());
+    }
+    // The git process whose transaction this is.
+    let pid = nix::unistd::getppid().as_raw() as u32;
+    match state {
+        "prepared" => {
+            for (_, dir, refname, oid) in &moves {
+                contextdb_daemon::team::append_announce(
+                    dir,
+                    &contextdb_daemon::team::Announce {
+                        refname: (*refname).to_owned(),
+                        oid: (*oid).to_owned(),
+                        pid,
+                    },
+                )
+                .map_err(|e| format!("team announce not durable: {e}"))?;
+            }
+            // No ctxd listening: the file alone is the fence.
+            let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) else {
+                return Ok(());
+            };
+            for (team, _, refname, oid) in moves {
+                let r = c
+                    .call(&Request::TeamAnnounce {
+                        team,
+                        refname: refname.to_owned(),
+                        oid: oid.to_owned(),
+                        pid,
+                    })
+                    .map_err(|e| format!("ctxd did not acknowledge the team announce: {e:?}"))?;
+                if let Response::Error { code, detail } = r.response {
+                    return Err(format!("team announce refused: {code}: {detail}"));
+                }
+            }
+            Ok(())
+        }
+        "aborted" => {
+            if let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) {
+                for (team, _, refname, oid) in moves {
+                    let _ = c.call(&Request::TeamWithdraw {
+                        team,
+                        refname: refname.to_owned(),
+                        oid: oid.to_owned(),
+                    });
+                }
+            }
+            Ok(())
+        }
+        "committed" => {
+            if let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) {
+                let mut seen = std::collections::BTreeSet::new();
+                for (team, ..) in moves {
+                    if seen.insert(team) {
+                        let _ = c.call(&Request::TeamNotify { team });
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `post-merge` (a pull): import every joined team now.
+pub fn notify_all(data: &Path) {
+    if let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) {
+        for (team, _) in joined(data) {
+            let _ = c.call(&Request::TeamNotify { team });
+        }
+    }
+}
+
+/// `pre-push` refuses pushes that delete a team ref or upload tracking refs
+/// (§7.2 step 3).
+pub fn refuse_team_refs(_data: &Path, input: &str) -> Result<(), String> {
+    for line in input.lines() {
+        let p: Vec<&str> = line.split(' ').collect();
+        let [_local, local_oid, remote_ref, _] = p.as_slice() else {
+            continue;
+        };
+        if remote_ref.starts_with("refs/contextdb/remotes/") {
+            return Err(format!(
+                "refusing to push {remote_ref}: tracking refs stay local"
+            ));
+        }
+        if remote_ref.starts_with("refs/contextdb/team/") && local_oid.bytes().all(|b| b == b'0') {
+            return Err(format!(
+                "refusing to delete {remote_ref}: the team chain is append-only"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Runs `git` with a deadline; `false` on failure or timeout (killed).
+fn git_within(dir: &Path, args: &[&str], deadline: std::time::Instant) -> bool {
+    let Ok(mut child) = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// `pre-push` step 1: a bounded team sync — fetch, import, catch up — so
+/// the gate does not see lag a sync would remove. Never fails the push.
+pub fn bounded_sync(data: &Path, _push_remote: &str) {
+    for (team, dir) in joined(data) {
+        let (Ok(cfg), Ok(remote)) = (TeamConfig::load(&dir), anchor_field(&dir, "remote")) else {
+            continue;
+        };
+        let deadline = std::time::Instant::now() + cfg.push_timeout;
+        if !git_within(&cfg.repo, &["fetch", "-q", &remote], deadline) {
+            eprintln!(
+                "ContextDB: team {}: fetch did not finish in time",
+                hex(&team)
+            );
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if let Some(mut c) = connect_within(data, left.max(std::time::Duration::from_millis(100))) {
+            let _ = c.call(&Request::TeamSync { team: Some(team) });
+        }
+    }
+}
+
+/// `pre-push` steps 3–10 for every team whose remote this push goes to.
+/// Publishing is irrevocable: it is skipped, with a warning, for a dry run
+/// or when the push's arguments cannot be read. A failure fails the code
+/// push only with `strict_push` (O5).
+pub fn pre_push_publish(data: &Path, remote: &str, url: &str) -> u8 {
+    let mut code = 0;
+    for (team, dir) in joined(data) {
+        let (Ok(cfg), Ok(team_remote)) = (TeamConfig::load(&dir), anchor_field(&dir, "remote"))
+        else {
+            continue;
+        };
+        if team_remote != remote {
+            continue;
+        }
+        let urls = git(&cfg.repo, &["remote", "get-url", "--all", remote]).unwrap_or_default()
+            + &git(&cfg.repo, &["remote", "get-url", "--push", "--all", remote])
+                .unwrap_or_default();
+        if !urls.lines().any(|u| u.trim() == url) {
+            continue;
+        }
+        match crate::githooks::push_args()
+            .as_deref()
+            .map(crate::githooks::is_dry_run)
+        {
+            Some(Some(false)) => {}
+            Some(Some(true)) => {
+                println!("ContextDB: dry run: team proposals not published");
+                continue;
+            }
+            _ => {
+                eprintln!(
+                    "ContextDB: could not read the push's arguments: team proposals not published \
+                     (run `ctx team publish`)"
+                );
+                continue;
+            }
+        }
+        // Step 4: the publish lock; the kernel releases a dead holder's.
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("publish.lock"));
+        let Ok(lock) = lock else { continue };
+        let Ok(_held) = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        else {
+            eprintln!("ContextDB: team {}: another publish is running", hex(&team));
+            continue;
+        };
+        if let Err(e) = publish(data, team, None, false) {
+            eprintln!("ContextDB: team {}: publish failed: {e}", hex(&team));
+            if cfg.strict_push {
+                code = 1;
+            }
+        }
+    }
+    code
 }

@@ -13,7 +13,7 @@ use contextdb_proto::{
 use contextdb_symbols::observer::{self as symbol_observer, Added, Mode};
 use std::{
     collections::BTreeSet,
-    io::{BufRead, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -499,10 +499,17 @@ fn check_range(dir: &Path, repo: &Repo, base: &str, tip: &str) -> Result<u8, Str
     }
 }
 pub fn pre_push(dir: &Path, root: &Path) -> Result<u8, String> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut input)
+        .map_err(|e| e.to_string())?;
+    pre_push_input(dir, root, &input)
+}
+/// P5a's pre-push gate over the ref pairs git gave the hook.
+pub fn pre_push_input(dir: &Path, root: &Path, input: &str) -> Result<u8, String> {
     let repo = Repo::open(root, Instant::now() + OBSERVER_TIMEOUT).map_err(|e| e.to_string())?;
     let mut code = 0;
-    for line in std::io::stdin().lock().lines() {
-        let line = line.map_err(|e| e.to_string())?;
+    for line in input.lines() {
+        let line = line.to_owned();
         let parts: Vec<_> = line.split_whitespace().collect();
         if parts.len() != 4 {
             return Err("invalid pre-push ref pair".into());
@@ -549,84 +556,21 @@ fn hooks(dir: &Path, repo: &Repo, args: &[String]) -> Result<u8, String> {
     };
     std::fs::create_dir_all(&hook_dir).map_err(|e| e.to_string())?;
     let _lock = stable_lock(&hook_dir.join(".contextdb-install.lock"))?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let quote = |p: &Path| crate::p4::shell_quote(p.to_str().ok_or("non-UTF8 hook path")?);
-    for name in ["post-commit", "post-checkout", "post-merge", "pre-push"] {
-        if name == "pre-push" && install && !args.iter().any(|a| a == "--pre-push") {
-            continue;
+    // The dispatcher (ADR 0018 §7.5): P5a's scan and gate are components.
+    let data = dir.canonicalize().map_err(|e| e.to_string())?;
+    let component = |name: &str| crate::githooks::Component {
+        name: name.into(),
+        data: data.clone(),
+        repo: Some(repo.root.clone()),
+    };
+    if install {
+        crate::githooks::register(&hook_dir, component("anchors"), false)?;
+        if args.iter().any(|a| a == "--pre-push") {
+            crate::githooks::register(&hook_dir, component("anchors-gate"), false)?;
         }
-        let path = hook_dir.join(name);
-        let backup = hook_dir.join(format!("{name}.contextdb-original"));
-        let existing = std::fs::read(&path).ok();
-        let ours = existing
-            .as_ref()
-            .is_some_and(|b| b.starts_with(b"#!/bin/sh\n# ContextDB P5a\n"));
-        if !install {
-            if ours {
-                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-                if backup.exists() {
-                    std::fs::rename(&backup, &path).map_err(|e| e.to_string())?;
-                }
-            }
-            continue;
-        }
-        let command = if name == "pre-push" {
-            format!(
-                "{} anchors-pre-push {} {}",
-                quote(&exe)?,
-                quote(&dir.canonicalize().map_err(|e| e.to_string())?)?,
-                quote(&repo.root)?
-            )
-        } else {
-            format!(
-                "{} anchors scan {} {}",
-                quote(&exe)?,
-                quote(&dir.canonicalize().map_err(|e| e.to_string())?)?,
-                quote(&repo.root)?
-            )
-        };
-        // stdin is buffered once for pre-push so both the previous hook and
-        // ContextDB receive every ref pair. No ignored exit status.
-        let script = if name == "pre-push" {
-            format!(
-                "#!/bin/sh\n# ContextDB P5a\ninput=$(mktemp) || exit 1\ntrap 'rm -f \"$input\"' EXIT HUP INT TERM\ncat > \"$input\" || exit 1\nif [ -x {} ]; then {} \"$@\" < \"$input\" || exit $?; fi\n{command} < \"$input\"\n",
-                quote(&backup)?,
-                quote(&backup)?
-            )
-        } else {
-            format!(
-                // Git reports post-checkout's status as the checkout's own;
-                // a failed scan (ctxd down) only delays freshness, so it must
-                // not fail the checkout. The original hook's status is kept.
-                "#!/bin/sh\n# ContextDB P5a\nif [ -x {} ]; then {} \"$@\" || exit $?; fi\n{command} || true\n",
-                quote(&backup)?,
-                quote(&backup)?
-            )
-        };
-        let tmp = hook_dir.join(format!(".{name}.contextdb-tmp"));
-        std::fs::write(&tmp, script).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-        std::fs::File::open(&tmp)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        if existing.is_some() && !ours {
-            if backup.exists() {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(format!("backup exists: {}", backup.display()));
-            }
-            // Hard-link the original before atomic replacement: interruption
-            // never leaves the active hook missing. Keep its original mode.
-            std::fs::hard_link(&path, &backup).map_err(|e| e.to_string())?;
-            std::fs::File::open(&hook_dir)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
-        }
-        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-        std::fs::File::open(&hook_dir)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+    } else {
+        crate::githooks::register(&hook_dir, component("anchors"), true)?;
+        crate::githooks::register(&hook_dir, component("anchors-gate"), true)?;
     }
     Ok(0)
 }
