@@ -13,6 +13,15 @@ pub(crate) struct ChangeLog {
     heads: BTreeMap<LogicalId, Vec<Epoch>>,
     base: BTreeMap<RevisionId, Vec<Epoch>>,
     watermarks: BTreeMap<String, Vec<Epoch>>,
+    /// Epochs of `gap: true` watermark ops, by team scope (ADR 0018 §5.3).
+    gaps: BTreeMap<String, Vec<Epoch>>,
+}
+/// One commit's watermark changes: scopes whose position moved, and team
+/// scopes caught up across a history gap.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScopeMoves {
+    pub moves: Vec<String>,
+    pub gaps: Vec<String>,
 }
 impl ChangeLog {
     /// `old_revisions`: revisions that existed before `epoch`. Creating a
@@ -21,7 +30,7 @@ impl ChangeLog {
         &mut self,
         epoch: Epoch,
         delta: &NetDelta,
-        watermark_moves: &[String],
+        watermark_moves: &ScopeMoves,
         old_revisions: usize,
     ) {
         for (l, old, _) in &delta.head_moves {
@@ -37,8 +46,11 @@ impl ChangeLog {
         {
             self.base.entry(*r).or_default().push(epoch);
         }
-        for s in watermark_moves {
+        for s in &watermark_moves.moves {
             self.watermarks.entry(s.clone()).or_default().push(epoch);
+        }
+        for s in &watermark_moves.gaps {
+            self.gaps.entry(s.clone()).or_default().push(epoch);
         }
     }
     /// Undoes the latest [`Self::record`] with the same arguments (WHAT_IF).
@@ -46,7 +58,7 @@ impl ChangeLog {
         &mut self,
         epoch: Epoch,
         delta: &NetDelta,
-        watermark_moves: &[String],
+        watermark_moves: &ScopeMoves,
         old_revisions: usize,
     ) {
         fn pop<K: Ord + Clone>(m: &mut BTreeMap<K, Vec<Epoch>>, k: &K, epoch: Epoch) {
@@ -69,8 +81,11 @@ impl ChangeLog {
         {
             pop(&mut self.base, r, epoch);
         }
-        for s in watermark_moves {
+        for s in &watermark_moves.moves {
             pop(&mut self.watermarks, s, epoch);
+        }
+        for s in &watermark_moves.gaps {
+            pop(&mut self.gaps, s, epoch);
         }
     }
     pub(crate) fn retained_bytes(&self) -> usize {
@@ -81,6 +96,8 @@ impl ChangeLog {
             + self.base.values().map(b).sum::<usize>()
             + btree_slots(self.watermarks.len()) * std::mem::size_of::<(String, Vec<Epoch>)>()
             + self.watermarks.values().map(b).sum::<usize>()
+            + btree_slots(self.gaps.len()) * std::mem::size_of::<(String, Vec<Epoch>)>()
+            + self.gaps.values().map(b).sum::<usize>()
     }
 }
 /// Per-entry result of SPEC §6.4 step 2.
@@ -101,7 +118,9 @@ pub(crate) fn entry_outcome(summary: &Summary, is_head: bool) -> EntryOutcome {
         _ if !is_head => EntryOutcome::Invalid,
         Summary::Stale(_) => EntryOutcome::Invalid,
         Summary::Conflicted => EntryOutcome::Conflicted,
-        Summary::Pending(PendingReason::ObservationLag) => EntryOutcome::Unknown,
+        Summary::Pending(PendingReason::ObservationLag | PendingReason::ReplicationLag) => {
+            EntryOutcome::Unknown
+        }
         Summary::Pending(PendingReason::Semantic | PendingReason::StructuralUnknown) => {
             EntryOutcome::Pending
         }
@@ -207,15 +226,30 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         Ok(scopes)
     }
     pub fn observation_scopes(&self, roots: &[RevisionId]) -> Result<BTreeSet<String>, TxError> {
-        Ok(self
-            .observation_support(roots)?
-            .into_iter()
-            .filter_map(|r| {
-                let l = self.revisions.logical(r);
-                (self.logicals.kind(l) == RecordKind::CodeAnchor)
-                    .then(|| self.logicals.scope_lane(l).to_owned())
-            })
-            .collect())
+        Ok(self.scopes_of(&self.observation_support(roots)?).0)
+    }
+    /// The team scopes of the mirrors in the L2-witness closure of `roots`
+    /// (ADR 0018 §8.3): what `ReplicationLag` is decided over.
+    pub fn replication_scopes(&self, roots: &[RevisionId]) -> Result<BTreeSet<String>, TxError> {
+        Ok(self.scopes_of(&self.observation_support(roots)?).1)
+    }
+    /// `(code observation scopes, team scopes)` of a support set.
+    fn scopes_of(&self, support: &[RevisionId]) -> (BTreeSet<String>, BTreeSet<String>) {
+        let (mut code, mut team) = (BTreeSet::new(), BTreeSet::new());
+        for r in support {
+            let l = self.revisions.logical(*r);
+            if self.logicals.kind(l) == RecordKind::CodeAnchor {
+                code.insert(self.logicals.scope_lane(l).to_owned());
+            }
+            if let Some(s) = self.logicals.origin_of(l).scope() {
+                team.insert(s);
+            }
+        }
+        (code, team)
+    }
+    /// A scope lags when `live_pos` lacks it or holds another position.
+    fn lags(&self, scope: &str, live_pos: &BTreeMap<String, Vec<u8>>) -> bool {
+        live_pos.get(scope).is_none() || self.tables.watermarks.get(scope) != live_pos.get(scope)
     }
     /// Missing evidence is lagging from P5a onward (SD14b). Freshness is
     /// evaluated across the full observation support, never cached in L0/L1/L2.
@@ -225,23 +259,26 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         live_pos: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Summary, TxError> {
         let mut dim = self.node(r)?.dimensions;
-        let scopes = self.observation_scopes(&[r])?;
+        let support = self.observation_support(&[r])?;
+        let (scopes, teams) = self.scopes_of(&support);
         if !scopes.is_empty() {
             // A merged anchor not yet observed here lags whatever the
             // watermark says (SD14b as extended by ADR 0013 §6.2).
             let unobserved = !self.anchor_unobserved.is_empty()
-                && (self.observation_support(&[r])?.into_iter())
-                    .any(|r| self.anchor_unobserved.contains(&self.revisions.logical(r)));
-            dim.observation = if unobserved
-                || scopes.iter().any(|s| {
-                    live_pos.get(s).is_none() || self.tables.watermarks.get(s) != live_pos.get(s)
-                }) {
+                && (support.iter())
+                    .any(|r| self.anchor_unobserved.contains(&self.revisions.logical(*r)));
+            dim.observation = if unobserved || scopes.iter().any(|s| self.lags(s, live_pos)) {
                 Observation::Lagging
             } else {
                 Observation::Fresh
             };
         }
-        Ok(contextdb_oracle::summarize(&dim))
+        let summary = contextdb_oracle::summarize(&dim);
+        Ok(if teams.iter().any(|s| self.lags(s, live_pos)) {
+            contextdb_oracle::with_replication_lag(summary)
+        } else {
+            summary
+        })
     }
     /// L2-witness closure of `roots` (ADR 0008 §6.2 step 3). Roots are
     /// `(revision, since_epoch)`; an item's `since_epoch` is the minimum over
@@ -416,9 +453,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 }
                 let scope = (self.logicals.kind(v.logical) == RecordKind::CodeAnchor)
                     .then(|| self.logicals.scope_lane(v.logical));
+                // A mirror: a gap catch-up of its team cannot prove it
+                // unchanged (ADR 0018 §5.3); its watermark advancing can.
+                let gap = (self.logicals.origin_of(v.logical).scope())
+                    .is_some_and(|s| after(self.changes.gaps.get(&s), v.since_epoch));
                 let moved = after(self.changes.heads.get(&v.logical), v.since_epoch)
                     || after(self.changes.base.get(&v.rev), v.since_epoch)
-                    || scope.is_some_and(|s| after(self.changes.watermarks.get(s), v.since_epoch));
+                    || scope.is_some_and(|s| after(self.changes.watermarks.get(s), v.since_epoch))
+                    || gap;
                 if moved {
                     let head = view.head(v.logical);
                     diffs.push(CertDiff {
@@ -490,13 +532,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .map(|e| (view.head(e.logical), e.since_epoch))
             .collect();
         let recomputed = self.closure(&roots);
-        for scope in self
-            .observation_scopes(&roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
-            .expect("roots exist")
-        {
-            if live_pos.get(&scope).is_none()
-                || self.tables.watermarks.get(&scope) != live_pos.get(&scope)
-            {
+        let support = self
+            .observation_support(&roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
+            .expect("roots exist");
+        let (scopes, teams) = self.scopes_of(&support);
+        for scope in scopes.into_iter().chain(teams) {
+            if self.lags(&scope, live_pos) {
                 lag.insert(scope);
             }
         }

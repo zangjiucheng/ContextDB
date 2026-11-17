@@ -76,7 +76,9 @@ failed incidence by RevisionId. A superseded non-Evidence Pin produces
 SupersededPinnedPremise(p); failing Sem current-head L1 inherits the current head's
 reason; otherwise inherit the premise's reason. This recursion follows the DAG.
 
-Pending priority is ObservationLag > StructuralUnknown > Semantic. Future
+Pending priority is ObservationLag > ReplicationLag > StructuralUnknown > Semantic
+(ReplicationLag, P10: a read-time overlay for a mirror in the L2-witness closure
+whose team watermark trails the fetched tip; never stored). Future
 observation, branch-only currency, conflict and visibility branches are synthesized
 for P0 function tests. P0 snapshots always have observation N_A, authorized=true,
 conflicted=false, and exact Supported/Unsupported structural status.

@@ -933,7 +933,7 @@ pub(crate) fn apply<S: StatsSink>(
             scope,
             expected,
             position,
-            gap: _,
+            gap,
         } => {
             let actual = i.watermark(&scope);
             if actual != expected {
@@ -952,6 +952,9 @@ pub(crate) fn apply<S: StatsSink>(
                 return Err(TxError::CapacityExceeded {
                     kind: CapacityKind::WatermarkPosition,
                 });
+            }
+            if gap {
+                i.gaps.insert(scope.clone());
             }
             i.watermarks.insert(scope, position);
         }

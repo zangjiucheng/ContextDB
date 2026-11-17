@@ -305,6 +305,15 @@ fn snapshot(i: &Inputs, t: Vec<[bool; 3]>) -> DerivedSnapshot {
     }
 }
 
+/// SD13 with `ReplicationLag` right after `ObservationLag` (ADR 0018 §8.3):
+/// a summary the read-time replication lag overrides. Never stored.
+pub fn with_replication_lag(s: Summary) -> Summary {
+    match s {
+        Summary::Pending(PendingReason::StructuralUnknown | PendingReason::Semantic)
+        | Summary::Certified => Summary::Pending(PendingReason::ReplicationLag),
+        other => other,
+    }
+}
 pub fn summarize(d: &Dimensions) -> Summary {
     if !d.authorized {
         return Summary::Unavailable;

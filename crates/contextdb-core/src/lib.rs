@@ -736,6 +736,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             metadata,
             validations,
             watermarks,
+            gaps,
             policy,
         } = parts;
         match &mut self.journal {
@@ -811,11 +812,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 .retain(|l| !watermarks.contains_key(logicals.scope_lane(*l)));
         }
         // Advances only (ADR 0008 §6.3): a committed position that differs.
-        let watermark_moves: Vec<String> = watermarks
-            .iter()
-            .filter(|(scope, position)| self.tables.watermarks.get(*scope) != Some(*position))
-            .map(|(scope, _)| scope.clone())
-            .collect();
+        let watermark_moves = cert::ScopeMoves {
+            moves: watermarks
+                .iter()
+                .filter(|(scope, position)| self.tables.watermarks.get(*scope) != Some(*position))
+                .map(|(scope, _)| scope.clone())
+                .collect(),
+            gaps: gaps.into_iter().collect(),
+        };
         self.tables.watermarks.extend(watermarks);
         for (l, m) in metadata {
             self.logicals.put_metadata(l, m);
@@ -919,7 +923,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             Allocations::default(),
             Default::default(),
             Vec::new(),
-            Vec::new(),
+            Default::default(),
             old_revisions,
             epoch,
             S::default(),
@@ -1078,7 +1082,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         allocations: Allocations,
         extra: std::collections::BTreeSet<RevisionId>,
         revalidated: Vec<RuleId>,
-        watermark_moves: Vec<String>,
+        watermark_moves: cert::ScopeMoves,
         old_revisions: usize,
         epoch: Epoch,
         mut stats: S,

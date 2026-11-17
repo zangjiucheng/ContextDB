@@ -3,12 +3,20 @@
 //! changes come from comparing consecutive committed states, not from any
 //! change log. `cert_id` is left zero: the oracle depends on the model only,
 //! and PROP11 compares every other field.
-use crate::{jacobi, summarize};
+use crate::{jacobi, summarize, with_replication_lag};
 use contextdb_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Committed input states by epoch, from genesis (index = epoch).
 pub type History = [Inputs];
+/// Per epoch (index = epoch), the team scopes a `gap: true` watermark op
+/// named in that epoch's batch (ADR 0018 §5.2); shorter than the history
+/// when the tail has none.
+pub type Gaps = [BTreeSet<String>];
+
+fn lags(i: &Inputs, live: &BTreeMap<String, Vec<u8>>, s: &str) -> bool {
+    live.get(s).is_none() || i.watermarks.get(s) != live.get(s)
+}
 
 fn summary(
     i: &Inputs,
@@ -28,7 +36,16 @@ fn summary(
             Observation::Fresh
         };
     }
-    summarize(&dim)
+    // ADR 0018 §8.3: a mirror anywhere in the closure, its team's branch
+    // watermark against the fetched tip.
+    if replication_scopes(i, d, &[r])
+        .iter()
+        .any(|s| lags(i, live, s))
+    {
+        with_replication_lag(summarize(&dim))
+    } else {
+        summarize(&dim)
+    }
 }
 /// Every revision reachable along L2 witnesses with its minimal root `since`,
 /// then grouped by logical.
@@ -79,6 +96,25 @@ fn closure(
         .collect())
 }
 fn observation_scopes(i: &Inputs, d: &DerivedSnapshot, roots: &[RevisionId]) -> BTreeSet<String> {
+    support(i, d, roots)
+        .into_iter()
+        .map(|r| &i.logicals[i.revisions[r.index()].logical.index()])
+        .filter(|l| l.kind == RecordKind::CodeAnchor)
+        .map(|l| l.scope_lane.clone())
+        .collect()
+}
+fn replication_scopes(i: &Inputs, d: &DerivedSnapshot, roots: &[RevisionId]) -> BTreeSet<String> {
+    support(i, d, roots)
+        .into_iter()
+        .filter_map(|r| {
+            i.logicals[i.revisions[r.index()].logical.index()]
+                .origin
+                .scope()
+        })
+        .collect()
+}
+/// The fixpoint of L2 witnesses from `roots`, Sem heads included.
+fn support(i: &Inputs, d: &DerivedSnapshot, roots: &[RevisionId]) -> BTreeSet<RevisionId> {
     let mut reached: BTreeSet<_> = roots.iter().copied().collect();
     loop {
         let mut next = reached.clone();
@@ -100,11 +136,6 @@ fn observation_scopes(i: &Inputs, d: &DerivedSnapshot, roots: &[RevisionId]) -> 
         reached = next;
     }
     reached
-        .into_iter()
-        .map(|r| &i.logicals[i.revisions[r.index()].logical.index()])
-        .filter(|l| l.kind == RecordKind::CodeAnchor)
-        .map(|l| l.scope_lane.clone())
-        .collect()
 }
 fn watermarks(
     i: &Inputs,
@@ -185,7 +216,7 @@ pub fn cert_issue_oracle(
     })
 }
 /// Did anything the strict check watches change in `(since, now]`?
-fn strict_moved(history: &History, v: &VectorItem) -> bool {
+fn strict_moved(history: &History, gaps: &Gaps, v: &VectorItem) -> bool {
     let start = v.since_epoch.0 as usize;
     (start + 1..history.len()).any(|e| {
         let (a, b) = (&history[e - 1], &history[e]);
@@ -200,11 +231,25 @@ fn strict_moved(history: &History, v: &VectorItem) -> bool {
             logical.kind == RecordKind::CodeAnchor
                 && a.watermarks.get(&logical.scope_lane) != b.watermarks.get(&logical.scope_lane)
         });
-        head || base || watermark
+        // A gap catch-up of a mirror's team (ADR 0018 §5.3).
+        let gap = (b.logicals.get(l).and_then(|logical| logical.origin.scope()))
+            .is_some_and(|s| gaps.get(e).is_some_and(|g| g.contains(&s)));
+        head || base || watermark || gap
     })
 }
 pub fn cert_validate_oracle(
     history: &History,
+    cert: &Certificate,
+    live: &BTreeMap<String, Vec<u8>>,
+    log_matches: bool,
+    current_checksum: ContentHash,
+) -> Validation {
+    cert_validate_oracle_gaps(history, &[], cert, live, log_matches, current_checksum)
+}
+/// [`cert_validate_oracle`] over a history with team gap catch-ups.
+pub fn cert_validate_oracle_gaps(
+    history: &History,
+    gaps: &Gaps,
     cert: &Certificate,
     live: &BTreeMap<String, Vec<u8>>,
     log_matches: bool,
@@ -225,7 +270,7 @@ pub fn cert_validate_oracle(
         let mut diffs: Vec<CertDiff> = cert
             .vector
             .iter()
-            .filter(|v| strict_moved(history, v))
+            .filter(|v| strict_moved(history, gaps, v))
             .map(|v| CertDiff {
                 logical: v.logical,
                 cert_rev: Some(v.rev),
@@ -314,8 +359,12 @@ pub fn cert_validate_oracle(
         Ok(v) => v,
     };
     let mut lag: BTreeSet<String> = BTreeSet::new();
-    for scope in observation_scopes(i, &d, &roots.iter().map(|(r, _)| *r).collect::<Vec<_>>()) {
-        if live.get(&scope).is_none() || i.watermarks.get(&scope) != live.get(&scope) {
+    let roots_only: Vec<_> = roots.iter().map(|(r, _)| *r).collect();
+    for scope in observation_scopes(i, &d, &roots_only)
+        .into_iter()
+        .chain(replication_scopes(i, &d, &roots_only))
+    {
+        if lags(i, live, &scope) {
             lag.insert(scope);
         }
     }

@@ -385,6 +385,7 @@ impl Wire for PendingReason {
             0 => Ok(Self::Semantic),
             1 => Ok(Self::StructuralUnknown),
             2 => Ok(Self::ObservationLag),
+            3 => Ok(Self::ReplicationLag),
             _ => Err(WireError::InvalidEncoding),
         }
     }

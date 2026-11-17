@@ -37,6 +37,8 @@ pub(crate) struct Stage<'a> {
     pub metadata: BTreeMap<LogicalId, Metadata>,
     pub validations: BTreeMap<(RuleId, HeadVector), ValidationRecord>,
     pub watermarks: BTreeMap<String, Vec<u8>>,
+    /// Scopes of `gap: true` watermark ops (ADR 0018 §5.2).
+    pub gaps: std::collections::BTreeSet<String>,
     pub policy: Option<PolicyDoc>,
     new_keys: BTreeMap<String, LogicalId>,
     new_revision_keys: BTreeMap<(LogicalId, ContentHash), RevisionId>,
@@ -78,6 +80,7 @@ pub(crate) struct Parts {
     pub metadata: BTreeMap<LogicalId, Metadata>,
     pub validations: BTreeMap<(RuleId, HeadVector), ValidationRecord>,
     pub watermarks: BTreeMap<String, Vec<u8>>,
+    pub gaps: std::collections::BTreeSet<String>,
     pub policy: Option<PolicyDoc>,
 }
 impl<'a> Stage<'a> {
@@ -97,6 +100,7 @@ impl<'a> Stage<'a> {
             metadata: self.metadata,
             validations: self.validations,
             watermarks: self.watermarks,
+            gaps: self.gaps,
             policy: self.policy,
         }
     }
@@ -126,6 +130,7 @@ impl<'a> Stage<'a> {
             metadata: BTreeMap::new(),
             validations: BTreeMap::new(),
             watermarks: BTreeMap::new(),
+            gaps: Default::default(),
             policy: None,
             new_keys: BTreeMap::new(),
             new_revision_keys: BTreeMap::new(),

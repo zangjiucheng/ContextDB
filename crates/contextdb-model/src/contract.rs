@@ -83,6 +83,20 @@ impl Origin {
             Self::Replica { team } => Some(team),
         }
     }
+    /// The observation scope of a replica's watermark, `team:<hex id>`
+    /// (ADR 0018 §5.2); `None` for a local record.
+    pub fn scope(self) -> Option<String> {
+        self.team().map(|t| team_scope(&t))
+    }
+}
+/// `team:<lowercase hex id>`, the watermark scope of team `team`.
+pub fn team_scope(team: &TeamId) -> String {
+    let mut s = String::with_capacity(5 + 32);
+    s.push_str("team:");
+    for b in team {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogicalRef {

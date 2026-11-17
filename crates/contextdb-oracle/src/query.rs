@@ -110,11 +110,24 @@ pub fn cert_verdict(
                 {
                     dim.observation = Observation::Lagging;
                 }
-                match summarize(&dim) {
+                let mut s = summarize(&dim);
+                if let Some(scope) = i
+                    .logicals
+                    .get(e.logical.index())
+                    .and_then(|l| l.origin.scope())
+                    && live_pos
+                        .get(&scope)
+                        .is_none_or(|v| i.watermarks.get(&scope) != Some(v))
+                {
+                    s = crate::with_replication_lag(s);
+                }
+                match s {
                     Summary::Unavailable => 0,
                     Summary::Stale(_) => 1,
                     Summary::Conflicted => 2,
-                    Summary::Pending(PendingReason::ObservationLag) => 4,
+                    Summary::Pending(
+                        PendingReason::ObservationLag | PendingReason::ReplicationLag,
+                    ) => 4,
                     Summary::Pending(_) => 5,
                     Summary::Certified => 7,
                 }

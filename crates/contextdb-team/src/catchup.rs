@@ -144,7 +144,7 @@ impl Held {
 }
 
 pub fn scope(team: TeamId) -> String {
-    format!("team:{}", hex(&team))
+    contextdb_model::team_scope(&team)
 }
 
 fn key(team: TeamId, path: &str) -> String {
@@ -322,14 +322,31 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
     [first, revs, retract, heads, assert, tags].concat()
 }
 
+/// Where catch-up batches go: the kernel itself, or a store that logs them
+/// first (the daemon's single writer).
+pub trait Writer {
+    type Error: From<TxError>;
+    fn kernel(&self) -> &Kernel;
+    fn commit(&mut self, b: &Batch) -> Result<CommitResult, Self::Error>;
+}
+impl Writer for Kernel {
+    type Error = TxError;
+    fn kernel(&self) -> &Kernel {
+        self
+    }
+    fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        Kernel::commit(self, b)
+    }
+}
+
 /// Brings branch `b` to the history's tip. Returns every committed batch's
 /// result, in order.
-pub fn catch_up(
-    k: &mut Kernel,
+pub fn catch_up<W: Writer + ?Sized>(
+    w: &mut W,
     b: BranchId,
     team: TeamId,
     h: &History,
-) -> Result<Vec<CommitResult>, TxError> {
+) -> Result<Vec<CommitResult>, W::Error> {
     let mut done = Vec::new();
     let Some(tip) = h.tip().map(str::to_owned) else {
         return Ok(done);
@@ -342,15 +359,12 @@ pub fn catch_up(
             .watermark(&scope)
             .map(<[u8]>::to_vec)
     };
-    let at = watermark(k).map(|w| String::from_utf8_lossy(&w).into_owned());
+    let at = watermark(w.kernel()).map(|w| String::from_utf8_lossy(&w).into_owned());
     if at.as_deref() == Some(tip.as_str()) {
         return Ok(done);
     }
-    let commit = |k: &mut Kernel,
-                  want: &Projection,
-                  oid: &str,
-                  gap: bool|
-     -> Result<CommitResult, TxError> {
+    let commit = |w: &mut W, want: &Projection, oid: &str, gap: bool| {
+        let k = w.kernel();
         let have = held(k, b, team);
         let mut ops = diff(k, team, &have, want);
         ops.push(Op::ObserverWatermark {
@@ -362,17 +376,17 @@ pub fn catch_up(
         let mut batch = Batch::new(ops);
         batch.branch = b;
         batch.channel = Channel::Replica;
-        k.commit(&batch)
+        w.commit(&batch)
     };
     let Some(from) = h.position(at.as_deref()) else {
         // A position the history does not hold: one net batch, gap.
-        done.push(commit(k, h.current(), &tip, true)?);
+        done.push(commit(w, h.current(), &tip, true)?);
         return Ok(done);
     };
     // Walk the entries, cutting before any entry that would bring a mirror
     // back to a value it already had within the current batch.
     let mut proj = h.projection_at(from);
-    let start = held(k, b, team);
+    let start = held(w.kernel(), b, team);
     let mut seen: BTreeMap<String, BTreeSet<(Hash, bool)>> = BTreeMap::new();
     let mut value: BTreeMap<String, (Hash, bool)> = BTreeMap::new();
     for (p, x) in &start {
@@ -386,7 +400,7 @@ pub fn catch_up(
         });
         if returns {
             let prev = &h.entries[i - 1].0;
-            done.push(commit(k, &proj, prev, false)?);
+            done.push(commit(w, &proj, prev, false)?);
             seen.clear();
             for (p, v) in &value {
                 seen.entry(p.clone()).or_default().insert(*v);
@@ -399,22 +413,25 @@ pub fn catch_up(
             proj.insert(p.clone(), st.clone());
         }
     }
-    done.push(commit(k, &proj, &tip, false)?);
+    done.push(commit(w, &proj, &tip, false)?);
     Ok(done)
 }
 
 /// Brings every open branch to the tip, `main` first, then by id
 /// (ADR 0018 §5.2, Q7). Archived branches are not written. Stops at the
 /// first branch whose catch-up fails, naming it.
-pub fn catch_up_all(
-    k: &mut Kernel,
+pub fn catch_up_all<W: Writer + ?Sized>(
+    w: &mut W,
     team: TeamId,
     h: &History,
-) -> Result<usize, (BranchId, TxError)> {
-    let open: Vec<BranchId> = k.branches().filter(|b| !b.archived).map(|b| b.id).collect();
+) -> Result<usize, (BranchId, W::Error)> {
+    let open: Vec<BranchId> = (w.kernel().branches())
+        .filter(|b| !b.archived)
+        .map(|b| b.id)
+        .collect();
     let mut total = 0;
     for b in std::iter::once(MAIN).chain(open.into_iter().filter(|b| *b != MAIN)) {
-        total += catch_up(k, b, team, h).map_err(|e| (b, e))?.len();
+        total += catch_up(w, b, team, h).map_err(|e| (b, e))?.len();
     }
     Ok(total)
 }

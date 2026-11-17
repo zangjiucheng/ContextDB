@@ -30,6 +30,9 @@ pub enum PendingReason {
     Semantic,
     StructuralUnknown,
     ObservationLag,
+    /// A mirror in the read's L2-witness closure trails the team's fetched
+    /// tip (ADR 0018 §8.3). Decided at read time only, never stored.
+    ReplicationLag,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Summary {

@@ -25,7 +25,7 @@ pub(crate) struct Journal {
     /// Set by `finish`: overwritten heads, base, enabled and validations,
     /// and the change-log record.
     pub undo: Option<fast::Undo>,
-    pub record: Option<(Epoch, NetDelta, Vec<String>, usize)>,
+    pub record: Option<(Epoch, NetDelta, crate::cert::ScopeMoves, usize)>,
     pub policy: Option<PolicyDoc>,
     pub watermarks: BTreeMap<String, Option<Vec<u8>>>,
     pub metadata: BTreeMap<LogicalId, Metadata>,
