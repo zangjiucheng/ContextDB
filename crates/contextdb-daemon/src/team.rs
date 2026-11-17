@@ -126,6 +126,8 @@ pub struct Joined {
     pub cfg: TeamConfig,
     /// The last import's outcome.
     pub status: Status,
+    /// Publish step 5's set, which step 7 checks against (§7.2).
+    pub prepared: Option<contextdb_team::publish::Prepared>,
 }
 
 /// Opens every joined team under `<data>/teams`. A team that does not open
@@ -148,6 +150,7 @@ pub fn open_all(data: &Path) -> (BTreeMap<TeamId, Joined>, Vec<String>) {
                 queue,
                 cfg,
                 status: Status::UpToDate,
+                prepared: None,
             })
         })();
         match opened {
@@ -232,6 +235,12 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
         _ => None,
     };
     j.status = status.clone();
+    // Published proposals take their outcome from what was decided, or go
+    // back to the queue when the chain does not hold them (§7.4).
+    if let Err(e) = contextdb_team::publish::reconcile(&j.store, &mut j.queue, &j.cfg.member, &repo)
+    {
+        eprintln!("ctxd: team {}: reconcile: {e}", hex(&team));
+    }
     let tip = repo
         .resolve(&j.store.tracking_ref(j.store.replica().generation()))
         .ok()
@@ -350,5 +359,167 @@ fn propose_error(e: contextdb_team::proposals::ProposeError) -> TxError {
             code: "ReplicaStalled".into(),
             detail: e.to_string(),
         },
+    }
+}
+
+/// A team request on the actor (`ctx team status`, the publish steps).
+#[derive(Clone, Debug)]
+pub enum Call {
+    Status {
+        who: PrincipalId,
+    },
+    Prepare {
+        yes: Option<[u8; 32]>,
+        confirm: bool,
+    },
+    Begin {
+        commit: String,
+    },
+    Refused,
+}
+
+/// A prepared entry: the unsigned commit, its tree id (written to the
+/// repository) and the ref to push.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub unsigned: contextdb_team::publish::Unsigned,
+    pub tree: String,
+    pub refname: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum Answer {
+    Lines(Vec<String>),
+    Prepared {
+        entry: Option<Entry>,
+        listed: Option<contextdb_team::publish::Listing>,
+        conflicted: Vec<([u8; 16], String)>,
+    },
+    Error {
+        code: String,
+        detail: String,
+    },
+}
+
+fn fail(code: &str, detail: impl Into<String>) -> Answer {
+    Answer::Error {
+        code: code.into(),
+        detail: detail.into(),
+    }
+}
+
+/// Runs `c` on the actor.
+pub fn call(
+    teams: &mut BTreeMap<TeamId, Joined>,
+    k: &Kernel,
+    team: Option<TeamId>,
+    c: Call,
+) -> Answer {
+    let (access, version) = local_policy(k);
+    let policy = LocalPolicy {
+        access: access.as_ref(),
+        version: &version,
+    };
+    if let Call::Status { who } = c {
+        let mut lines = Vec::new();
+        for (t, j) in teams.iter() {
+            if team.is_some_and(|x| x != *t) {
+                continue;
+            }
+            let r = j.store.replica();
+            lines.push(format!(
+                "team {} member {} seq {} generation {} import {:?}",
+                hex(t),
+                j.cfg.member,
+                r.seq().map_or("-".to_owned(), |s| s.to_string()),
+                r.generation(),
+                j.status,
+            ));
+            // §6.2: only proposals `who` may see, and no count of others.
+            for p in j.queue.listing_for(who, r, &policy) {
+                lines.push(format!(
+                    "  proposal {} by {} {:?}",
+                    hex(&p.id),
+                    p.author.0,
+                    p.state
+                ));
+            }
+        }
+        return Answer::Lines(lines);
+    }
+    let Some(t) = team else {
+        return fail("InvalidRequest", "a publish step names its team");
+    };
+    let Some(j) = teams.get_mut(&t) else {
+        return fail("UnknownTeam", hex(&t));
+    };
+    match c {
+        Call::Status { .. } => unreachable!("answered above"),
+        Call::Prepare { yes, confirm } => {
+            use contextdb_team::publish::Mode;
+            let mode = match (yes, confirm, j.cfg.publish) {
+                (Some(token), _, _) => Mode::Yes(token),
+                (None, true, _) | (None, _, PublishMode::Confirm) => Mode::Confirm,
+                (None, false, PublishMode::Auto) => Mode::Auto,
+            };
+            let prepared = match contextdb_team::publish::prepare(
+                &j.store,
+                &mut j.queue,
+                &j.cfg.member,
+                &policy,
+                mode,
+            ) {
+                Ok(p) => p,
+                Err(e) => return fail("PublishFailed", format!("{e:?}")),
+            };
+            let entry = match &prepared.entry {
+                None => None,
+                Some(u) => {
+                    let repo = match Repo::open(&j.cfg.repo) {
+                        Ok(r) => r,
+                        Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+                    };
+                    let tree = match repo.write_tree(&u.tree) {
+                        Ok(t) => t,
+                        Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+                    };
+                    Some(Entry {
+                        unsigned: u.clone(),
+                        tree,
+                        refname: format!(
+                            "refs/contextdb/team/{}/g{}",
+                            hex(&t),
+                            j.store.replica().generation()
+                        ),
+                    })
+                }
+            };
+            let answer = Answer::Prepared {
+                entry,
+                listed: prepared.listed.clone(),
+                conflicted: prepared.conflicted.clone(),
+            };
+            j.prepared = Some(prepared);
+            answer
+        }
+        Call::Begin { commit } => {
+            let Some(p) = &j.prepared else {
+                return fail("NotPrepared", "no prepared publish");
+            };
+            match contextdb_team::publish::begin(&mut j.queue, p, &version, &commit) {
+                Ok(Ok(())) => Answer::Lines(vec![format!("published {commit}")]),
+                Ok(Err(e)) => fail(&format!("{e:?}"), "prepare again"),
+                Err(e) => fail("ReplicaStalled", e.to_string()),
+            }
+        }
+        Call::Refused => {
+            let Some(p) = j.prepared.take() else {
+                return Answer::Lines(Vec::new());
+            };
+            match contextdb_team::publish::refused(&mut j.queue, &p) {
+                Ok(()) => Answer::Lines(vec!["queued again".into()]),
+                Err(e) => fail("ReplicaStalled", e.to_string()),
+            }
+        }
     }
 }

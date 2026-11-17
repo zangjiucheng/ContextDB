@@ -119,6 +119,12 @@ pub enum Message {
         refused: TxError,
         reply: mpsc::Sender<team::Routed>,
     },
+    /// P10: `ctx team status` and the publish steps (ADR 0018 §7.2).
+    TeamCall {
+        team: Option<TeamId>,
+        call: team::Call,
+        reply: mpsc::Sender<team::Answer>,
+    },
     Shutdown {
         reply: mpsc::Sender<()>,
     },
@@ -412,6 +418,16 @@ impl<D: Durability + Clone> Actor<D> {
                 }
                 self.teams = teams;
                 let _ = reply.send(lines);
+            }
+            Message::TeamCall { team, call, reply } => {
+                let a = match self.store.kernel() {
+                    Ok(k) => team::call(&mut self.teams, k, team, call),
+                    Err(e) => team::Answer::Error {
+                        code: "OutcomeUnknown".into(),
+                        detail: format!("{e:?}"),
+                    },
+                };
+                let _ = reply.send(a);
             }
             Message::TeamRoute {
                 batch,

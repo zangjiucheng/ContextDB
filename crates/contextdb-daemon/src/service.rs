@@ -1669,6 +1669,23 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamStatus { team } => {
+                drop(snap);
+                let call = crate::team::Call::Status { who: id.principal };
+                self.team_call(team, call)
+            }
+            Request::TeamPublishPrepare { team, yes, confirm } => {
+                drop(snap);
+                self.team_call(Some(team), crate::team::Call::Prepare { yes, confirm })
+            }
+            Request::TeamPublishBegin { team, commit } => {
+                drop(snap);
+                self.team_call(Some(team), crate::team::Call::Begin { commit })
+            }
+            Request::TeamPublishRefused { team } => {
+                drop(snap);
+                self.team_call(Some(team), crate::team::Call::Refused)
+            }
             Request::AccessShow => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx access requires the admin socket");
@@ -2743,6 +2760,33 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Op::ExpectHeads { entries, .. } => entries.iter().any(|(l, _)| logical(l)),
             _ => false,
         })
+    }
+    fn team_call(&self, team: Option<TeamId>, call: crate::team::Call) -> Response {
+        use crate::team::Answer;
+        match self
+            .actor
+            .request(|reply| Message::TeamCall { team, call, reply })
+        {
+            Ok(Answer::Lines(lines)) => Response::TeamLines { lines },
+            Ok(Answer::Prepared {
+                entry,
+                listed,
+                conflicted,
+            }) => Response::TeamPrepared {
+                entry: entry.map(|e| TeamEntry {
+                    payload: e.unsigned.payload,
+                    tree: e.tree,
+                    seq: e.unsigned.seq,
+                    parent: e.unsigned.parent,
+                    proposals: e.unsigned.proposals,
+                    refname: e.refname,
+                }),
+                listed,
+                conflicted,
+            },
+            Ok(Answer::Error { code, detail }) => err(&code, detail),
+            Err(e) => submit_err(e),
+        }
     }
     /// A refused write that may be a team write: queued as a proposal, or
     /// the refusal as is.

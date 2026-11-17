@@ -265,6 +265,85 @@ fn summary(s: &Service<SimDisk>, sid: SessionId, path: &str) -> Summary {
     }
 }
 
+fn status(s: &Service<SimDisk>) -> Vec<String> {
+    match s.handle(ADMIN, Request::TeamStatus { team: None }).response {
+        Response::TeamLines { lines } => lines,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The pre-push hook's publish, by hand: prepare (a confirm listing, then
+/// `--yes`), sign as the bound member, begin, push, import.
+fn publish(s: &Service<SimDisk>, w: &World, proposal: [u8; 16]) {
+    let prepare = |yes: Option<[u8; 32]>, confirm: bool| match s
+        .handle(
+            ADMIN,
+            Request::TeamPublishPrepare {
+                team: TEAM,
+                yes,
+                confirm,
+            },
+        )
+        .response
+    {
+        Response::TeamPrepared {
+            entry,
+            listed,
+            conflicted,
+        } => (entry, listed, conflicted),
+        other => panic!("{other:?}"),
+    };
+    let (entry, listed, conflicted) = prepare(None, true);
+    assert!(entry.is_none() && conflicted.is_empty());
+    let (token, who) = listed.expect("a confirm listing");
+    assert_eq!(who, vec![(proposal, AGENT.principal)]);
+    let (entry, _, conflicted) = prepare(Some(token), false);
+    assert!(conflicted.is_empty(), "{conflicted:?}");
+    let e = entry.expect("an entry to sign");
+    assert_eq!(e.proposals, vec![proposal]);
+    let raw = commit::with_signature(
+        &e.payload,
+        &sshsig::sign(&ALICE, "git", &e.payload),
+        ObjectFormat::Sha1,
+    );
+    let edge = Repo::open(&w.edge).unwrap();
+    let oid = edge.write_commit(&raw).unwrap();
+    let r = s
+        .handle(
+            ADMIN,
+            Request::TeamPublishBegin {
+                team: TEAM,
+                commit: oid.clone(),
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+    assert!(
+        status(s).iter().any(|l| l.contains("Published")),
+        "{:?}",
+        status(s)
+    );
+    git(
+        &w.edge,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "-q",
+            "origin",
+            &format!("{oid}:{}", e.refname),
+        ],
+    );
+    w.fetch();
+    let lines = sync(s);
+    assert!(lines[0].contains("Imported(1)"), "{lines:?}");
+    assert!(
+        status(s).iter().any(|l| l.contains("Accepted")),
+        "{:?}",
+        status(s)
+    );
+}
+
 fn code(r: &Response) -> &str {
     match r {
         Response::Error { code, .. } => code,
@@ -309,14 +388,33 @@ fn p10_daemon_imports_routes_and_lags() {
         }],
         vec![b"c1".to_vec()],
     );
-    match &r {
-        Response::Proposed { team, .. } => assert_eq!(*team, TEAM),
+    let proposal = match &r {
+        Response::Proposed { team, id } => {
+            assert_eq!(*team, TEAM);
+            *id
+        }
         other => panic!("{other:?}"),
-    }
+    };
     assert_eq!(
         s.actor.snapshot().epoch,
         epoch,
         "a proposal commits nothing"
+    );
+    publish(&s, &w, proposal);
+    let snap = s.actor.snapshot();
+    assert!(
+        snap.view(MAIN).logical_by_key(&key("k/c")).is_some(),
+        "the accepted proposal is a mirror now"
+    );
+    drop(snap);
+    // The publisher continues from the edge's entry.
+    let tracking = format!("refs/contextdb/remotes/origin/team/{}/g0", hex(&TEAM));
+    w.parent = Some(git(&w.edge, &["rev-parse", &tracking]).trim().to_owned());
+    w.seq += 1;
+    let r = w.refname();
+    git(
+        &w.publisher,
+        &["fetch", "-q", "origin", &format!("+{r}:{r}")],
     );
     // Team and local targets together.
     let r = commit(

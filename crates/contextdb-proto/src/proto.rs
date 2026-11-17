@@ -713,6 +713,39 @@ pub enum Request {
     TeamSync {
         team: Option<[u8; 16]>,
     },
+    /// P10 `ctx team status` (store owner).
+    TeamStatus {
+        team: Option<[u8; 16]>,
+    },
+    /// P10 publish step 5 (ADR 0018 §7.2): fix the publish set. `yes`
+    /// publishes from a confirm listing's token; `confirm` only lists.
+    TeamPublishPrepare {
+        team: [u8; 16],
+        yes: Option<[u8; 32]>,
+        confirm: bool,
+    },
+    /// P10 publish step 7, the linearization point: the signed entry's
+    /// commit id.
+    TeamPublishBegin {
+        team: [u8; 16],
+        commit: String,
+    },
+    /// P10 publish step 9: the push was refused (non-fast-forward).
+    TeamPublishRefused {
+        team: [u8; 16],
+    },
+}
+/// A prepared team entry (publish step 5): the unsigned commit object the
+/// signature covers, its tree already written to the repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamEntry {
+    pub payload: Vec<u8>,
+    pub tree: String,
+    pub seq: u64,
+    pub parent: Option<String>,
+    pub proposals: Vec<[u8; 16]>,
+    /// The ref to push to: `refs/contextdb/team/<hex>/g<n>`.
+    pub refname: String,
 }
 /// One payload `ctx shred` names: what it is and where it is attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1248,6 +1281,13 @@ pub enum Response {
     /// P10: one line per team (`ctx team sync`).
     TeamLines {
         lines: Vec<String>,
+    },
+    /// P10 publish step 5's answer: an entry to sign, or a confirm listing
+    /// (token and `(proposal, author)`), and the proposals left out.
+    TeamPrepared {
+        entry: Option<TeamEntry>,
+        listed: Option<([u8; 32], Vec<([u8; 16], PrincipalId)>)>,
+        conflicted: Vec<([u8; 16], String)>,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -2075,6 +2115,25 @@ impl Wire for Request {
                 45u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamStatus { team } => {
+                46u8.encode(o);
+                team.encode(o);
+            }
+            Self::TeamPublishPrepare { team, yes, confirm } => {
+                47u8.encode(o);
+                team.encode(o);
+                yes.encode(o);
+                confirm.encode(o);
+            }
+            Self::TeamPublishBegin { team, commit } => {
+                48u8.encode(o);
+                team.encode(o);
+                commit.encode(o);
+            }
+            Self::TeamPublishRefused { team } => {
+                49u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2327,6 +2386,21 @@ impl Wire for Request {
                 client_txn_id: Wire::decode(i)?,
             },
             45 => Self::TeamSync {
+                team: Wire::decode(i)?,
+            },
+            46 => Self::TeamStatus {
+                team: Wire::decode(i)?,
+            },
+            47 => Self::TeamPublishPrepare {
+                team: Wire::decode(i)?,
+                yes: Wire::decode(i)?,
+                confirm: Wire::decode(i)?,
+            },
+            48 => Self::TeamPublishBegin {
+                team: Wire::decode(i)?,
+                commit: Wire::decode(i)?,
+            },
+            49 => Self::TeamPublishRefused {
                 team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
@@ -2611,6 +2685,16 @@ impl Wire for Response {
                 40u8.encode(o);
                 lines.encode(o);
             }
+            Self::TeamPrepared {
+                entry,
+                listed,
+                conflicted,
+            } => {
+                41u8.encode(o);
+                entry.encode(o);
+                listed.encode(o);
+                conflicted.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2786,7 +2870,33 @@ impl Wire for Response {
             40 => Self::TeamLines {
                 lines: Wire::decode(i)?,
             },
+            41 => Self::TeamPrepared {
+                entry: Wire::decode(i)?,
+                listed: Wire::decode(i)?,
+                conflicted: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+
+impl Wire for TeamEntry {
+    fn encode(&self, o: &mut Vec<u8>) {
+        self.payload.encode(o);
+        self.tree.encode(o);
+        self.seq.encode(o);
+        self.parent.encode(o);
+        self.proposals.encode(o);
+        self.refname.encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            payload: Wire::decode(i)?,
+            tree: Wire::decode(i)?,
+            seq: Wire::decode(i)?,
+            parent: Wire::decode(i)?,
+            proposals: Wire::decode(i)?,
+            refname: Wire::decode(i)?,
         })
     }
 }
