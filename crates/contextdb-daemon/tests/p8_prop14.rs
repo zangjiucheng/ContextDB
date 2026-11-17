@@ -492,6 +492,7 @@ fn prop14_retrieval_against_the_oracle() {
             Request::Raw {
                 blobs: vec![unrelated.clone()],
                 batch: Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: "zz-unrelated".into(),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),

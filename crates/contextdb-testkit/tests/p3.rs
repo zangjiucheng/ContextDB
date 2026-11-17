@@ -186,6 +186,7 @@ fn t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid() {
     let mut rig = Rig::new();
     rig.observer(vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/a.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: SCOPE.into(),
@@ -193,6 +194,7 @@ fn t16b_cert_aba_valid_unless_strict_and_anchor_base_aba_is_strict_invalid() {
             adopt_as_base: true,
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: SCOPE.into(),
             expected: None,
             position: vec![1],
@@ -263,6 +265,7 @@ fn t65_verdict_priority() {
     let mut rig = Rig::new();
     rig.observer(vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/a.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: SCOPE.into(),
@@ -270,12 +273,14 @@ fn t65_verdict_priority() {
             adopt_as_base: true,
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: SCOPE.into(),
             expected: None,
             position: vec![1],
         },
     ]);
     rig.observer(vec![Op::ObserverWatermark {
+        gap: false,
         scope: SCOPE.into(),
         expected: Some(vec![1]),
         position: vec![1],
@@ -301,6 +306,7 @@ fn t65_verdict_priority() {
     let mut rig = sem_fixture();
     rig.observer(vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/a.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: SCOPE.into(),
@@ -308,6 +314,7 @@ fn t65_verdict_priority() {
             adopt_as_base: true,
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: SCOPE.into(),
             expected: None,
             position: vec![1],

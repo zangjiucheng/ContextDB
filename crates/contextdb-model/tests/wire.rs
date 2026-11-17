@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 fn every_op_and_reference_round_trips_in_versioned_jsonl() {
     let ops = vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "fact:a".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -63,6 +64,7 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
             },
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: "repo".into(),
             expected: Some(vec![1]),
             position: vec![2],
@@ -107,7 +109,7 @@ fn every_op_and_reference_round_trips_in_versioned_jsonl() {
 #[test]
 fn log_rejects_unknown_version_bad_hex_and_unbounded_lengths() {
     assert_eq!(
-        EventLog::from_jsonl("{\"version\":4,\"batch_hex\":\"\"}"),
+        EventLog::from_jsonl("{\"version\":5,\"batch_hex\":\"\"}"),
         Err(WireError::UnknownVersion)
     );
     for line in [
@@ -163,4 +165,94 @@ fn eventlog_v1_carries_branch_ops_only() {
         EventLog::from_jsonl(&forged),
         Err(WireError::UnknownVersion)
     );
+}
+
+/// P10 (SPEC §6.1 contract 16, SD21.7): replica-origin creates, MirrorAttach,
+/// `gap` watermarks and the Replica channel round-trip at EventLog v4, while
+/// Local creates, `gap = false` watermarks and Local logicals keep today's
+/// tags and bytes.
+#[test]
+fn p10_replica_encodings_and_local_bytes_unchanged() {
+    let team = [0xab; 16];
+    let local = Op::CreateLogical {
+        key: "fact:a".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: [7; 32],
+        adopt_as_base: true,
+        origin: Origin::Local,
+    };
+    let replica = Op::CreateLogical {
+        key: format!("team/{}/k", "ab".repeat(16)),
+        kind: RecordKind::Decision,
+        scope_lane: format!("team:{}/main", "ab".repeat(16)),
+        content: [7; 32],
+        adopt_as_base: false,
+        origin: Origin::Replica { team },
+    };
+    let wm = |gap| Op::ObserverWatermark {
+        scope: format!("team:{}", "ab".repeat(16)),
+        expected: None,
+        position: vec![1, 2],
+        gap,
+    };
+    let attach = Op::MirrorAttach {
+        key: "team/x/k".into(),
+        head: [9; 32],
+        base: true,
+    };
+    // Tags: Local keeps 0 and 10; the new shapes take 22, 24, 23.
+    assert_eq!(local.canonical_bytes()[0], 0);
+    assert_eq!(replica.canonical_bytes()[0], 22);
+    assert_eq!(wm(false).canonical_bytes()[0], 10);
+    assert_eq!(wm(true).canonical_bytes()[0], 24);
+    assert_eq!(attach.canonical_bytes()[0], 23);
+    // A replica create is a Local create plus the team, nothing else.
+    let mut l2 = local.canonical_bytes();
+    l2[0] = 22;
+    let mut as_replica = Op::CreateLogical {
+        key: "fact:a".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: [7; 32],
+        adopt_as_base: true,
+        origin: Origin::Replica { team },
+    }
+    .canonical_bytes();
+    assert_eq!(as_replica.split_off(l2.len()), team.to_vec());
+    assert_eq!(as_replica, l2);
+    for op in [&local, &replica, &wm(false), &wm(true), &attach] {
+        assert_eq!(&Op::from_bytes(&op.canonical_bytes()).unwrap(), op);
+    }
+    // Logical: the kind byte's high bit marks a Replica origin.
+    let mk = |origin| Logical {
+        key: "k".into(),
+        kind: RecordKind::Plan,
+        scope_lane: "l".into(),
+        owner: PrincipalId(0),
+        origin_branch: MAIN,
+        origin_epoch: Epoch(3),
+        origin,
+    };
+    let lb = mk(Origin::Local).canonical_bytes();
+    let rb = mk(Origin::Replica { team }).canonical_bytes();
+    assert_eq!(lb[5], RecordKind::Plan as u8);
+    assert_eq!(rb[5], RecordKind::Plan as u8 | 0x80);
+    assert_eq!(rb.len(), lb.len() + 16);
+    assert_eq!(Logical::from_bytes(&rb).unwrap(), mk(Origin::Replica { team }));
+    assert_eq!(Logical::from_bytes(&lb).unwrap(), mk(Origin::Local));
+    // EventLog: v4 for anything P10, and a v4 batch under a lower version
+    // is refused.
+    let mut b = Batch::new(vec![wm(false)]);
+    b.channel = Channel::Replica;
+    for batch in [b, Batch::new(vec![replica]), Batch::new(vec![attach]), Batch::new(vec![wm(true)])] {
+        assert_eq!(EventLog::version_of(&batch), 4);
+        assert_eq!(Batch::from_bytes(&batch.canonical_bytes()).unwrap(), batch);
+        let log = EventLog { batches: vec![batch] };
+        let text = log.to_jsonl();
+        assert_eq!(EventLog::from_jsonl(&text).unwrap(), log);
+        let forged = text.replacen("\"version\":4", "\"version\":3", 1);
+        assert_eq!(EventLog::from_jsonl(&forged), Err(WireError::UnknownVersion));
+    }
+    assert_eq!(EventLog::version_of(&Batch::new(vec![local])), 0);
 }

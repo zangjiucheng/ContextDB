@@ -60,6 +60,29 @@ pub enum Channel {
     Agent,
     Observer,
     Admin,
+    /// P10 (SPEC SD21.7): the daemon's replica channel, the only writer of
+    /// replica-origin logicals. No client socket maps to it.
+    Replica,
+}
+/// A team's 128-bit id (SPEC SD21.1).
+pub type TeamId = [u8; 16];
+/// Where a logical comes from (SPEC SD21.7): set once at creation,
+/// immutable. `Local` is encoded as absent, so existing objects, ops and
+/// digests are unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Origin {
+    #[default]
+    Local,
+    /// A mirror of team `team`'s record, written by the replica channel.
+    Replica { team: TeamId },
+}
+impl Origin {
+    pub fn team(self) -> Option<TeamId> {
+        match self {
+            Self::Local => None,
+            Self::Replica { team } => Some(team),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogicalRef {
@@ -189,6 +212,8 @@ pub enum Op {
         scope_lane: String,
         content: ContentHash,
         adopt_as_base: bool,
+        /// P10: `Replica{team}` only from the replica channel (A8).
+        origin: Origin,
     },
     AddRevision {
         logical: LogicalRef,
@@ -238,6 +263,10 @@ pub enum Op {
         scope: String,
         expected: Option<Vec<u8>>,
         position: Vec<u8>,
+        /// P10: a `team:` catch-up whose start is not in the replica's
+        /// per-entry log (ADR 0018 §5.2); strict history treats it as a
+        /// change to every mirror of the team.
+        gap: bool,
     },
     /// Replaces the access document (ADR 0017 §4.1): admin only, sole Op of
     /// its batch, committed on `main`, global; never in a WHAT_IF or a merge.
@@ -278,6 +307,14 @@ pub enum Op {
         entries: Vec<(LogicalRef, RevisionId)>,
         source: ReadSource,
     },
+    /// P10 (SPEC §6.1 contract 16): makes an existing replica-origin
+    /// logical, created on another branch, visible on the batch's branch
+    /// with its head revision, and sets head and base. Replica channel only.
+    MirrorAttach {
+        key: String,
+        head: ContentHash,
+        base: bool,
+    },
     /// Merges `source` into the batch's branch (SD19 supplement, P6).
     Merge {
         source: BranchId,
@@ -314,6 +351,7 @@ impl Op {
             Self::CreateBranch { .. } => "CreateBranch",
             Self::ArchiveBranch { .. } => "ArchiveBranch",
             Self::ExpectHeads { .. } => "ExpectHeads",
+            Self::MirrorAttach { .. } => "MirrorAttach",
             Self::Merge { .. } => "Merge",
         }
     }
@@ -429,6 +467,15 @@ pub enum TxError {
     LogicalExists {
         key: String,
     },
+    /// P10: a local write to a `team/` key or `team:` lane (SPEC §6.1
+    /// contract 6).
+    ReservedNamespace,
+    /// P10 A8: a non-replica write to a replica-origin logical, or a local
+    /// rule, Rebind or artifact naming one.
+    ReplicaReadOnly,
+    /// P10: a merge would carry a rule or validation naming a mirror
+    /// revision the target cannot see (SD19 team supplement).
+    MirrorLag,
     ArtifactNotOpen {
         id: ArtifactId,
     },
@@ -535,6 +582,8 @@ pub struct Logical {
     pub owner: PrincipalId,
     pub origin_branch: BranchId,
     pub origin_epoch: Epoch,
+    /// P10 (SPEC SD21.7).
+    pub origin: Origin,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Revision {

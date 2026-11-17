@@ -3492,6 +3492,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let content = *blake3::hash(&body).as_bytes();
         let mut ops = match target {
             WriteTarget::Create { key, scope_lane } => vec![Op::CreateLogical {
+                origin: Default::default(),
                 key,
                 kind,
                 scope_lane,

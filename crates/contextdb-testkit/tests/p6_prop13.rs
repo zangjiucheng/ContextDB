@@ -113,6 +113,7 @@ impl Gen {
             channel = Channel::Observer;
             self.keys += 1;
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("code:f{}.rs#g", self.keys),
                 kind: RecordKind::CodeAnchor,
                 scope_lane: "fs".into(),
@@ -147,6 +148,7 @@ impl Gen {
                 });
             }
             ops.push(Op::ObserverWatermark {
+                gap: false,
                 scope: "fs".into(),
                 expected: c.watermarks.get("fs").cloned(),
                 position: vec![self.pick(250) as u8],
@@ -182,6 +184,7 @@ impl Gen {
             // Agents need facts to work on.
             creates = true;
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: self.key(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -200,6 +203,7 @@ impl Gen {
                 0..=13 => {
                     creates = true;
                     Op::CreateLogical {
+                        origin: Default::default(),
                         key: self.key(),
                         kind: if self.coin(10) {
                             RecordKind::Plan

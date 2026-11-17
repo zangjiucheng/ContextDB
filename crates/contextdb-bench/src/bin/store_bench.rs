@@ -61,6 +61,7 @@ fn p99(mut v: Vec<u128>) -> u128 {
 }
 fn create(n: usize, content: ContentHash) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: format!("k{n}"),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

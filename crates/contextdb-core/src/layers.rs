@@ -505,6 +505,7 @@ mod tests {
     fn rebuild_cross_check_detects_a_corrupted_column() {
         let mut db = Db::default();
         db.commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "x".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

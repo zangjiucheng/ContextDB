@@ -122,6 +122,7 @@ fn records(s: &Svc, n: u32) {
     }
     let ops = (0..n)
         .map(|i| Op::CreateLogical {
+            origin: Default::default(),
             key: format!("k{i}"),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -245,6 +246,7 @@ fn t58_identity_comes_from_the_transport_only() {
     // Bob writes `repo` (milestone 4 authorises writes).
     share(&s);
     let mut forged = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "forged".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -573,6 +575,7 @@ fn t98_socket_layout_modes_and_endpoint() {
         .call(&Request::Raw {
             blobs: vec![b"x".to_vec()],
             batch: Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: "k".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

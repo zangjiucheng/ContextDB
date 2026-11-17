@@ -32,6 +32,7 @@ fn h(b: &[u8]) -> ContentHash {
 }
 fn create(key: &str, lane: &str, body: &str) -> Batch {
     Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: lane.into(),
@@ -281,6 +282,7 @@ fn t104_a_format5_store_with_plaintext_is_incomplete() {
         .unwrap();
         let c = s.put_blob(b"new body").unwrap();
         s.commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "n".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -352,6 +354,7 @@ fn t104_shredded_plaintext_is_not_carried_over() {
         .unwrap();
         let c = s.put_blob(b"to shred").unwrap();
         s.commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "s".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

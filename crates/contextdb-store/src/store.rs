@@ -380,6 +380,7 @@ fn encodable(b: &Batch) -> bool {
                 scope,
                 expected,
                 position,
+                ..
             } => {
                 fits(scope.len())
                     && fits(position.len())
@@ -391,6 +392,7 @@ fn encodable(b: &Batch) -> bool {
                     && tags.iter().chain(dirs).all(|s| fits(s.len()))
             }
             Op::SetPolicy { policy } => fits(policy.require_deps.len()),
+            Op::MirrorAttach { key, .. } => fits(key.len()),
             _ => true,
         })
 }

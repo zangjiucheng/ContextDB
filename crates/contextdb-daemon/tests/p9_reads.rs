@@ -156,6 +156,7 @@ fn fixture() -> Fixture {
             .collect(),
         recs.iter()
             .map(|(k, lane, base)| Op::CreateLogical {
+                origin: Default::default(),
                 key: (*k).into(),
                 kind: RecordKind::Fact,
                 scope_lane: (*lane).into(),
@@ -779,6 +780,7 @@ fn t100_every_response_type_names_only_visible_ids() {
     }]))
     .unwrap();
     let mk = |key: &str, lane: &str| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: lane.into(),
@@ -1655,6 +1657,7 @@ fn a_certificate_read_set_never_names_a_hidden_premise() {
         s,
         vec![b"body of pub/c".to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "pub/c".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -1720,6 +1723,7 @@ fn a_certificate_read_set_never_names_a_hidden_premise() {
             Request::Commit {
                 binding: Binding::root(session),
                 ops: vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: "pub/new".into(),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),
@@ -2028,6 +2032,7 @@ fn impact_batch_is_redacted_with_its_branch() {
     let mine = s.actor.snapshot().kernel.branch_by_name("mine").unwrap();
     // Bob's record, on his branch only.
     let mut create = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "pub/mine".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -2129,6 +2134,7 @@ fn recall_for_a_narrow_reader_skips_hidden_lanes_in_the_index() {
         keys.iter()
             .zip(&lanes)
             .map(|(k, lane)| Op::CreateLogical {
+                origin: Default::default(),
                 key: k.clone(),
                 kind: RecordKind::Fact,
                 scope_lane: (*lane).into(),
@@ -2146,6 +2152,7 @@ fn recall_for_a_narrow_reader_skips_hidden_lanes_in_the_index() {
             Request::Commit {
                 binding: Binding::root(carol),
                 ops: vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: "carol/own".into(),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),
@@ -2185,6 +2192,7 @@ fn hidden_conflicts_take_no_slot_in_the_list() {
         keys.iter().map(|(k, _)| body(k)).collect(),
         keys.iter()
             .map(|(k, lane)| Op::CreateLogical {
+                origin: Default::default(),
                 key: k.clone(),
                 kind: RecordKind::Fact,
                 scope_lane: (*lane).into(),
@@ -2246,6 +2254,7 @@ fn owner_recall_without_scope_skips_others_personal_lanes() {
         recs.iter().map(|(k, _)| body(k)).collect(),
         recs.iter()
             .map(|(k, lane)| Op::CreateLogical {
+                origin: Default::default(),
                 key: (*k).into(),
                 kind: RecordKind::Fact,
                 scope_lane: (*lane).into(),
@@ -2345,6 +2354,7 @@ fn prop15_recall_returns_min_limit_authorised_at_random() {
             recs.iter().map(|(k, _)| body(k)).collect(),
             recs.iter()
                 .map(|(k, lane)| Op::CreateLogical {
+                    origin: Default::default(),
                     key: k.clone(),
                     kind: RecordKind::Fact,
                     scope_lane: (*lane).into(),

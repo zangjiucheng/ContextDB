@@ -63,6 +63,7 @@ fn observer_batch(rng: &mut ChaCha8Rng, db: &Db) -> Batch {
         .position(|l| l.key == "code:repo/a.rs");
     let ops = match (anchor, rng.next_u32() % 3) {
         (None, _) => vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/a.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: SCOPE.into(),
@@ -86,6 +87,7 @@ fn observer_batch(rng: &mut ChaCha8Rng, db: &Db) -> Batch {
             ]
         }
         (Some(_), _) => vec![Op::ObserverWatermark {
+            gap: false,
             scope: SCOPE.into(),
             expected: inputs.watermarks.get(SCOPE).cloned(),
             position: vec![(rng.next_u32() % 4) as u8],

@@ -69,6 +69,7 @@ fn setup(a: &Actor) -> HeadVector {
         vec![b"a: postgres".to_vec(), b"b: use sql joins".to_vec()],
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "a".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -76,6 +77,7 @@ fn setup(a: &Actor) -> HeadVector {
                 adopt_as_base: true,
             },
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "b".into(),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),
@@ -926,6 +928,7 @@ fn discovery_quiescence_property() {
                         b,
                         vec![body.clone().into_bytes()],
                         vec![Op::CreateLogical {
+                            origin: Default::default(),
                             key: format!("k{n}"),
                             kind: RecordKind::Decision,
                             scope_lane: "repo".into(),

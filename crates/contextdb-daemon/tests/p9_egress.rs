@@ -140,6 +140,7 @@ fn create(s: &Svc, lane: &str, key: &str, kind: RecordKind, body: &str) -> Revis
         s,
         vec![body.as_bytes().to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind,
             scope_lane: lane.into(),

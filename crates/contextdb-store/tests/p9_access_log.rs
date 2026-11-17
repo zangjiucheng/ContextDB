@@ -59,6 +59,7 @@ fn the_access_document_survives_replay_and_snapshots() {
     let content = store.put_blob(b"a").unwrap();
     store
         .commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "a".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -102,6 +103,7 @@ fn format4_log_migrates_to_format5_byte_identical() {
     let batches: Vec<Batch> = (0..3u8)
         .map(|n| {
             let mut b = Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("k{n}"),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

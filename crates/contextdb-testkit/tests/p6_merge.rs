@@ -6,6 +6,7 @@ use contextdb_model::*;
 
 fn create(key: &str, content: u8) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -228,6 +229,7 @@ fn t20_merge_and_certification() {
         b,
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "d2".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -444,6 +446,7 @@ fn observer_domain() {
         b
     };
     let anchor = |key: &str, content: u8| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::CodeAnchor,
         scope_lane: "fs".into(),
@@ -451,6 +454,7 @@ fn observer_domain() {
         adopt_as_base: true,
     };
     let watermark = |expected: Option<Vec<u8>>, position: u8| Op::ObserverWatermark {
+        gap: false,
         scope: "fs".into(),
         expected,
         position: vec![position],
@@ -544,6 +548,7 @@ fn merge_checks_policy_on_the_merged_state() {
     let mut k = setup();
     let b = fork(&mut k, MAIN, "b");
     k.commit(&Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "plan".into(),
         kind: RecordKind::Plan,
         scope_lane: "repo".into(),

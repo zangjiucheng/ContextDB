@@ -108,6 +108,7 @@ fn main() -> ExitCode {
         for i in 0..RULES {
             let body = format!("{prefix}{i} v0");
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("{prefix}{i}"),
                 kind,
                 scope_lane: "repo".into(),

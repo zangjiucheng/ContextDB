@@ -85,6 +85,7 @@ fn raw(c: &mut Client, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
 /// a (Fact) and b (Decision) ← Sem a; a moves, so the rule is Pending.
 fn pending_rule(c: &mut Client) {
     let fact = |key: &str, kind, body: &str| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind,
         scope_lane: "repo".into(),
@@ -234,6 +235,7 @@ fn write(a: &Actor, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
 /// `n` Decisions, each ← Sem a single moved Fact: `n` Pending rules.
 fn many_pending(a: &Actor, n: u32) {
     let mut ops = vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "a".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -244,6 +246,7 @@ fn many_pending(a: &Actor, n: u32) {
     for k in 0..n {
         let body = format!("decision {k}");
         ops.push(Op::CreateLogical {
+            origin: Default::default(),
             key: format!("d{k}"),
             kind: RecordKind::Decision,
             scope_lane: "repo".into(),

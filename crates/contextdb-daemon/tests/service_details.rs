@@ -57,6 +57,7 @@ fn offline_create(disk: &SimDisk, keys: &[(&str, &str)]) {
         let content = store.put_blob(body.as_bytes()).unwrap();
         store
             .commit(&Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: (*key).into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

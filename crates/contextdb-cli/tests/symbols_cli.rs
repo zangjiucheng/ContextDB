@@ -157,6 +157,7 @@ impl Rig {
                 blobs: vec![body],
                 batch: Batch::new(vec![
                     Op::CreateLogical {
+                        origin: Default::default(),
                         key: key.into(),
                         kind: RecordKind::Decision,
                         scope_lane: "test".into(),

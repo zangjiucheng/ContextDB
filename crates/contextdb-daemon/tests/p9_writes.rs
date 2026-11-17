@@ -134,6 +134,7 @@ fn fixture() -> Fixture {
                 batch: Batch::new(
                     recs.iter()
                         .map(|(k, lane, base)| Op::CreateLogical {
+                            origin: Default::default(),
                             key: (*k).into(),
                             kind: RecordKind::Fact,
                             scope_lane: (*lane).into(),
@@ -250,6 +251,7 @@ fn unauthorized(r: &Response, need: &str, reference: &str) {
 }
 fn create(key: &str, lane: &str, base: bool) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: lane.into(),
@@ -486,6 +488,7 @@ fn t102_dry_runs_refuse_exactly_what_the_commit_refuses() {
         ),
         (
             vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: "pub/stolen".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -524,6 +527,7 @@ fn t107_proof_of_possession() {
     let known = h(&body("sec/s"));
     let unknown = h(b"nobody has these bytes");
     let mk = |key: &str, content| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -1062,6 +1066,7 @@ fn t59_t107_shredded_payloads() {
 
     // Carol: with the bytes, ContentShredded (F13); without, MissingBlob.
     let mk = |key: &str| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -1122,6 +1127,7 @@ fn t108_a_merged_anchor_arrives_not_base() {
     assert_eq!(code(&branch(s, BOB, "feat-anchor")), "ok");
     let descriptor = b"an anchor descriptor".to_vec();
     let mut batch = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "code:repo/a.rs".into(),
         kind: RecordKind::CodeAnchor,
         scope_lane: "code:repo".into(),

@@ -71,6 +71,7 @@ fn idempotent_retry_and_txn_status_t18b() {
     let (mut store, _) = open(&disk).unwrap();
     let blob = store.put_blob(b"payload").unwrap();
     let mut b = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "a".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -129,6 +130,7 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         Payload::Unavailable(Unavailable::Missing)
     );
     let create = Op::CreateLogical {
+        origin: Default::default(),
         key: "a".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -181,6 +183,7 @@ fn blobs_are_idempotent_verified_and_required_t35() {
         Payload::Available(b"legacy".to_vec())
     );
     let create = Op::CreateLogical {
+        origin: Default::default(),
         key: "legacy".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -489,6 +492,7 @@ fn historical_reads_survive_restart_t07b_t13() {
     let v1 = store.put_blob(b"db: mongodb").unwrap();
     let v2 = store.put_blob(b"db: postgresql").unwrap();
     let create = Op::CreateLogical {
+        origin: Default::default(),
         key: "db".into(),
         kind: RecordKind::Decision,
         scope_lane: "repo".into(),
@@ -657,6 +661,7 @@ fn projections_roll_forward_rebuild_and_agree_with_replay() {
     let (mut s2, _) = open_with(&other, &proj);
     let blob = s2.put_blob(b"foreign").unwrap();
     s2.commit(&Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "foreign".into(),
         kind: RecordKind::Fact,
         scope_lane: "x".into(),
@@ -802,6 +807,7 @@ fn g4_blob_write() {
             assert_eq!(store.put_blob(&payload).unwrap(), hash);
             store
                 .commit(&Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: format!("after-{seed}"),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),
@@ -1030,6 +1036,7 @@ fn review5_poisoned_store_serves_nothing() {
     let epoch = store.epoch();
     let content = store.put_blob(b"ghost").unwrap();
     let mut b = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "ghost".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -1488,6 +1495,7 @@ fn watermark_history_projection_records_net_advances() {
     let (mut store, _) = open_with(&disk, &proj);
     let watermark = |expected: Option<u8>, position: u8| {
         let mut b = Batch::new(vec![Op::ObserverWatermark {
+            gap: false,
             scope: "repo".into(),
             expected: expected.map(|v| vec![v]),
             position: vec![position],
@@ -1499,6 +1507,7 @@ fn watermark_history_projection_records_net_advances() {
     let content = store.put_blob(b"x").unwrap();
     store
         .commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "x".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -1603,6 +1612,7 @@ fn g4_staged_blobs_never_trail_their_frame() {
                 .enumerate()
                 .map(|(i, p)| {
                     Batch::new(vec![Op::CreateLogical {
+                        origin: Default::default(),
                         key: format!("staged-{seed}-{i}"),
                         kind: RecordKind::Fact,
                         scope_lane: "repo".into(),
@@ -1662,6 +1672,7 @@ fn g4_staged_harness_detects_a_missing_barrier() {
         disk.disable_syncs();
         let (mut store, _) = open(&disk).unwrap();
         let b = Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: format!("u{seed}"),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -1711,6 +1722,7 @@ fn put_blobs_is_durable_on_return_and_poisons_on_failed_barrier() {
 
 fn create_with(key: &str, content: ContentHash) -> Batch {
     Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

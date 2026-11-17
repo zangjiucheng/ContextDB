@@ -808,6 +808,7 @@ fn prop15_merge_refusals_match_the_reference() {
         let create = |g: &mut Gen, serial: &mut u32| {
             *serial += 1;
             Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("k{serial}"),
                 kind: RecordKind::Fact,
                 scope_lane: lanes[g.pick(lanes.len())].into(),
@@ -868,6 +869,7 @@ fn prop15_merge_refusals_match_the_reference() {
             if g.coin(15) {
                 serial += 1;
                 let mut b = Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: format!("code:x/a{serial}"),
                     kind: RecordKind::CodeAnchor,
                     scope_lane: "code:x".into(),

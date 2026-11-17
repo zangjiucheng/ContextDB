@@ -529,6 +529,7 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
             // atomically, then the scan reloads state and recaptures.
             race += 1;
             sut.commit(vec![Op::ObserverWatermark {
+                gap: false,
                 scope: scope.clone(),
                 expected: sut.db.watermark(&scope).map(<[u8]>::to_vec),
                 position: vec![race],

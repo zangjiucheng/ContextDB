@@ -67,6 +67,7 @@ fn raw(s: &Svc, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
 }
 fn create(key: &str, kind: RecordKind, body: &[u8]) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind,
         scope_lane: "repo".into(),
@@ -392,6 +393,7 @@ fn resolve_accepts_conflicts_and_reviews_only() {
         MAIN,
         vec![b"anchor".to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "code:src/lib.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: "repo".into(),

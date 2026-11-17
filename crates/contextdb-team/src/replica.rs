@@ -642,6 +642,7 @@ impl Replica {
                 }
                 self.content_ok(st, content, entry)?;
                 st.ops.push(Op::CreateLogical {
+                    origin: Default::default(),
                     key: self.key(path),
                     kind: *kind,
                     scope_lane: self.lane(lane),
@@ -1012,6 +1013,7 @@ impl Replica {
         for rec in &st.records {
             let l = LogicalId(inputs.logicals.len() as u32);
             inputs.logicals.push(Logical {
+                origin: Default::default(),
                 key: r.key(&rec.path),
                 kind: rec.kind,
                 scope_lane: r.lane(&rec.lane),

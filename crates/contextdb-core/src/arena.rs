@@ -99,6 +99,8 @@ pub(crate) struct LogicalArena {
     branch: Vec<BranchId>,
     epoch: Vec<Epoch>,
     metadata: BTreeMap<LogicalId, Metadata>,
+    /// P10: replica-origin logicals only; absent means Local (SD21.7).
+    origin: BTreeMap<LogicalId, TeamId>,
     keys_by_hash: KeyTable,
 }
 impl LogicalArena {
@@ -120,6 +122,7 @@ impl LogicalArena {
             + self.scope_ids.keys().map(String::capacity).sum::<usize>()
             // Lower bound: B-tree leaves store keys and values in separate arrays.
             + btree_slots(self.metadata.len()) * (size_of::<LogicalId>() + size_of::<Metadata>())
+            + btree_slots(self.origin.len()) * (size_of::<LogicalId>() + size_of::<TeamId>())
             + self
                 .metadata
                 .values()
@@ -205,6 +208,15 @@ impl LogicalArena {
         self.owner.push(l.owner);
         self.branch.push(l.origin_branch);
         self.epoch.push(l.origin_epoch);
+        if let Origin::Replica { team } = l.origin {
+            self.origin.insert(LogicalId(id), team);
+        }
+    }
+    /// A logical's origin (P10, SD21.7).
+    pub fn origin_of(&self, l: LogicalId) -> Origin {
+        self.origin
+            .get(&l)
+            .map_or(Origin::Local, |team| Origin::Replica { team: *team })
     }
     /// Drops logicals `n..` (WHAT_IF rollback): their keys, interned lanes
     /// first used by them, and their metadata.
@@ -237,10 +249,12 @@ impl LogicalArena {
         self.branch.truncate(n);
         self.epoch.truncate(n);
         self.metadata.retain(|l, _| l.index() < n);
+        self.origin.retain(|l, _| l.index() < n);
     }
     pub fn record(&self, l: LogicalId) -> Logical {
         let n = l.index();
         Logical {
+            origin: self.origin_of(LogicalId(n as u32)),
             key: self.key(n).to_owned(),
             kind: self.kind[n],
             scope_lane: self.scopes[self.scope[n] as usize].clone(),
@@ -271,6 +285,7 @@ impl LogicalArena {
     pub fn export(&self) -> (Vec<Logical>, Vec<Metadata>) {
         let logicals = (0..self.len())
             .map(|n| Logical {
+                origin: self.origin_of(LogicalId(n as u32)),
                 key: self.key(n).to_owned(),
                 kind: self.kind[n],
                 scope_lane: self.scopes[self.scope[n] as usize].clone(),
@@ -923,6 +938,7 @@ mod tests {
     }
     fn logical(key: String) -> Logical {
         Logical {
+            origin: Default::default(),
             key,
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -1042,6 +1058,7 @@ mod reserve_tests {
     use super::*;
     fn logical(key: &str) -> Logical {
         Logical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

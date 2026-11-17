@@ -6,6 +6,7 @@ use contextdb_testkit::{generate, generate_p1};
 
 fn create(key: &str, content: u8, lane: &str) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: lane.into(),
@@ -153,6 +154,7 @@ fn t14_what_if_changes_nothing() {
     admin.channel = Channel::Admin;
     db.what_if(&admin).unwrap();
     let mut observer = Batch::new(vec![Op::ObserverWatermark {
+        gap: false,
         scope: "fs".into(),
         expected: None,
         position: vec![1, 2],

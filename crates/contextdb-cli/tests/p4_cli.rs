@@ -87,6 +87,7 @@ fn t41_policy_violations_are_rejected_on_every_channel() {
     let raw = Request::Raw {
         blobs: vec![b"d2".to_vec()],
         batch: Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "d2".into(),
             kind: RecordKind::Decision,
             scope_lane: "repo".into(),

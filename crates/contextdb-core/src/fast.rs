@@ -48,7 +48,8 @@ fn l(l: &LogicalRef, logicals: &LogicalArena) -> Result<LogicalId, TxError> {
     Ok(id)
 }
 fn channel(b: &Batch, op: &Op, anchor: bool) -> Result<(), TxError> {
-    if b.channel == Channel::Observer && !anchor {
+    // P10 milestone 3, first slice: the replica channel is not admitted yet.
+    if b.channel == Channel::Replica || (b.channel == Channel::Observer && !anchor) {
         return Err(TxError::ChannelRestricted {
             op: op.name().into(),
             channel: b.channel,

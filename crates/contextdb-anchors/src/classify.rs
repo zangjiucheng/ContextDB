@@ -90,6 +90,7 @@ pub fn prepare_anchors(
                     None => {
                         out.blobs.push(d.canonical());
                         out.ops.push(Op::CreateLogical {
+                            origin: Default::default(),
                             key: d.key(),
                             kind: RecordKind::CodeAnchor,
                             scope_lane: d.scope(),
@@ -177,6 +178,7 @@ pub fn prepare_anchors(
         out.ops.insert(
             0,
             Op::ObserverWatermark {
+                gap: false,
                 scope: format!("code:{repo}"),
                 expected,
                 position,

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 fn fact(key: &str, content: u8) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -299,6 +300,7 @@ fn view_observation_support_and_unobserved_anchors() {
     let mut k = Kernel::default();
     // `t` is not base, so its support is the rule on the anchor.
     let t = Op::CreateLogical {
+        origin: Default::default(),
         key: "t".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -311,6 +313,7 @@ fn view_observation_support_and_unobserved_anchors() {
     let mut observe = on(
         b,
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/a.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: "repo".into(),

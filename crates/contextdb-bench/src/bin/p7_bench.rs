@@ -115,6 +115,7 @@ fn commit_round(busy: bool, commits: usize) -> (Vec<Duration>, u64) {
     for i in 0..P + R + W {
         let body = format!("record {i} v0");
         ops.push(Op::CreateLogical {
+            origin: Default::default(),
             key: format!("k{i}"),
             kind: if (P..P + R).contains(&i) {
                 RecordKind::Decision
@@ -244,6 +245,7 @@ fn candidates_bench(corpus: u32) -> (Vec<Duration>, Duration, usize, usize, u64)
         for &i in chunk {
             let text = body(1, i as u64);
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("rec/{i}"),
                 kind: [RecordKind::Decision, RecordKind::Fact, RecordKind::Plan][i as usize % 3],
                 scope_lane: "repo".into(),
@@ -341,6 +343,7 @@ fn long_poll_bench(samples: usize) -> Vec<Duration> {
         &mut c,
         vec![b"x0".to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "x".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -421,6 +424,7 @@ fn memory_bench(pending: u32) {
     };
     admin(
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "a".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -436,6 +440,7 @@ fn memory_bench(pending: u32) {
         for k in start..end {
             let text = format!("decision {k}");
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("d{k}"),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),

@@ -465,6 +465,7 @@ mod tests {
         assert_eq!(p.watermark(), Epoch(0));
         let mut db = contextdb_core::Db::default();
         db.commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "a".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

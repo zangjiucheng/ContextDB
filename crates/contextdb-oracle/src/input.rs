@@ -177,9 +177,10 @@ fn resolve(i: &Inputs, a: &Allocations, op: &Op) -> Result<Op, TxError> {
     let lr = |l: &LogicalRef| logical(i, a, l).map(LogicalRef::Existing);
     let jr = |j| rule(i, a, j).map(RuleRef::Existing);
     Ok(match op {
-        Op::CreateLogical { .. } | Op::SetPolicy { .. } | Op::ObserverWatermark { .. } => {
-            op.clone()
-        }
+        Op::CreateLogical { .. }
+        | Op::SetPolicy { .. }
+        | Op::ObserverWatermark { .. }
+        | Op::MirrorAttach { .. } => op.clone(),
         Op::ExpectHeads { entries, source } => Op::ExpectHeads {
             entries: entries
                 .iter()
@@ -550,6 +551,24 @@ fn anchor_write(i: &Inputs, op: &Op) -> bool {
     }
 }
 fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
+    // P10 milestone 3, first slice: the replica channel and its ops are
+    // encodable but not yet admitted.
+    if c == Channel::Replica
+        || matches!(
+            op,
+            Op::MirrorAttach { .. }
+                | Op::CreateLogical {
+                    origin: Origin::Replica { .. },
+                    ..
+                }
+                | Op::ObserverWatermark { gap: true, .. }
+        )
+    {
+        return Err(TxError::ChannelRestricted {
+            op: op.name().into(),
+            channel: c,
+        });
+    }
     let anchor_art = match op {
         Op::OpenArtifact {
             ty: ArtifactType::AnchorBroken,
@@ -755,6 +774,7 @@ fn apply_op(
             scope_lane,
             content,
             adopt_as_base,
+            origin,
         } => {
             let valid = !key.is_empty()
                 && key.len() <= 256
@@ -778,6 +798,7 @@ fn apply_op(
             let l = LogicalId(checked_id(i.logicals.len(), CapacityKind::Logical)?);
             let r = RevisionId(checked_id(i.revisions.len(), CapacityKind::Revision)?);
             i.logicals.push(Logical {
+                origin,
                 key,
                 kind,
                 scope_lane,
@@ -962,6 +983,7 @@ fn apply_op(
             scope,
             expected,
             position,
+            gap: _,
         } => {
             let actual = i.watermarks.get(&scope).cloned();
             if expected != actual {
@@ -1058,6 +1080,7 @@ fn apply_op(
         | Op::ShredContent { .. } => {
             unreachable!("rejected by resolve")
         }
+        Op::MirrorAttach { .. } => unreachable!("refused by check_channel"),
     }
     Ok(())
 }

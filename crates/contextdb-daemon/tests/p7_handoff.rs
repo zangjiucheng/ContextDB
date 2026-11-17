@@ -54,6 +54,7 @@ fn raw(s: &Svc, branch: BranchId, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitRe
 fn records(s: &Svc, n: u32) {
     let ops = (0..n)
         .map(|i| Op::CreateLogical {
+            origin: Default::default(),
             key: format!("k{i}"),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

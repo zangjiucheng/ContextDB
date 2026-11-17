@@ -42,6 +42,7 @@ impl Coverage {
 }
 pub fn create(key: &str, kind: RecordKind, base: bool, content: u8) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind,
         scope_lane: "repo".into(),

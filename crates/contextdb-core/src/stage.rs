@@ -462,6 +462,7 @@ mod tests {
     use crate::Db;
     fn create(key: &str, content: u8) -> Op {
         Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -579,6 +580,7 @@ mod tests {
         assert_eq!(s.revisions_of(a), vec![RevisionId(0), RevisionId(2), r4]);
         let d = s.push_logical(
             Logical {
+                origin: Default::default(),
                 key: "d".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

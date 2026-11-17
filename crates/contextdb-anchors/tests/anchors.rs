@@ -76,6 +76,7 @@ fn classifier_restores_identical_retracted_head_and_handles_broken_paths() {
         restored.ops,
         vec![
             Op::ObserverWatermark {
+                gap: false,
                 scope: format!("code:{repo}"),
                 expected: Some(vec![1]),
                 position: vec![2]
@@ -289,6 +290,7 @@ fn t42_t43_t46_cur_sem_pin_deletion_restore_old_head_and_exact_oracle_counters()
     db.commit(&Batch::new(
         (1..=3)
             .map(|n| Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("root{n}"),
                 kind: RecordKind::Decision,
                 scope_lane: "test".into(),
@@ -387,6 +389,7 @@ fn t42_t43_t46_cur_sem_pin_deletion_restore_old_head_and_exact_oracle_counters()
 fn t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effective_vector() {
     let mut db = Db::default();
     let anchor = |key: &str, scope: &str, content| Op::CreateLogical {
+        origin: Default::default(),
         key: format!("code:{key}"),
         kind: RecordKind::CodeAnchor,
         scope_lane: scope.into(),
@@ -397,11 +400,13 @@ fn t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effe
         anchor("a/x", "a", 1),
         anchor("b/x", "b", 2),
         Op::ObserverWatermark {
+            gap: false,
             scope: "a".into(),
             expected: None,
             position: vec![1],
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: "b".into(),
             expected: None,
             position: vec![1],
@@ -411,6 +416,7 @@ fn t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effe
     db.commit(&batch).unwrap();
     db.commit(&Batch::new(vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "x".into(),
             kind: RecordKind::Decision,
             scope_lane: "test".into(),
@@ -423,6 +429,7 @@ fn t44_missing_live_evidence_and_sem_asserted_old_support_are_not_hidden_by_effe
             enabled: true,
         },
         Op::CreateLogical {
+            origin: Default::default(),
             key: "root".into(),
             kind: RecordKind::Decision,
             scope_lane: "test".into(),
@@ -588,6 +595,7 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
         &mut history,
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "code:a/x".into(),
                 kind: RecordKind::CodeAnchor,
                 scope_lane: "a".into(),
@@ -595,6 +603,7 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
                 adopt_as_base: true,
             },
             Op::ObserverWatermark {
+                gap: false,
                 scope: "a".into(),
                 expected: None,
                 position: vec![1],
@@ -603,6 +612,7 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
         true,
     );
     let create = |key: &str, n| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Decision,
         scope_lane: "test".into(),
@@ -688,6 +698,7 @@ fn strict_hidden_scope_uses_original_premises_after_rebind() {
         &mut db,
         &mut history,
         vec![Op::ObserverWatermark {
+            gap: false,
             scope: "a".into(),
             expected: Some(vec![1]),
             position: vec![2],
@@ -742,6 +753,7 @@ fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
         &mut history,
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "code:a/x".into(),
                 kind: RecordKind::CodeAnchor,
                 scope_lane: "a".into(),
@@ -749,6 +761,7 @@ fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
                 adopt_as_base: true,
             },
             Op::ObserverWatermark {
+                gap: false,
                 scope: "a".into(),
                 expected: None,
                 position: vec![1],
@@ -757,6 +770,7 @@ fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
         true,
     );
     let create = |key: &str, n| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Decision,
         scope_lane: "test".into(),
@@ -839,6 +853,7 @@ fn strict_hidden_scope_survives_a_rebind_without_any_head_move() {
         &mut db,
         &mut history,
         vec![Op::ObserverWatermark {
+            gap: false,
             scope: "a".into(),
             expected: Some(vec![1]),
             position: vec![2],
@@ -921,6 +936,7 @@ fn strict_watermark_window_belongs_only_to_roots_that_originally_reached_it() {
     let mut db = Db::default();
     let mut history = vec![db.inputs()];
     let b = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "plain".into(),
         kind: RecordKind::Fact,
         scope_lane: "test".into(),
@@ -932,6 +948,7 @@ fn strict_watermark_window_belongs_only_to_roots_that_originally_reached_it() {
     let old = db.epoch();
     let mut b = Batch::new(vec![
         Op::CreateLogical {
+            origin: Default::default(),
             key: "code:a/x".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: "a".into(),
@@ -939,6 +956,7 @@ fn strict_watermark_window_belongs_only_to_roots_that_originally_reached_it() {
             adopt_as_base: true,
         },
         Op::ObserverWatermark {
+            gap: false,
             scope: "a".into(),
             expected: None,
             position: vec![1],
@@ -948,6 +966,7 @@ fn strict_watermark_window_belongs_only_to_roots_that_originally_reached_it() {
     db.commit(&b).unwrap();
     history.push(db.inputs());
     let mut b = Batch::new(vec![Op::ObserverWatermark {
+        gap: false,
         scope: "a".into(),
         expected: Some(vec![1]),
         position: vec![2],

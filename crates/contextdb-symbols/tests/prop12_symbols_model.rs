@@ -1352,6 +1352,7 @@ fn run_seed(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
         if step.race {
             race += 1;
             sut.commit(vec![Op::ObserverWatermark {
+                gap: false,
                 scope: scope.clone(),
                 expected: sut.db.watermark(&scope).map(<[u8]>::to_vec),
                 position: vec![race],

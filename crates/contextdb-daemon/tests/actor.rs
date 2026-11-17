@@ -15,6 +15,7 @@ fn create(key: &str, body: &[u8]) -> (Vec<Vec<u8>>, Batch) {
     (
         vec![body.to_vec()],
         Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

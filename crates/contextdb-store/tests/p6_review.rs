@@ -44,6 +44,7 @@ fn group_commit_projections_equal_a_rebuild() {
         let (a, p) = (s.put_blob(b"a").unwrap(), s.put_blob(b"p").unwrap());
         s.commit(&Batch::new(vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "p".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -51,6 +52,7 @@ fn group_commit_projections_equal_a_rebuild() {
                 adopt_as_base: true,
             },
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "a".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -102,6 +104,7 @@ fn group_commit_projections_equal_a_rebuild() {
 
 fn fact(key: &str, content: u8, base: bool) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

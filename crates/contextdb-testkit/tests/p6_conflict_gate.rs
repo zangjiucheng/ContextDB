@@ -10,6 +10,7 @@ use rand_core::{RngCore, SeedableRng};
 
 fn create(key: &str, content: u8) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -33,6 +34,7 @@ fn t51_open_conflict_blocks_certified_only() {
     db.commit(&Batch::new(vec![
         create("a", 0),
         Op::CreateLogical {
+            origin: Default::default(),
             key: "d".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

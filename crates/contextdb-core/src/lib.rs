@@ -1190,6 +1190,7 @@ mod tests {
     #[test]
     fn maintenance_journal_has_old_rows_without_inventing_new_prestate() {
         let create = |key: &str, content, base| Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -1251,6 +1252,7 @@ mod tests {
     }
     fn logical(key: &str, lane: &str, content: u8) -> Op {
         Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: lane.into(),

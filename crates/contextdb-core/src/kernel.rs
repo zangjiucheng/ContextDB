@@ -1060,6 +1060,7 @@ fn map_batch(b: &Batch, local: &dyn Fn(Kind, u32) -> u32) -> Batch {
             Op::CreateLogical { .. }
             | Op::SetPolicy { .. }
             | Op::ObserverWatermark { .. }
+            | Op::MirrorAttach { .. }
             | Op::CreateBranch { .. }
             | Op::ArchiveBranch { .. }
             | Op::SetAccess { .. }

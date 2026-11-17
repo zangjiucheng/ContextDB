@@ -638,7 +638,7 @@ fn t09t_observer_anchor_delete_and_watermark_cas() {
             target: r(1),
             payload_hash: [0; 32],
         },
-        Op::ObserverWatermark {
+        Op::ObserverWatermark { gap: false,
             scope: "repo".into(),
             expected: None,
             position: vec![1],
@@ -674,7 +674,7 @@ fn t09t_observer_anchor_delete_and_watermark_cas() {
             channel: Channel::Agent,
         },
     );
-    let mut b = Batch::new(vec![Op::ObserverWatermark {
+    let mut b = Batch::new(vec![Op::ObserverWatermark { gap: false,
         scope: "repo".into(),
         expected: None,
         position: vec![2],
@@ -877,7 +877,7 @@ fn t29_epoch_overflow_and_watermark_capacity_are_atomic() {
         },
     );
     let mut y = Rig::default();
-    let mut b = Batch::new(vec![Op::ObserverWatermark {
+    let mut b = Batch::new(vec![Op::ObserverWatermark { gap: false,
         scope: "s".into(),
         expected: None,
         position: vec![0; 65],

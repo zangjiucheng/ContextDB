@@ -7,6 +7,7 @@ use contextdb_oracle::{InputModel, jacobi};
 
 fn create(key: &str, content: u8) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -175,6 +176,7 @@ fn policy_violation_precedes_read_set_conflict() {
     admin.channel = Channel::Admin;
     both(&mut db, &mut oracle, &admin).unwrap();
     let decision = Op::CreateLogical {
+        origin: Default::default(),
         key: "d".into(),
         kind: RecordKind::Decision,
         scope_lane: "repo".into(),

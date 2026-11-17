@@ -95,6 +95,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
     batches.push(Batch::new(
         (0..500)
             .map(|n| Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("extra-{n}"),
                 kind: RecordKind::Fact,
                 scope_lane: format!("lane-{}", n % 50),
@@ -177,6 +178,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
             .collect(),
     ));
     let mut observer = Batch::new(vec![Op::ObserverWatermark {
+        gap: false,
         scope: "lane-1".into(),
         expected: None,
         position: vec![1],
@@ -212,6 +214,7 @@ fn accounting_is_a_tight_lower_bound_of_live_heap() {
         c
     };
     let create = |key: String, content, adopt_as_base| Op::CreateLogical {
+        origin: Default::default(),
         key,
         kind: RecordKind::Decision,
         scope_lane: "rebind".into(),

@@ -34,9 +34,17 @@ The encoder emits lowercase hex. Binary layout:
   `lanes: map<name, LaneEntry>`, `code_lanes`, `personal_egress: bool`,
   `default_lane`; `LaneEntry` is `members`, `writers`, `curators` (sets of
   strings), `egress: bool`, `grants: map<string, set<string>>`,
-  `deny: set<(string, string)>`). Each line carries the lowest version that
-  can represent it.
-- Edge tags: Ref=0, Pin=1, Sem=2, Cur=3. Channel: Agent=0, Observer=1, Admin=2.
+  `deny: set<(string, string)>`). v4 (P10, SPEC §6.1 contract 16, SD21.7)
+  adds tag 22 `CreateLogical` with a replica origin (tag 0's fields, then
+  `team: [u8;16]`), tag 23 `MirrorAttach` (`key: string`, `head: [u8;32]`,
+  `base: bool`), tag 24 `ObserverWatermark` with `gap = true` (tag 10's
+  fields; tag 10 always means `gap = false`), and Channel `Replica = 3`. A
+  Local create keeps tag 0 and a `gap = false` watermark tag 10, so their
+  bytes are unchanged. In a `Logical` record a replica origin sets the
+  RecordKind byte's high bit (`kind | 0x80`) and appends the team after it.
+  Each line carries the lowest version that can represent it.
+- Edge tags: Ref=0, Pin=1, Sem=2, Cur=3. Channel: Agent=0, Observer=1, Admin=2,
+  Replica=3 (v4).
 - RecordKind: Fact, Assumption, Decision, Plan, Convention, Procedure, Artifact,
   Evidence, CodeAnchor, Summary (0–9).
 - References: Existing=0, New=1; LogicalRef additionally has Key=1, New=2.

@@ -43,6 +43,7 @@ fn create(c: &mut Client, key: &str, kind: RecordKind, body: &str) {
         c,
         vec![body.as_bytes().to_vec()],
         Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind,
             scope_lane: "repo".into(),
@@ -309,6 +310,7 @@ mod jobs {
             vec![b"p: postgres".to_vec(), b"c: zanzibar joins".to_vec()],
             vec![
                 Op::CreateLogical {
+                    origin: Default::default(),
                     key: "p".into(),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),
@@ -316,6 +318,7 @@ mod jobs {
                     adopt_as_base: true,
                 },
                 Op::CreateLogical {
+                    origin: Default::default(),
                     key: "c".into(),
                     kind: RecordKind::Decision,
                     scope_lane: "repo".into(),
@@ -507,6 +510,7 @@ fn a_failed_key_log_rewrite_is_retried_by_the_purge() {
         Request::Raw {
             blobs: vec![body],
             batch: Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: "k".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

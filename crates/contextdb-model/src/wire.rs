@@ -298,17 +298,23 @@ impl Wire for RecordKind {
         (*self as u8).encode(o)
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
-        match u8::decode(i)? {
-            0 => Ok(Self::Fact),
-            1 => Ok(Self::Assumption),
-            2 => Ok(Self::Decision),
-            3 => Ok(Self::Plan),
-            4 => Ok(Self::Convention),
-            5 => Ok(Self::Procedure),
-            6 => Ok(Self::Artifact),
-            7 => Ok(Self::Evidence),
-            8 => Ok(Self::CodeAnchor),
-            9 => Ok(Self::Summary),
+        record_kind(u8::decode(i)?)
+    }
+}
+fn record_kind(tag: u8) -> Result<RecordKind, WireError> {
+    use RecordKind as K;
+    {
+        match tag {
+            0 => Ok(K::Fact),
+            1 => Ok(K::Assumption),
+            2 => Ok(K::Decision),
+            3 => Ok(K::Plan),
+            4 => Ok(K::Convention),
+            5 => Ok(K::Procedure),
+            6 => Ok(K::Artifact),
+            7 => Ok(K::Evidence),
+            8 => Ok(K::CodeAnchor),
+            9 => Ok(K::Summary),
             _ => Err(WireError::InvalidEncoding),
         }
     }
@@ -322,6 +328,7 @@ impl Wire for Channel {
             0 => Ok(Self::Agent),
             1 => Ok(Self::Observer),
             2 => Ok(Self::Admin),
+            3 => Ok(Self::Replica),
             _ => Err(WireError::InvalidEncoding),
         }
     }
@@ -498,16 +505,35 @@ impl Wire for Batch {
 impl Wire for Logical {
     fn encode(&self, o: &mut Vec<u8>) {
         self.key.encode(o);
-        self.kind.encode(o);
+        // A Replica origin sets the kind byte's high bit and appends the
+        // team; a Local logical keeps today's bytes (P10, Q15).
+        match self.origin {
+            Origin::Local => self.kind.encode(o),
+            Origin::Replica { .. } => ((self.kind as u8) | 0x80).encode(o),
+        }
+        if let Origin::Replica { team } = self.origin {
+            team.encode(o);
+        }
         self.scope_lane.encode(o);
         self.owner.encode(o);
         self.origin_branch.encode(o);
         self.origin_epoch.encode(o);
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let key = Wire::decode(i)?;
+        let tag = u8::decode(i)?;
+        let kind = record_kind(tag & 0x7f)?;
+        let origin = if tag & 0x80 != 0 {
+            Origin::Replica {
+                team: Wire::decode(i)?,
+            }
+        } else {
+            Origin::Local
+        };
         Ok(Self {
-            key: Wire::decode(i)?,
-            kind: Wire::decode(i)?,
+            key,
+            kind,
+            origin,
             scope_lane: Wire::decode(i)?,
             owner: Wire::decode(i)?,
             origin_branch: Wire::decode(i)?,
@@ -1017,13 +1043,21 @@ impl Wire for Op {
                 scope_lane,
                 content,
                 adopt_as_base,
+                origin,
             } => {
-                0u8.encode(o);
+                // A Local origin keeps tag 0 and today's bytes (P10, Q15).
+                match origin {
+                    Origin::Local => 0u8.encode(o),
+                    Origin::Replica { .. } => 22u8.encode(o),
+                }
                 key.encode(o);
                 kind.encode(o);
                 scope_lane.encode(o);
                 content.encode(o);
                 adopt_as_base.encode(o);
+                if let Origin::Replica { team } = origin {
+                    team.encode(o);
+                }
             }
             Self::AddRevision {
                 logical,
@@ -1103,11 +1137,19 @@ impl Wire for Op {
                 scope,
                 expected,
                 position,
+                gap,
             } => {
-                10u8.encode(o);
+                // `gap = false` keeps tag 10 and today's bytes.
+                if *gap { 24u8 } else { 10u8 }.encode(o);
                 scope.encode(o);
                 expected.encode(o);
                 position.encode(o);
+            }
+            Self::MirrorAttach { key, head, base } => {
+                23u8.encode(o);
+                key.encode(o);
+                head.encode(o);
+                base.encode(o);
             }
             // op_log format 5 (ADR 0017 §10).
             Self::SetAccess { doc } => {
@@ -1178,6 +1220,22 @@ impl Wire for Op {
                 scope_lane: Wire::decode(i)?,
                 content: Wire::decode(i)?,
                 adopt_as_base: Wire::decode(i)?,
+                origin: Origin::Local,
+            }),
+            22 => Ok(Self::CreateLogical {
+                key: Wire::decode(i)?,
+                kind: Wire::decode(i)?,
+                scope_lane: Wire::decode(i)?,
+                content: Wire::decode(i)?,
+                adopt_as_base: Wire::decode(i)?,
+                origin: Origin::Replica {
+                    team: Wire::decode(i)?,
+                },
+            }),
+            23 => Ok(Self::MirrorAttach {
+                key: Wire::decode(i)?,
+                head: Wire::decode(i)?,
+                base: Wire::decode(i)?,
             }),
             1 => Ok(Self::AddRevision {
                 logical: Wire::decode(i)?,
@@ -1243,6 +1301,14 @@ impl Wire for Op {
                 scope: Wire::decode(i)?,
                 expected: Wire::decode(i)?,
                 position: Wire::decode(i)?,
+                gap: false,
+            }),
+            // Tag 24 only ever carries `gap = true`: one encoding per op.
+            24 => Ok(Self::ObserverWatermark {
+                scope: Wire::decode(i)?,
+                expected: Wire::decode(i)?,
+                position: Wire::decode(i)?,
+                gap: true,
             }),
             20 => Ok(Self::SetAccess {
                 doc: Box::new(Wire::decode(i)?),
@@ -1406,7 +1472,20 @@ impl EventLog {
             .ops
             .iter()
             .any(|op| matches!(op, Op::SetAccess { .. } | Op::ShredContent { .. }));
-        if p9 {
+        let p10 = batch.channel == Channel::Replica
+            || batch.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::CreateLogical {
+                        origin: Origin::Replica { .. },
+                        ..
+                    } | Op::MirrorAttach { .. }
+                        | Op::ObserverWatermark { gap: true, .. }
+                )
+            });
+        if p10 {
+            4
+        } else if p9 {
             3
         } else if p7 {
             2
@@ -1454,6 +1533,7 @@ impl EventLog {
                 "1" => 1,
                 "2" => 2,
                 "3" => 3,
+                "4" => 4,
                 _ => return Err(WireError::UnknownVersion),
             };
             let hex = rest.strip_suffix("\"}").ok_or(WireError::InvalidEncoding)?;

@@ -386,6 +386,7 @@ mod tests {
             let y = store.put_blob(b"y").unwrap();
             let x2 = store.put_blob(b"x v2").unwrap();
             let create = |key: &str, content, base| Op::CreateLogical {
+                origin: Default::default(),
                 key: key.into(),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),
@@ -462,6 +463,7 @@ mod tests {
             store
                 .commit(&Batch::new(vec![
                     Op::CreateLogical {
+                        origin: Default::default(),
                         key: "f".into(),
                         kind: RecordKind::Fact,
                         scope_lane: "repo".into(),
@@ -469,6 +471,7 @@ mod tests {
                         adopt_as_base: true,
                     },
                     Op::CreateLogical {
+                        origin: Default::default(),
                         key: "s".into(),
                         kind: RecordKind::Summary,
                         scope_lane: "repo".into(),
@@ -532,6 +535,7 @@ mod tests {
                 blob(b"r"),
             );
             let create = |key: &str, kind, content| Op::CreateLogical {
+                origin: Default::default(),
                 key: key.into(),
                 kind,
                 scope_lane: "repo".into(),

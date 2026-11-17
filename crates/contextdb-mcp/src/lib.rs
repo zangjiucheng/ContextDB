@@ -489,6 +489,7 @@ fn ops_of(args: &Value) -> Result<(Vec<Op>, Vec<Vec<u8>>), String> {
         };
         ops.push(match s("op")? {
             "create" => Op::CreateLogical {
+                origin: Default::default(),
                 key: s("key")?.into(),
                 kind: kind_of(s("kind")?)?,
                 scope_lane: o

@@ -57,6 +57,7 @@ fn create_on(
     base: bool,
 ) -> RevisionId {
     let mut batch = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind,
         scope_lane: "repo".into(),
@@ -591,6 +592,7 @@ fn ctxd_reads_embeddings_toml_and_keeps_vectors_across_restart() {
             .call(&Request::Raw {
                 blobs: vec![body.as_bytes().to_vec()],
                 batch: Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: format!("k{i}"),
                     kind: RecordKind::Fact,
                     scope_lane: "repo".into(),

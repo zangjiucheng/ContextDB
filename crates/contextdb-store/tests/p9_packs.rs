@@ -21,6 +21,7 @@ fn open(disk: &SimDisk) -> Result<Store<SimDisk>, StoreError> {
 }
 fn create(content: ContentHash) -> Batch {
     Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "a".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

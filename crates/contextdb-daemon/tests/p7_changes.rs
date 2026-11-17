@@ -46,6 +46,7 @@ fn create(s: &Svc, branch: BranchId, key: &str, scope: &str) -> RevisionId {
         branch,
         vec![key.as_bytes().to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind: RecordKind::Fact,
             scope_lane: scope.into(),

@@ -272,6 +272,7 @@ impl TeamOracle {
                     }
                     usable(self, content)?;
                     kernel.push(Op::CreateLogical {
+                        origin: Default::default(),
                         key: self.key(path),
                         kind: *kind,
                         scope_lane: format!("team:{}/{lane}", self.team_hex),

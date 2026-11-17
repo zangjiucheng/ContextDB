@@ -202,6 +202,7 @@ fn roots(s: &Service<SimDisk>) {
         s,
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "root-a".into(),
                 kind: RecordKind::Decision,
                 scope_lane: "test".into(),
@@ -214,6 +215,7 @@ fn roots(s: &Service<SimDisk>) {
                 enabled: true,
             },
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "root-b".into(),
                 kind: RecordKind::Decision,
                 scope_lane: "test".into(),
@@ -592,6 +594,7 @@ fn range_is_bound_to_exact_manifest_and_head_and_excludes_ref_only_roots() {
         &s,
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "ref-only".into(),
                 kind: RecordKind::Decision,
                 scope_lane: "test".into(),
@@ -654,6 +657,7 @@ fn aggregate_explicit_certificate_retains_read_epoch_and_complete_diffs() {
     raw(
         &s,
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "unrelated".into(),
             kind: RecordKind::Fact,
             scope_lane: "test".into(),
@@ -934,6 +938,7 @@ fn unanchored_reads_remain_required_and_briefing_uses_fresh_evidence() {
     raw(
         &s,
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "plain".into(),
             kind: RecordKind::Fact,
             scope_lane: "test".into(),
@@ -1080,6 +1085,7 @@ fn g4_corrupt_descriptor_makes_the_scope_unknown() {
             Request::Raw {
                 blobs: vec![body.clone()],
                 batch: Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: format!("{}/c.rs", f.repo.scope()),
                     kind: RecordKind::CodeAnchor,
                     scope_lane: f.repo.scope(),
@@ -1504,6 +1510,7 @@ fn strict_full_check_on_a_branch_issues_from_the_branch() {
     raw(
         &s,
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "main-later".into(),
             kind: RecordKind::Decision,
             scope_lane: "test".into(),

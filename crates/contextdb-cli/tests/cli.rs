@@ -88,6 +88,7 @@ fn migrate_completes_and_openers_refuse_a_marked_store() {
     let disk = StdDisk::default();
     let body = b"pre-p9 body".to_vec();
     let batch = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "k".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

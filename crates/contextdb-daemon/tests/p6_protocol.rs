@@ -430,6 +430,7 @@ fn create_op(key: &str) -> (Vec<Op>, Vec<Vec<u8>>) {
     let body = format!("body-{key}").into_bytes();
     let content = *blake3::hash(&body).as_bytes();
     let op = Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

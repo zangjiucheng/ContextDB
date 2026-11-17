@@ -117,6 +117,7 @@ fn create(s: &Service<SimDisk>, key: &str, lane: &str) {
             Request::Raw {
                 blobs: vec![body.clone()],
                 batch: Batch::new(vec![Op::CreateLogical {
+                    origin: Default::default(),
                     key: key.into(),
                     kind: RecordKind::Fact,
                     scope_lane: lane.into(),

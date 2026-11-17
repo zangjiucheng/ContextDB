@@ -58,6 +58,7 @@ fn ctxd_validates_pending_rules_in_the_background() {
         vec![b"a0".to_vec(), b"b".to_vec()],
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "a".into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -65,6 +66,7 @@ fn ctxd_validates_pending_rules_in_the_background() {
                 adopt_as_base: true,
             },
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "b".into(),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),
@@ -169,6 +171,7 @@ fn create(c: &mut Client, key: &str, kind: RecordKind, body: &str) {
         c,
         vec![body.as_bytes().to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind,
             scope_lane: "repo".into(),

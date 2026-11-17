@@ -36,6 +36,7 @@ impl Gen {
                 _ if inputs.revisions.is_empty() || code < 15 => {
                     self.keys += 1;
                     Op::CreateLogical {
+                        origin: Default::default(),
                         key: format!("k{}", self.keys),
                         kind: RecordKind::Fact,
                         scope_lane: "repo".into(),

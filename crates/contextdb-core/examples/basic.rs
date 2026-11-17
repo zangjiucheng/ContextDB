@@ -4,6 +4,7 @@ use contextdb_model::*;
 fn main() -> Result<(), TxError> {
     let mut db = Db::default();
     let create = |key: &str, content, base| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

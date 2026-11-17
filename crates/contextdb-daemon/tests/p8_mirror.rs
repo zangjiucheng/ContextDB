@@ -113,6 +113,7 @@ fn create_in(
     body: &str,
 ) -> RevisionId {
     let mut batch = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind,
         scope_lane: lane.into(),

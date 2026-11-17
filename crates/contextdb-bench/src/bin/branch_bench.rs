@@ -87,6 +87,7 @@ fn private_rules(k: &mut Kernel, branch: BranchId, n: usize) {
         for i in 0..100 {
             let id = chunk * 100 + i;
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("private{id}"),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -228,6 +229,7 @@ fn kernel_part(n: usize, samples: usize) -> bool {
 fn merge_history(merges: usize) -> (u128, u128, isize) {
     let mut k = Kernel::default();
     k.commit(&Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
         key: "seed".into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -245,6 +247,7 @@ fn merge_history(merges: usize) -> (u128, u128, isize) {
         k.commit(&on(
             source,
             vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("f{n}"),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

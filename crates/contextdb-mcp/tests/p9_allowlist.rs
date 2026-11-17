@@ -185,6 +185,7 @@ fn hidden_reads_render_as_unavailable_with_counts() {
     );
     assert!(matches!(r.response, Response::Committed { .. }));
     let create = |key: &str, lane: &str, base: bool| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: lane.into(),

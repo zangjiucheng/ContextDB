@@ -51,6 +51,7 @@ fn raw(s: &Service<SimDisk>, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult 
 }
 fn create(key: &str, body: &[u8]) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

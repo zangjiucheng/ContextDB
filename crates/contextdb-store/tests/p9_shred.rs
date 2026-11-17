@@ -33,6 +33,7 @@ fn shred(contents: &[ContentHash]) -> Batch {
 }
 fn create(key: &str, content: ContentHash) -> Op {
     Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

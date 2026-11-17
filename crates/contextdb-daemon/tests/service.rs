@@ -148,6 +148,7 @@ fn t46a_agent_cannot_write_anchors_raw_batches_or_validations() {
     let anchor = |blobs: Vec<Vec<u8>>| Request::Raw {
         blobs,
         batch: Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "code:repo/b.rs".into(),
             kind: RecordKind::CodeAnchor,
             scope_lane: "repo".into(),
@@ -853,6 +854,7 @@ fn recall_is_capped() {
     let h = *blake3::hash(&body).as_bytes();
     let ops = (0..1_500)
         .map(|i| Op::CreateLogical {
+            origin: Default::default(),
             key: format!("k{i:04}"),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

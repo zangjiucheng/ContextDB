@@ -42,6 +42,7 @@ impl Gen {
     pub fn fact(&mut self) -> Op {
         self.keys += 1;
         Op::CreateLogical {
+            origin: Default::default(),
             key: format!("k{}", self.keys),
             kind: RecordKind::Fact,
             scope_lane: SCOPE.into(),
@@ -151,6 +152,7 @@ impl Gen {
         let view = k.branch(branch).unwrap();
         let ops = match (view.logical_by_key(ANCHOR), self.pick(3)) {
             (None, _) => vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: ANCHOR.into(),
                 kind: RecordKind::CodeAnchor,
                 scope_lane: SCOPE.into(),
@@ -170,6 +172,7 @@ impl Gen {
                 },
             ],
             (Some(_), _) => vec![Op::ObserverWatermark {
+                gap: false,
                 scope: SCOPE.into(),
                 expected: view.watermark(SCOPE).map(<[u8]>::to_vec),
                 position: vec![self.pick(4) as u8],

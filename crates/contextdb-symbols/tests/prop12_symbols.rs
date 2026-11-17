@@ -443,6 +443,7 @@ fn run(seed: u64, steps: &[Step], git: &GitHistories, cov: &mut Coverage) {
         let mut prepared = prepare(&sut, false).unwrap();
         if k == 5 {
             sut.commit(vec![Op::ObserverWatermark {
+                gap: false,
                 scope: scope.clone(),
                 expected: sut.db.watermark(&scope).map(<[u8]>::to_vec),
                 position: vec![99],

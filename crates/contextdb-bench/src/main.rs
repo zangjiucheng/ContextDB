@@ -175,6 +175,7 @@ fn main() {
         let premise = RevisionId((n - 1 - step % 8) as u32);
         let batch = Batch::new(vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("probe-{step}"),
                 kind: RecordKind::Fact,
                 scope_lane: "bench".into(),

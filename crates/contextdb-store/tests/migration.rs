@@ -119,6 +119,7 @@ fn format1_log_migrates_to_group_framing_t68() {
     let content = store.put_blob(b"after").unwrap();
     store
         .commit(&Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: "after".into(),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),
@@ -140,6 +141,7 @@ fn format1_log_migrates_to_group_framing_t68() {
 fn format2_log_migrates_to_the_current_format_and_reports_changed_results() {
     let disk = SimDisk::new();
     let fact = |key: &str, content: u8| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -223,6 +225,7 @@ fn branches_are_durable_and_replayed() {
         .0
     };
     let fact = |store: &mut Store<SimDisk>, key: &str| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -291,6 +294,7 @@ fn multi_branch_snapshot_round_trip() {
         .unwrap()
     };
     let fact = |store: &mut Store<SimDisk>, key: &str| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),
@@ -344,6 +348,7 @@ fn multi_branch_snapshot_round_trip() {
 fn t77_format3_log_migrates_to_format4_byte_identical() {
     let disk = SimDisk::new();
     let fact = |key: &str, content: u8| Op::CreateLogical {
+        origin: Default::default(),
         key: key.into(),
         kind: RecordKind::Fact,
         scope_lane: "repo".into(),

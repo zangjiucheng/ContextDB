@@ -162,6 +162,7 @@ fn fill(s: &Svc, n: usize, rng: &mut Rng) {
                 format!("l{}", i % 9)
             };
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("area{}/topic-{i}", i % 50),
                 kind: RecordKind::Decision,
                 scope_lane: lane,
@@ -401,6 +402,7 @@ fn migrate_section(mib: usize, out: &mut Vec<String>) {
         let mut b = vec![(i % 251) as u8; per];
         b[..8].copy_from_slice(&(i as u64).to_le_bytes());
         batches.push(Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
             key: format!("m/{i}"),
             kind: RecordKind::Fact,
             scope_lane: "repo".into(),

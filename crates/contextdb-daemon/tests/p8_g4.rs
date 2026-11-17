@@ -117,6 +117,7 @@ fn create(c: &mut Client, key: &str, body: &str) {
         .call(&Request::Raw {
             blobs: vec![body.as_bytes().to_vec()],
             batch: Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: key.into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -352,6 +353,7 @@ fn raw(s: &Service<SimDisk>, key: &str, body: &str) {
         Request::Raw {
             blobs: vec![body.as_bytes().to_vec()],
             batch: Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: key.into(),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),

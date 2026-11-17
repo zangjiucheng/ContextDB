@@ -69,9 +69,10 @@ impl Resolver<'_, '_> {
     }
     fn op(&self, op: &Op) -> Result<Op, TxError> {
         Ok(match op {
-            Op::CreateLogical { .. } | Op::SetPolicy { .. } | Op::ObserverWatermark { .. } => {
-                op.clone()
-            }
+            Op::CreateLogical { .. }
+            | Op::SetPolicy { .. }
+            | Op::ObserverWatermark { .. }
+            | Op::MirrorAttach { .. } => op.clone(),
             Op::AddRevision {
                 logical,
                 content,
@@ -206,6 +207,24 @@ fn kind(i: &Stage, r: RevisionId) -> RecordKind {
     i.logical_kind(i.revision_logical(r))
 }
 fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
+    // P10 milestone 3, first slice: the replica channel and its ops are
+    // encodable but not yet admitted.
+    if c == Channel::Replica
+        || matches!(
+            op,
+            Op::MirrorAttach { .. }
+                | Op::CreateLogical {
+                    origin: Origin::Replica { .. },
+                    ..
+                }
+                | Op::ObserverWatermark { gap: true, .. }
+        )
+    {
+        return Err(TxError::ChannelRestricted {
+            op: op.name().to_owned(),
+            channel: c,
+        });
+    }
     let anchor = match op {
         Op::CreateLogical { kind, .. } => *kind == RecordKind::CodeAnchor,
         Op::AddRevision { logical, .. } | Op::SetHead { logical, .. } => {
@@ -630,6 +649,7 @@ pub(crate) fn apply<S: StatsSink>(
             scope_lane,
             content,
             adopt_as_base,
+            origin,
         } => {
             let mut chars = key.bytes();
             let start = chars
@@ -654,6 +674,7 @@ pub(crate) fn apply<S: StatsSink>(
             let revision = RevisionId(id(i.revision_count(), CapacityKind::Revision)?);
             let logical = i.push_logical(
                 Logical {
+                    origin,
                     key,
                     kind,
                     scope_lane,
@@ -870,6 +891,7 @@ pub(crate) fn apply<S: StatsSink>(
             scope,
             expected,
             position,
+            gap: _,
         } => {
             let actual = i.watermark(&scope);
             if actual != expected {
@@ -976,6 +998,7 @@ pub(crate) fn apply<S: StatsSink>(
         | Op::ShredContent { .. } => {
             unreachable!("rejected by the resolver")
         }
+        Op::MirrorAttach { .. } => unreachable!("refused by channel()"),
     }
 
     Ok(())

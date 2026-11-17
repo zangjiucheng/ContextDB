@@ -284,7 +284,7 @@ fn observer_scope_position_and_anchor_update_channels() {
     s.oracle.apply(&b).unwrap();
     s.db.commit(&b).unwrap();
     for n in [256, 257, 258] {
-        let mut b = Batch::new(vec![Op::ObserverWatermark {
+        let mut b = Batch::new(vec![Op::ObserverWatermark { gap: false,
             scope: "s".repeat(n),
             expected: None,
             position: vec![1; 64],

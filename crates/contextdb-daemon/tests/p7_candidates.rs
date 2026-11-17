@@ -57,6 +57,7 @@ fn create(s: &Svc, branch: BranchId, key: &str, kind: RecordKind, body: &str) ->
         branch,
         vec![body.as_bytes().to_vec()],
         vec![Op::CreateLogical {
+            origin: Default::default(),
             key: key.into(),
             kind,
             scope_lane: "repo".into(),
@@ -188,6 +189,7 @@ fn similar_heads_pair_neighbours_and_other_kinds_do_not() {
         vec![plan.as_bytes().to_vec()],
         vec![
             Op::CreateLogical {
+                origin: Default::default(),
                 key: "deploy-plan".into(),
                 kind: RecordKind::Plan,
                 scope_lane: "repo".into(),

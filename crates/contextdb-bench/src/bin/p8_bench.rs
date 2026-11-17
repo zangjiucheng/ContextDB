@@ -165,6 +165,7 @@ fn fill(s: &Svc, n: usize, rng: &mut Rng) {
         for &i in chunk {
             let b = body(rng, i);
             ops.push(Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("area{}/topic-{i}", i % 50),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),
@@ -304,6 +305,7 @@ fn recall_section(n: usize, out: &mut Vec<String>) {
             &s,
             vec![b.clone().into_bytes()],
             vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("lag/k-{i}"),
                 kind: RecordKind::Fact,
                 scope_lane: "repo".into(),
@@ -355,6 +357,7 @@ fn stream(s: &Arc<Svc>, b: &Binding, qs: &[String], period: u64, out: &mut Vec<S
                     &s,
                     vec![b.clone().into_bytes()],
                     vec![Op::CreateLogical {
+                        origin: Default::default(),
                         key: format!("stream{period}/k-{i}"),
                         kind: RecordKind::Fact,
                         scope_lane: "repo".into(),
@@ -477,6 +480,7 @@ fn mirror_section(n: usize, epochs: usize, out: &mut Vec<String>) {
             &s,
             vec![b.clone().into_bytes()],
             vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: format!("area{}/topic-{i}", i % 50),
                 kind: RecordKind::Decision,
                 scope_lane: "repo".into(),
