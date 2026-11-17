@@ -545,29 +545,45 @@ impl TeamStore {
                     Status::UpToDate
                 });
             }
-            let path = match repo.first_parent_path(&tip) {
-                Ok(p) => p,
-                Err(GitError::Missing(m)) => return Ok(Status::Incomplete(m)),
-                Err(e) => return Err(StoreError::Git(e)),
+            // G5: an exact continuation of the last decided entry is walked
+            // from there; anything else walks the whole path and decides.
+            let tail = match &self.last {
+                Some(l) => repo.first_parent_since(&tip, l).map_err(StoreError::Git)?,
+                None => None,
             };
-            if path.first() != Some(&self.anchor) {
-                return Ok(Status::Diverged(format!(
-                    "g{g} does not start at the trusted entry"
-                )));
-            }
-            let start = match &self.last {
-                None => 0,
-                Some(l) => match path.iter().position(|o| o == l) {
-                    Some(i) => i + 1,
-                    None if repo.is_ancestor(&tip, l).map_err(StoreError::Git)? => {
-                        return Ok(if imported > 0 {
-                            Status::Imported(imported)
-                        } else {
-                            Status::UpToDate
-                        });
-                    }
-                    None => return Ok(Status::Diverged(format!("g{g} no longer contains {l}"))),
-                },
+            let (path, start) = if let (Some(tail), Some(l)) = (tail, &self.last) {
+                let mut p = Vec::with_capacity(tail.len() + 1);
+                p.push(l.clone());
+                p.extend(tail);
+                (p, 1)
+            } else {
+                let path = match repo.first_parent_path(&tip) {
+                    Ok(p) => p,
+                    Err(GitError::Missing(m)) => return Ok(Status::Incomplete(m)),
+                    Err(e) => return Err(StoreError::Git(e)),
+                };
+                if path.first() != Some(&self.anchor) {
+                    return Ok(Status::Diverged(format!(
+                        "g{g} does not start at the trusted entry"
+                    )));
+                }
+                let start = match &self.last {
+                    None => 0,
+                    Some(l) => match path.iter().position(|o| o == l) {
+                        Some(i) => i + 1,
+                        None if repo.is_ancestor(&tip, l).map_err(StoreError::Git)? => {
+                            return Ok(if imported > 0 {
+                                Status::Imported(imported)
+                            } else {
+                                Status::UpToDate
+                            });
+                        }
+                        None => {
+                            return Ok(Status::Diverged(format!("g{g} no longer contains {l}")));
+                        }
+                    },
+                };
+                (path, start)
             };
             // Entries are read in batches: a few git processes per batch,
             // not one per entry (G5).

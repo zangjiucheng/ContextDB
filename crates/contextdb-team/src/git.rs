@@ -150,6 +150,29 @@ impl Repo {
         }
     }
 
+    /// The first-parent path from `last` (exclusive) to `tip` when it
+    /// continues `last` exactly — its first commit's first parent is `last`
+    /// (G5: an import walks only what is new). `None` when it does not, or
+    /// cannot be told: the caller walks the whole path and decides.
+    pub fn first_parent_since(&self, tip: &str, last: &str) -> Result<Option<Vec<String>>> {
+        let not = format!("^{last}");
+        let (ok, out, _) =
+            self.raw(&["rev-list", "--first-parent", "--reverse", tip, &not], &[])?;
+        if !ok {
+            return Ok(None);
+        }
+        let list: Vec<String> = String::from_utf8_lossy(&out)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let Some(first) = list.first() else {
+            return Ok(None);
+        };
+        let (ok, out, _) =
+            self.raw(&["rev-parse", "--verify", "-q", &format!("{first}^1")], &[])?;
+        Ok((ok && String::from_utf8_lossy(&out).trim() == last).then_some(list))
+    }
+
     /// Whether `a` is an ancestor of (or equal to) `b`.
     pub fn is_ancestor(&self, a: &str, b: &str) -> Result<bool> {
         Ok(self.raw(&["merge-base", "--is-ancestor", a, b], &[])?.0)
