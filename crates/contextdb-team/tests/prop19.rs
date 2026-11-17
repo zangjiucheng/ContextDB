@@ -438,3 +438,137 @@ fn prop19_mirrors_equal_the_projection_and_keep_their_history() {
         }
     }
 }
+
+/// A catch-up writer that dies after `left` batches (a process kill):
+/// committed batches stay (they are durable in the op_log), the rest never
+/// happen.
+struct Killed<'a> {
+    k: &'a mut Kernel,
+    left: usize,
+}
+impl catchup::Writer for Killed<'_> {
+    type Error = TxError;
+    fn kernel(&self) -> &Kernel {
+        self.k
+    }
+    fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
+        if self.left == 0 {
+            return Err(TxError::UnknownRef);
+        }
+        self.left -= 1;
+        self.k.commit(b)
+    }
+}
+
+/// T114, §8.4's rows "replica ahead of a branch's mirrors" and "some
+/// branches written, others not", by kill point: from random branch states
+/// (forks at different team positions, local dependents of mirrors), the
+/// catch-up of every open branch is killed after each of its batches in
+/// turn, then run again as at the next start. Every branch then equals the
+/// uninterrupted run's, digest for digest, and holds the projection at the
+/// tip. Seeds: `CONTEXTDB_KILL_SEEDS` (default 200).
+#[test]
+fn t114_a_catch_up_killed_after_any_batch_recovers_on_restart() {
+    let seeds: u64 = std::env::var("CONTEXTDB_KILL_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    let (mut points, mut multi) = (0usize, 0usize);
+    for seed in 0..seeds {
+        let mut rng = Rng(ChaCha8Rng::seed_from_u64(seed ^ 0x114));
+        let mut team = Team::new();
+        let mut k = Kernel::default();
+        let mut local = 0u32;
+        for step in 0..30 {
+            let open: Vec<BranchId> = k.branches().filter(|b| !b.archived).map(|b| b.id).collect();
+            match rng.n(10) {
+                0..=4 => team.random(&mut rng),
+                5 if open.len() < 4 => {
+                    let from = open[rng.n(open.len())];
+                    k.commit(&on(
+                        from,
+                        Channel::Admin,
+                        vec![Op::CreateBranch {
+                            name: format!("b{step}"),
+                        }],
+                    ))
+                    .unwrap();
+                }
+                6 | 7 => {
+                    let b = open[rng.n(open.len())];
+                    catchup::catch_up(&mut k, b, TEAM, &team.history).unwrap();
+                }
+                _ => {
+                    let b = open[rng.n(open.len())];
+                    let v = k.branch(b).unwrap();
+                    let db = v.db();
+                    let mirrors: Vec<RevisionId> = (0..db.revision_count() as u32)
+                        .map(RevisionId)
+                        .filter(|r| {
+                            db.logical_origin(db.revision_logical(*r).unwrap()) != Origin::Local
+                        })
+                        .map(|r| v.global_revision(r))
+                        .collect();
+                    if mirrors.is_empty() {
+                        continue;
+                    }
+                    local += 1;
+                    let m = mirrors[rng.n(mirrors.len())];
+                    let edge = [EdgeKind::Pin, EdgeKind::Cur, EdgeKind::Ref][rng.n(3)];
+                    let _ = k.commit(&on(
+                        b,
+                        Channel::Agent,
+                        vec![
+                            Op::CreateLogical {
+                                key: format!("dec:l{local}"),
+                                kind: RecordKind::Decision,
+                                scope_lane: "repo".into(),
+                                content: [local as u8; 32],
+                                adopt_as_base: false,
+                                origin: Origin::Local,
+                            },
+                            Op::AddRule {
+                                conclusion: RevRef::New(0),
+                                incidences: vec![(m.into(), edge)],
+                                enabled: true,
+                            },
+                        ],
+                    ));
+                }
+            }
+        }
+        team.random(&mut rng);
+        let open: Vec<BranchId> = k.branches().filter(|b| !b.archived).map(|b| b.id).collect();
+        let mut reference = k.clone();
+        let total = catchup::catch_up_all(&mut reference, TEAM, &team.history).unwrap();
+        if total > 1 {
+            multi += 1;
+        }
+        for kill in 0..total {
+            let at = format!("seed {seed} killed after batch {kill} of {total}");
+            let mut c = k.clone();
+            let r = catchup::catch_up_all(
+                &mut Killed {
+                    k: &mut c,
+                    left: kill,
+                },
+                TEAM,
+                &team.history,
+            );
+            assert!(r.is_err(), "{at}: the kill did not happen");
+            catchup::catch_up_all(&mut c, TEAM, &team.history)
+                .unwrap_or_else(|e| panic!("{at}: restart: {e:?}"));
+            for &b in &open {
+                assert_eq!(
+                    c.branch(b).unwrap().digest(),
+                    reference.branch(b).unwrap().digest(),
+                    "{at}: {b:?}"
+                );
+                check_branch(&c, b, &team.history, &at);
+            }
+            points += 1;
+        }
+    }
+    eprintln!("kill points: {points} over {seeds} seeds ({multi} with more than one batch)");
+    assert!(points > 0 && multi > 0);
+}

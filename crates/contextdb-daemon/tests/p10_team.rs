@@ -1664,3 +1664,139 @@ fn t117_a_mirror_is_unavailable_to_a_principal_without_read_on_team_lanes() {
         read_as(bob)
     );
 }
+
+/// T113, G-LAG as a property (ADR 0018 §2.2, §8.3): random interleavings of
+/// root entries, hook-running fetches (the `committed` notify delivered or
+/// lost), hook aborts, hooks killed after their announce, fetches that
+/// bypass the hooks, and `lag_check` imports. After every step, for
+/// hook-running fetches: whenever the tracking ref's **actual** tip is not
+/// the branch's watermark, a read of a mirror is not CERTIFIED. A bypassing
+/// fetch is exempt until the next `lag_check` (§2.3). After each
+/// `lag_check` with nothing pending, the read is CERTIFIED again.
+/// Seeds: `CONTEXTDB_GLAG_SEEDS` (default 12).
+#[test]
+fn t113_g_lag_holds_at_every_step() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let seeds: u64 = std::env::var("CONTEXTDB_GLAG_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
+    let mut counts = std::collections::BTreeMap::<&str, u64>::new();
+    for seed in 0..seeds {
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        let mut w = World::new(&format!("glag{seed}"));
+        let (a1, ba) = blob(b"a1");
+        w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+        w.push();
+        w.fetch();
+        let s = daemon(&w);
+        sync(&s);
+        let sid = session(&s);
+        let tracking = format!("refs/contextdb/remotes/origin/team/{}/g0", hex(&TEAM));
+        let announce = |oid: &str, pid: u32| {
+            let r = s
+                .handle(
+                    ADMIN,
+                    Request::TeamAnnounce {
+                        team: TEAM,
+                        refname: tracking.clone(),
+                        oid: oid.into(),
+                        pid,
+                    },
+                )
+                .response;
+            assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+        };
+        let edge = w.edge.clone();
+        let actual = || git(&edge, &["rev-parse", &tracking]).trim().to_owned();
+        let mut bypassed = false;
+        let mut n = 0u32;
+        for step in 0..14 {
+            let remote_tip = w.parent.clone().expect("genesis");
+            let event = match next(8) {
+                0 | 1 => {
+                    n += 1;
+                    let (c, bc) = blob(format!("p{seed}-{n}").as_bytes());
+                    w.entry(vec![new_op(&format!("k/p{n}"), c, false)], vec![bc]);
+                    w.push();
+                    "root-entry"
+                }
+                2 | 3 => {
+                    // reference-transaction: `prepared` announces, git moves
+                    // the ref, `committed` notifies (or the notify is lost).
+                    let moves = actual() != remote_tip;
+                    if moves {
+                        announce(&remote_tip, std::process::id());
+                    }
+                    w.fetch();
+                    if next(2) == 0 {
+                        s.handle(ADMIN, Request::TeamNotify { team: TEAM });
+                        "hook-fetch"
+                    } else {
+                        "hook-fetch-notify-lost"
+                    }
+                }
+                4 => {
+                    let oid = "2".repeat(40);
+                    announce(&oid, std::process::id());
+                    s.handle(
+                        ADMIN,
+                        Request::TeamWithdraw {
+                            team: TEAM,
+                            refname: tracking.clone(),
+                            oid,
+                        },
+                    );
+                    "hook-aborted"
+                }
+                5 => {
+                    let mut child = Command::new("true").spawn().unwrap();
+                    let dead = child.id();
+                    child.wait().unwrap();
+                    announce(&remote_tip, dead);
+                    "hook-killed-after-announce"
+                }
+                6 => {
+                    let before = actual();
+                    w.fetch();
+                    bypassed |= actual() != before;
+                    "fetch-without-hooks"
+                }
+                _ => {
+                    sync(&s);
+                    bypassed = false;
+                    assert_eq!(
+                        summary(&s, sid, "k/a"),
+                        Summary::Certified,
+                        "seed {seed} step {step}: lag_check with nothing pending"
+                    );
+                    "lag-check"
+                }
+            };
+            *counts.entry(event).or_default() += 1;
+            if bypassed {
+                continue;
+            }
+            let tip = actual();
+            let watermark = (s.actor.snapshot().view(MAIN).watermark(&team_scope(&TEAM)))
+                .map(|p| String::from_utf8_lossy(p).into_owned());
+            if watermark.as_deref() != Some(tip.as_str()) {
+                *counts.entry("checked-unmirrored").or_default() += 1;
+                assert_ne!(
+                    summary(&s, sid, "k/a"),
+                    Summary::Certified,
+                    "seed {seed} step {step} after {event}: the actual tip is not mirrored"
+                );
+            }
+        }
+    }
+    eprintln!("G-LAG over {seeds} seeds: {counts:?}");
+}
