@@ -412,6 +412,19 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn logical_owner(&self, l: LogicalId) -> Option<PrincipalId> {
         (l.index() < self.logicals.len()).then(|| self.logicals.owner(l))
     }
+    /// The logical's revisions, from the index (P10 G5: catch-up reads a
+    /// few mirrors without scanning every revision).
+    pub fn revisions_of(&self, l: LogicalId) -> Vec<RevisionId> {
+        if l.index() >= self.logicals.len() {
+            return Vec::new();
+        }
+        self.indexes
+            .revisions_by_logical
+            .row(l.index())
+            .iter()
+            .copied()
+            .collect()
+    }
     pub fn logical_info(&self, l: LogicalId) -> Option<(String, RecordKind, String)> {
         (l.index() < self.logicals.len()).then(|| {
             (

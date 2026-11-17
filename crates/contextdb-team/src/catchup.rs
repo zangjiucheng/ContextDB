@@ -43,6 +43,29 @@ pub struct MirrorState {
 /// Path → mirror state.
 pub type Projection = BTreeMap<String, MirrorState>;
 
+fn mirror_state(x: crate::state::RecordItem) -> (String, MirrorState) {
+    (
+        x.path,
+        MirrorState {
+            kind: x.kind,
+            lane: x.lane,
+            revisions: x.revisions.iter().map(|v| v.content).collect(),
+            head: x.head,
+            certified: x.certified,
+            tags: x.tags,
+        },
+    )
+}
+
+/// The projection of `paths` only (G5: what one entry may have changed).
+pub fn projection_of<'a>(r: &Replica, paths: impl IntoIterator<Item = &'a String>) -> Projection {
+    paths
+        .into_iter()
+        .filter_map(|p| r.record(p))
+        .map(mirror_state)
+        .collect()
+}
+
 /// The projection of a replica now.
 pub fn projection(r: &Replica) -> Projection {
     let Some(s) = r.keyed_state() else {
@@ -87,6 +110,17 @@ impl History {
             entries: Vec::new(),
         }
     }
+    /// Records entry `oid`, which changed at most the records in `changed`
+    /// (their states after it).
+    pub fn record_partial(&mut self, oid: &str, changed: Projection) {
+        let delta: Projection = (changed.into_iter())
+            .filter(|(p, s)| self.current.get(p) != Some(s))
+            .collect();
+        for (p, s) in &delta {
+            self.current.insert(p.clone(), s.clone());
+        }
+        self.entries.push((oid.to_owned(), delta));
+    }
     /// Records the projection after entry `oid`.
     pub fn record(&mut self, oid: &str, after: Projection) {
         let delta: Projection = (after.iter())
@@ -117,6 +151,19 @@ impl History {
         let mut p = self.start.clone();
         for (_, d) in &self.entries[..n] {
             for (k, v) in d {
+                p.insert(k.clone(), v.clone());
+            }
+        }
+        p
+    }
+    /// [`Self::projection_at`] restricted to `paths`.
+    pub fn projection_at_paths(&self, n: usize, paths: &BTreeSet<String>) -> Projection {
+        let mut p: Projection = (self.start.iter())
+            .filter(|(k, _)| paths.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (_, d) in &self.entries[..n] {
+            for (k, v) in d.iter().filter(|(k, _)| paths.contains(*k)) {
                 p.insert(k.clone(), v.clone());
             }
         }
@@ -193,6 +240,49 @@ fn held(k: &Kernel, b: BranchId, team: TeamId) -> BTreeMap<String, Held> {
             .expect("indexed")
             .revisions
             .insert(content, (v.global_revision(r), base));
+    }
+    out
+}
+
+/// [`held`] for `paths` only (G5): the branch's mirrors among them, found
+/// by key, their revisions from the index.
+fn held_paths(
+    k: &Kernel,
+    b: BranchId,
+    team: TeamId,
+    paths: &BTreeSet<String>,
+) -> BTreeMap<String, Held> {
+    let v = k.branch(b).expect("open branch");
+    let db = v.db();
+    let mut out = BTreeMap::new();
+    for path in paths {
+        let Some(l) = db.logical_by_key(&key(team, path)) else {
+            continue;
+        };
+        if db.logical_origin(l) != (Origin::Replica { team }) {
+            continue;
+        }
+        let head = db.head(l).expect("head");
+        let revisions = (db.revisions_of(l).into_iter())
+            .map(|r| {
+                (
+                    db.revision_content(r).expect("revision"),
+                    (v.global_revision(r), db.is_base(r).expect("revision")),
+                )
+            })
+            .collect();
+        out.insert(
+            path.clone(),
+            Held {
+                head: db.revision_content(head).expect("revision"),
+                head_id: v.global_revision(head),
+                revisions,
+                tags: v
+                    .metadata(v.global_logical(l))
+                    .map(|m| m.tags)
+                    .unwrap_or_default(),
+            },
+        );
     }
     out
 }
@@ -363,30 +453,41 @@ pub fn catch_up<W: Writer + ?Sized>(
     if at.as_deref() == Some(tip.as_str()) {
         return Ok(done);
     }
-    let commit = |w: &mut W, want: &Projection, oid: &str, gap: bool| {
-        let k = w.kernel();
-        let have = held(k, b, team);
-        let mut ops = diff(k, team, &have, want);
-        ops.push(Op::ObserverWatermark {
-            scope: scope.clone(),
-            expected: watermark(k),
-            position: oid.as_bytes().to_vec(),
-            gap,
-        });
-        let mut batch = Batch::new(ops);
-        batch.branch = b;
-        batch.channel = Channel::Replica;
-        w.commit(&batch)
-    };
+    // `paths`: the only records that can differ (the entries since the
+    // branch's position changed nothing else); `None` for every record.
+    let commit =
+        |w: &mut W, want: &Projection, oid: &str, gap: bool, paths: Option<&BTreeSet<String>>| {
+            let k = w.kernel();
+            let have = match paths {
+                Some(p) => held_paths(k, b, team, p),
+                None => held(k, b, team),
+            };
+            let mut ops = diff(k, team, &have, want);
+            ops.push(Op::ObserverWatermark {
+                scope: scope.clone(),
+                expected: watermark(k),
+                position: oid.as_bytes().to_vec(),
+                gap,
+            });
+            let mut batch = Batch::new(ops);
+            batch.branch = b;
+            batch.channel = Channel::Replica;
+            w.commit(&batch)
+        };
     let Some(from) = h.position(at.as_deref()) else {
         // A position the history does not hold: one net batch, gap.
-        done.push(commit(w, h.current(), &tip, true)?);
+        done.push(commit(w, h.current(), &tip, true, None)?);
         return Ok(done);
     };
+    // G5: only the records the entries since `from` changed can differ.
+    let paths: BTreeSet<String> = h.entries[from..]
+        .iter()
+        .flat_map(|(_, d)| d.keys().cloned())
+        .collect();
     // Walk the entries, cutting before any entry that would bring a mirror
     // back to a value it already had within the current batch.
-    let mut proj = h.projection_at(from);
-    let start = held(w.kernel(), b, team);
+    let mut proj = h.projection_at_paths(from, &paths);
+    let start = held_paths(w.kernel(), b, team, &paths);
     let mut seen: BTreeMap<String, BTreeSet<(Hash, bool)>> = BTreeMap::new();
     let mut value: BTreeMap<String, (Hash, bool)> = BTreeMap::new();
     for (p, x) in &start {
@@ -400,7 +501,7 @@ pub fn catch_up<W: Writer + ?Sized>(
         });
         if returns {
             let prev = &h.entries[i - 1].0;
-            done.push(commit(w, &proj, prev, false)?);
+            done.push(commit(w, &proj, prev, false, Some(&paths))?);
             seen.clear();
             for (p, v) in &value {
                 seen.entry(p.clone()).or_default().insert(*v);
@@ -413,7 +514,7 @@ pub fn catch_up<W: Writer + ?Sized>(
             proj.insert(p.clone(), st.clone());
         }
     }
-    done.push(commit(w, &proj, &tip, false)?);
+    done.push(commit(w, &proj, &tip, false, Some(&paths))?);
     Ok(done)
 }
 

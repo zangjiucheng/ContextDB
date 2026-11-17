@@ -374,7 +374,21 @@ impl TeamStore {
     /// `oid` is decided (or followed as a successor): it is the tip.
     fn advanced(&mut self, oid: &str) {
         self.last = Some(oid.to_owned());
-        self.history.record(oid, catchup::projection(&self.replica));
+        // Only what the entry may have changed (G5); a replica that cannot
+        // say gives the whole projection.
+        match self.replica.touched() {
+            Some(paths) => {
+                let changed = catchup::projection_of(&self.replica, paths);
+                self.history.record_partial(oid, changed);
+            }
+            None => self.history.record(oid, catchup::projection(&self.replica)),
+        }
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            self.history.current(),
+            &catchup::projection(&self.replica),
+            "the catch-up history drifted"
+        );
     }
 
     /// The projection after every entry decided here, for catch-up.
@@ -388,12 +402,21 @@ impl TeamStore {
     }
 
     fn append(&mut self, frames: &[Frame]) -> Result<(), StoreError> {
+        self.append_unsynced(frames)?;
+        self.log.sync_data()?;
+        Ok(())
+    }
+
+    /// Import's appends: synced once when `import` returns (G5). A crash
+    /// before that loses a tail import redoes from git; nothing outside the
+    /// replica (no catch-up) has used it yet, since catch-up runs after
+    /// `import` returns.
+    fn append_unsynced(&mut self, frames: &[Frame]) -> Result<(), StoreError> {
         let mut bytes = Vec::new();
         for f in frames {
             bytes.extend_from_slice(&f.encode());
         }
         self.log.write_all(&bytes)?;
-        self.log.sync_data()?;
         Ok(())
     }
 
@@ -442,6 +465,12 @@ impl TeamStore {
     /// once, follows a verified successor, and stops on anything it cannot
     /// prove continues the trusted chain.
     pub fn import(&mut self, repo: &Repo) -> Result<Status, StoreError> {
+        let r = self.import_unsynced(repo);
+        self.log.sync_data()?;
+        r
+    }
+
+    fn import_unsynced(&mut self, repo: &Repo) -> Result<Status, StoreError> {
         let mut imported = 0usize;
         loop {
             if let Some(p) = self.replica.pending().cloned() {
@@ -573,7 +602,7 @@ impl TeamStore {
                     Outcome::Stall(s) => return Ok(Status::Stalled(format!("{oid}: {s:?}"))),
                     other => return Err(StoreError::Corrupt(format!("{oid}: {other:?}"))),
                 }
-                self.append(&[Frame {
+                self.append_unsynced(&[Frame {
                     kind: Kind::Entry,
                     oid: oid.clone(),
                     seq,

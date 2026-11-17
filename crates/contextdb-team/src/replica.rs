@@ -79,6 +79,44 @@ pub enum Outcome {
 /// One rule of [`Why`]: enabled, and its premises and references as
 /// `(path, edge kind, content)`.
 pub type WhyRule = (bool, Vec<(String, EdgeKind, Hash)>);
+/// Exact totals of a state's checkpoint (G5): the framed bytes of every
+/// item, and the reference count of every content a non-shredded revision
+/// holds with the total size of those contents. Items are fixed-width
+/// encodings, so each is a function of its strings alone (`state.rs`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Sizes {
+    items: u64,
+    refs: BTreeMap<Hash, u32>,
+    blobs: u64,
+}
+
+/// The framed bytes of a record header item (`state.rs` `for_each_item`).
+fn header_bytes(path: &str, lane: &str, tags: &BTreeSet<String>) -> u64 {
+    4 + 1
+        + (4 + path.len() as u64)
+        + (4 + lane.len() as u64)
+        + 1
+        + 4
+        + tags.iter().map(|t| 4 + t.len() as u64).sum::<u64>()
+        + 1
+        + 32
+        + 4
+}
+/// Framed bytes of a revision item, a shred item.
+const REV_ITEM: u64 = 4 + 1 + 32 + 1 + 1;
+const SHRED_ITEM: u64 = 4 + 1 + 32;
+fn rule_bytes(r: &RuleSpec) -> u64 {
+    let mut w = crate::enc::Writer::default();
+    r.encode(&mut w);
+    4 + 1 + w.0.len() as u64 + 1
+}
+fn doc_bytes(d: &TeamDoc) -> u64 {
+    4 + 1 + 4 + d.encode().len() as u64
+}
+fn accepted_bytes(member: &str) -> u64 {
+    4 + 1 + 4 + member.len() as u64 + 16
+}
+
 /// A team record's justification ([`Replica::why`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Why {
@@ -148,6 +186,11 @@ pub struct Replica {
     tags: BTreeMap<String, BTreeSet<String>>,
     revs: BTreeMap<(String, Hash), RevisionId>,
     rules: BTreeMap<RuleSpec, RuleId>,
+    /// Exact running totals of the state's checkpoint size (G5): the
+    /// capacity check's fast path. `None` until first needed.
+    sizes: Option<Sizes>,
+    /// See [`Replica::touched`].
+    touched: Option<BTreeSet<String>>,
 }
 
 struct Present<'a> {
@@ -194,6 +237,8 @@ impl Replica {
             tags: BTreeMap::new(),
             revs: BTreeMap::new(),
             rules: BTreeMap::new(),
+            sizes: None,
+            touched: None,
         }
     }
 
@@ -230,6 +275,7 @@ impl Replica {
     /// `accept(replica at parent, entry)`: decides the entry and, unless it
     /// stalls, applies the accepted proposals and advances the sequence.
     pub fn accept(&mut self, e: &EntryInput) -> Outcome {
+        self.touched = Some(BTreeSet::new());
         if self.pending.is_some() {
             return if e.first_in_generation {
                 match self.check_successor(e) {
@@ -450,13 +496,34 @@ impl Replica {
             .clone()
             .or_else(|| self.doc.clone())
             .expect("a document");
-        let prospective = self.prospective_state(&st, author, id, &doc_after);
-        let size = prospective.ckpt_size_reserved(|h| self.blob_size(h, entry_blobs));
-        if size > doc_after.state_bytes {
-            return Err(rej(
-                "TeamStateLimit",
-                format!("{size} > {}", doc_after.state_bytes),
-            ));
+        // Fast path (G5): next-fit packing leaves any two consecutive chunks
+        // over CHUNK_BYTES together, so the chunk count is at most
+        // 2·⌊items/CHUNK_BYTES⌋ + 1; with that bound the size is an upper
+        // bound of the exact one. Within the limit, the exact size is too;
+        // otherwise the exact computation decides, as always.
+        if self.sizes.is_none() && self.doc.is_some() {
+            self.sizes = self.sizes_now();
+        }
+        let after =
+            (self.sizes.as_ref()).map(|b| self.sizes_after(b, &st, author, id, entry_blobs));
+        let fast = after.as_ref().is_some_and(|a| {
+            let chunks = 2 * (a.items / crate::state::CHUNK_BYTES as u64) + 2;
+            let upper = crate::state::INDEX_HEADER
+                + crate::state::INDEX_PER_CHUNK * (chunks + 1)
+                + a.items
+                + a.blobs
+                + crate::state::reserve_item_bytes() as u64;
+            upper <= doc_after.state_bytes
+        });
+        if !fast {
+            let prospective = self.prospective_state(&st, author, id, &doc_after);
+            let size = prospective.ckpt_size_reserved(|h| self.blob_size(h, entry_blobs));
+            if size > doc_after.state_bytes {
+                return Err(rej(
+                    "TeamStateLimit",
+                    format!("{size} > {}", doc_after.state_bytes),
+                ));
+            }
         }
         let mut result = None;
         if !st.ops.is_empty() {
@@ -475,6 +542,27 @@ impl Replica {
                 Ok(r) => result = Some(r),
                 Err(e) => return Err(rej("Kernel", tx_code(&e))),
             }
+        }
+        // The paths this proposal may have changed (G5): staged ones, and
+        // every record whose root status the commit changed.
+        let mut paths: BTreeSet<String> = st.new_records.keys().cloned().collect();
+        paths.extend(st.new_revs.iter().map(|(p, _)| p.clone()));
+        paths.extend(st.heads.keys().cloned());
+        paths.extend(st.base.keys().map(|(p, _)| p.clone()));
+        paths.extend(st.tags.keys().cloned());
+        if let Some(r) = &result {
+            let prefix = self.key("");
+            for rid in &r.status_diff {
+                if let Some(l) = self.db.revision_logical(*rid)
+                    && let Some((key, ..)) = self.db.logical_info(l)
+                    && let Some(p) = key.strip_prefix(&prefix)
+                {
+                    paths.insert(p.to_owned());
+                }
+            }
+        }
+        if let Some(t) = &mut self.touched {
+            t.extend(paths);
         }
         // Commit the side state.
         if let Some(r) = result {
@@ -505,7 +593,102 @@ impl Replica {
             self.doc = Some(d);
         }
         self.accepted.insert((author.to_owned(), id));
+        // The running totals follow the committed state; debug builds check
+        // them against a full recomputation.
+        self.sizes = after;
+        #[cfg(debug_assertions)]
+        if self.sizes.is_some() {
+            assert_eq!(
+                self.sizes,
+                self.sizes_now(),
+                "checkpoint size totals drifted"
+            );
+        }
         Ok(())
+    }
+
+    /// The exact totals of the current state, from scratch.
+    fn sizes_now(&self) -> Option<Sizes> {
+        let ks = self.keyed_state()?;
+        let mut s = Sizes::default();
+        ks.for_each_item(|it| s.items += 4 + it.len() as u64);
+        for r in &ks.records {
+            for v in r.revisions.iter().filter(|v| !v.shredded) {
+                *s.refs.entry(v.content).or_default() += 1;
+            }
+        }
+        s.blobs = s
+            .refs
+            .keys()
+            .map(|h| self.blob_size(h, &BTreeMap::new()))
+            .sum();
+        Some(s)
+    }
+
+    /// The totals `st` leaves (with `author`'s proposal `id` accepted).
+    fn sizes_after(
+        &self,
+        base: &Sizes,
+        st: &Stage,
+        author: &str,
+        id: [u8; 16],
+        entry: &BTreeMap<Hash, Vec<u8>>,
+    ) -> Sizes {
+        let mut s = base.clone();
+        if let Some(d) = &st.doc {
+            s.items -= self.doc.as_ref().map_or(0, doc_bytes);
+            s.items += doc_bytes(d);
+        }
+        // Record headers: new records, and tag changes on existing ones.
+        for (path, (lane, _)) in &st.new_records {
+            if self.logical(path).is_none() {
+                s.items += header_bytes(path, lane, &self.tags_of(st, path));
+            }
+        }
+        for (path, tags) in &st.tags {
+            if st.new_records.contains_key(path) || self.logical(path).is_none() {
+                continue;
+            }
+            let old: u64 = self
+                .tags
+                .get(path)
+                .map_or(0, |t| t.iter().map(|x| 4 + x.len() as u64).sum());
+            s.items = s.items - old + tags.iter().map(|x| 4 + x.len() as u64).sum::<u64>();
+        }
+        // Shreds first: a shredded content is referenced by nothing.
+        let shredded = |h: &Hash| self.shred.contains(h) || st.shred.contains(h);
+        for h in &st.shred {
+            if !self.shred.contains(h) {
+                s.items += SHRED_ITEM;
+                if s.refs.remove(h).is_some() {
+                    s.blobs -= self.blob_size(h, entry);
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for (path, h) in &st.new_revs {
+            if self.revs.contains_key(&(path.clone(), *h)) || !seen.insert((path, h)) {
+                continue;
+            }
+            s.items += REV_ITEM;
+            if !shredded(h) {
+                let r = s.refs.entry(*h).or_default();
+                if *r == 0 {
+                    s.blobs += self.blob_size(h, entry);
+                }
+                *r += 1;
+            }
+        }
+        let mut rules = BTreeSet::new();
+        for r in &st.new_rules {
+            if !self.rules.contains_key(r) && rules.insert(r) {
+                s.items += rule_bytes(r);
+            }
+        }
+        if !self.accepted.contains(&(author.to_owned(), id)) {
+            s.items += accepted_bytes(author);
+        }
+        s
     }
 
     fn blob_size(&self, h: &Hash, entry: &BTreeMap<Hash, Vec<u8>>) -> u64 {
@@ -956,6 +1139,8 @@ impl Replica {
             Err(_) => return reject("Sha1Collision", "checkpoint tree"),
         }
         self.accepted.insert((author.to_owned(), id));
+        // Changed outside `apply`: recomputed when next needed.
+        self.sizes = None;
         self.pending = Some(Pending {
             generation,
             tree: tree.to_vec(),
@@ -1174,6 +1359,48 @@ impl Replica {
     // ----- the keyed state -----
 
     /// The keyed state now (§4.3).
+    /// One record of the keyed state, from its revisions.
+    fn record_item(&self, path: String, mut revs: Vec<(Hash, RevisionId)>) -> RecordItem {
+        revs.sort_by_key(|(_, r)| *r);
+        let l = self.logical(&path).expect("logical");
+        let (_, kind, lane) = self.db.logical_info(l).expect("info");
+        let head = self.db.head(l).expect("head");
+        RecordItem {
+            lane: self.lane_name(&lane).to_owned(),
+            kind,
+            tags: self.tags.get(&path).cloned().unwrap_or_default(),
+            certified: self.db.status(head).is_ok_and(|s| s == Summary::Certified),
+            head: self.db.revision_content(head).expect("rev"),
+            revisions: revs
+                .iter()
+                .map(|(h, r)| RevisionItem {
+                    content: *h,
+                    base: self.db.is_base(*r).unwrap_or(false),
+                    shredded: self.shred.contains(h),
+                })
+                .collect(),
+            path,
+        }
+    }
+
+    /// The keyed-state record at `path`, if the team has one.
+    pub fn record(&self, path: &str) -> Option<RecordItem> {
+        self.logical(path)?;
+        let revs: Vec<(Hash, RevisionId)> = self
+            .revs
+            .range((path.to_owned(), [0u8; 32])..=(path.to_owned(), [0xffu8; 32]))
+            .map(|((_, h), r)| (*h, *r))
+            .collect();
+        Some(self.record_item(path.to_owned(), revs))
+    }
+
+    /// Paths whose record may have changed in the last `accept` (G5): the
+    /// paths its accepted proposals staged, and those whose root status
+    /// changed. `None` when the last call changed the state otherwise.
+    pub fn touched(&self) -> Option<&BTreeSet<String>> {
+        self.touched.as_ref()
+    }
+
     pub fn keyed_state(&self) -> Option<KeyedState> {
         let doc = self.doc.clone()?;
         let mut paths: BTreeMap<String, Vec<(Hash, RevisionId)>> = BTreeMap::new();
@@ -1181,27 +1408,8 @@ impl Replica {
             paths.entry(p.clone()).or_default().push((*h, *r));
         }
         let mut records = Vec::with_capacity(paths.len());
-        for (path, mut revs) in paths {
-            revs.sort_by_key(|(_, r)| *r);
-            let l = self.logical(&path).expect("logical");
-            let (_, kind, lane) = self.db.logical_info(l).expect("info");
-            let head = self.db.head(l).expect("head");
-            records.push(RecordItem {
-                lane: self.lane_name(&lane).to_owned(),
-                kind,
-                tags: self.tags.get(&path).cloned().unwrap_or_default(),
-                certified: self.db.status(head).is_ok_and(|s| s == Summary::Certified),
-                head: self.db.revision_content(head).expect("rev"),
-                revisions: revs
-                    .iter()
-                    .map(|(h, r)| RevisionItem {
-                        content: *h,
-                        base: self.db.is_base(*r).unwrap_or(false),
-                        shredded: self.shred.contains(h),
-                    })
-                    .collect(),
-                path,
-            });
+        for (path, revs) in paths {
+            records.push(self.record_item(path, revs));
         }
         let rules = self
             .rules
