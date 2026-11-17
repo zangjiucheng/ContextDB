@@ -339,6 +339,7 @@ dependencies = [
  "contextdb-model",
  "contextdb-oracle",
  "ed25519-dalek",
+ "getrandom 0.3.4",
  "rand_chacha",
  "rand_core 0.9.5",
  "sha1-checked",

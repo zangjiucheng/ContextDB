@@ -822,6 +822,52 @@ impl Replica {
         Ok(())
     }
 
+    // ----- scratch decisions (§6.2, §7.2) -----
+
+    /// Decides one proposal as `accept` would for an entry by `member`,
+    /// without an entry around it: the scratch check at enqueue and at
+    /// publish (ADR 0018 §4.2 "scratch accept"). Run it on a clone, never on
+    /// the replica itself; nothing here checks a signature or a sequence.
+    pub fn scratch_apply(
+        &mut self,
+        member: &str,
+        id: [u8; 16],
+        ops: &[TeamOp],
+        blobs: &BTreeMap<Hash, Vec<u8>>,
+    ) -> Result<(), Reason> {
+        if self.doc.is_none() {
+            return reject("Genesis", "no team document");
+        }
+        if ops.iter().any(TeamOp::is_sole) && ops.len() != 1 {
+            return reject("SoleOpRequired", "");
+        }
+        if self
+            .doc
+            .as_ref()
+            .is_some_and(|d| d.keys_of(member).is_empty())
+        {
+            return reject("NotTeamMember", member);
+        }
+        if self.accepted.contains(&(member.to_owned(), id)) {
+            return reject("DuplicateProposal", hex(&id));
+        }
+        match self.apply(member, id, ops, blobs) {
+            Ok(()) => Ok(()),
+            Err(Fail::Reject(r)) => Err(r),
+            Err(Fail::Stall(s)) => reject("Stall", format!("{s:?}")),
+        }
+    }
+    /// Whether `(member, id)` is an accepted proposal.
+    pub fn is_accepted(&self, member: &str, id: &[u8; 16]) -> bool {
+        self.accepted.contains(&(member.to_owned(), *id))
+    }
+    pub fn team(&self) -> [u8; 16] {
+        self.team
+    }
+    pub fn format(&self) -> ObjectFormat {
+        self.format
+    }
+
     // ----- compaction (§8.6) -----
 
     /// Σc: the state after an accepted `Compact` by `author` with proposal

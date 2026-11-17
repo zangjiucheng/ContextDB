@@ -14,6 +14,8 @@ pub mod enc;
 pub mod git;
 pub mod gitobj;
 pub mod ops;
+pub mod proposals;
+pub mod publish;
 pub mod replica;
 pub mod sshsig;
 pub mod state;

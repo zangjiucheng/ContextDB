@@ -12,6 +12,7 @@ use crate::commit::{ObjectFormat, hex};
 use crate::enc::{Reader, Writer};
 use crate::git::{GitError, Repo};
 use crate::replica::{EntryInput, JoinError, Outcome, Reason, Replica};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -142,6 +143,15 @@ pub struct TeamStore {
     /// The last decided entry of the current generation.
     last: Option<String>,
     log: File,
+    /// Every decided proposal: `(member, proposal id)` → its outcome, from
+    /// the entries imported (the publish side reads its outcomes here).
+    decisions: BTreeMap<(String, [u8; 16]), Result<(), Reason>>,
+}
+
+/// `(author, proposal ids)` of an entry, from its trailers.
+fn proposers(format: ObjectFormat, commit: &[u8]) -> Option<(String, Vec<[u8; 16]>)> {
+    let c = crate::commit::parse(commit, format).ok()?;
+    Some((c.trailers.author?, c.trailers.proposals))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -251,6 +261,7 @@ impl TeamStore {
             anchor,
             last: None,
             log,
+            decisions: BTreeMap::new(),
         };
         for f in frames {
             s.replay(&f)?;
@@ -275,7 +286,9 @@ impl TeamStore {
         });
         match (f.kind, out) {
             (Kind::Successor, Outcome::Successor) => self.anchor = f.oid.clone(),
-            (Kind::Entry, Outcome::Decided(_) | Outcome::EntryRejected(_)) => {}
+            (Kind::Entry, o @ (Outcome::Decided(_) | Outcome::EntryRejected(_))) => {
+                self.record_decisions(&f.commit, &o)
+            }
             (_, o) => {
                 return Err(StoreError::Corrupt(format!(
                     "log replay of {}: {o:?}",
@@ -297,6 +310,31 @@ impl TeamStore {
         Ok(())
     }
 
+    fn record_decisions(&mut self, commit: &[u8], o: &Outcome) {
+        let Some((author, ids)) = proposers(self.format, commit) else {
+            return;
+        };
+        for (i, id) in ids.iter().enumerate() {
+            let d = match o {
+                Outcome::Decided(v) => v.get(i).cloned().unwrap_or(Ok(())),
+                Outcome::EntryRejected(r) => Err(r.clone()),
+                _ => continue,
+            };
+            // The first decision stands: a later replay of the same id is a
+            // DuplicateProposal of an accepted one.
+            self.decisions.entry((author.clone(), *id)).or_insert(d);
+        }
+    }
+    /// The outcome of `(member, proposal id)`, if an imported entry decided
+    /// it.
+    pub fn decision(&self, member: &str, id: &[u8; 16]) -> Option<&Result<(), Reason>> {
+        self.decisions.get(&(member.to_owned(), *id))
+    }
+    /// The last decided entry of the current generation (the parent of the
+    /// next publish).
+    pub fn tip(&self) -> Option<&str> {
+        self.last.as_deref()
+    }
     pub fn replica(&self) -> &Replica {
         &self.replica
     }
@@ -428,7 +466,9 @@ impl TeamStore {
                     tree: &objs.tree,
                 });
                 match out {
-                    Outcome::Decided(_) | Outcome::EntryRejected(_) => {}
+                    o @ (Outcome::Decided(_) | Outcome::EntryRejected(_)) => {
+                        self.record_decisions(&objs.commit, &o)
+                    }
                     Outcome::Stall(s) => return Ok(Status::Stalled(format!("{oid}: {s:?}"))),
                     other => return Err(StoreError::Corrupt(format!("{oid}: {other:?}"))),
                 }
