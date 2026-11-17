@@ -140,11 +140,27 @@ pub fn register(hooks: &Path, component: Component, remove: bool) -> Result<(), 
             }
             continue;
         }
-        let script = format!(
-            "{HEADER}exec {} git-hook {name} {} \"$@\"\n",
-            quote(&exe)?,
-            quote(hooks)?
-        );
+        // `reference-transaction` runs for every ref update, three times per
+        // transaction: the script itself chains the user's hook and starts
+        // `ctx` only for a team tracking ref in a state that matters (G5).
+        let script = if name == "reference-transaction" {
+            format!(
+                "{HEADER}input=$(cat)\n\
+                 if [ -x {b} ]; then printf '%s\\n' \"$input\" | {b} \"$@\" || exit $?; fi\n\
+                 case \"$1\" in prepared|aborted|committed) ;; *) exit 0 ;; esac\n\
+                 case \"$input\" in *refs/contextdb/remotes/*) ;; *) exit 0 ;; esac\n\
+                 printf '%s\\n' \"$input\" | exec {exe} git-hook {name} {hooks} --chained \"$@\"\n",
+                b = quote(&backup)?,
+                exe = quote(&exe)?,
+                hooks = quote(hooks)?,
+            )
+        } else {
+            format!(
+                "{HEADER}exec {} git-hook {name} {} \"$@\"\n",
+                quote(&exe)?,
+                quote(hooks)?
+            )
+        };
         if existing.as_deref() == Some(script.as_bytes()) {
             continue;
         }
@@ -167,7 +183,9 @@ pub fn run(args: &[String]) -> Result<u8, String> {
         return Err("git-hook <name> <hooks dir> …".into());
     };
     let hooks = Path::new(hooks);
-    let rest = &args[2..];
+    // `--chained`: the script already ran the user's hook (and it passed).
+    let chained = args.get(2).is_some_and(|a| a == "--chained");
+    let rest = &args[if chained { 3 } else { 2 }..];
     let mut input = Vec::new();
     if takes_input(name) {
         std::io::stdin()
@@ -176,7 +194,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     }
     // The user's hook first, with the same arguments and input.
     let backup = hooks.join(format!("{name}.contextdb-original"));
-    let original = if is_executable(&backup) {
+    let original = if !chained && is_executable(&backup) {
         let mut child = Command::new(&backup)
             .args(rest)
             .stdin(Stdio::piped())

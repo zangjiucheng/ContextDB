@@ -224,6 +224,20 @@ fn main() {
         vec![(format!("blobs/{}", hex(&c)), body)],
     );
     repo.update_ref(&refname, &last, Some(&tip)).unwrap();
+    // The import's git calls, measured apart (reported).
+    let t = Instant::now();
+    let path = repo.first_parent_path(&last).unwrap();
+    let walk_ms = t.elapsed().as_secs_f64() * 1e3;
+    let t = Instant::now();
+    let _ = repo.read_entries(std::slice::from_ref(&last)).unwrap();
+    let read_ms = t.elapsed().as_secs_f64() * 1e3;
+    let t = Instant::now();
+    let _ = repo.resolve(&refname).unwrap();
+    let resolve_ms = t.elapsed().as_secs_f64() * 1e3;
+    eprintln!(
+        "{{\"part\":\"import-one-parts\",\"walk_ms\":{walk_ms:.2},\"walk_len\":{},\"read_one_ms\":{read_ms:.2},\"resolve_ms\":{resolve_ms:.2}}}",
+        path.len()
+    );
     let t = Instant::now();
     store.import(&repo).unwrap();
     let import_ms = t.elapsed().as_secs_f64() * 1e3;
