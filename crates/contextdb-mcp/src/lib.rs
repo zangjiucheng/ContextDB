@@ -124,6 +124,16 @@ fn item(i: &Item) -> Value {
         "summary": summary_text(&i.summary),
         "status": status(&i.state),
     });
+    // ADR 0018 §6.3: team proposals waiting to change this record.
+    if !i.proposed.is_empty()
+        && let Some(o) = v.as_object_mut()
+    {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        o.insert(
+            "proposed".into(),
+            json!(i.proposed.iter().map(|(id, _)| hex(id)).collect::<Vec<_>>()),
+        );
+    }
     // ADR 0016 §6: a Summary's pending count.
     if let (Some(c), Some(o)) = (i.premises, v.as_object_mut()) {
         o.insert(

@@ -149,6 +149,11 @@ impl<'a, 'v> Viewer<'a, 'v> {
     pub fn item(&self, i: &mut Item) {
         self.node(&mut i.state);
         self.summary(&mut i.summary);
+        // §6.2: a proposal is shown to its author (and the owner); never a
+        // count of others.
+        if !self.is_owner() {
+            i.proposed.retain(|(_, author)| *author == self.p);
+        }
     }
     fn items(&self, items: &mut Vec<Item>) -> u32 {
         let n = drop_hidden(items, |i| self.sees(i.logical));

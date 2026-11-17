@@ -192,6 +192,56 @@ pub struct Live {
     /// Import stopped (`ReplicaStalled`, `ReplicaDiverged`,
     /// `ReplicaIncomplete`).
     pub stopped: Option<String>,
+    /// §6.3: pending proposals by the full key of each record they write.
+    pub proposed: BTreeMap<String, Vec<([u8; 16], PrincipalId)>>,
+}
+
+/// The record a team op writes, if any.
+fn target(op: &contextdb_team::ops::TeamOp) -> Option<&str> {
+    use contextdb_team::ops::TeamOp as T;
+    match op {
+        T::New { path, .. }
+        | T::Revise { path, .. }
+        | T::SetHead { path, .. }
+        | T::SetBase { path, .. }
+        | T::SetTags { path, .. } => Some(path),
+        T::AddRule { rule, .. } | T::SetRuleEnabled { rule, .. } => Some(&rule.conclusion.0),
+        _ => None,
+    }
+}
+
+/// Recomputes `j`'s proposal markers (§6.3) after its queue changed.
+pub fn refresh_proposed(j: &Joined, live: &LiveMap) {
+    let team = j.store.team();
+    let mut map: BTreeMap<String, Vec<([u8; 16], PrincipalId)>> = BTreeMap::new();
+    for p in j.queue.proposals.iter().filter(|p| p.state.pending()) {
+        for path in p.ops.iter().filter_map(target) {
+            let e = map
+                .entry(format!("team/{}/{path}", hex(&team)))
+                .or_default();
+            if !e.iter().any(|(id, _)| *id == p.id) {
+                e.push((p.id, p.author));
+            }
+        }
+    }
+    live.lock()
+        .expect("team live")
+        .entry(team)
+        .or_default()
+        .proposed = map;
+}
+
+/// The markers of `key` (§6.3), before redaction.
+pub fn proposed_for(live: &LiveMap, key: &str) -> Vec<([u8; 16], PrincipalId)> {
+    if !key.starts_with("team/") {
+        return Vec::new();
+    }
+    let live = live.lock().expect("team live");
+    live.values()
+        .filter_map(|l| l.proposed.get(key))
+        .flatten()
+        .copied()
+        .collect()
 }
 
 impl Live {
@@ -274,6 +324,7 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
         e.stopped = stopped.or_else(|| (!caught.is_empty()).then(|| caught.clone()));
     }
     resolve_announces(j.store.dir(), team, &repo, tip.as_deref(), live);
+    refresh_proposed(j, live);
     format!("{} {status:?}{caught}", hex(&team))
 }
 

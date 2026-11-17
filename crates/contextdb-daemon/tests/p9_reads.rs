@@ -1059,6 +1059,7 @@ fn t100_every_response_type_names_only_visible_ids() {
         handle: None,
         premises: None,
         body: None,
+        proposed: Vec::new(),
     };
     let (out, _) = run(Response::Read {
         item: it(lv, vis),

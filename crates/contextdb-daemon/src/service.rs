@@ -3032,6 +3032,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let premises = (kind == RecordKind::Summary)
             .then(|| premise_count(db, r))
             .flatten();
+        let proposed = crate::team::proposed_for(&self.actor.team_live, &key);
         Item {
             logical: l,
             key,
@@ -3042,6 +3043,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             handle,
             premises,
             body: None,
+            proposed,
         }
     }
     /// Proof of possession for a principal other than the store owner (ADR

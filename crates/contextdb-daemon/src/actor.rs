@@ -511,6 +511,11 @@ impl<D: Durability + Clone> Actor<D> {
                         detail: format!("{e:?}"),
                     },
                 };
+                for (t, j) in &self.teams {
+                    if team.is_none_or(|x| x == *t) {
+                        team::refresh_proposed(j, &self.team_live);
+                    }
+                }
                 let _ = reply.send(a);
             }
             Message::TeamRoute {
@@ -523,6 +528,11 @@ impl<D: Durability + Clone> Actor<D> {
                     Ok(k) => team::propose(&mut self.teams, k, &batch, &blobs, refused),
                     Err(_) => Err(refused),
                 };
+                if let Ok(Some((t, _))) = &r
+                    && let Some(j) = self.teams.get(t)
+                {
+                    team::refresh_proposed(j, &self.team_live);
+                }
                 let _ = reply.send(r);
             }
             Message::KeyPurge { retry, reply } => {

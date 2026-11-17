@@ -1096,6 +1096,10 @@ pub struct Item {
     /// asked for a level or a budget; `None` is the pre-P8 header-only
     /// shape (and a full `ctx_read`, whose body is the payload).
     pub body: Option<Rendering>,
+    /// P10 (ADR 0018 §6.3): queued or published team proposals that write
+    /// this record, `(proposal id, local author)`; for a principal other
+    /// than the store owner, only its own.
+    pub proposed: Vec<([u8; 16], PrincipalId)>,
 }
 /// A Summary's pending count (ADR 0016 §6): `moved` of its witness rule's
 /// `total` Sem premises have a head other than the nearest Verified vector
@@ -1468,7 +1472,8 @@ wire_struct!(Item {
     summary,
     handle,
     premises,
-    body
+    body,
+    proposed
 });
 wire_struct!(Envelope {
     epoch,

@@ -468,6 +468,42 @@ fn p10_daemon_imports_routes_and_lags() {
         vec![b"l".to_vec()],
     );
     assert_eq!(code(&r), "MixedTeamBatch", "{r:?}");
+    // A queued proposal on a mirror is marked on reads of it (§6.3).
+    let r = commit(
+        &s,
+        sid,
+        vec![Op::SetMetadata {
+            logical: LogicalRef::Key(key("k/a")),
+            tags: ["reviewed".to_owned()].into(),
+            dirs: Default::default(),
+        }],
+        vec![],
+    );
+    let tagged = match r {
+        Response::Proposed { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let l = s
+        .actor
+        .snapshot()
+        .view(MAIN)
+        .logical_by_key(&key("k/a"))
+        .unwrap();
+    match s
+        .handle(
+            AGENT,
+            Request::Read {
+                binding: Binding::root(sid),
+                target: Target::Logical(l),
+                mode: Mode::Advisory,
+                level: None,
+            },
+        )
+        .response
+    {
+        Response::Read { item, .. } => assert_eq!(item.proposed, vec![(tagged, AGENT.principal)]),
+        other => panic!("{other:?}"),
+    }
     // A new root entry: fetched, not yet imported, reads are behind the
     // daemon's view of the ref only after it re-reads it (lag_check or
     // the hooks' announce); sync imports and catches up.

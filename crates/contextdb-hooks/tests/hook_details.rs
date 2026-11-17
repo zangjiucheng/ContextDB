@@ -710,6 +710,7 @@ fn briefing_items_and_unapplied_gating_file() {
         handle: None,
         body: None,
         premises: None,
+        proposed: Vec::new(),
     };
     fake.set(|s| {
         s.briefing = Response::Briefing {
