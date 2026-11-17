@@ -255,6 +255,12 @@ fn new_op(path: &str, h: Hash) -> TeamOp {
     }
 }
 
+/// The tracking ref of the generation an edge's anchor file follows.
+fn off_tracking(dir: &Path) -> String {
+    let s = TeamStore::open(dir).unwrap();
+    s.tracking_ref(s.replica().generation())
+}
+
 fn have_git() -> bool {
     Command::new("git").arg("--version").output().is_ok()
 }
@@ -536,6 +542,17 @@ fn compaction_with_real_objects() {
         TeamStore::open(&dir).unwrap().replica().digest(),
         p.replica.digest()
     );
+    // Batched reads give exactly what single reads give, nested checkpoint
+    // trees included.
+    let all = frepo
+        .first_parent_path(&frepo.resolve(&off_tracking(&dir)).unwrap().unwrap())
+        .unwrap();
+    let batched = frepo.read_entries(&all).unwrap();
+    for (oid, b) in all.iter().zip(batched) {
+        let one = frepo.read_entry(oid).unwrap();
+        let b = b.unwrap();
+        assert_eq!((b.commit, b.tree), (one.commit, one.tree), "{oid}");
+    }
     // The edge followed the Compact: its trust anchor is the verified
     // checkpoint entry, and a rebuild replays from there (Q13).
     let anchor = std::fs::read_to_string(dir.join("anchor")).unwrap();
@@ -577,6 +594,22 @@ fn partial_clone_reports_missing_blobs_until_fetched() {
         panic!("expected Incomplete")
     };
     assert!(!missing.is_empty());
+    // Batched reads report the same missing blobs as single reads.
+    let path = repo
+        .first_parent_path(&repo.resolve(&s.tracking_ref(0)).unwrap().unwrap())
+        .unwrap();
+    for (oid, b) in path.iter().zip(repo.read_entries(&path).unwrap()) {
+        match (b, repo.read_entry(oid)) {
+            (Ok(x), Ok(y)) => assert_eq!((x.commit, x.tree), (y.commit, y.tree)),
+            (
+                Err(contextdb_team::git::GitError::Missing(x)),
+                Err(contextdb_team::git::GitError::Missing(y)),
+            ) => {
+                assert_eq!(x, y)
+            }
+            (x, y) => panic!("{oid}: batched {x:?}, single {y:?}"),
+        }
+    }
     // The hook's by-OID fetch, in the user's environment.
     let mut args = vec!["fetch", "-q", "origin"];
     args.extend(missing.iter().map(String::as_str));

@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const FRAME: &[u8; 4] = b"CXTL";
+/// Entries read from git per batch on import.
+const IMPORT_BATCH: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -538,8 +540,19 @@ impl TeamStore {
                     None => return Ok(Status::Diverged(format!("g{g} no longer contains {l}"))),
                 },
             };
+            // Entries are read in batches: a few git processes per batch,
+            // not one per entry (G5).
+            let mut batch: std::collections::VecDeque<Result<crate::git::EntryObjects, GitError>> =
+                Default::default();
             for (i, oid) in path.iter().enumerate().skip(start) {
-                let objs = match repo.read_entry(oid) {
+                if batch.is_empty() {
+                    let end = (i + IMPORT_BATCH).min(path.len());
+                    batch = repo
+                        .read_entries(&path[i..end])
+                        .map_err(StoreError::Git)?
+                        .into();
+                }
+                let objs = match batch.pop_front().expect("read for this entry") {
                     Ok(o) => o,
                     Err(GitError::Missing(m)) => return Ok(Status::Incomplete(m)),
                     Err(e) => return Err(StoreError::Git(e)),

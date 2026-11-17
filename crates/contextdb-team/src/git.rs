@@ -259,6 +259,176 @@ impl Repo {
         })
     }
 
+    /// [`Self::read_entry`] for many entries in a few `cat-file --batch`
+    /// runs (commits, then each tree level, then the blobs), whatever their
+    /// number: import's cost is no longer a git process per entry. Each
+    /// entry's result is what `read_entry` gives for it, missing objects
+    /// included.
+    pub fn read_entries(&self, oids: &[String]) -> Result<Vec<Result<EntryObjects>>> {
+        let id_len = match self.format {
+            ObjectFormat::Sha1 => 20,
+            ObjectFormat::Sha256 => 32,
+        };
+        let commits = self.read_objects(oids)?;
+        // Per entry: its commit bytes, then its tree id.
+        let mut out: Vec<Option<Result<EntryObjects>>> = Vec::with_capacity(oids.len());
+        let mut roots: Vec<Option<(Vec<u8>, String)>> = Vec::with_capacity(oids.len());
+        for (oid, c) in oids.iter().zip(commits) {
+            match c {
+                Some((k, b)) if k == "commit" => {
+                    let tree = std::str::from_utf8(&b)
+                        .ok()
+                        .and_then(|t| t.strip_prefix("tree "))
+                        .and_then(|t| t.split('\n').next())
+                        .map(str::to_owned);
+                    match tree {
+                        Some(t) => {
+                            roots.push(Some((b, t)));
+                            out.push(None);
+                        }
+                        None => {
+                            roots.push(None);
+                            out.push(Some(Err(failed("commit without a tree"))));
+                        }
+                    }
+                }
+                Some((k, _)) => {
+                    roots.push(None);
+                    out.push(Some(Err(failed(format!("{oid} is a {k}")))));
+                }
+                None => {
+                    roots.push(None);
+                    out.push(Some(Err(GitError::Missing(vec![oid.clone()]))));
+                }
+            }
+        }
+        // Every tree reachable from the roots, level by level.
+        let mut trees: std::collections::BTreeMap<String, Option<Vec<u8>>> = Default::default();
+        let mut level: Vec<String> = roots.iter().flatten().map(|(_, t)| t.clone()).collect();
+        level.sort();
+        level.dedup();
+        while !level.is_empty() {
+            let got = self.read_objects(&level)?;
+            let mut next = Vec::new();
+            for (id, o) in level.iter().zip(got) {
+                let body = match o {
+                    Some((k, b)) if k == "tree" => Some(b),
+                    _ => None,
+                };
+                if let Some(b) = &body {
+                    for (mode, _, sub) in parse_tree(b, id_len)? {
+                        if mode == "40000" && !trees.contains_key(&sub) {
+                            next.push(sub);
+                        }
+                    }
+                }
+                trees.insert(id.clone(), body);
+            }
+            next.sort();
+            next.dedup();
+            level = next;
+        }
+        // Flatten each root in `ls-tree -r` order.
+        type Listed = Vec<(String, String, String)>;
+        fn flatten(
+            trees: &std::collections::BTreeMap<String, Option<Vec<u8>>>,
+            id: &str,
+            prefix: &str,
+            id_len: usize,
+            into: &mut Listed,
+        ) -> std::result::Result<(), GitError> {
+            let Some(Some(body)) = trees.get(id) else {
+                return Err(GitError::Missing(vec![id.to_owned()]));
+            };
+            for (mode, name, sub) in parse_tree(body, id_len)? {
+                let path = format!("{prefix}{name}");
+                match mode.as_str() {
+                    "40000" => flatten(trees, &sub, &format!("{path}/"), id_len, into)?,
+                    "160000" => into.push((format!("{mode} commit"), sub, path)),
+                    m => into.push((
+                        format!(
+                            "{} blob",
+                            if m.len() < 6 {
+                                format!("{m:0>6}")
+                            } else {
+                                m.to_owned()
+                            }
+                        ),
+                        sub,
+                        path,
+                    )),
+                }
+            }
+            Ok(())
+        }
+        let mut listings: Vec<Option<Listed>> = Vec::with_capacity(oids.len());
+        let mut blob_ids: Vec<String> = Vec::new();
+        for (i, r) in roots.iter().enumerate() {
+            let Some((_, tree)) = r else {
+                listings.push(None);
+                continue;
+            };
+            let mut l = Vec::new();
+            match flatten(&trees, tree, "", id_len, &mut l) {
+                Ok(()) => {
+                    blob_ids.extend(
+                        l.iter()
+                            .filter(|x| x.0 == "100644 blob")
+                            .map(|x| x.1.clone()),
+                    );
+                    listings.push(Some(l));
+                }
+                Err(e) => {
+                    out[i] = Some(Err(e));
+                    listings.push(None);
+                }
+            }
+        }
+        blob_ids.sort();
+        blob_ids.dedup();
+        let blobs: std::collections::BTreeMap<String, Option<Vec<u8>>> = blob_ids
+            .iter()
+            .cloned()
+            .zip(
+                self.read_objects(&blob_ids)?
+                    .into_iter()
+                    .map(|o| o.map(|(_, b)| b)),
+            )
+            .collect();
+        let mut res = Vec::with_capacity(oids.len());
+        for ((o, root), listed) in out.into_iter().zip(roots).zip(listings) {
+            if let Some(r) = o {
+                res.push(r);
+                continue;
+            }
+            let (Some((commit, _)), Some(listed)) = (root, listed) else {
+                res.push(Err(failed("unreachable")));
+                continue;
+            };
+            let missing: Vec<String> = listed
+                .iter()
+                .filter(|x| x.0 == "100644 blob" && blobs.get(&x.1).is_none_or(Option::is_none))
+                .map(|x| x.1.clone())
+                .collect();
+            if !missing.is_empty() {
+                res.push(Err(GitError::Missing(missing)));
+                continue;
+            }
+            let tree = listed
+                .into_iter()
+                .map(|(mode, id, path)| {
+                    if mode == "100644 blob" {
+                        (path, blobs[&id].clone().expect("present"))
+                    } else {
+                        (format!("{ODD_MODE_PREFIX}{mode} {path}"), Vec::new())
+                    }
+                })
+                .collect();
+            res.push(Ok(EntryObjects { commit, tree }));
+        }
+        Ok(res)
+    }
+
     /// Writes regular files as a tree (through a temporary index) and
     /// returns its id.
     pub fn write_tree(&self, files: &[(String, Vec<u8>)]) -> Result<String> {
@@ -318,4 +488,36 @@ impl Repo {
         self.run(&["update-ref", name, new, old.unwrap_or(&zero)], &[])?;
         Ok(())
     }
+}
+
+/// A raw tree object's entries: `(mode, name, object id hex)`.
+fn parse_tree(body: &[u8], id_len: usize) -> Result<Vec<(String, String, String)>> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while !rest.is_empty() {
+        let sp = rest
+            .iter()
+            .position(|b| *b == b' ')
+            .ok_or_else(|| failed("tree: mode"))?;
+        let nul = rest
+            .iter()
+            .position(|b| *b == 0)
+            .ok_or_else(|| failed("tree: name"))?;
+        if nul < sp || rest.len() < nul + 1 + id_len {
+            return Err(failed("tree: truncated"));
+        }
+        let mode = std::str::from_utf8(&rest[..sp])
+            .map_err(|_| failed("tree: mode"))?
+            .to_owned();
+        let name = std::str::from_utf8(&rest[sp + 1..nul])
+            .map_err(|_| failed("tree: name"))?
+            .to_owned();
+        let id: String = rest[nul + 1..nul + 1 + id_len]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        out.push((mode, name, id));
+        rest = &rest[nul + 1 + id_len..];
+    }
+    Ok(out)
 }
