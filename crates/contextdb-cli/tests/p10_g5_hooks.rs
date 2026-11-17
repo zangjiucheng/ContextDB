@@ -1,5 +1,6 @@
 //! P10 G5 with the real binary and hooks (ADR 0018 §13): what the team
-//! hooks add to `git commit` (`reference-transaction`, ≤ 20 ms), what the
+//! hooks add to `git commit` (`reference-transaction`, ≤ 20 ms over a
+//! trivial hook that only reads its input, owner decision 2026-11-17), what the
 //! durable announce and its acknowledgement add to a fetch that moves a
 //! team ref (≤ 50 ms), and what publishing ten proposals adds to `git push`
 //! (≤ 2 s). Each is measured against the same operation without the team
@@ -140,14 +141,27 @@ fn p10_g5_hook_and_publish_overheads() {
         0
     );
     let without = stats(commit_times(&a, n, "off"));
+    // The floor any `reference-transaction` hook pays here: one that only
+    // reads its input (owner decision 2026-11-17: the budget is ≤ 20 ms
+    // over this floor).
+    let trivial_hook = a.join(".git/hooks/reference-transaction");
+    std::fs::write(&trivial_hook, "#!/bin/sh\ncat >/dev/null\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&trivial_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let trivial = stats(commit_times(&a, n, "trivial"));
+    std::fs::remove_file(&trivial_hook).unwrap();
     assert_eq!(ctx(&["team", "hooks", da_dir.to_str().unwrap(), "on"]).0, 0);
     println!(
-        "{{\"part\":\"git-commit\",\"n\":{n},\"with_p50_ms\":{:.2},\"with_p99_ms\":{:.2},\"without_p50_ms\":{:.2},\"without_p99_ms\":{:.2},\"added_p50_ms\":{:.2},\"budget_ms\":20}}",
+        "{{\"part\":\"git-commit\",\"n\":{n},\"with_p50_ms\":{:.2},\"with_p99_ms\":{:.2},\"without_p50_ms\":{:.2},\"without_p99_ms\":{:.2},\"trivial_hook_p50_ms\":{:.2},\"added_p50_ms\":{:.2},\"added_over_trivial_hook_p50_ms\":{:.2},\"budget_over_trivial_ms\":20}}",
         with.0,
         with.1,
         without.0,
         without.1,
-        with.0 - without.0
+        trivial.0,
+        with.0 - without.0,
+        with.0 - trivial.0
     );
     // A team write proposed on A.
     let sid = match da
