@@ -1761,6 +1761,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamPropose { team, batch, blobs } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                let call = crate::team::Call::Propose {
+                    who: id.principal,
+                    batch,
+                    blobs,
+                };
+                self.team_call(Some(team), call)
+            }
             Request::TeamCompact { team } => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx team requires the admin socket");

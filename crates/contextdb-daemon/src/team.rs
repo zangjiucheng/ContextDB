@@ -453,6 +453,12 @@ pub enum Call {
     /// §8.6: step 1 (`Compact`) when none is pending, else step 2 (the
     /// successor, `--resume`).
     Compact,
+    /// A portable proposal (`SetTeamAccess`, `TeamShred`) by `who`.
+    Propose {
+        who: PrincipalId,
+        batch: Vec<u8>,
+        blobs: Vec<Vec<u8>>,
+    },
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
@@ -748,6 +754,26 @@ pub fn call(
             Answer::Lines(lines)
         }
         Call::Compact => compact(j, t),
+        Call::Propose { who, batch, blobs } => {
+            let ops = match contextdb_team::ops::TeamBatch::decode(&batch) {
+                Ok(b) if b.proposals.len() == 1 => b.proposals.into_iter().next().expect("one"),
+                _ => return fail("InvalidRequest", "one CXTB proposal"),
+            };
+            let blobs = blobs
+                .into_iter()
+                .map(|b| (*blake3::hash(&b).as_bytes(), b))
+                .collect();
+            match j
+                .queue
+                .propose(j.store.replica(), &j.cfg.member, who, ops, blobs, &policy)
+            {
+                Ok(id) => Answer::Lines(vec![format!("proposed {}", hex(&id))]),
+                Err(e) => match propose_error(e) {
+                    TxError::Team { code, detail } => fail(&code, detail),
+                    other => fail(&format!("{other:?}"), ""),
+                },
+            }
+        }
         Call::Rebuild => {
             let repo = match Repo::open(&j.cfg.repo) {
                 Ok(r) => r,

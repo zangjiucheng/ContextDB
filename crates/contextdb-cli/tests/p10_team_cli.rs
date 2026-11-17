@@ -594,3 +594,142 @@ fn run_git(dir: &Path, args: &[&str]) {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+#[test]
+fn p10_ctx_team_access_adds_a_member_who_joins_and_publishes() {
+    if Command::new("ssh-keygen").arg("-?").output().is_err()
+        || Command::new("git").arg("--version").output().is_err()
+    {
+        return;
+    }
+    let tmp = temp("access");
+    let remote = tmp.join("remote.git");
+    git(&tmp, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    let url = format!("file://{}", remote.display());
+    let (a, b) = (tmp.join("a"), tmp.join("b"));
+    git(&tmp, &["clone", "-q", &url, a.to_str().unwrap()]);
+    git(&tmp, &["clone", "-q", &url, b.to_str().unwrap()]);
+    let keygen = |name: &str| {
+        let k = tmp.join(name);
+        assert!(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-C", name, "-f"])
+                .arg(&k)
+                .status()
+                .unwrap()
+                .success()
+        );
+        k
+    };
+    let (alice, bob) = (keygen("alice"), keygen("bob"));
+    let (data_a, data_b) = (tmp.join("data-a"), tmp.join("data-b"));
+    let da = Daemon::start(&data_a, &Options::default()).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "create",
+        data_a.to_str().unwrap(),
+        "--repo",
+        a.to_str().unwrap(),
+        "--key",
+        alice.to_str().unwrap(),
+        "--member",
+        "alice",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let genesis = status_field(&out, "genesis").to_owned();
+    let team = team_dir_id(&data_a);
+    // bob cannot join yet.
+    let db = Daemon::start(&data_b, &Options::default()).unwrap();
+    let join = |key: &Path| {
+        ctx(&[
+            "team",
+            "join",
+            data_b.to_str().unwrap(),
+            "--repo",
+            b.to_str().unwrap(),
+            "--genesis",
+            &genesis,
+            "--key",
+            key.to_str().unwrap(),
+        ])
+    };
+    let (code, out) = join(&bob);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("NotTeamMember"), "{out}");
+    // alice, an admin, adds bob.
+    let pubkey = |k: &Path| {
+        std::fs::read_to_string(k.with_extension("pub"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let doc = format!(
+        "version = 1\naccept_version = 1\nid = \"{team}\"\nadmins = [\"alice\"]\n\
+         [members.alice]\nkeys = [\"{}\"]\n[members.bob]\nkeys = [\"{}\"]\n\
+         [lanes.main]\nwriters = [\"*members\"]\ncurators = [\"*admins\"]\n",
+        pubkey(&alice),
+        pubkey(&bob)
+    );
+    let file = tmp.join("team.toml");
+    std::fs::write(&file, doc).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "access",
+        data_a.to_str().unwrap(),
+        "--file",
+        file.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Accepted"), "{out}");
+    let (code, out) = join(&bob);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("as bob"), "{out}");
+    // bob proposes and publishes, signed as bob; alice imports it.
+    let sid = session(&db);
+    let body = b"bob's convention".to_vec();
+    let r = db
+        .service
+        .handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(sid),
+                ops: vec![Op::CreateLogical {
+                    origin: Origin::Local,
+                    key: format!("team/{team}/conv/bob"),
+                    kind: RecordKind::Convention,
+                    scope_lane: format!("team:{team}/main"),
+                    content: *blake3::hash(&body).as_bytes(),
+                    adopt_as_base: false,
+                }],
+                blobs: vec![body],
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
+    let (code, out) = ctx(&["team", "publish", data_b.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Accepted"), "{out}");
+    run_git(&a, &["fetch", "-q", "origin"]);
+    ctx(&["team", "sync", data_a.to_str().unwrap()]);
+    let snap = da.service.actor.snapshot();
+    assert!(
+        snap.view(MAIN)
+            .logical_by_key(&format!("team/{team}/conv/bob"))
+            .is_some()
+    );
+    drop(snap);
+    // hooks off and on again.
+    let (code, out) = ctx(&["team", "hooks", data_b.to_str().unwrap(), "off"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!b.join(".git/hooks/reference-transaction").exists());
+    let (code, out) = ctx(&["team", "hooks", data_b.to_str().unwrap(), "on"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(b.join(".git/hooks/reference-transaction").exists());
+    drop(da);
+    drop(db);
+    let _ = std::fs::remove_dir_all(&tmp);
+}

@@ -781,6 +781,14 @@ pub enum Request {
     TeamCompact {
         team: [u8; 16],
     },
+    /// P10 `ctx team access` / `ctx team shred` (ADR 0018 §9.1, §11): a
+    /// proposal given in portable form — a `CXTB` batch of one proposal —
+    /// queued like any other. Store owner, admin socket.
+    TeamPropose {
+        team: [u8; 16],
+        batch: Vec<u8>,
+        blobs: Vec<Vec<u8>>,
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2231,6 +2239,12 @@ impl Wire for Request {
                 57u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamPropose { team, batch, blobs } => {
+                58u8.encode(o);
+                team.encode(o);
+                batch.encode(o);
+                blobs.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2529,6 +2543,11 @@ impl Wire for Request {
             },
             57 => Self::TeamCompact {
                 team: Wire::decode(i)?,
+            },
+            58 => Self::TeamPropose {
+                team: Wire::decode(i)?,
+                batch: Wire::decode(i)?,
+                blobs: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })

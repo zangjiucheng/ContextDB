@@ -133,6 +133,63 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        // §9.1: a new team document (admins), queued like any proposal.
+        Some("access") => {
+            let team = pick(data, args)?;
+            let file = flag(args, "--file").ok_or("--file <team.toml>")?;
+            let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+            let doc = TeamDoc::from_toml(&src).map_err(|e| format!("{file}: {e:?}"))?;
+            propose_portable(
+                data,
+                team,
+                vec![TeamOp::SetTeamAccess { doc: Box::new(doc) }],
+            )
+        }
+        // §11: a team shred of one content (admins).
+        Some("shred") => {
+            let team = pick(data, args)?;
+            let h = flag(args, "--content").ok_or("--content <blake3 hex>")?;
+            let bytes = (h.len() == 64)
+                .then(|| {
+                    (0..32)
+                        .map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok())
+                        .collect::<Option<Vec<u8>>>()
+                })
+                .flatten()
+                .ok_or("--content: 64 hex digits")?;
+            let mut content = [0u8; 32];
+            content.copy_from_slice(&bytes);
+            propose_portable(data, team, vec![TeamOp::TeamShred { content }])
+        }
+        // §2.3: the team component of the hooks, and the fence with it.
+        Some("hooks") => {
+            let team = pick(data, args)?;
+            let cfg = TeamConfig::load(&team_dir(data, &team))?;
+            let off = match args.get(1).map(String::as_str) {
+                Some("off") => true,
+                Some("on") => false,
+                _ => return Err("ctx team hooks <dir> on|off".into()),
+            };
+            crate::githooks::register(
+                &crate::githooks::hooks_dir(&cfg.repo)?,
+                crate::githooks::Component {
+                    name: "team".into(),
+                    data: data.canonicalize().map_err(|e| e.to_string())?,
+                    repo: None,
+                },
+                off,
+            )?;
+            println!(
+                "team hooks {}{}",
+                if off { "off" } else { "on" },
+                if off {
+                    ": no announce fence; reads may be CERTIFIED on an older root until lag_check"
+                } else {
+                    ""
+                }
+            );
+            Ok(0)
+        }
         Some("compact") => {
             let team = pick(data, args)?;
             compact(
@@ -998,4 +1055,25 @@ fn prune(data: &Path, team: [u8; 16], yes: bool) -> Result<u8, String> {
     git(&cfg.repo, &args)?;
     println!("pruned {}", old.join(", "));
     Ok(0)
+}
+
+/// Queues one proposal given in portable form (`SetTeamAccess`,
+/// `TeamShred`); it publishes on the next push or `ctx team publish`.
+fn propose_portable(data: &Path, team: [u8; 16], ops: Vec<TeamOp>) -> Result<u8, String> {
+    let batch = TeamBatch {
+        proposals: vec![ops],
+    }
+    .encode();
+    let mut c = connect(data, "admin.sock")?;
+    lines(
+        call(
+            &mut c,
+            Request::TeamPropose {
+                team,
+                batch,
+                blobs: Vec::new(),
+            },
+        )?
+        .response,
+    )
 }
