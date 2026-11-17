@@ -1749,6 +1749,29 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamRebuild { team } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                // Rebuilt, then every branch is brought to it by ordinary
+                // batches (a gap where the history no longer holds it).
+                match self.team_call(Some(team), crate::team::Call::Rebuild) {
+                    Response::TeamLines { mut lines } => {
+                        match self.actor.request(|reply| Message::TeamImport {
+                            team: Some(team),
+                            reply,
+                        }) {
+                            Ok(more) => {
+                                lines.extend(more);
+                                Response::TeamLines { lines }
+                            }
+                            Err(e) => submit_err(e),
+                        }
+                    }
+                    other => other,
+                }
+            }
             Request::TeamWhy { team, path } => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx team requires the admin socket");

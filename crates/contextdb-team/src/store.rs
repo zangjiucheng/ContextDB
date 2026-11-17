@@ -308,6 +308,67 @@ impl TeamStore {
         Ok(())
     }
 
+    fn write_anchor(&self) -> Result<(), StoreError> {
+        let fmt = match self.format {
+            ObjectFormat::Sha1 => "sha1",
+            ObjectFormat::Sha256 => "sha256",
+        };
+        write_atomic(
+            &self.dir.join("anchor"),
+            format!(
+                "team {}\nformat {fmt}\nremote {}\nanchor {}\n",
+                hex(&self.team),
+                self.remote,
+                self.anchor
+            )
+            .as_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// `ctx team rebuild` (§8.5): discards the replica and replays it from
+    /// the trusted anchor — the genesis, or the last verified checkpoint
+    /// (Q13) — through import. The old log is kept until the new one is
+    /// complete; on failure it is put back.
+    pub fn rebuild(dir: &Path, repo: &Repo) -> Result<(Self, Status), StoreError> {
+        let old = Self::open(dir)?;
+        let (team, remote, anchor) = (old.team, old.remote.clone(), old.anchor.clone());
+        drop(old);
+        let log = dir.join("log");
+        let aside = dir.join("log.rebuild");
+        if log.exists() {
+            std::fs::rename(&log, &aside)?;
+        }
+        let built = (|| -> Result<(Self, Status), StoreError> {
+            let objs = repo.read_entry(&anchor).map_err(StoreError::Git)?;
+            let checkpoint = crate::commit::parse(&objs.commit, repo.format())
+                .map_err(|e| StoreError::Corrupt(format!("anchor: {e:?}")))?
+                .trailers
+                .compacts
+                .is_some();
+            let mut s = if checkpoint {
+                Self::create_from_checkpoint(dir, team, repo, &remote, &anchor)?
+            } else {
+                Self::create(dir, team, repo.format(), &remote, &anchor)?
+            };
+            let status = s.import(repo)?;
+            Ok((s, status))
+        })();
+        match built {
+            Ok(v) => {
+                let _ = std::fs::remove_file(&aside);
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&log);
+                if aside.exists() {
+                    std::fs::rename(&aside, &log)?;
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// `oid` is decided (or followed as a successor): it is the tip.
     fn advanced(&mut self, oid: &str) {
         self.last = Some(oid.to_owned());
@@ -422,6 +483,9 @@ impl TeamStore {
                             tree: objs.tree,
                         }])?;
                         self.anchor = root.clone();
+                        // Q13: the verified successor is the trust anchor a
+                        // rebuild replays from after a prune.
+                        self.write_anchor()?;
                         self.advanced(&root);
                         imported += 1;
                         continue;

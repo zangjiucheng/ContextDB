@@ -133,6 +133,11 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        Some("rebuild") => {
+            let team = pick(data, args)?;
+            let mut c = connect(data, "admin.sock")?;
+            lines(call(&mut c, Request::TeamRebuild { team })?.response)
+        }
         Some("why") => {
             let team = pick(data, args)?;
             let target = args

@@ -497,6 +497,18 @@ fn p10_daemon_imports_routes_and_lags() {
     assert_eq!(v.revision_content(v.head(l).unwrap()).unwrap(), a2);
     drop(snap);
     assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    // `ctx team rebuild`: replayed from the genesis, the same state; the
+    // branch's position is still in the history (no gap).
+    let digest = s.actor.snapshot().view(MAIN).digest();
+    match s
+        .handle(ADMIN, Request::TeamRebuild { team: TEAM })
+        .response
+    {
+        Response::TeamLines { lines } => assert!(lines[0].contains("rebuilt"), "{lines:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.actor.snapshot().view(MAIN).digest(), digest);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
     // Import stopped: every read over the team's mirrors lags.
     s.actor
         .team_live

@@ -770,6 +770,11 @@ pub enum Request {
         team: [u8; 16],
         path: String,
     },
+    /// P10 `ctx team rebuild` (ADR 0018 §8.5): the replica discarded and
+    /// replayed from its trust anchor, then every branch caught up.
+    TeamRebuild {
+        team: [u8; 16],
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2207,6 +2212,10 @@ impl Wire for Request {
                 team.encode(o);
                 path.encode(o);
             }
+            Self::TeamRebuild { team } => {
+                56u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2499,6 +2508,9 @@ impl Wire for Request {
             55 => Self::TeamWhy {
                 team: Wire::decode(i)?,
                 path: Wire::decode(i)?,
+            },
+            56 => Self::TeamRebuild {
+                team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })

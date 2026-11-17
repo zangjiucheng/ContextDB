@@ -319,6 +319,13 @@ fn import_restart_and_torn_log() {
     assert_eq!(s.replica().seq(), Some(2));
     assert_eq!(s.import(&repo).unwrap(), Status::Imported(1));
     assert_eq!(s.replica().digest(), p.replica.digest());
+    // `ctx team rebuild`: discarded and replayed from the genesis.
+    drop(s);
+    let (mut s, status) = TeamStore::rebuild(&dir, &repo).unwrap();
+    assert_eq!(status, Status::Imported(4));
+    assert_eq!(s.replica().digest(), p.replica.digest());
+    assert_eq!(s.history().entries.len(), 4);
+    assert!(!dir.join("log.rebuild").exists());
     // More entries later.
     let (c, bc) = blob(b"c");
     p.entry(&BOB, "bob", vec![vec![new_op("k/c", c)]], vec![bc]);
@@ -529,6 +536,12 @@ fn compaction_with_real_objects() {
         TeamStore::open(&dir).unwrap().replica().digest(),
         p.replica.digest()
     );
+    // The edge followed the Compact: its trust anchor is the verified
+    // checkpoint entry, and a rebuild replays from there (Q13).
+    let anchor = std::fs::read_to_string(dir.join("anchor")).unwrap();
+    assert!(!anchor.contains(&format!("anchor {genesis}\n")), "{anchor}");
+    let (s, _) = TeamStore::rebuild(&dir, &frepo).unwrap();
+    assert_eq!(s.replica().digest(), p.replica.digest());
 }
 
 #[test]

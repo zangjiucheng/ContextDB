@@ -396,6 +396,7 @@ pub enum Call {
     Why {
         path: String,
     },
+    Rebuild,
 }
 
 /// A prepared entry: the unsigned commit, its tree id (written to the
@@ -557,6 +558,22 @@ pub fn call(
                 ));
             }
             Answer::Lines(lines)
+        }
+        Call::Rebuild => {
+            let repo = match Repo::open(&j.cfg.repo) {
+                Ok(r) => r,
+                Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+            };
+            let dir = j.store.dir().to_owned();
+            match TeamStore::rebuild(&dir, &repo) {
+                Ok((store, status)) => {
+                    j.store = store;
+                    j.status = status.clone();
+                    j.prepared = None;
+                    Answer::Lines(vec![format!("{} rebuilt: {status:?}", hex(&t))])
+                }
+                Err(e) => fail("ReplicaStalled", format!("{e:?}")),
+            }
         }
         Call::Refused => {
             let Some(p) = j.prepared.take() else {
