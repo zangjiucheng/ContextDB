@@ -90,6 +90,11 @@ fn p10_ctx_team_create_publish_join() {
     let tmp = temp("main");
     let remote = tmp.join("remote.git");
     git(&tmp, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    git(&remote, &["config", "uploadpack.allowFilter", "true"]);
+    git(
+        &remote,
+        &["config", "uploadpack.allowAnySHA1InWant", "true"],
+    );
     let url = format!("file://{}", remote.display());
     let a = tmp.join("a");
     let b = tmp.join("b");
@@ -262,19 +267,95 @@ fn p10_ctx_team_create_publish_join() {
     // B fetches: reference-transaction announces and notifies; ctxd
     // imports without anyone asking.
     run(&b, &["fetch", "-q", "origin"]);
-    let key = format!("team/{team}/conv/plans");
+    let plans = format!("team/{team}/conv/plans");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         let snap = db.service.actor.snapshot();
-        if snap.view(MAIN).logical_by_key(&key).is_some() {
+        if snap.view(MAIN).logical_by_key(&plans).is_some() {
             break;
         }
         drop(snap);
         assert!(
             std::time::Instant::now() < deadline,
-            "B never imported {key}"
+            "B never imported {plans}"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // A blobless clone joins (no ctxd running there): the join fetches the
+    // entries' blobs by OID before importing.
+    let c = tmp.join("c");
+    git(
+        &tmp,
+        &[
+            "clone",
+            "-q",
+            "--filter=blob:none",
+            &url,
+            c.to_str().unwrap(),
+        ],
+    );
+    let data_c = tmp.join("data-c");
+    std::fs::create_dir_all(&data_c).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "join",
+        data_c.to_str().unwrap(),
+        "--repo",
+        c.to_str().unwrap(),
+        "--genesis",
+        &genesis,
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // A third proposal published from A; C's fetch alone brings its blobs
+    // (reference-transaction `committed` starts the by-OID fetch).
+    let body = b"third".to_vec();
+    let r = da
+        .service
+        .handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(sid),
+                ops: vec![Op::CreateLogical {
+                    origin: Origin::Local,
+                    key: format!("team/{team}/conv/third"),
+                    kind: RecordKind::Convention,
+                    scope_lane: format!("team:{team}/main"),
+                    content: *blake3::hash(&body).as_bytes(),
+                    adopt_as_base: false,
+                }],
+                blobs: vec![body],
+                expect_cert_valid: false,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
+    let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    run(&c, &["fetch", "-q", "origin"]);
+    let tracking = format!("refs/contextdb/remotes/origin/team/{team}/g0");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let o = Command::new("git")
+            .current_dir(&c)
+            .args(["rev-list", "--objects", "--missing=print", &tracking])
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .output()
+            .unwrap();
+        let missing = String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| l.starts_with('?'))
+            .count();
+        if o.status.success() && missing == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{missing} objects still missing"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     // Deleting the team ref, or pushing tracking refs, is refused.
     let o = Command::new("git")

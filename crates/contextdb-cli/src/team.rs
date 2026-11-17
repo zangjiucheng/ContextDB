@@ -109,6 +109,30 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             let mut c = connect(data, "admin.sock")?;
             lines(call(&mut c, Request::TeamSync { team })?.response)
         }
+        // Detached from `reference-transaction` in `committed` (§8.1 step 2):
+        // `fetch-missing <dir> <remote> <repo> <team hex> <old>:<new>…`.
+        Some("fetch-missing") => {
+            let (Some(remote), Some(repo), Some(team)) = (args.get(1), args.get(2), args.get(3))
+            else {
+                return Err("fetch-missing <dir> <remote> <repo> <team> <old>:<new>…".into());
+            };
+            let team = commit::parse_id128(team).ok_or("not a team id")?;
+            let ranges: Vec<(&str, &str)> =
+                args[4..].iter().filter_map(|r| r.split_once(':')).collect();
+            let tips: Vec<&str> = ranges.iter().map(|(_, n)| *n).collect();
+            let not: Vec<&str> = ranges
+                .iter()
+                .map(|(o, _)| *o)
+                .filter(|o| !o.bytes().all(|b| b == b'0'))
+                .collect();
+            let n = fetch_missing(Path::new(repo), remote, &tips, &not)?;
+            if n > 0
+                && let Some(mut c) = connect_within(data, std::time::Duration::from_secs(5))
+            {
+                let _ = c.call(&Request::TeamNotify { team });
+            }
+            Ok(0)
+        }
         Some("leave") => {
             let team = pick(data, args)?;
             if !args.iter().any(|a| a == "--yes") {
@@ -274,6 +298,8 @@ fn join(
         )?;
     }
     git(repo_dir, &["fetch", "-q", remote])?;
+    // A partial clone holds the genesis commit, not its tree's blobs.
+    fetch_missing(repo_dir, remote, &[genesis], &[])?;
     // The team id is the genesis entry's, which came out of band.
     let objs = repo.read_entry(genesis).map_err(|e| format!("{e:?}"))?;
     let c = commit::parse(&objs.commit, repo.format()).map_err(|e| format!("genesis: {e:?}"))?;
@@ -290,9 +316,19 @@ fn join(
     let built = (|| -> Result<String, String> {
         let mut s = TeamStore::create(&dir, team, repo.format(), remote, genesis)
             .map_err(|e| format!("{e:?}"))?;
-        match s.import(&repo).map_err(|e| format!("{e:?}"))? {
-            Status::Imported(_) | Status::UpToDate => {}
-            other => return Err(format!("import: {other:?}")),
+        // A partial clone: the entries' blobs by OID first (§8.1, Q13).
+        let mut attempts = 0;
+        loop {
+            match s.import(&repo).map_err(|e| format!("{e:?}"))? {
+                Status::Imported(_) | Status::UpToDate => break,
+                Status::Incomplete(missing) if attempts < 3 => {
+                    attempts += 1;
+                    let mut args = vec!["fetch", "-q", remote];
+                    args.extend(missing.iter().map(String::as_str));
+                    git(repo_dir, &args)?;
+                }
+                other => return Err(format!("import: {other:?}")),
+            }
         }
         let doc = s.replica().doc().ok_or("the chain has no team document")?;
         let member = doc
@@ -514,10 +550,37 @@ pub fn reference_transaction(data: &Path, state: &str, input: &str) -> Result<()
         "committed" => {
             if let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) {
                 let mut seen = std::collections::BTreeSet::new();
-                for (team, ..) in moves {
-                    if seen.insert(team) {
-                        let _ = c.call(&Request::TeamNotify { team });
+                for (team, ..) in &moves {
+                    if seen.insert(*team) {
+                        let _ = c.call(&Request::TeamNotify { team: *team });
                     }
+                }
+            }
+            // A partial clone has the commits, not their blobs: fetch them
+            // by OID, detached, then notify again.
+            let olds: std::collections::BTreeMap<&str, &str> = input
+                .lines()
+                .filter_map(|l| {
+                    let mut p = l.split(' ');
+                    let (old, _new, r) = (p.next()?, p.next()?, p.next()?);
+                    Some((r, old))
+                })
+                .collect();
+            let mut by_team: std::collections::BTreeMap<[u8; 16], (&Path, Vec<String>, String)> =
+                Default::default();
+            for (team, dir, refname, oid) in &moves {
+                let remote = refname
+                    .strip_prefix("refs/contextdb/remotes/")
+                    .and_then(|r| r.split_once('/'))
+                    .map(|(r, _)| r.to_owned())
+                    .unwrap_or_default();
+                let old = olds.get(refname).copied().unwrap_or("0");
+                let e = by_team.entry(*team).or_insert((dir, Vec::new(), remote));
+                e.1.push(format!("{old}:{oid}"));
+            }
+            for (team, (dir, ranges, remote)) in by_team {
+                if let Ok(cfg) = TeamConfig::load(dir) {
+                    spawn_fetch_missing(data, &team, &cfg.repo, &remote, &ranges);
                 }
             }
             Ok(())
@@ -700,4 +763,65 @@ fn leave(data: &Path, team: [u8; 16]) -> Result<u8, String> {
     }
     println!("left team {}", hex(&team));
     Ok(0)
+}
+
+/// The objects reachable from `tips` (and not from `not`) that a partial
+/// clone does not hold, without fetching them lazily.
+fn missing_objects(repo: &Path, tips: &[&str], not: &[&str]) -> Vec<String> {
+    let mut args = vec!["rev-list", "--objects", "--missing=print"];
+    args.extend(tips.iter().copied());
+    let excluded: Vec<String> = not.iter().map(|o| format!("^{o}")).collect();
+    args.extend(excluded.iter().map(String::as_str));
+    let Ok(out) = Command::new("git")
+        .args(&args)
+        .current_dir(repo)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix('?'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Fetches by OID, through the promisor remote, every object a partial
+/// clone lacks below `tips` (§8.1 step 2, Q13). Returns how many.
+pub fn fetch_missing(
+    repo: &Path,
+    remote: &str,
+    tips: &[&str],
+    not: &[&str],
+) -> Result<usize, String> {
+    let missing = missing_objects(repo, tips, not);
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let mut args = vec!["fetch", "-q", remote];
+    args.extend(missing.iter().map(String::as_str));
+    git(repo, &args)?;
+    Ok(missing.len())
+}
+
+/// Starts `ctx team fetch-missing` detached from the hook: git does not
+/// wait for it (§8.1 step 2).
+fn spawn_fetch_missing(data: &Path, team: &[u8; 16], repo: &Path, remote: &str, ranges: &[String]) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(exe)
+        .arg("team")
+        .arg("fetch-missing")
+        .arg(data)
+        .arg(remote)
+        .arg(repo)
+        .arg(hex(team))
+        .args(ranges)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
