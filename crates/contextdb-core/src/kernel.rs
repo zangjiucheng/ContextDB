@@ -214,6 +214,11 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             replica_keys,
         }
     }
+    /// The global id of the replica-origin logical with `key`, on any
+    /// branch (P10 catch-up: attach it, or create it on `main` first).
+    pub fn replica_logical(&self, key: &str) -> Option<LogicalId> {
+        self.replica_keys.get(key).map(|(g, _)| LogicalId(*g))
+    }
     /// The committed access document and its ids, if any (ADR 0017 §4).
     pub fn access(&self) -> Option<&AccessState> {
         self.access.as_deref()

@@ -6,6 +6,7 @@
 //! `accept_version`; nothing here reads a local store.
 
 pub mod b64;
+pub mod catchup;
 pub mod checkpoint;
 pub mod commit;
 pub mod doc;

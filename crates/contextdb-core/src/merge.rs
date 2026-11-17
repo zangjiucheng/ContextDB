@@ -103,7 +103,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.revisions.record(r)
     }
     /// A logical's origin without copying its record (P10).
-    pub(crate) fn logical_origin(&self, l: LogicalId) -> Origin {
+    pub fn logical_origin(&self, l: LogicalId) -> Origin {
         self.logicals.origin_of(l)
     }
     pub(crate) fn rule_record(&self, j: RuleId) -> Rule {
