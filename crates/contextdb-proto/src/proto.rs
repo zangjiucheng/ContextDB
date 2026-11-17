@@ -735,6 +735,8 @@ pub enum Request {
         team: [u8; 16],
     },
 }
+/// A confirm listing (publish step 5): its token and `(proposal, author)`.
+pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
 /// A prepared team entry (publish step 5): the unsigned commit object the
 /// signature covers, its tree already written to the repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1286,7 +1288,7 @@ pub enum Response {
     /// (token and `(proposal, author)`), and the proposals left out.
     TeamPrepared {
         entry: Option<TeamEntry>,
-        listed: Option<([u8; 32], Vec<([u8; 16], PrincipalId)>)>,
+        listed: Option<TeamListing>,
         conflicted: Vec<([u8; 16], String)>,
     },
     Conflicts {
