@@ -96,7 +96,19 @@ pub fn prepare(
     policy: &LocalPolicy,
     mode: Mode,
 ) -> Result<Prepared, PublishError> {
-    let replica = store.replica();
+    prepare_on(store.replica(), store.tip(), queue, member, policy, mode)
+}
+
+/// [`prepare`] on a replica whose last decided entry is `tip` (PROP18 runs
+/// it without a repository).
+pub fn prepare_on(
+    replica: &crate::replica::Replica,
+    tip: Option<&str>,
+    queue: &mut Queue,
+    member: &str,
+    policy: &LocalPolicy,
+    mode: Mode,
+) -> Result<Prepared, PublishError> {
     let doc = replica.doc().ok_or(PublishError::NoTeam)?.clone();
     let mut out = Prepared {
         policy: policy.version.to_vec(),
@@ -251,7 +263,7 @@ pub fn prepare(
     );
     let tree_id = gitobj::tree_id(replica.format(), &tree)
         .map_err(|_| PublishError::Io(std::io::Error::other("SHA-1 collision in an entry tree")))?;
-    let parent = store.tip().map(str::to_owned);
+    let parent = tip.map(str::to_owned);
     let parents: Vec<String> = parent.iter().cloned().collect();
     let subject = format!(
         "ctx team: {} proposal{}",
