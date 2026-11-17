@@ -44,6 +44,9 @@ pub struct Options {
     /// --multi-user`) turns it on. Starting in it requires the file-system
     /// rules of ADR 0017 §3.2.
     pub multi_user: bool,
+    /// P10 `lag_check` (ADR 0018 §8.3): how often the team refs are re-read;
+    /// `None` disables it (T113 issues reads that `lag_check` must not help).
+    pub team_lag_check: Option<std::time::Duration>,
 }
 /// A replacement for `getpeereid` in tests (debug builds only).
 #[derive(Clone)]
@@ -64,6 +67,7 @@ impl Default for Options {
             anchor_live_timeout: None,
             peer_uid: None,
             multi_user: false,
+            team_lag_check: Some(crate::team::LAG_CHECK),
         }
     }
 }
@@ -288,13 +292,13 @@ impl Daemon {
         // P10 `lag_check` (ADR 0018 §8.3): re-read the team refs, catching
         // ref moves that bypassed the hooks; an unchanged ref imports
         // nothing. Idle while no team is joined.
-        {
+        if let Some(every) = options.team_lag_check {
             let (service, stop) = (service.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("ctxd-team-lag".into())
                 .spawn(move || {
                     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                        std::thread::sleep(crate::team::LAG_CHECK);
+                        std::thread::sleep(every);
                         if service
                             .actor
                             .team_live
