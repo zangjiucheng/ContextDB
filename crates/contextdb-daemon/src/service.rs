@@ -901,6 +901,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .map_err(|e| sqlerr("candidates", &e))?;
         Ok(state)
     }
+    /// P10 (ADR 0018 §11): an import may have committed the local shred
+    /// step; its purge follows as for `ctx shred`.
+    pub fn after_team_import(&self) {
+        if !self.purge_pending(&self.actor.snapshot()).is_empty()
+            && let Err(e) = self.purge()
+        {
+            eprintln!("ctxd: purge after a team shred (retried later): {e}");
+        }
+    }
     /// Shred epochs above the lowest mark of the key log and the
     /// projections this daemon runs (ADR 0017 §8.4); read only.
     fn purge_pending(&self, snap: &Snapshot<D>) -> Vec<Epoch> {
@@ -1665,7 +1674,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     .actor
                     .request(|reply| Message::TeamImport { team, reply })
                 {
-                    Ok(lines) => Response::TeamLines { lines },
+                    Ok(lines) => {
+                        self.after_team_import();
+                        Response::TeamLines { lines }
+                    }
                     Err(e) => submit_err(e),
                 }
             }

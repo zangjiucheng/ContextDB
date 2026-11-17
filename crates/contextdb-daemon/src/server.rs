@@ -308,9 +308,13 @@ impl Daemon {
                         {
                             continue;
                         }
-                        let _ = service
+                        if service
                             .actor
-                            .request(|reply| actor::Message::TeamImport { team: None, reply });
+                            .request(|reply| actor::Message::TeamImport { team: None, reply })
+                            .is_ok()
+                        {
+                            service.after_team_import();
+                        }
                     }
                 })?;
         }

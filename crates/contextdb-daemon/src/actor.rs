@@ -275,9 +275,15 @@ impl<D: Durability + Clone> contextdb_team::catchup::Writer for ActorWriter<'_, 
         self.actor.store.kernel().expect("a readable store")
     }
     fn commit(&mut self, b: &Batch) -> Result<CommitResult, StoreError> {
-        let blobs: Vec<Vec<u8>> = team::contents(b)
-            .filter_map(|h| self.replica.blob(&h).map(<[u8]>::to_vec))
-            .collect();
+        // Bytes shredded here are never stored again: the kernel creates
+        // such a mirror revision unavailable instead (§5.1, §11).
+        let blobs: Vec<Vec<u8>> = {
+            let k = self.actor.store.kernel().expect("a readable store");
+            team::contents(b)
+                .filter(|h| !k.is_shredded(h))
+                .filter_map(|h| self.replica.blob(&h).map(<[u8]>::to_vec))
+                .collect()
+        };
         let (reply, rx) = mpsc::channel();
         self.actor.commit(vec![WriteRequest {
             blobs,
@@ -488,6 +494,15 @@ impl<D: Durability + Clone> Actor<D> {
                             actor: self,
                             replica,
                         };
+                        // §11 (Q6): the local shred step precedes any mirror.
+                        let kept = team::shred_step(&mut w, replica).map_err(|e| (MAIN, e))?;
+                        if !kept.is_empty() {
+                            eprintln!(
+                                "ctxd: team {}: {} shredded content(s) kept: a local record holds them",
+                                contextdb_team::commit::hex(&team),
+                                kept.len()
+                            );
+                        }
                         contextdb_team::catchup::catch_up_all(&mut w, team, h).map(|_| ())
                     };
                     lines.push(team::import(j, &live, &mut catch_up));

@@ -1148,3 +1148,85 @@ fn t115_root_changes_invalidate_local_dependents_precisely_on_every_branch() {
     );
     all(certified, certified, "head back");
 }
+
+#[test]
+fn t117_team_shred_local_shred_and_q6_order() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("t117");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let shredded = |s: &Service<SimDisk>, h: &Hash| s.actor.snapshot().kernel.is_shredded(h);
+    // A local record holding bytes the team will shred.
+    let mine = b"also mine".to_vec();
+    let mine_h = *blake3::hash(&mine).as_bytes();
+    let r = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![mine.clone()],
+                batch: Batch::new(vec![Op::CreateLogical {
+                    origin: Origin::Local,
+                    key: "dec:mine".into(),
+                    kind: RecordKind::Decision,
+                    scope_lane: "repo".into(),
+                    content: mine_h,
+                    adopt_as_base: true,
+                }]),
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    // Q6: a record created and shredded within one import; and a shred of
+    // the bytes the local record holds.
+    let (c1, bc) = blob(b"c1");
+    w.entry(vec![new_op("k/c", c1, false)], vec![bc]);
+    w.entry(vec![TeamOp::TeamShred { content: c1 }], vec![]);
+    w.entry(
+        vec![new_op("k/m", mine_h, false)],
+        vec![(format!("blobs/{}", hex(&mine_h)), mine.clone())],
+    );
+    w.entry(vec![TeamOp::TeamShred { content: mine_h }], vec![]);
+    w.push();
+    w.fetch();
+    let lines = sync(&s);
+    assert!(!lines[0].contains("Stalled"), "{lines:?}");
+    // The shred step ran before the mirror was created: no stall, the
+    // mirror exists and its revision is shredded locally.
+    assert!(shredded(&s, &c1));
+    let snap = s.actor.snapshot();
+    assert!(snap.view(MAIN).logical_by_key(&key("k/c")).is_some());
+    // Bytes a local record holds are kept (m5).
+    assert!(!shredded(&s, &mine_h));
+    drop(snap);
+    // A local shred of a mirror's bytes, then a root entry reusing them:
+    // the mirror revision is created unavailable, never a stall.
+    let r = s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs: Vec::new(),
+                batch: Batch::new(vec![Op::ShredContent { content: a1 }]),
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let (_, ba1) = blob(b"a1");
+    w.entry(vec![new_op("k/reuse", a1, false)], vec![ba1]);
+    w.push();
+    w.fetch();
+    let lines = sync(&s);
+    assert!(!lines[0].contains("Stalled"), "{lines:?}");
+    assert!(
+        s.actor
+            .snapshot()
+            .view(MAIN)
+            .logical_by_key(&key("k/reuse"))
+            .is_some()
+    );
+}

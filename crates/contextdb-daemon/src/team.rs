@@ -903,3 +903,42 @@ pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str
         }
     }
 }
+
+/// §11 (Q6): before catch-up creates or attaches a mirror revision with
+/// bytes the team shredded, the store owner's `ShredContent` on `main`, as
+/// its own batch — only when no local record that is not a mirror holds
+/// them (a team admin cannot destroy a developer's private records). Returns
+/// the contents kept for that reason, which `ctx team status` reports.
+pub fn shred_step<W>(w: &mut W, replica: &Replica) -> Result<Vec<ContentHash>, StoreError>
+where
+    W: catchup::Writer<Error = StoreError> + ?Sized,
+{
+    let mut kept = Vec::new();
+    for h in replica.shredded() {
+        let k = w.kernel();
+        if k.is_shredded(h) {
+            continue;
+        }
+        let held_locally = k.branches().any(|b| {
+            let Some(v) = k.branch(b.id) else {
+                return false;
+            };
+            let db = v.db();
+            (0..db.revision_count() as u32).map(RevisionId).any(|r| {
+                db.revision_content(r).is_ok_and(|c| c == *h)
+                    && db
+                        .revision_logical(r)
+                        .is_some_and(|l| db.logical_origin(l) == Origin::Local)
+            })
+        });
+        if held_locally {
+            kept.push(*h);
+            continue;
+        }
+        let mut b = Batch::new(vec![Op::ShredContent { content: *h }]);
+        b.channel = Channel::Admin;
+        b.branch = MAIN;
+        w.commit(&b)?;
+    }
+    Ok(kept)
+}

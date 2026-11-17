@@ -407,6 +407,11 @@ impl Replica {
         self.db.logical_by_key(&self.key(path))
     }
 
+    /// The team's shred set (§11).
+    pub fn shredded(&self) -> &BTreeSet<Hash> {
+        &self.shred
+    }
+
     /// Whether the team has a record at `path`.
     pub fn has_record(&self, path: &str) -> bool {
         self.logical(path).is_some()
