@@ -119,6 +119,11 @@ pub enum Message {
         refused: TxError,
         reply: mpsc::Sender<team::Routed>,
     },
+    /// P10: a team joined while the daemon runs, opened from its directory.
+    TeamOpen {
+        dir: std::path::PathBuf,
+        reply: mpsc::Sender<Result<TeamId, String>>,
+    },
     /// P10: `ctx team status` and the publish steps (ADR 0018 §7.2).
     TeamCall {
         team: Option<TeamId>,
@@ -418,6 +423,22 @@ impl<D: Durability + Clone> Actor<D> {
                 }
                 self.teams = teams;
                 let _ = reply.send(lines);
+            }
+            Message::TeamOpen { dir, reply } => {
+                let r = team::open_one(&dir).and_then(|j| {
+                    let t = j.store.team();
+                    if self.teams.contains_key(&t) {
+                        return Err("already joined".into());
+                    }
+                    self.teams.insert(t, j);
+                    self.team_live
+                        .lock()
+                        .expect("team live")
+                        .entry(t)
+                        .or_default();
+                    Ok(t)
+                });
+                let _ = reply.send(r);
             }
             Message::TeamCall { team, call, reply } => {
                 let a = match self.store.kernel() {

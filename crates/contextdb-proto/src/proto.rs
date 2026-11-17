@@ -734,6 +734,11 @@ pub enum Request {
     TeamPublishRefused {
         team: [u8; 16],
     },
+    /// P10 `ctx team join`: a team joined while `ctxd` runs is opened from
+    /// `<data>/teams/<hex>` and imported. Store owner, admin socket.
+    TeamOpen {
+        team: [u8; 16],
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2136,6 +2141,10 @@ impl Wire for Request {
                 49u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamOpen { team } => {
+                50u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2403,6 +2412,9 @@ impl Wire for Request {
                 commit: Wire::decode(i)?,
             },
             49 => Self::TeamPublishRefused {
+                team: Wire::decode(i)?,
+            },
+            50 => Self::TeamOpen {
                 team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),

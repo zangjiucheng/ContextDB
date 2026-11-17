@@ -130,6 +130,20 @@ pub struct Joined {
     pub prepared: Option<contextdb_team::publish::Prepared>,
 }
 
+/// Opens one joined team's directory.
+pub fn open_one(dir: &Path) -> Result<Joined, String> {
+    let cfg = TeamConfig::load(dir)?;
+    let store = TeamStore::open(dir).map_err(|e| format!("{e:?}"))?;
+    let queue = Queue::open(dir).map_err(|e| e.to_string())?;
+    Ok(Joined {
+        store,
+        queue,
+        cfg,
+        status: Status::UpToDate,
+        prepared: None,
+    })
+}
+
 /// Opens every joined team under `<data>/teams`. A team that does not open
 /// is reported and skipped; its reads lag (no live position).
 pub fn open_all(data: &Path) -> (BTreeMap<TeamId, Joined>, Vec<String>) {
@@ -141,19 +155,7 @@ pub fn open_all(data: &Path) -> (BTreeMap<TeamId, Joined>, Vec<String>) {
     let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     dirs.sort();
     for dir in dirs {
-        let opened = (|| -> Result<Joined, String> {
-            let cfg = TeamConfig::load(&dir)?;
-            let store = TeamStore::open(&dir).map_err(|e| format!("{e:?}"))?;
-            let queue = Queue::open(&dir).map_err(|e| e.to_string())?;
-            Ok(Joined {
-                store,
-                queue,
-                cfg,
-                status: Status::UpToDate,
-                prepared: None,
-            })
-        })();
-        match opened {
+        match open_one(&dir) {
             Ok(j) => {
                 teams.insert(j.store.team(), j);
             }

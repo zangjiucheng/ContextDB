@@ -1669,6 +1669,30 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamOpen { team } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                let Some(data) = self.data_dir.lock().expect("data dir").clone() else {
+                    return err("InvalidRequest", "no data directory");
+                };
+                let hex: String = team.iter().map(|b| format!("{b:02x}")).collect();
+                let dir = data.join(crate::team::TEAMS_DIR).join(hex);
+                match self.actor.request(|reply| Message::TeamOpen { dir, reply }) {
+                    Ok(Ok(t)) => {
+                        match self.actor.request(|reply| Message::TeamImport {
+                            team: Some(t),
+                            reply,
+                        }) {
+                            Ok(lines) => Response::TeamLines { lines },
+                            Err(e) => submit_err(e),
+                        }
+                    }
+                    Ok(Err(e)) => err("TeamOpenFailed", e),
+                    Err(e) => submit_err(e),
+                }
+            }
             Request::TeamStatus { team } => {
                 drop(snap);
                 let call = crate::team::Call::Status { who: id.principal };

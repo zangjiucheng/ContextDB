@@ -6,6 +6,7 @@ mod daemon;
 mod p4;
 mod setup;
 mod shred;
+mod team;
 mod ui;
 
 use contextdb_model::*;
@@ -258,6 +259,12 @@ fn run(args: &[String]) -> Result<u8, String> {
             access::run(dir(2)?, &rest)
         }
         Some("shred") => shred::run(dir(1)?, &args[2..]),
+        Some("team") => {
+            let sub = args.get(1).cloned().unwrap_or_default();
+            let mut rest = vec![sub];
+            rest.extend(args.iter().skip(3).cloned());
+            team::run(dir(2)?, &rest)
+        }
         Some("gating") => {
             let sub = args.get(1).cloned().unwrap_or_default();
             let mut rest = vec![sub];

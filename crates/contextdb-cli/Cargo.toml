@@ -19,6 +19,7 @@ contextdb-oracle.workspace = true
 contextdb-store.workspace = true
 contextdb-daemon.workspace = true
 contextdb-proto.workspace = true
+contextdb-team.workspace = true
 toml = { version = "=1.1.2", default-features = false, features = ["parse", "std", "serde"] }
 serde_json = "=1.0.151"
 blake3 = "=1.8.7"
