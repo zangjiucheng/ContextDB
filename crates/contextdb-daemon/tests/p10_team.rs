@@ -765,3 +765,68 @@ fn p10_a_recorded_leave_is_finished_at_the_next_import_never_caught_up() {
     assert!(snap.view(MAIN).logical_by_key(&key("k/b")).is_none());
     assert!(!dir.exists());
 }
+
+#[test]
+fn p10_a_merge_catches_branches_up_first() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("merge");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let r = s
+        .handle(
+            ADMIN,
+            Request::BranchCreate {
+                name: "feat".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    // A new root entry, fetched but not imported (no notify, no sync).
+    let (a2, ba2) = blob(b"a2");
+    w.entry(
+        vec![
+            TeamOp::Revise {
+                path: "k/a".into(),
+                content: a2,
+                adopt_as_base: true,
+            },
+            TeamOp::SetHead {
+                path: "k/a".into(),
+                expected: a1,
+                new: a2,
+            },
+        ],
+        vec![ba2],
+    );
+    w.push();
+    w.fetch();
+    // Q1: the merge imports and catches up before it runs.
+    let r = s
+        .handle(
+            ADMIN,
+            Request::Merge {
+                binding: None,
+                source: "feat".into(),
+                into: Some("main".into()),
+                require_certified: false,
+                certify: Vec::new(),
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Merged { .. }), "{r:?}");
+    let snap = s.actor.snapshot();
+    for b in [MAIN, snap.kernel.branch_by_name("feat").unwrap()] {
+        let v = snap.view(b);
+        let l = v.logical_by_key(&key("k/a")).unwrap();
+        assert_eq!(v.revision_content(v.head(l).unwrap()).unwrap(), a2, "{b:?}");
+    }
+}

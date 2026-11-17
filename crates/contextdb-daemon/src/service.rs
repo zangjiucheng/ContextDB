@@ -2168,6 +2168,14 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     return err("InvalidMerge", format!("no branch named {source}"));
                 };
                 drop(snap);
+                // P10 Q1 (ADR 0018 §5.1): catch the target up before the
+                // merge, so a carried rule naming a mirror the root already
+                // accepted is not `MirrorLag` only because of this edge's lag.
+                if !self.actor.team_live.lock().expect("team live").is_empty() {
+                    let _ = self
+                        .actor
+                        .request(|reply| Message::TeamImport { team: None, reply });
+                }
                 let mut batch = Batch::new(vec![Op::Merge {
                     source,
                     require_certified,
