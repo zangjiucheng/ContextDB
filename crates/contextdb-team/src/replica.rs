@@ -395,6 +395,24 @@ impl Replica {
         self.db.logical_by_key(&self.key(path))
     }
 
+    /// Whether the team has a record at `path`.
+    pub fn has_record(&self, path: &str) -> bool {
+        self.logical(path).is_some()
+    }
+
+    /// The team's base bit of `path`'s revision `h` (not its status; a
+    /// mirror's base shows the status), if the revision exists.
+    pub fn base_bit(&self, path: &str, h: &Hash) -> Option<bool> {
+        let r = self.revs.get(&(path.to_owned(), *h))?;
+        self.db.is_base(*r).ok()
+    }
+
+    /// The team record's tags, if the record exists.
+    pub fn record_tags(&self, path: &str) -> Option<BTreeSet<String>> {
+        self.has_record(path)
+            .then(|| self.tags.get(path).cloned().unwrap_or_default())
+    }
+
     /// Decides one proposal; on success commits it to the kernel and the
     /// side state, on failure leaves both unchanged.
     fn apply(

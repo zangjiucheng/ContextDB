@@ -494,6 +494,15 @@ pub enum TxError {
     /// P10: a merge would carry a rule or validation naming a mirror
     /// revision the target cannot see (SD19 team supplement).
     MirrorLag,
+    /// P10 (ADR 0018 §6.1): a batch writing both team and local records,
+    /// or records of two teams.
+    MixedTeamBatch,
+    /// P10 (§4.1): a team proposal relying on a record that is not a
+    /// record of the same team.
+    TeamDepOutside,
+    /// P10 (O3): a local batch relying on a record that exists only in a
+    /// queued proposal.
+    Unpublished,
     ArtifactNotOpen {
         id: ArtifactId,
     },

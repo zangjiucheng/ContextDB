@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod commit;
 pub mod doc;
 pub mod enc;
+pub mod frontend;
 pub mod git;
 pub mod gitobj;
 pub mod ops;
