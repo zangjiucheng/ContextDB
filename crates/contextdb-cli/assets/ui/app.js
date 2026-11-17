@@ -1,11 +1,14 @@
 // ctx ui front end. Records: every head grouped by key path, with its
-// status and abstract. Graph: the justification DAG (premises above their
-// conclusions), whole or around the selection. Timeline: the commits.
+// status and abstract. Graph: the justification graph, whole or around the
+// selection, as a network (force layout, clustered by key directory) or in
+// layers (premises above their conclusions). Timeline: the commits.
 // Refreshed when the op_log changes. Read-only: every request is a GET.
 "use strict";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const NODE_W = 236, NODE_H = 60, GAP_X = 32, GAP_Y = 74;
+// Network layout: compact nodes, laid out by forces.
+const NET_W = 172, NET_H = 28;
 const CLASSES = ["certified", "stale", "pending", "conflicted", "unavailable"];
 const KINDS = ["pin", "cur", "sem", "ref"];
 
@@ -14,6 +17,7 @@ const state = {
   selected: null, allRevs: false, search: "", hidden: new Set(),
   view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "records", laidOut: false,
   branch: 0, focus: 0, collapsed: new Set(), changedSummaries: false, level: "abstract",
+  layout: "network",
 };
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, parent) => {
@@ -164,11 +168,113 @@ function layout(model) {
   });
   return xy;
 }
+/// Force-directed layout (Fruchterman–Reingold) for graphs too deep to read
+/// in layers: every node repels every other, each edge pulls its ends
+/// together, and nodes of the same key directory are drawn to their
+/// group's centre, so a long dependency chain coils up instead of making
+/// one tall column. Deterministic (fixed start, fixed iterations), so the
+/// 2 s refresh never moves anything that did not change. Computed with x
+/// compressed by ASPECT, since nodes are wide, then overlaps are removed.
+function layoutNetwork(model) {
+  const ids = [...model.nodes.keys()].sort((a, b) => keyOf(model, a).localeCompare(keyOf(model, b)));
+  const n = ids.length;
+  const xy = new Map();
+  if (!n) return xy;
+  const ASPECT = 2.4, L = 74, CUTOFF2 = (4 * L) * (4 * L);
+  const index = new Map(ids.map((id, i) => [id, i]));
+  const groupOf = ids.map((id) => splitKey(label(model.nodes.get(id).logical))[0]);
+  const groups = [...new Set(groupOf)];
+  const gi = groupOf.map((g) => groups.indexOf(g));
+  // Start: groups on a circle, members on a golden-angle spiral around it.
+  const x = new Float64Array(n), y = new Float64Array(n);
+  const ring = L * Math.sqrt(n) * 0.9;
+  const seen = new Array(groups.length).fill(0);
+  for (let i = 0; i < n; i++) {
+    const a = (2 * Math.PI * gi[i]) / groups.length;
+    const j = seen[gi[i]]++;
+    const r = L * 0.6 * Math.sqrt(j + 1), t = j * 2.39996;
+    x[i] = (groups.length > 1 ? ring * Math.cos(a) : 0) + r * Math.cos(t);
+    y[i] = (groups.length > 1 ? ring * Math.sin(a) : 0) + r * Math.sin(t);
+  }
+  const pairs = new Set();
+  for (const e of model.edges) {
+    const u = index.get(e.from), v = index.get(e.to);
+    if (u === undefined || v === undefined || u === v) continue;
+    pairs.add(u < v ? `${u},${v}` : `${v},${u}`);
+  }
+  const springs = [...pairs].map((p) => p.split(",").map(Number));
+  const iterations = n > 600 ? 120 : 300;
+  const dx = new Float64Array(n), dy = new Float64Array(n);
+  const cx = new Float64Array(groups.length), cy = new Float64Array(groups.length), cn = new Float64Array(groups.length);
+  for (let it = 0; it < iterations; it++) {
+    dx.fill(0); dy.fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const ex = x[i] - x[j], ey = y[i] - y[j];
+        const d2 = ex * ex + ey * ey + 0.01;
+        // Repulsion only nearby (grid variant): unconnected nodes would
+        // otherwise drift far out and shrink everything else on fit.
+        if (d2 > CUTOFF2) continue;
+        const f = (L * L) / d2;
+        dx[i] += ex * f; dy[i] += ey * f; dx[j] -= ex * f; dy[j] -= ey * f;
+      }
+    }
+    for (const [u, v] of springs) {
+      const ex = x[u] - x[v], ey = y[u] - y[v];
+      const f = Math.sqrt(ex * ex + ey * ey) / L;
+      dx[u] -= ex * f; dy[u] -= ey * f; dx[v] += ex * f; dy[v] += ey * f;
+    }
+    cx.fill(0); cy.fill(0); cn.fill(0);
+    for (let i = 0; i < n; i++) { cx[gi[i]] += x[i]; cy[gi[i]] += y[i]; cn[gi[i]]++; }
+    for (let i = 0; i < n; i++) {
+      const g = gi[i];
+      dx[i] += (cx[g] / cn[g] - x[i]) * 0.5 - x[i] * 0.06;
+      dy[i] += (cy[g] / cn[g] - y[i]) * 0.5 - y[i] * 0.06;
+    }
+    const temp = L * 2 * (1 - it / iterations) + 1;
+    for (let i = 0; i < n; i++) {
+      const d = Math.sqrt(dx[i] * dx[i] + dy[i] * dy[i]) || 1;
+      const m = Math.min(d, temp);
+      x[i] += (dx[i] / d) * m; y[i] += (dy[i] / d) * m;
+    }
+  }
+  // Back to real proportions, then push overlapping boxes apart.
+  for (let i = 0; i < n; i++) x[i] *= ASPECT;
+  const padX = NET_W + 14, padY = NET_H + 12;
+  for (let pass = 0; pass < 40; pass++) {
+    let moved = false;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const ox = padX - Math.abs(x[i] - x[j]), oy = padY - Math.abs(y[i] - y[j]);
+        if (ox <= 0 || oy <= 0) continue;
+        moved = true;
+        if (ox / padX < oy / padY) {
+          const s = (x[i] < x[j] || (x[i] === x[j] && i < j) ? -1 : 1) * (ox / 2 + 0.5);
+          x[i] += s; x[j] -= s;
+        } else {
+          const s = (y[i] < y[j] || (y[i] === y[j] && i < j) ? -1 : 1) * (oy / 2 + 0.5);
+          y[i] += s; y[j] -= s;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+  const minX = Math.min(...x), minY = Math.min(...y);
+  ids.forEach((id, i) => xy.set(id, { x: x[i] - minX, y: y[i] - minY + 24, group: groupOf[i] }));
+  return xy;
+}
+/// Where a line from a box's centre toward (dx, dy) leaves the box.
+const boxExit = (cx, cy, dx, dy, hw, hh) => {
+  const t = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
+  return [cx + dx * t, cy + dy * t];
+};
 const keyOf = (model, id) => model.nodes.get(id)?.logical?.key || "";
 /// `a/b/c` → [`a/b/`, `c`]; a key without `/` has no path.
 const splitKey = (k) => { const i = k.lastIndexOf("/"); return i < 0 ? ["", k] : [k.slice(0, i + 1), k.slice(i + 1)]; };
 /// Cuts to `n` characters, keeping the end (`tail`) or the start.
 const clip = (s, n, tail) => (s.length <= n ? s : tail ? "…" + s.slice(-(n - 1)) : s.slice(0, n - 1) + "…");
+/// Cuts the middle: keys that share a long prefix differ at the end.
+const clipMiddle = (s, n) => (s.length <= n ? s : s.slice(0, Math.ceil((n - 1) * 0.45)) + "…" + s.slice(-Math.floor((n - 1) * 0.55)));
 /// A Summary's changed premises (ADR 0016 §6).
 const premiseNote = (r, short) => {
   const p = r.premises;
@@ -187,15 +293,41 @@ function render() {
   const g = state.graph;
   if (!g) return;
   const model = build(g);
-  const xy = layout(model);
+  const net = state.layout === "network";
+  const xy = net ? layoutNetwork(model) : layout(model);
+  const W = net ? NET_W : NODE_W, H = net ? NET_H : NODE_H;
   const vp = $("viewport");
   vp.replaceChildren();
+  $("graph").classList.toggle("net", net);
   $("empty").hidden = model.nodes.size > 0;
   const q = state.search.trim().toLowerCase();
   const visible = (n) => !state.hidden.has(n.rev.class);
   const matches = (n) => !q || n.logical.key.toLowerCase().includes(q);
   const hl = state.highlight; // Set of node ids, or null
 
+  if (net) {
+    // Each key directory's name above its cluster.
+    const top = new Map();
+    for (const p of xy.values()) {
+      const t = top.get(p.group);
+      if (!t) top.set(p.group, { x0: p.x, x1: p.x + W, y: p.y });
+      else { t.x0 = Math.min(t.x0, p.x); t.x1 = Math.max(t.x1, p.x + W); t.y = Math.min(t.y, p.y); }
+    }
+    // Larger groups first; a label that would overlap one already placed
+    // moves up, and single-node groups get none (the node says enough).
+    const size = new Map();
+    for (const p of xy.values()) size.set(p.group, (size.get(p.group) || 0) + 1);
+    const placed = [];
+    const groupLayer = el("g", {}, vp);
+    for (const [name, t] of [...top].sort((a, b) => size.get(b[0]) - size.get(a[0]))) {
+      if (!name || size.get(name) < 2) continue;
+      const text = clip(name, 48, true), w = text.length * 7.4, cx = (t.x0 + t.x1) / 2;
+      let y = t.y - 10;
+      for (let tries = 0; tries < 12 && placed.some((b) => Math.abs(b.x - cx) < (b.w + w) / 2 && Math.abs(b.y - y) < 16); tries++) y -= 16;
+      placed.push({ x: cx, y, w });
+      el("text", { class: "group-label", x: cx, y, "text-anchor": "middle" }, groupLayer).textContent = text;
+    }
+  }
   const edgeLayer = el("g", {}, vp);
   for (const e of model.edges) {
     const a = xy.get(e.from), b = xy.get(e.to);
@@ -204,6 +336,16 @@ function render() {
     const dim = !visible(na) || !visible(nb) || (hl && !(hl.has(e.from) && hl.has(e.to))) || (q && !(matches(na) || matches(nb)));
     const cls = ["edge", e.kind, e.disabled ? "disabled" : "", dim ? "dim" : ""].join(" ");
     const grp = el("g", { class: cls }, edgeLayer);
+    if (net) {
+      // Straight, from box edge to box edge.
+      const ax = a.x + W / 2, ay = a.y + H / 2, bx = b.x + W / 2, by = b.y + H / 2;
+      const [x1, y1] = boxExit(ax, ay, bx - ax, by - ay, W / 2, H / 2);
+      const [x2, y2] = boxExit(bx, by, ax - bx, ay - by, W / 2 + 2, H / 2 + 2);
+      el("path", { d: `M${x1},${y1} L${x2},${y2}`, "marker-end": "url(#arrow)" }, grp);
+      const title = el("title", {}, grp);
+      title.textContent = `${e.kind}${e.disabled ? " (disabled)" : ""}${e.rule !== undefined ? ` · rule ${e.rule}` : ""}${e.old != null ? ` · old r${e.old}` : ""}`;
+      continue;
+    }
     const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = b.x + NODE_W / 2, y2 = b.y;
     const my = (y1 + y2) / 2;
     el("path", { d: `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 2}`, "marker-end": "url(#arrow)" }, grp);
@@ -222,12 +364,21 @@ function render() {
       state.selected === n.rev.id ? "selected" : "", q && matches(n) ? "hit" : "", dim ? "dim" : ""].join(" ");
     const grp = el("g", { class: cls, transform: `translate(${p.x},${p.y})` }, nodeLayer);
     el("rect", {
-      width: NODE_W, height: NODE_H, rx: 7,
+      width: W, height: H, rx: 7,
       fill: `var(--${n.rev.class}-bg)`, stroke: `var(--${n.rev.class})`,
     }, grp);
     // Path above, the last segment below: the part that tells records apart
     // is never the one cut.
     const [dir, leaf] = splitKey(label(n.logical));
+    if (net) {
+      // Compact: the last key segment; the cluster label names the path.
+      el("text", { x: 9, y: 18 }, grp).textContent = clipMiddle(leaf, 25);
+      el("title", {}, grp).textContent = `${n.logical.key}\n${kindLabel(n.logical)} · r${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}${n.rev.abstract ? `\n\n${n.rev.abstract}` : ""}`;
+      grp.addEventListener("click", (ev) => { ev.stopPropagation(); select(n.rev.id); });
+      grp.addEventListener("mouseenter", () => hover(model, id, true));
+      grp.addEventListener("mouseleave", () => hover(model, id, false));
+      continue;
+    }
     el("text", { x: 10, y: 16, class: "sub" }, grp).textContent = clip(dir, 38, true);
     el("text", { x: 10, y: 33 }, grp).textContent = clip(leaf, 34, false);
     el("text", { x: 10, y: 50, class: "sub" }, grp).textContent =
@@ -238,7 +389,7 @@ function render() {
     grp.addEventListener("mouseleave", () => hover(model, id, false));
   }
   applyView();
-  if (!state.laidOut && model.nodes.size) { fit(xy); state.laidOut = true; }
+  if (!state.laidOut && model.nodes.size) { fit(xy, W, H); state.laidOut = true; }
 }
 function hover(model, id, on) {
   if (state.highlight) return;
@@ -249,10 +400,10 @@ function hover(model, id, on) {
     n.classList.toggle("dim", on && !near.has(nid));
   });
 }
-function fit(xy) {
+function fit(xy, W = NODE_W, H = NODE_H) {
   const svg = $("graph").getBoundingClientRect();
   const xs = [...xy.values()];
-  const w = Math.max(...xs.map((p) => p.x)) + NODE_W, h = Math.max(...xs.map((p) => p.y)) + NODE_H;
+  const w = Math.max(...xs.map((p) => p.x)) + W, h = Math.max(...xs.map((p) => p.y)) + H;
   // A focused view stays readable (pan for the rest); the whole graph may
   // shrink further.
   const floor = state.focus && state.selected !== null ? 0.6 : 0.2;
@@ -730,6 +881,7 @@ function wire() {
   $("tab-graph").addEventListener("click", () => setTab("graph"));
   $("focus").addEventListener("change", (e) => { state.focus = Number(e.target.value); state.laidOut = false; render(); });
   $("fit").addEventListener("click", () => { state.laidOut = false; render(); });
+  $("layout").addEventListener("change", (e) => { state.layout = e.target.value; state.laidOut = false; render(); });
   $("tab-timeline").addEventListener("click", () => setTab("timeline"));
   $("timeline-here").addEventListener("change", renderTimeline);
   $("branch").addEventListener("change", (e) => {
