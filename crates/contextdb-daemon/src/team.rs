@@ -256,9 +256,10 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
     {
         let mut l = live.lock().expect("team live");
         let e = l.entry(team).or_default();
-        e.tip = tip;
+        e.tip = tip.clone();
         e.stopped = stopped.or_else(|| (!caught.is_empty()).then(|| caught.clone()));
     }
+    resolve_announces(j.store.dir(), team, &repo, tip.as_deref(), live);
     format!("{} {status:?}{caught}", hex(&team))
 }
 
@@ -522,6 +523,136 @@ pub fn call(
                 Ok(()) => Answer::Lines(vec!["queued again".into()]),
                 Err(e) => fail("ReplicaStalled", e.to_string()),
             }
+        }
+    }
+}
+
+/// One durable announce (§8.3): a team ref about to move to `oid`, by the
+/// git process `pid`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Announce {
+    pub refname: String,
+    pub oid: String,
+    pub pid: u32,
+}
+
+const ANNOUNCE: &str = "announce";
+const ANNOUNCE_LOCK: &str = "announce.lock";
+
+fn with_announce_lock<T>(dir: &Path, f: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    use nix::fcntl::{Flock, FlockArg};
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(ANNOUNCE_LOCK))?;
+    let _lock = Flock::lock(file, FlockArg::LockExclusive)
+        .map_err(|(_, e)| std::io::Error::other(e.to_string()))?;
+    f()
+}
+
+fn parse_announces(text: &str) -> Vec<Announce> {
+    text.lines()
+        .filter_map(|l| {
+            let mut p = l.split(' ');
+            Some(Announce {
+                refname: p.next()?.to_owned(),
+                oid: p.next()?.to_owned(),
+                pid: p.next()?.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+/// The hook's step 1: append and fsync, under the announce lock.
+pub fn append_announce(dir: &Path, a: &Announce) -> std::io::Result<()> {
+    use std::io::Write;
+    with_announce_lock(dir, || {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(ANNOUNCE))?;
+        f.write_all(format!("{} {} {}\n", a.refname, a.oid, a.pid).as_bytes())?;
+        f.sync_all()
+    })
+}
+
+/// Every durable announce of the team (`ctxd` at start).
+pub fn read_announces(dir: &Path) -> Vec<Announce> {
+    with_announce_lock(dir, || {
+        Ok(parse_announces(
+            &std::fs::read_to_string(dir.join(ANNOUNCE)).unwrap_or_default(),
+        ))
+    })
+    .unwrap_or_default()
+}
+
+/// Drops resolved announces from the file, under the lock: what another
+/// hook appended meanwhile is kept.
+fn forget_announces(dir: &Path, resolved: &[Announce]) -> std::io::Result<()> {
+    with_announce_lock(dir, || {
+        let path = dir.join(ANNOUNCE);
+        let all = parse_announces(&std::fs::read_to_string(&path).unwrap_or_default());
+        let keep: String = all
+            .iter()
+            .filter(|a| !resolved.contains(a))
+            .map(|a| format!("{} {} {}\n", a.refname, a.oid, a.pid))
+            .collect();
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, keep)?;
+        std::fs::File::open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        std::fs::File::open(dir)?.sync_all()
+    })
+}
+
+fn pid_alive(pid: u32) -> bool {
+    use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+    let Ok(p) = i32::try_from(pid) else {
+        return false;
+    };
+    matches!(kill(Pid::from_raw(p), None), Ok(()) | Err(Errno::EPERM))
+}
+
+/// Resolves pending announces after an import read the tip (§8.3): one is
+/// done when the tracking ref contains its OID, or when its git process is
+/// gone and the ref does not contain it (the transaction ended without
+/// it). Git runs outside the lock reads take.
+pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str>, live: &LiveMap) {
+    let pending: Vec<Announce> = {
+        let l = live.lock().expect("team live");
+        l.get(&team)
+            .map(|e| {
+                e.pending
+                    .iter()
+                    .map(|((r, o), p)| Announce {
+                        refname: r.clone(),
+                        oid: o.clone(),
+                        pid: *p,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let contains =
+        |oid: &str| tip.is_some_and(|t| t == oid || repo.is_ancestor(oid, t).unwrap_or(false));
+    let resolved: Vec<Announce> = pending
+        .into_iter()
+        .filter(|a| contains(&a.oid) || !pid_alive(a.pid))
+        .collect();
+    if resolved.is_empty() {
+        return;
+    }
+    if let Err(e) = forget_announces(dir, &resolved) {
+        eprintln!("ctxd: team {}: announce file: {e}", hex(&team));
+    }
+    let mut l = live.lock().expect("team live");
+    if let Some(e) = l.get_mut(&team) {
+        for a in resolved {
+            e.pending.remove(&(a.refname, a.oid));
         }
     }
 }

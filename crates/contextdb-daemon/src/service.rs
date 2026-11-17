@@ -1693,6 +1693,46 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamAnnounce {
+                team,
+                refname,
+                oid,
+                pid,
+            } => {
+                drop(snap);
+                self.actor
+                    .team_live
+                    .lock()
+                    .expect("team live")
+                    .entry(team)
+                    .or_default()
+                    .pending
+                    .insert((refname, oid), pid);
+                Response::TeamLines { lines: Vec::new() }
+            }
+            Request::TeamWithdraw { team, refname, oid } => {
+                drop(snap);
+                if let Some(e) = self
+                    .actor
+                    .team_live
+                    .lock()
+                    .expect("team live")
+                    .get_mut(&team)
+                {
+                    e.pending.remove(&(refname, oid));
+                }
+                Response::TeamLines { lines: Vec::new() }
+            }
+            Request::TeamNotify { team } => {
+                drop(snap);
+                // Not waited for: the hook returns to git at once.
+                let (reply, _) = std::sync::mpsc::channel();
+                let _ = self.actor.submit(Message::TeamImport {
+                    team: Some(team),
+                    reply,
+                });
+                Response::TeamLines { lines: Vec::new() }
+            }
             Request::TeamStatus { team } => {
                 drop(snap);
                 let call = crate::team::Call::Status { who: id.principal };

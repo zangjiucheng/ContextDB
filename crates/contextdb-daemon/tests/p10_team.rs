@@ -481,3 +481,102 @@ fn p10_daemon_imports_routes_and_lags() {
         Summary::Pending(PendingReason::ReplicationLag)
     );
 }
+
+#[test]
+fn p10_announce_fence_lags_reads_until_resolved() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("announce");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let sid = session(&s);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    let refname = format!("refs/contextdb/remotes/origin/team/{}/g0", hex(&TEAM));
+    let announce = |oid: &str, pid: u32| {
+        let r = s
+            .handle(
+                ADMIN,
+                Request::TeamAnnounce {
+                    team: TEAM,
+                    refname: refname.clone(),
+                    oid: oid.into(),
+                    pid,
+                },
+            )
+            .response;
+        assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+    };
+    let lag = Summary::Pending(PendingReason::ReplicationLag);
+    // A live git process announces an OID the ref does not hold yet.
+    let ahead = "1".repeat(40);
+    announce(&ahead, std::process::id());
+    assert_eq!(summary(&s, sid, "k/a"), lag);
+    sync(&s);
+    assert_eq!(
+        summary(&s, sid, "k/a"),
+        lag,
+        "still pending: its process lives"
+    );
+    // aborted: withdrawn.
+    s.handle(
+        ADMIN,
+        Request::TeamWithdraw {
+            team: TEAM,
+            refname: refname.clone(),
+            oid: ahead.clone(),
+        },
+    );
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    // A process that died before the ref moved: dropped at the next import.
+    let mut child = Command::new("true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    announce(&ahead, dead);
+    assert_eq!(summary(&s, sid, "k/a"), lag);
+    sync(&s);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    // The ref moved to the announced OID: resolved by the import itself.
+    let (a2, ba2) = blob(b"a2");
+    let next = w.entry(
+        vec![
+            TeamOp::Revise {
+                path: "k/a".into(),
+                content: a2,
+                adopt_as_base: true,
+            },
+            TeamOp::SetHead {
+                path: "k/a".into(),
+                expected: a1,
+                new: a2,
+            },
+        ],
+        vec![ba2],
+    );
+    w.push();
+    announce(&next, std::process::id());
+    w.fetch();
+    assert_eq!(summary(&s, sid, "k/a"), lag);
+    sync(&s);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+}
+
+#[test]
+fn p10_announce_file_keeps_concurrent_appends() {
+    let dir = std::env::temp_dir().join(format!("ctx-p10-announce-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = |oid: &str, pid| team::Announce {
+        refname: "refs/x".into(),
+        oid: oid.into(),
+        pid,
+    };
+    team::append_announce(&dir, &a("o1", 1)).unwrap();
+    team::append_announce(&dir, &a("o2", 2)).unwrap();
+    assert_eq!(team::read_announces(&dir), vec![a("o1", 1), a("o2", 2)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

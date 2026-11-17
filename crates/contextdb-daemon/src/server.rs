@@ -262,6 +262,29 @@ impl Daemon {
                 .spawn(move || accept(listener, identity, uid, service, stop, hook))?;
             sockets.push(path);
         }
+        // P10 (ADR 0018 §8.3): the socket is bound before the announce files
+        // are read, so an announce written after this read is acknowledged
+        // over the socket; until resolved, reads over the team lag.
+        if let Ok(entries) = std::fs::read_dir(dir.join(crate::team::TEAMS_DIR)) {
+            for e in entries.flatten() {
+                let Some(team) = e
+                    .file_name()
+                    .to_str()
+                    .and_then(contextdb_team::commit::parse_id128)
+                else {
+                    continue;
+                };
+                let announces = crate::team::read_announces(&e.path());
+                if announces.is_empty() {
+                    continue;
+                }
+                let mut live = service.actor.team_live.lock().expect("team live");
+                let pending = &mut live.entry(team).or_default().pending;
+                for a in announces {
+                    pending.insert((a.refname, a.oid), a.pid);
+                }
+            }
+        }
         // P10 `lag_check` (ADR 0018 §8.3): re-read the team refs, catching
         // ref moves that bypassed the hooks; an unchanged ref imports
         // nothing. Idle while no team is joined.

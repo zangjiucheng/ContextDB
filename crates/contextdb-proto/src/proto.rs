@@ -739,6 +739,25 @@ pub enum Request {
     TeamOpen {
         team: [u8; 16],
     },
+    /// P10 announce fence (ADR 0018 §8.3), from `reference-transaction` in
+    /// `prepared`: the team ref `refname` is about to move to `oid` in git
+    /// process `pid`. Acknowledged once recorded under the lock reads take.
+    TeamAnnounce {
+        team: [u8; 16],
+        refname: String,
+        oid: String,
+        pid: u32,
+    },
+    /// `aborted`: the transaction ended without the move.
+    TeamWithdraw {
+        team: [u8; 16],
+        refname: String,
+        oid: String,
+    },
+    /// `committed` (and `post-merge`): import now; not waited for.
+    TeamNotify {
+        team: [u8; 16],
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2145,6 +2164,28 @@ impl Wire for Request {
                 50u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamAnnounce {
+                team,
+                refname,
+                oid,
+                pid,
+            } => {
+                51u8.encode(o);
+                team.encode(o);
+                refname.encode(o);
+                oid.encode(o);
+                pid.encode(o);
+            }
+            Self::TeamWithdraw { team, refname, oid } => {
+                52u8.encode(o);
+                team.encode(o);
+                refname.encode(o);
+                oid.encode(o);
+            }
+            Self::TeamNotify { team } => {
+                53u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2415,6 +2456,20 @@ impl Wire for Request {
                 team: Wire::decode(i)?,
             },
             50 => Self::TeamOpen {
+                team: Wire::decode(i)?,
+            },
+            51 => Self::TeamAnnounce {
+                team: Wire::decode(i)?,
+                refname: Wire::decode(i)?,
+                oid: Wire::decode(i)?,
+                pid: Wire::decode(i)?,
+            },
+            52 => Self::TeamWithdraw {
+                team: Wire::decode(i)?,
+                refname: Wire::decode(i)?,
+                oid: Wire::decode(i)?,
+            },
+            53 => Self::TeamNotify {
                 team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
