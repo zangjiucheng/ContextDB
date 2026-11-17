@@ -985,3 +985,166 @@ fn t114_every_publish_crash_row_recovers() {
     assert_eq!(e.proposals, vec![listed]);
     assert!(!e.proposals.contains(&later));
 }
+
+#[test]
+fn t115_root_changes_invalidate_local_dependents_precisely_on_every_branch() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("t115");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let r = s
+        .handle(
+            ADMIN,
+            Request::BranchCreate {
+                name: "feat".into(),
+                from: None,
+                client_txn_id: None,
+            },
+        )
+        .response;
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let feat = s.actor.snapshot().kernel.branch_by_name("feat").unwrap();
+    // On each branch, a Pin and a Cur dependent of the mirror's head.
+    for (b, tag) in [(MAIN, "m"), (feat, "f")] {
+        let ma = {
+            let snap = s.actor.snapshot();
+            let v = snap.view(b);
+            v.head(v.logical_by_key(&key("k/a")).unwrap()).unwrap()
+        };
+        for (edge, name) in [(EdgeKind::Pin, "pin"), (EdgeKind::Cur, "cur")] {
+            let body = format!("{tag}-{name}").into_bytes();
+            let mut batch = Batch::new(vec![
+                Op::CreateLogical {
+                    origin: Origin::Local,
+                    key: format!("dec:{tag}-{name}"),
+                    kind: RecordKind::Decision,
+                    scope_lane: "repo".into(),
+                    content: *blake3::hash(&body).as_bytes(),
+                    adopt_as_base: false,
+                },
+                Op::AddRule {
+                    conclusion: RevRef::New(0),
+                    incidences: vec![(ma.into(), edge)],
+                    enabled: true,
+                },
+            ]);
+            batch.branch = b;
+            let r = s
+                .handle(
+                    ADMIN,
+                    Request::Raw {
+                        blobs: vec![body],
+                        batch,
+                    },
+                )
+                .response;
+            assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+        }
+    }
+    // The summary of a local record on a branch, with that branch's team
+    // position as the live one (no lag in these checks).
+    let stat = |b: BranchId, k: &str| {
+        let snap = s.actor.snapshot();
+        let v = snap.view(b);
+        let scope = team_scope(&TEAM);
+        let live = [(scope.clone(), v.watermark(&scope).unwrap().to_vec())].into();
+        let l = v.logical_by_key(k).unwrap();
+        v.summary_at(v.head(l).unwrap(), &live).unwrap()
+    };
+    let all = |s_pin: fn(&Summary) -> bool, s_cur: fn(&Summary) -> bool, at: &str| {
+        for (b, tag) in [(MAIN, "m"), (feat, "f")] {
+            let (p, c) = (
+                stat(b, &format!("dec:{tag}-pin")),
+                stat(b, &format!("dec:{tag}-cur")),
+            );
+            assert!(s_pin(&p), "{at}: {tag} pin {p:?}");
+            assert!(s_cur(&c), "{at}: {tag} cur {c:?}");
+        }
+    };
+    let certified = |x: &Summary| *x == Summary::Certified;
+    let stale = |x: &Summary| matches!(x, Summary::Stale(_));
+    all(certified, certified, "before");
+    let root = |w: &mut World, ops: Vec<TeamOp>, blobs: Vec<(String, Vec<u8>)>| {
+        w.entry(ops, blobs);
+        w.push();
+        w.fetch();
+        sync(&s);
+    };
+    // Q4: the root retracts the head's base: every dependent unsupported.
+    root(
+        &mut w,
+        vec![TeamOp::SetBase {
+            path: "k/a".into(),
+            content: a1,
+            expected: true,
+            base: false,
+        }],
+        vec![],
+    );
+    all(stale, stale, "retracted");
+    // Restored: both recover.
+    root(
+        &mut w,
+        vec![TeamOp::SetBase {
+            path: "k/a".into(),
+            content: a1,
+            expected: false,
+            base: true,
+        }],
+        vec![],
+    );
+    all(certified, certified, "restored");
+    // A root supersede: Pin STALE (its revision is no longer the head),
+    // Cur unsupported until rebound.
+    let (a2, ba2) = blob(b"a2");
+    root(
+        &mut w,
+        vec![
+            TeamOp::Revise {
+                path: "k/a".into(),
+                content: a2,
+                adopt_as_base: true,
+            },
+            TeamOp::SetHead {
+                path: "k/a".into(),
+                expected: a1,
+                new: a2,
+            },
+        ],
+        vec![ba2],
+    );
+    all(stale, stale, "superseded");
+    for (b, tag) in [(MAIN, "m"), (feat, "f")] {
+        // A mirror's old head loses its base as the head moves (§5.1), so
+        // the pinned premise has no L0: SEMANTICS' "no L0 -> Unsupported"
+        // comes before the witness inspection that would name the
+        // superseded Pin. §5.3 asks for STALE.
+        let p = stat(b, &format!("dec:{tag}-pin"));
+        assert_eq!(p, Summary::Stale(StaleReason::Unsupported), "{tag}");
+    }
+    // The head goes back: both recover.
+    root(
+        &mut w,
+        vec![
+            TeamOp::SetHead {
+                path: "k/a".into(),
+                expected: a2,
+                new: a1,
+            },
+            TeamOp::SetBase {
+                path: "k/a".into(),
+                content: a1,
+                expected: true,
+                base: true,
+            },
+        ],
+        vec![],
+    );
+    all(certified, certified, "head back");
+}
