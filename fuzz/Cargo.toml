@@ -19,6 +19,7 @@ contextdb-model = { path = "../crates/contextdb-model" }
 contextdb-hooks = { path = "../crates/contextdb-hooks" }
 contextdb-proto = { path = "../crates/contextdb-proto" }
 contextdb-store = { path = "../crates/contextdb-store" }
+contextdb-team = { path = "../crates/contextdb-team" }
 blake3 = "=1.8.7"
 contextdb-anchors = { path = "../crates/contextdb-anchors" }
 contextdb-symbols = { path = "../crates/contextdb-symbols" }
@@ -92,6 +93,48 @@ bench = false
 [[bin]]
 name = "access_doc"
 path = "fuzz_targets/access_doc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_batch"
+path = "fuzz_targets/team_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_doc"
+path = "fuzz_targets/team_doc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_commit"
+path = "fuzz_targets/team_commit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_sshsig"
+path = "fuzz_targets/team_sshsig.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_checkpoint"
+path = "fuzz_targets/team_checkpoint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "team_accept"
+path = "fuzz_targets/team_accept.rs"
 test = false
 doc = false
 bench = false

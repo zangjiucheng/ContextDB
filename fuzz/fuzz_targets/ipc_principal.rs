@@ -70,6 +70,7 @@ fn create(s: &Service<SimDisk>, key: &str, lane: &str, body: &str) {
         Request::Raw {
             blobs: vec![body.as_bytes().to_vec()],
             batch: Batch::new(vec![Op::CreateLogical {
+                origin: Default::default(),
                 key: key.into(),
                 kind: RecordKind::Fact,
                 scope_lane: lane.into(),
@@ -108,6 +109,7 @@ fn base() -> &'static SimDisk {
             .into(),
             code_lanes: LaneEntry::code_default(),
             personal_egress: false,
+            team_lanes: None,
             default_lane: LaneEntry::owner_only(),
         };
         let r = s.handle(
