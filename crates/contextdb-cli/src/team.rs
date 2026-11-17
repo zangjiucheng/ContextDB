@@ -109,6 +109,18 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             let mut c = connect(data, "admin.sock")?;
             lines(call(&mut c, Request::TeamSync { team })?.response)
         }
+        Some("leave") => {
+            let team = pick(data, args)?;
+            if !args.iter().any(|a| a == "--yes") {
+                println!(
+                    "leaving team {} retracts every mirror's base on every open branch and \
+                     deletes the replica and the proposal queue; confirm with --yes",
+                    hex(&team)
+                );
+                return Ok(1);
+            }
+            leave(data, team)
+        }
         Some("publish") => {
             let team = pick(data, args)?;
             let yes = match flag(args, "--yes") {
@@ -650,4 +662,42 @@ pub fn pre_push_publish(data: &Path, remote: &str, url: &str) -> u8 {
         }
     }
     code
+}
+
+/// `ctx team leave` (§8.5): `ctxd` records `leaving`, retracts and deletes;
+/// then the fetch refspec, the tracking refs and (with no team left) the
+/// hook component go.
+fn leave(data: &Path, team: [u8; 16]) -> Result<u8, String> {
+    let dir = team_dir(data, &team);
+    let cfg = TeamConfig::load(&dir)?;
+    let remote = anchor_field(&dir, "remote")?;
+    let mut c = connect(data, "admin.sock")?;
+    lines(call(&mut c, Request::TeamLeave { team })?.response)?;
+    let prefix = format!("refs/contextdb/remotes/{remote}/team/{}/", hex(&team));
+    for r in git(&cfg.repo, &["for-each-ref", "--format=%(refname)", &prefix])?.lines() {
+        git(&cfg.repo, &["update-ref", "-d", r])?;
+    }
+    if joined(data).is_empty() {
+        let _ = git(
+            &cfg.repo,
+            &[
+                "config",
+                "--fixed-value",
+                "--unset-all",
+                &format!("remote.{remote}.fetch"),
+                &refspec(&remote),
+            ],
+        );
+        crate::githooks::register(
+            &crate::githooks::hooks_dir(&cfg.repo)?,
+            crate::githooks::Component {
+                name: "team".into(),
+                data: data.canonicalize().map_err(|e| e.to_string())?,
+                repo: None,
+            },
+            true,
+        )?;
+    }
+    println!("left team {}", hex(&team));
+    Ok(0)
 }

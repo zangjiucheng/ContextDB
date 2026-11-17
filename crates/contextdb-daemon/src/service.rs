@@ -1733,6 +1733,22 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 });
                 Response::TeamLines { lines: Vec::new() }
             }
+            Request::TeamLeave { team } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                match self
+                    .actor
+                    .request(|reply| Message::TeamLeave { team, reply })
+                {
+                    Ok(Ok(n)) => Response::TeamLines {
+                        lines: vec![format!("left; {n} branches written")],
+                    },
+                    Ok(Err(e)) => err("TeamLeaveFailed", e),
+                    Err(e) => submit_err(e),
+                }
+            }
             Request::TeamStatus { team } => {
                 drop(snap);
                 let call = crate::team::Call::Status { who: id.principal };

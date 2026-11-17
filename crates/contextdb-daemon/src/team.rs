@@ -128,6 +128,19 @@ pub struct Joined {
     pub status: Status,
     /// Publish step 5's set, which step 7 checks against (§7.2).
     pub prepared: Option<contextdb_team::publish::Prepared>,
+    /// `leaving` is recorded (§8.5): never imported or caught up again;
+    /// the leave is finished at the next import.
+    pub leaving: bool,
+}
+
+const LEAVING: &str = "leaving";
+
+/// Records `leaving` durably before any branch is written (§8.5, Q12).
+pub fn mark_leaving(dir: &Path) -> std::io::Result<()> {
+    let path = dir.join(LEAVING);
+    std::fs::write(&path, b"leaving\n")?;
+    std::fs::File::open(&path)?.sync_all()?;
+    std::fs::File::open(dir)?.sync_all()
 }
 
 /// Opens one joined team's directory.
@@ -141,6 +154,7 @@ pub fn open_one(dir: &Path) -> Result<Joined, String> {
         cfg,
         status: Status::UpToDate,
         prepared: None,
+        leaving: dir.join(LEAVING).exists(),
     })
 }
 

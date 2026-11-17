@@ -580,3 +580,110 @@ fn p10_announce_file_keeps_concurrent_appends() {
     assert_eq!(team::read_announces(&dir), vec![a("o1", 1), a("o2", 2)]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn p10_leave_retracts_every_mirror_and_resumes_after_a_crash() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("leave");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let sid = session(&s);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    // A local record supported by the mirror (Cur).
+    let ma = {
+        let snap = s.actor.snapshot();
+        let v = snap.view(MAIN);
+        v.head(v.logical_by_key(&key("k/a")).unwrap()).unwrap()
+    };
+    let r = commit(
+        &s,
+        sid,
+        vec![
+            Op::CreateLogical {
+                origin: Origin::Local,
+                key: "dec:on-a".into(),
+                kind: RecordKind::Decision,
+                scope_lane: "repo".into(),
+                content: *blake3::hash(b"on a").as_bytes(),
+                adopt_as_base: false,
+            },
+            Op::AddRule {
+                conclusion: RevRef::New(0),
+                incidences: vec![(ma.into(), EdgeKind::Cur)],
+                enabled: true,
+            },
+        ],
+        vec![b"on a".to_vec()],
+    );
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let local = |s: &Service<SimDisk>| {
+        let snap = s.actor.snapshot();
+        let v = snap.view(MAIN);
+        let l = v.logical_by_key("dec:on-a").unwrap();
+        v.summary_at(v.head(l).unwrap(), &Default::default())
+            .unwrap()
+    };
+    assert_eq!(
+        local(&s),
+        Summary::Pending(PendingReason::ReplicationLag),
+        "no live position given here"
+    );
+    let r = s.handle(ADMIN, Request::TeamLeave { team: TEAM }).response;
+    assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+    // Every base retracted, the watermark `left`: the mirror and its
+    // dependents are unsupported, and nothing lags.
+    assert!(matches!(summary(&s, sid, "k/a"), Summary::Stale(_)));
+    assert!(matches!(local(&s), Summary::Stale(_)));
+    let snap = s.actor.snapshot();
+    assert_eq!(
+        snap.view(MAIN).watermark(&team_scope(&TEAM)),
+        Some(TEAM_LEFT)
+    );
+    drop(snap);
+    let dir = w.tmp.join("data").join(team::TEAMS_DIR).join(hex(&TEAM));
+    assert!(!dir.exists());
+    // Leaving twice: not joined.
+    let r = s.handle(ADMIN, Request::TeamLeave { team: TEAM }).response;
+    assert_eq!(code(&r), "TeamLeaveFailed");
+}
+
+#[test]
+fn p10_a_recorded_leave_is_finished_at_the_next_import_never_caught_up() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("leave-crash");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    // A crash right after `leaving` was recorded: the next start opens the
+    // team leaving, and its import finishes the leave instead of catching
+    // up (a new root entry is never mirrored).
+    let dir = w.tmp.join("data").join(team::TEAMS_DIR).join(hex(&TEAM));
+    team::mark_leaving(&dir).unwrap();
+    let (teams, _) = team::open_all(&w.tmp.join("data"));
+    assert!(teams[&TEAM].leaving);
+    drop(teams);
+    let (b1, bb) = blob(b"b1");
+    w.entry(vec![new_op("k/b", b1, true)], vec![bb]);
+    w.push();
+    w.fetch();
+    // The running daemon still holds the team open (not leaving): reopen
+    // as a restart would.
+    drop(s);
+    let s = daemon(&w);
+    let lines = sync(&s);
+    assert!(lines[0].contains("left"), "{lines:?}");
+    let snap = s.actor.snapshot();
+    assert!(snap.view(MAIN).logical_by_key(&key("k/b")).is_none());
+    assert!(!dir.exists());
+}

@@ -89,6 +89,9 @@ impl Origin {
         self.team().map(|t| team_scope(&t))
     }
 }
+/// The watermark of a team the store left (ADR 0018 §8.5): every mirror's
+/// base is retracted, so a read over them never lags.
+pub const TEAM_LEFT: &[u8] = b"left";
 /// `team:<lowercase hex id>`, the watermark scope of team `team`.
 pub fn team_scope(team: &TeamId) -> String {
     let mut s = String::with_capacity(5 + 32);

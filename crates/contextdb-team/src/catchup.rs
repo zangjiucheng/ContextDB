@@ -435,3 +435,63 @@ pub fn catch_up_all<W: Writer + ?Sized>(
     }
     Ok(total)
 }
+
+/// Leaving a team on branch `b` (ADR 0018 §8.5): one replica-channel batch
+/// that retracts every base of the team's mirrors and sets the watermark to
+/// [`TEAM_LEFT`]. `None` when the branch has already left.
+pub fn leave<W: Writer + ?Sized>(
+    w: &mut W,
+    b: BranchId,
+    team: TeamId,
+) -> Result<Option<CommitResult>, W::Error> {
+    let scope = scope(team);
+    let (ops, watermark) = {
+        let k = w.kernel();
+        let v = k.branch(b).expect("open branch");
+        let db = v.db();
+        let watermark = db.watermark(&scope).map(<[u8]>::to_vec);
+        let mut ops: Vec<Op> = (0..db.revision_count() as u32)
+            .map(RevisionId)
+            .filter(|r| {
+                db.revision_logical(*r)
+                    .is_some_and(|l| db.logical_origin(l) == (Origin::Replica { team }))
+                    && db.is_base(*r).unwrap_or(false)
+            })
+            .map(|r| Op::RetractBase {
+                rev: RevRef::Existing(v.global_revision(r)),
+            })
+            .collect();
+        if ops.is_empty() && watermark.as_deref() == Some(contextdb_model::TEAM_LEFT) {
+            return Ok(None);
+        }
+        ops.push(Op::ObserverWatermark {
+            scope: scope.clone(),
+            expected: watermark.clone(),
+            position: contextdb_model::TEAM_LEFT.to_vec(),
+            gap: false,
+        });
+        (ops, watermark)
+    };
+    let _ = watermark;
+    let mut batch = Batch::new(ops);
+    batch.branch = b;
+    batch.channel = Channel::Replica;
+    w.commit(&batch).map(Some)
+}
+
+/// [`leave`] on every open branch, `main` first. Archived branches are
+/// not written.
+pub fn leave_all<W: Writer + ?Sized>(
+    w: &mut W,
+    team: TeamId,
+) -> Result<usize, (BranchId, W::Error)> {
+    let open: Vec<BranchId> = (w.kernel().branches())
+        .filter(|b| !b.archived)
+        .map(|b| b.id)
+        .collect();
+    let mut n = 0;
+    for b in std::iter::once(MAIN).chain(open.into_iter().filter(|b| *b != MAIN)) {
+        n += usize::from(leave(w, b, team).map_err(|e| (b, e))?.is_some());
+    }
+    Ok(n)
+}

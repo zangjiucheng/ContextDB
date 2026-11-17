@@ -124,6 +124,11 @@ pub enum Message {
         dir: std::path::PathBuf,
         reply: mpsc::Sender<Result<TeamId, String>>,
     },
+    /// P10: `ctx team leave` (ADR 0018 §8.5).
+    TeamLeave {
+        team: TeamId,
+        reply: mpsc::Sender<Result<usize, String>>,
+    },
     /// P10: `ctx team status` and the publish steps (ADR 0018 §7.2).
     TeamCall {
         team: Option<TeamId>,
@@ -284,6 +289,37 @@ impl<D: Durability + Clone> contextdb_team::catchup::Writer for ActorWriter<'_, 
         rx.recv().unwrap_or(Err(StoreError::Poisoned))
     }
 }
+impl<D: Durability + Clone> Actor<D> {
+    /// The rest of a leave whose `leaving` is recorded: every open branch
+    /// retracted with the watermark `left`, then the team's directory
+    /// deleted. Rerun until it completes (a crash in between).
+    fn finish_leave(&mut self, team: TeamId) -> Result<usize, String> {
+        let Some(j) = self.teams.remove(&team) else {
+            return Err("not joined".into());
+        };
+        if let Err(e) = self.store.kernel() {
+            self.teams.insert(team, j);
+            return Err(format!("{e:?}"));
+        }
+        let mut w = ActorWriter {
+            actor: self,
+            replica: j.store.replica(),
+        };
+        let written = match contextdb_team::catchup::leave_all(&mut w, team) {
+            Ok(n) => n,
+            Err((b, e)) => {
+                let msg = format!("branch {}: {e:?}", b.0);
+                self.teams.insert(team, j);
+                return Err(msg);
+            }
+        };
+        let dir = j.store.dir().to_owned();
+        drop(j);
+        self.team_live.lock().expect("team live").remove(&team);
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(written)
+    }
+}
 /// Starts the actor thread over an opened store.
 pub fn spawn<D: Durability + Clone + 'static>(
     store: Store<D>,
@@ -398,12 +434,39 @@ impl<D: Durability + Clone> Actor<D> {
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
             }
+            Message::TeamLeave { team, reply } => {
+                let r = match self.teams.get_mut(&team) {
+                    None => Err("not joined".to_owned()),
+                    Some(j) => team::mark_leaving(j.store.dir())
+                        .map(|()| j.leaving = true)
+                        .map_err(|e| e.to_string()),
+                }
+                .and_then(|()| self.finish_leave(team));
+                let _ = reply.send(r);
+            }
             Message::TeamImport { team, reply } => {
+                let leaving: Vec<TeamId> = (self.teams.iter())
+                    .filter(|(t, j)| j.leaving && team.is_none_or(|x| x == **t))
+                    .map(|(t, _)| *t)
+                    .collect();
+                let mut lines = Vec::new();
+                for t in leaving {
+                    lines.push(match self.finish_leave(t) {
+                        Ok(n) => format!(
+                            "{} left ({n} branches written)",
+                            contextdb_team::commit::hex(&t)
+                        ),
+                        Err(e) => format!(
+                            "{} leave not finished: {e}",
+                            contextdb_team::commit::hex(&t)
+                        ),
+                    });
+                }
                 let mut teams = std::mem::take(&mut self.teams);
                 let live = self.team_live.clone();
-                let mut lines = Vec::new();
                 for (t, j) in teams.iter_mut() {
-                    if team.is_some_and(|x| x != *t) {
+                    // A leave not finished is never caught up (Q12).
+                    if team.is_some_and(|x| x != *t) || j.leaving {
                         continue;
                     }
                     let mut catch_up = |team: TeamId,

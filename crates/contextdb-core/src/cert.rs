@@ -249,7 +249,12 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     }
     /// A scope lags when `live_pos` lacks it or holds another position.
     fn lags(&self, scope: &str, live_pos: &BTreeMap<String, Vec<u8>>) -> bool {
-        live_pos.get(scope).is_none() || self.tables.watermarks.get(scope) != live_pos.get(scope)
+        let at = self.tables.watermarks.get(scope);
+        // A team the store left: nothing in it is base any more (§8.5).
+        if scope.starts_with("team:") && at.is_some_and(|w| w == TEAM_LEFT) {
+            return false;
+        }
+        live_pos.get(scope).is_none() || at != live_pos.get(scope)
     }
     /// Missing evidence is lagging from P5a onward (SD14b). Freshness is
     /// evaluated across the full observation support, never cached in L0/L1/L2.

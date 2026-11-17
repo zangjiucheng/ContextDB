@@ -15,6 +15,9 @@ pub type History = [Inputs];
 pub type Gaps = [BTreeSet<String>];
 
 fn lags(i: &Inputs, live: &BTreeMap<String, Vec<u8>>, s: &str) -> bool {
+    if s.starts_with("team:") && i.watermarks.get(s).is_some_and(|w| w == TEAM_LEFT) {
+        return false;
+    }
     live.get(s).is_none() || i.watermarks.get(s) != live.get(s)
 }
 

@@ -758,6 +758,12 @@ pub enum Request {
     TeamNotify {
         team: [u8; 16],
     },
+    /// P10 `ctx team leave` (ADR 0018 §8.5): `leaving` recorded durably,
+    /// every open branch's mirrors retracted with the watermark `left`,
+    /// then the replica and queue deleted. Store owner, admin socket.
+    TeamLeave {
+        team: [u8; 16],
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2186,6 +2192,10 @@ impl Wire for Request {
                 53u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamLeave { team } => {
+                54u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2470,6 +2480,9 @@ impl Wire for Request {
                 oid: Wire::decode(i)?,
             },
             53 => Self::TeamNotify {
+                team: Wire::decode(i)?,
+            },
+            54 => Self::TeamLeave {
                 team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
