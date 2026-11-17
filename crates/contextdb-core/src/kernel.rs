@@ -548,8 +548,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let foreign = |key: &str| keys.contains(key);
         let lookup = |key: &str, head: &ContentHash| {
             let (g, record) = replica_keys.get(key)?;
-            let gr = revision_ids.get(&(*g, *head))?;
-            Some((*g, record.clone(), revisions[*gr as usize].clone()))
+            let rev = revision_ids
+                .get(&(*g, *head))
+                .map(|gr| revisions[*gr as usize].clone());
+            Some((*g, record.clone(), rev))
         };
         // A batch that attaches mirrors names new logicals by `New(k)` or by
         // key, never by a global id it has not been assigned yet.

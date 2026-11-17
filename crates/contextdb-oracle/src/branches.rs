@@ -655,9 +655,10 @@ impl BranchOracle {
                     && l.origin != Origin::Local
                     && !p.to_local[0].contains_key(&(*n as u32))
             })?;
-            let r =
-                (self.revisions.iter()).find(|r| r.logical.index() == n && r.content == *head)?;
-            Some((l.clone(), r.clone()))
+            // The head revision if any branch holds it; else the attach
+            // creates it.
+            let r = (self.revisions.iter()).find(|r| r.logical.index() == n && r.content == *head);
+            Some((l.clone(), r.cloned()))
         };
         let mut model = InputModel::from_inputs(p.inputs.clone(), self.epoch);
         let mut local_batch = local;

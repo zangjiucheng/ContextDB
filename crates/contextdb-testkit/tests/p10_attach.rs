@@ -199,7 +199,7 @@ fn attach_errors() {
         Channel::Replica,
         vec![create("arch/a", [1; 32], true)],
     ));
-    // No such mirror, or no revision with that head: UnknownRef.
+    // No such mirror: UnknownRef.
     assert_eq!(
         s.err(on(
             b,
@@ -208,14 +208,33 @@ fn attach_errors() {
         )),
         TxError::UnknownRef
     );
-    assert_eq!(
-        s.err(on(
-            b,
-            Channel::Replica,
-            vec![attach("arch/a", [9; 32], true)]
-        )),
-        TxError::UnknownRef
-    );
+    // A head no branch holds yet is created by the attach (a branch caught
+    // up ahead of the others), on that branch only.
+    s.ok(on(
+        b,
+        Channel::Admin,
+        vec![Op::CreateBranch { name: "c".into() }],
+    ));
+    let c = BranchId(2);
+    s.ok(on(
+        c,
+        Channel::Replica,
+        vec![attach("arch/a", [9; 32], true)],
+    ));
+    {
+        let v = s.k.branch(c).unwrap();
+        let db = v.db();
+        let l = db.logical_by_key(&key("arch/a")).unwrap();
+        assert_eq!(db.revision_content(db.head(l).unwrap()).unwrap(), [9; 32]);
+        let main = s.k.branch(MAIN).unwrap();
+        let ml = main.db().logical_by_key(&key("arch/a")).unwrap();
+        assert_eq!(
+            main.db()
+                .revision_content(main.db().head(ml).unwrap())
+                .unwrap(),
+            [1; 32]
+        );
+    }
     // Already visible here: LogicalExists.
     assert_eq!(
         s.err(on(

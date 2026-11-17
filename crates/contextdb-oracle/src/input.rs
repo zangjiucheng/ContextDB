@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The replica-origin logicals of other branches by key and head content
 /// (P10 MirrorAttach): the mirror's record and head revision.
-pub type Mirrors<'a> = &'a dyn Fn(&str, &ContentHash) -> Option<(Logical, Revision)>;
+pub type Mirrors<'a> = &'a dyn Fn(&str, &ContentHash) -> Option<(Logical, Option<Revision>)>;
 
 /// Independent clone-and-stage reference input model. Never calls the core front-end.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1147,12 +1147,25 @@ fn apply_op(
             let Some((record, revision)) = mirror(&key, &head) else {
                 return Err(TxError::UnknownRef);
             };
+            // A head no branch holds yet is created by the attach.
+            if revision.is_none() && !blobs.contains(&head) {
+                return Err(TxError::MissingBlob { content: head });
+            }
             let l = LogicalId(checked_id(i.logicals.len(), CapacityKind::Logical)?);
             let r = RevisionId(checked_id(i.revisions.len(), CapacityKind::Revision)?);
             i.logicals.push(record);
-            i.revisions.push(Revision {
-                logical: l,
-                ..revision
+            i.revisions.push(match revision {
+                Some(revision) => Revision {
+                    logical: l,
+                    ..revision
+                },
+                None => Revision {
+                    logical: l,
+                    content: head,
+                    author: b.principal,
+                    origin_branch: b.branch,
+                    origin_epoch: epoch,
+                },
             });
             i.heads.push(r);
             i.base.push(base);

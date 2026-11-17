@@ -99,8 +99,10 @@ pub struct Staged {
     pub logicals: Vec<Option<u32>>,
 }
 /// The kernel's replica-origin lookup for `MirrorAttach` (P10): a key and a
-/// head content → the mirror's global id, record and head revision.
-pub type MirrorLookup<'a> = &'a dyn Fn(&str, &ContentHash) -> Option<(u32, Logical, Revision)>;
+/// head content → the mirror's global id, record, and the revision holding
+/// that content if any branch has it (else the attach creates it).
+pub type MirrorLookup<'a> =
+    &'a dyn Fn(&str, &ContentHash) -> Option<(u32, Logical, Option<Revision>)>;
 #[derive(Clone, Debug)]
 pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     maintainer: M,

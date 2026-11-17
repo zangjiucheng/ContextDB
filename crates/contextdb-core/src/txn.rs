@@ -1046,8 +1046,10 @@ pub(crate) fn apply<S: StatsSink>(
             unreachable!("rejected by the resolver")
         }
         // P10 (SPEC §6.1 contract 16): an existing mirror, created on another
-        // branch, becomes visible here with its head revision. Nothing new
-        // is allocated globally; the kernel maps both objects to their ids.
+        // branch, becomes visible here with its head revision; the kernel maps
+        // the logical (and the revision, if any branch holds it) to its
+        // global id. A head no branch holds yet is created here, as a
+        // replica AddRevision would: a branch caught up ahead of the rest.
         Op::MirrorAttach { key, head, base } => {
             if i.find_key(&key).is_some() {
                 return Err(TxError::LogicalExists { key });
@@ -1055,9 +1057,19 @@ pub(crate) fn apply<S: StatsSink>(
             let Some((global, record, revision)) = i.mirror.and_then(|f| f(&key, &head)) else {
                 return Err(TxError::UnknownRef);
             };
+            if revision.is_none() && !blobs.contains(&head) && !replica_shredded(i, b, &head) {
+                return Err(TxError::MissingBlob { content: head });
+            }
             id(i.logical_count(), CapacityKind::Logical)?;
             let rev = RevisionId(id(i.revision_count(), CapacityKind::Revision)?);
             let logical = i.push_logical_as(record, rev, Some(global));
+            let revision = revision.unwrap_or(Revision {
+                logical,
+                content: head,
+                author: b.principal,
+                origin_branch: b.branch,
+                origin_epoch: epoch,
+            });
             i.push_revision(
                 Revision {
                     logical,
