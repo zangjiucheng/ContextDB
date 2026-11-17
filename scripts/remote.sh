@@ -34,7 +34,11 @@ need_toolchain() {
 sync_tree() {
   remote "mkdir -p $dir/src $dir/logs"
   # Fuzz state is excluded so a sync never deletes it under a running job.
-  rsync -az --delete --exclude target --exclude results --exclude .git --exclude .contextdb --exclude .codex --exclude .claude \
+  # Changes are found by checksum and written with the remote's current
+  # time (--no-times): preserving local mtimes let a file edited before a
+  # remote build, but synced after it, look older than that build's
+  # artifacts, and cargo then reused the stale build.
+  rsync -az --no-times --checksum --delete --exclude target --exclude results --exclude .git --exclude .contextdb --exclude .codex --exclude .claude \
     --exclude fuzz/artifacts --exclude fuzz/corpus --exclude fuzz/coverage ./ "$host:$dir/src/"
 }
 case ${1:-} in
