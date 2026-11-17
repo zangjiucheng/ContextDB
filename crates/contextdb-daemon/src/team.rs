@@ -17,7 +17,7 @@ use contextdb_team::git::Repo;
 use contextdb_team::proposals::{LocalPolicy, Queue};
 use contextdb_team::replica::Replica;
 use contextdb_team::store::{Status, TeamStore};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,8 +187,6 @@ pub struct Live {
     pub tip: Option<String>,
     /// Announces not yet resolved: `(ref, oid)` → the git process's pid.
     pub pending: BTreeMap<(String, String), u32>,
-    /// Fetches `ctxd` runs itself, until the ref is read back.
-    pub in_flight: u32,
     /// Import stopped (`ReplicaStalled`, `ReplicaDiverged`,
     /// `ReplicaIncomplete`).
     pub stopped: Option<String>,
@@ -248,7 +246,9 @@ impl Live {
     /// The position a read compares a branch's watermark with, or `None`
     /// (every read over the team's mirrors lags).
     pub fn position(&self) -> Option<Vec<u8>> {
-        if !self.pending.is_empty() || self.in_flight > 0 || self.stopped.is_some() {
+        // A fetch in flight is a pending announce: `ctxd` runs no fetch of
+        // its own (review finding 13).
+        if !self.pending.is_empty() || self.stopped.is_some() {
             return None;
         }
         self.tip.as_ref().map(|t| t.as_bytes().to_vec())
@@ -309,10 +309,21 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
     {
         eprintln!("ctxd: team {}: reconcile: {e}", hex(&team));
     }
-    let tip = repo
-        .resolve(&j.store.tracking_ref(j.store.replica().generation()))
-        .ok()
-        .flatten();
+    // The position reads compare with. With a `Compact` pending (§8.6) the
+    // terminal generation's ref is not watched — entries appended to it are
+    // ignored and no cause of lag (Q3): the tip is the successor's ref if
+    // it exists, else the last decided entry (review finding 8).
+    let tip = match j.store.replica().pending() {
+        Some(p) => repo
+            .resolve(&j.store.tracking_ref(p.generation))
+            .ok()
+            .flatten()
+            .or_else(|| j.store.tip().map(str::to_owned)),
+        None => repo
+            .resolve(&j.store.tracking_ref(j.store.replica().generation()))
+            .ok()
+            .flatten(),
+    };
     // Bring every open branch to what the replica decided, even when the
     // import stopped part-way (a prefix is decided).
     let caught = match catch_up(team, j.store.replica(), j.store.history()) {
@@ -325,7 +336,7 @@ pub fn import(j: &mut Joined, live: &LiveMap, catch_up: &mut CatchUp<'_>) -> Str
         e.tip = tip.clone();
         e.stopped = stopped.or_else(|| (!caught.is_empty()).then(|| caught.clone()));
     }
-    resolve_announces(j.store.dir(), team, &repo, tip.as_deref(), live);
+    resolve_announces(j.store.dir(), team, &repo, j.store.tip(), live);
     refresh_proposed(j, live);
     format!("{} {status:?}{caught}", hex(&team))
 }
@@ -358,13 +369,31 @@ pub type Routed = Result<Option<(TeamId, [u8; 16])>, TxError>;
 /// A write the kernel refused as a team write: translated against the
 /// author's overlays and entered into the team's queue. `Ok(None)`: not a
 /// team write (the kernel's refusal stands).
+///
+/// A client transaction id is idempotent across both paths (SPEC §6.1):
+/// the retry of a proposed request answers the same proposal, another
+/// request under a proposal's id, or a proposal under an id the kernel
+/// committed (`txn_committed`), is `TxnIdReuse`.
 pub fn propose(
     teams: &mut BTreeMap<TeamId, Joined>,
     k: &Kernel,
     b: &Batch,
     blobs: &[Vec<u8>],
     refused: TxError,
+    txn_committed: bool,
 ) -> Routed {
+    let txn = b.client_txn_id.map(|t| (t, request_hash(b)));
+    if let Some((t, hash)) = txn {
+        if let Some((team, p)) = proposal_by_txn(teams, &t) {
+            return match p.txn {
+                Some((_, h)) if h == hash => Ok(Some((team, p.id))),
+                _ => Err(TxError::TxnIdReuse { id: t }),
+            };
+        }
+        if txn_committed {
+            return Err(TxError::TxnIdReuse { id: t });
+        }
+    }
     if !contextdb_team::frontend::may_be_team(b, &refused) {
         return Ok(None);
     }
@@ -391,17 +420,32 @@ pub fn propose(
         .iter()
         .map(|b| (*blake3::hash(b).as_bytes(), b.clone()))
         .collect();
-    match j.queue.propose(
+    match j.queue.propose_txn(
         j.store.replica(),
         &j.cfg.member,
         b.principal,
         ops,
         blobs,
         &policy,
+        txn,
     ) {
         Ok(id) => Ok(Some((team, id))),
         Err(e) => Err(propose_error(e)),
     }
+}
+
+/// The proposal a client transaction id entered, in any joined team.
+pub fn proposal_by_txn<'a>(
+    teams: &'a BTreeMap<TeamId, Joined>,
+    txn: &[u8; 16],
+) -> Option<(TeamId, &'a contextdb_team::proposals::Proposal)> {
+    (teams.iter()).find_map(|(t, j)| j.queue.by_txn(txn).map(|p| (*t, p)))
+}
+
+/// The idempotency hash of a request routed to a team: the batch as sent
+/// (its ops, branch, channel, principal and id), which a retry repeats.
+fn request_hash(b: &Batch) -> [u8; 32] {
+    *blake3::hash(&b.canonical_bytes()).as_bytes()
 }
 
 /// A queue refusal as the client sees it (SPEC §6.1 catalog).
@@ -672,6 +716,10 @@ pub fn call(
         Call::Status { .. } => unreachable!("answered above"),
         Call::Prepare { yes, confirm } => {
             use contextdb_team::publish::Mode;
+            // §8.6: with a `Compact` pending, publish waits for its successor.
+            if j.store.replica().pending().is_some() {
+                return fail("CompactPending", "publish waits for the successor");
+            }
             let mode = match (yes, confirm, j.cfg.publish) {
                 (Some(token), _, _) => Mode::Yes(token),
                 (None, true, _) | (None, _, PublishMode::Confirm) => Mode::Confirm,
@@ -912,11 +960,23 @@ pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str
     if pending.is_empty() {
         return;
     }
-    let contains =
-        |oid: &str| tip.is_some_and(|t| t == oid || repo.is_ancestor(oid, t).unwrap_or(false));
+    let within = |oid: &str, t: &str| t == oid || repo.is_ancestor(oid, t).unwrap_or(false);
+    // Resolved: the replica (and so every branch) has the OID; or its git
+    // process is gone and the ref, read again now, does not contain it —
+    // the transaction ended without it. A ref read before the process
+    // exited is never used for that (review finding 2).
     let resolved: Vec<Announce> = pending
         .into_iter()
-        .filter(|a| contains(&a.oid) || !pid_alive(a.pid))
+        .filter(|a| {
+            if tip.is_some_and(|t| within(&a.oid, t)) {
+                return true;
+            }
+            if pid_alive(a.pid) {
+                return false;
+            }
+            let now = repo.resolve(&a.refname).ok().flatten();
+            !now.is_some_and(|r| within(&a.oid, &r))
+        })
         .collect();
     if resolved.is_empty() {
         return;
@@ -934,41 +994,88 @@ pub fn resolve_announces(dir: &Path, team: TeamId, repo: &Repo, tip: Option<&str
 
 /// §11 (Q6): before catch-up creates or attaches a mirror revision with
 /// bytes the team shredded, the store owner's `ShredContent` on `main`, as
-/// its own batch — only when no local record that is not a mirror holds
-/// them (a team admin cannot destroy a developer's private records). Returns
-/// the contents kept for that reason, which `ctx team status` reports.
-pub fn shred_step<W>(w: &mut W, replica: &Replica) -> Result<Vec<ContentHash>, StoreError>
+/// its own batch — only when nothing local holds them (a team admin cannot
+/// destroy a developer's private data): a record that is not a mirror, an
+/// artifact's payload, a ValidationRecord's metadata, or a resolution note
+/// (`notes`: those of `todo` a `ResolveArtifact` in the op log names;
+/// review finding 10). `todo`: [`shred_todo`], less what is known kept.
+/// Returns the contents kept for that reason.
+pub fn shred_step<W>(
+    w: &mut W,
+    todo: &BTreeSet<ContentHash>,
+    notes: &BTreeSet<ContentHash>,
+) -> Result<Vec<ContentHash>, StoreError>
 where
     W: catchup::Writer<Error = StoreError> + ?Sized,
 {
+    if todo.is_empty() {
+        return Ok(Vec::new());
+    }
+    let k = w.kernel();
+    let mut held: BTreeSet<ContentHash> = notes.intersection(todo).copied().collect();
+    for b in k.branches() {
+        let Some(v) = k.branch(b.id) else {
+            continue;
+        };
+        let db = v.db();
+        for r in (0..db.revision_count() as u32).map(RevisionId) {
+            if let Ok(c) = db.revision_content(r)
+                && todo.contains(&c)
+                && db
+                    .revision_logical(r)
+                    .is_some_and(|l| db.logical_origin(l) == Origin::Local)
+            {
+                held.insert(c);
+            }
+        }
+        held.extend(
+            (v.artifacts())
+                .map(|(_, a)| a.payload_hash)
+                .filter(|h| todo.contains(h)),
+        );
+        held.extend(v.validation_metas().filter(|h| todo.contains(h)));
+    }
     let mut kept = Vec::new();
-    for h in replica.shredded() {
-        let k = w.kernel();
-        if k.is_shredded(h) {
+    for &h in todo {
+        if held.contains(&h) {
+            kept.push(h);
             continue;
         }
-        let held_locally = k.branches().any(|b| {
-            let Some(v) = k.branch(b.id) else {
-                return false;
-            };
-            let db = v.db();
-            (0..db.revision_count() as u32).map(RevisionId).any(|r| {
-                db.revision_content(r).is_ok_and(|c| c == *h)
-                    && db
-                        .revision_logical(r)
-                        .is_some_and(|l| db.logical_origin(l) == Origin::Local)
-            })
-        });
-        if held_locally {
-            kept.push(*h);
-            continue;
-        }
-        let mut b = Batch::new(vec![Op::ShredContent { content: *h }]);
+        let mut b = Batch::new(vec![Op::ShredContent { content: h }]);
         b.channel = Channel::Admin;
         b.branch = MAIN;
         w.commit(&b)?;
     }
     Ok(kept)
+}
+
+/// The team's shredded contents the store has not shredded yet.
+pub fn shred_todo(k: &Kernel, replica: &Replica) -> BTreeSet<ContentHash> {
+    (replica.shredded().iter())
+        .filter(|h| !k.is_shredded(h))
+        .copied()
+        .collect()
+}
+
+/// Which of `hashes` a `ResolveArtifact` note in the op log names (notes
+/// live only there), read through `row`.
+pub fn notes_in_log(
+    last: Epoch,
+    row: impl Fn(Epoch) -> Result<contextdb_store::log::LogRow, StoreError>,
+    hashes: &BTreeSet<ContentHash>,
+) -> Result<BTreeSet<ContentHash>, StoreError> {
+    let mut found = BTreeSet::new();
+    for e in 1..=last.0 {
+        let batch = (row(Epoch(e))?.batch()).map_err(|e| StoreError::Io(format!("{e:?}")))?;
+        for op in &batch.ops {
+            if let Op::ResolveArtifact { note: Some(n), .. } = op
+                && hashes.contains(n)
+            {
+                found.insert(*n);
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Whether a publish holds `<team dir>/publish.lock` (between its step 7

@@ -160,6 +160,27 @@ fn proposers(format: ObjectFormat, commit: &[u8]) -> Option<(String, Vec<[u8; 16
     Some((c.trailers.author?, c.trailers.proposals))
 }
 
+fn write_anchor_file(
+    dir: &Path,
+    team: [u8; 16],
+    format: ObjectFormat,
+    remote: &str,
+    anchor: &str,
+) -> std::io::Result<()> {
+    let fmt = match format {
+        ObjectFormat::Sha1 => "sha1",
+        ObjectFormat::Sha256 => "sha256",
+    };
+    write_atomic(
+        &dir.join("anchor"),
+        format!(
+            "team {}\nformat {fmt}\nremote {remote}\nanchor {anchor}\n",
+            hex(&team)
+        )
+        .as_bytes(),
+    )
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     let mut f = File::create(&tmp)?;
@@ -182,19 +203,8 @@ impl TeamStore {
         genesis: &str,
     ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir)?;
-        let fmt = match format {
-            ObjectFormat::Sha1 => "sha1",
-            ObjectFormat::Sha256 => "sha256",
-        };
-        write_atomic(
-            &dir.join("anchor"),
-            format!(
-                "team {}\nformat {fmt}\nremote {remote}\nanchor {genesis}\n",
-                hex(&team)
-            )
-            .as_bytes(),
-        )?;
-        Self::open(dir)
+        write_anchor_file(dir, team, format, remote, genesis)?;
+        Self::open_with(dir, false)
     }
 
     /// Joins from a checkpoint: `first` is a later generation's first entry,
@@ -209,7 +219,10 @@ impl TeamStore {
         let objs = repo.read_entry(first).map_err(StoreError::Git)?;
         let r = Replica::join_checkpoint(team, repo.format(), &objs.commit, &objs.tree)
             .map_err(StoreError::Join)?;
-        let mut s = Self::create(dir, team, repo.format(), remote, first)?;
+        // The Join frame is durable before the anchor names the checkpoint:
+        // an anchor without it would open as a join at genesis (review
+        // finding 12). A crash before the anchor leaves no joined team.
+        std::fs::create_dir_all(dir)?;
         let frame = Frame {
             kind: Kind::Join,
             oid: first.to_owned(),
@@ -218,15 +231,24 @@ impl TeamStore {
             commit: objs.commit,
             tree: objs.tree,
         };
-        s.append(&[frame])?;
-        s.replica = r;
-        s.last = Some(first.to_owned());
-        s.history = History::starting_at(s.last.clone(), catchup::projection(&s.replica));
-        Ok(s)
+        write_atomic(&dir.join("log"), &frame.encode())?;
+        write_anchor_file(dir, team, repo.format(), remote, first)?;
+        Self::open_with(dir, false)
     }
 
     /// Opens a joined team and replays its log; a torn tail is truncated.
+    /// A `log.rebuild` left by an interrupted [`Self::rebuild`] is put
+    /// back first (review finding 12): the rebuild runs again on request.
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
+        Self::open_with(dir, true)
+    }
+
+    fn open_with(dir: &Path, restore: bool) -> Result<Self, StoreError> {
+        let aside = dir.join("log.rebuild");
+        if restore && aside.exists() {
+            std::fs::rename(&aside, dir.join("log"))?;
+            File::open(dir)?.sync_all()?;
+        }
         let text = std::fs::read_to_string(dir.join("anchor"))?;
         let field = |k: &str| -> Result<String, StoreError> {
             text.lines()
@@ -311,19 +333,12 @@ impl TeamStore {
     }
 
     fn write_anchor(&self) -> Result<(), StoreError> {
-        let fmt = match self.format {
-            ObjectFormat::Sha1 => "sha1",
-            ObjectFormat::Sha256 => "sha256",
-        };
-        write_atomic(
-            &self.dir.join("anchor"),
-            format!(
-                "team {}\nformat {fmt}\nremote {}\nanchor {}\n",
-                hex(&self.team),
-                self.remote,
-                self.anchor
-            )
-            .as_bytes(),
+        write_anchor_file(
+            &self.dir,
+            self.team,
+            self.format,
+            &self.remote,
+            &self.anchor,
         )?;
         Ok(())
     }
@@ -424,6 +439,11 @@ impl TeamStore {
         let Some((author, ids)) = proposers(self.format, commit) else {
             return;
         };
+        // A rejected entry whose author did not sign it decides nothing: its
+        // trailers are anyone's words.
+        if matches!(o, Outcome::EntryRejected(_)) && !self.replica.signed_by_author(commit) {
+            return;
+        }
         for (i, id) in ids.iter().enumerate() {
             let d = match o {
                 Outcome::Decided(v) => v.get(i).cloned().unwrap_or(Ok(())),

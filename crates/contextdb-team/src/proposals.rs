@@ -68,6 +68,10 @@ pub struct Proposal {
     /// Earlier proposals it reads or names.
     pub deps: Vec<[u8; 16]>,
     pub state: State,
+    /// The client transaction id of the request that entered it, and that
+    /// request's hash: a retry finds this proposal, another request under
+    /// the same id is `TxnIdReuse` (SPEC §6.1).
+    pub txn: Option<([u8; 16], Hash)>,
 }
 
 #[derive(Debug)]
@@ -106,6 +110,8 @@ pub struct Queue {
     pub proposals: Vec<Proposal>,
     /// Confirm listings (§7.2 step 5): token → the proposal ids it names.
     pub listed: BTreeMap<Hash, Vec<[u8; 16]>>,
+    /// Client transaction id → index into `proposals`.
+    txns: BTreeMap<[u8; 16], usize>,
 }
 
 enum Frame {
@@ -114,6 +120,7 @@ enum Frame {
         author: u32,
         ops: Vec<TeamOp>,
         deps: Vec<[u8; 16]>,
+        txn: Option<([u8; 16], Hash)>,
     },
     State {
         id: [u8; 16],
@@ -176,8 +183,13 @@ impl Frame {
                 author,
                 ops,
                 deps,
+                txn,
             } => {
-                w.u8(0).raw(id).u32(*author);
+                // Tag 3 carries a transaction id; 0 is the frame without.
+                w.u8(if txn.is_some() { 3 } else { 0 }).raw(id).u32(*author);
+                if let Some((t, h)) = txn {
+                    w.raw(t).raw(h);
+                }
                 w.bytes(
                     &TeamBatch {
                         proposals: vec![ops.clone()],
@@ -219,9 +231,14 @@ impl Frame {
         }
         let mut r = Reader(&buf[8..8 + n]);
         let f = match r.u8().ok()? {
-            0 => {
+            tag @ (0 | 3) => {
                 let id = r.array().ok()?;
                 let author = r.u32().ok()?;
+                let txn = if tag == 3 {
+                    Some((r.array().ok()?, r.array().ok()?))
+                } else {
+                    None
+                };
                 let mut ops = TeamBatch::decode(r.bytes().ok()?).ok()?.proposals;
                 if ops.len() != 1 {
                     return None;
@@ -233,6 +250,7 @@ impl Frame {
                     author,
                     ops: ops.pop()?,
                     deps,
+                    txn,
                 }
             }
             1 => Self::State {
@@ -298,6 +316,7 @@ impl Queue {
             log,
             proposals: Vec::new(),
             listed: BTreeMap::new(),
+            txns: BTreeMap::new(),
         };
         let mut at = 0;
         while let Some((f, n)) = Frame::decode(&buf[at..]) {
@@ -318,13 +337,20 @@ impl Queue {
                 author,
                 ops,
                 deps,
-            } => self.proposals.push(Proposal {
-                id,
-                author: PrincipalId(author),
-                ops,
-                deps,
-                state: State::Queued,
-            }),
+                txn,
+            } => {
+                if let Some((t, _)) = txn {
+                    self.txns.insert(t, self.proposals.len());
+                }
+                self.proposals.push(Proposal {
+                    id,
+                    author: PrincipalId(author),
+                    ops,
+                    deps,
+                    state: State::Queued,
+                    txn,
+                })
+            }
             Frame::State { id, state } => {
                 if let Some(p) = self.proposals.iter_mut().find(|p| p.id == id) {
                     p.state = state;
@@ -459,6 +485,11 @@ impl Queue {
         scratch
     }
 
+    /// The proposal a client transaction id entered, if any.
+    pub fn by_txn(&self, txn: &[u8; 16]) -> Option<&Proposal> {
+        self.txns.get(txn).map(|&i| &self.proposals[i])
+    }
+
     /// Enters a proposal: both layers, then a durable enqueue frame.
     #[allow(clippy::too_many_arguments)]
     pub fn propose(
@@ -469,6 +500,22 @@ impl Queue {
         ops: Vec<TeamOp>,
         blobs: BTreeMap<Hash, Vec<u8>>,
         policy: &LocalPolicy,
+    ) -> Result<[u8; 16], ProposeError> {
+        self.propose_txn(replica, member, author, ops, blobs, policy, None)
+    }
+
+    /// [`Queue::propose`] under a client transaction id and the request's
+    /// hash; the caller has checked that no proposal holds the id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_txn(
+        &mut self,
+        replica: &Replica,
+        member: &str,
+        author: PrincipalId,
+        ops: Vec<TeamOp>,
+        blobs: BTreeMap<Hash, Vec<u8>>,
+        policy: &LocalPolicy,
+        txn: Option<([u8; 16], Hash)>,
     ) -> Result<[u8; 16], ProposeError> {
         if ops.is_empty() || ops.len() > MAX_OPS {
             return Err(ProposeError::TooLarge("ops"));
@@ -485,10 +532,26 @@ impl Queue {
         if blobs.values().any(|b| b.len() > MAX_BLOB_BYTES) {
             return Err(ProposeError::TooLarge("blob"));
         }
+        // One entry must hold it: its batch and the blobs the replica lacks
+        // (Q11; otherwise it would wait forever, review finding 5).
+        let batch_len = (TeamBatch {
+            proposals: vec![ops.clone()],
+        })
+        .encode()
+        .len();
+        let new_blobs: usize = (blobs.iter())
+            .filter(|(h, _)| replica.blob(h).is_none())
+            .map(|(_, b)| b.len())
+            .sum();
+        if batch_len + new_blobs > crate::ops::MAX_ENTRY_BYTES {
+            return Err(ProposeError::TooLarge("entry"));
+        }
         let queued = self.queued_records(self.proposals.len());
         local_layer(replica, &queued, policy, author, &ops)?;
         // Dependencies: earlier pending proposals that create or change a
-        // path this one names.
+        // path this one names, hidden ones too — this one was checked on
+        // top of them, so it waits for and dies with them; a dependent's
+        // reason is only "dependency", which names nothing.
         let named: BTreeSet<&str> = ops.iter().flat_map(|op| names(op).0).collect();
         let deps: Vec<[u8; 16]> = (self.proposals.iter())
             .filter(|p| p.state.pending())
@@ -512,11 +575,12 @@ impl Queue {
             }
             scratch.scratch_apply(member, id, &ops, &blobs)
         };
-        if let Err(r) = attempt(false) {
-            return Err(if attempt(true).is_ok() {
-                ProposeError::QueueConflict
-            } else {
-                ProposeError::Team(r)
+        // The reason given is the visible attempt's: the full overlay's
+        // could name what a hidden proposal wrote (review finding 7).
+        if attempt(false).is_err() {
+            return Err(match attempt(true) {
+                Ok(()) => ProposeError::QueueConflict,
+                Err(r) => ProposeError::Team(r),
             });
         }
         for (h, b) in &blobs {
@@ -534,6 +598,7 @@ impl Queue {
             author: author.0,
             ops,
             deps,
+            txn,
         }])?;
         Ok(id)
     }

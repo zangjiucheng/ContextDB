@@ -534,6 +534,7 @@ pub fn publish(
             Err(e) if e.starts_with("PolicyChanged") || e.starts_with("QueueChanged") => continue,
             Err(e) => return Err(e),
         }
+        announce_own(data, team, &remote, &e.refname, &oid)?;
         match push(&cfg.repo, &remote, &oid, &e.refname) {
             Ok(true) => {
                 git(&cfg.repo, &["fetch", "-q", &remote])?;
@@ -983,6 +984,7 @@ fn compact(data: &Path, team: [u8; 16], resume: bool, force: bool) -> Result<u8,
             return Err("no Compact is pending: run `ctx team compact` without --resume".into());
         }
         let oid = sign_commit(&repo, Path::new(&cfg.key), &e.payload)?;
+        announce_own(data, team, &remote, &e.refname, &oid)?;
         if !push(&cfg.repo, &remote, &oid, &e.refname)? {
             return Err("the team moved while compacting: run it again".into());
         }
@@ -995,6 +997,7 @@ fn compact(data: &Path, team: [u8; 16], resume: bool, force: bool) -> Result<u8,
     }
     // Step 2: the successor.
     let oid = sign_commit(&repo, Path::new(&cfg.key), &e.payload)?;
+    announce_own(data, team, &remote, &e.refname, &oid)?;
     if push_force(&cfg.repo, &remote, &oid, &e.refname, force)? {
         println!("successor {oid} pushed to {}", e.refname);
     } else {
@@ -1087,4 +1090,43 @@ fn partial_clone(repo: &Path) -> bool {
     std::fs::read_to_string(repo.join(".git").join("config"))
         .map(|c| c.contains("partialclone") || c.contains("promisor = true"))
         .unwrap_or(true)
+}
+
+/// Before a push with hooks off (publish, compaction), the announce the
+/// hook would have made: `git push` also moves the team's tracking ref
+/// through the fetch refspec, and reads must lag until the entry is
+/// imported (review finding 4). Durable first, then to `ctxd`, under this
+/// process's pid; it resolves once the replica holds the OID.
+fn announce_own(
+    data: &Path,
+    team: [u8; 16],
+    remote: &str,
+    refname: &str,
+    oid: &str,
+) -> Result<(), String> {
+    let Some(rest) = refname.strip_prefix("refs/contextdb/team/") else {
+        return Ok(());
+    };
+    let tracking = format!("refs/contextdb/remotes/{remote}/team/{rest}");
+    let a = contextdb_daemon::team::Announce {
+        refname: tracking.clone(),
+        oid: oid.to_owned(),
+        pid: std::process::id(),
+    };
+    contextdb_daemon::team::append_announce(&team_dir(data, &team), &a)
+        .map_err(|e| format!("team announce not durable: {e}"))?;
+    if let Some(mut c) = connect_within(data, std::time::Duration::from_millis(500)) {
+        let r = c
+            .call(&Request::TeamAnnounce {
+                team,
+                refname: tracking,
+                oid: oid.to_owned(),
+                pid: a.pid,
+            })
+            .map_err(|e| format!("ctxd did not acknowledge the announce: {e:?}"))?;
+        if let Response::Error { code, detail } = r.response {
+            return Err(format!("announce refused: {code}: {detail}"));
+        }
+    }
+    Ok(())
 }

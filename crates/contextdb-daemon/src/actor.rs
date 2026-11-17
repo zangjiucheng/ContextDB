@@ -260,6 +260,10 @@ struct Actor<D: Durability> {
     /// P10: joined teams; only the actor reads or writes them.
     teams: std::collections::BTreeMap<TeamId, team::Joined>,
     team_live: team::LiveMap,
+    /// Team-shredded contents a local holder keeps (§11): checked once per
+    /// process, since what holds them (records, artifacts, validation
+    /// metadata, notes) is never removed.
+    shred_kept: std::collections::BTreeSet<ContentHash>,
 }
 /// A catch-up writer over the store's single writer: each batch carries
 /// the mirror payloads, read from the replica.
@@ -366,6 +370,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
         epochs: epochs.clone(),
         teams,
         team_live: team_live.clone(),
+        shred_kept: Default::default(),
     };
     std::thread::Builder::new()
         .name("ctxd-actor".into())
@@ -487,23 +492,38 @@ impl<D: Durability + Clone> Actor<D> {
                                         replica: &contextdb_team::replica::Replica,
                                         h: &contextdb_team::catchup::History|
                      -> Result<(), (BranchId, StoreError)> {
-                        if let Err(e) = self.store.kernel() {
-                            return Err((MAIN, e));
-                        }
+                        // Notes live only in the op log: read (only when
+                        // there is something to shred) before the writer
+                        // borrows the actor.
+                        let mut todo = match self.store.kernel() {
+                            Ok(k) => team::shred_todo(k, replica),
+                            Err(e) => return Err((MAIN, e)),
+                        };
+                        todo.retain(|h| !self.shred_kept.contains(h));
+                        let notes = if todo.is_empty() {
+                            Default::default()
+                        } else {
+                            let store = &self.store;
+                            team::notes_in_log(store.epoch(), |e| store.read_row(e), &todo)
+                                .map_err(|e| (MAIN, e))?
+                        };
                         let mut w = ActorWriter {
                             actor: self,
                             replica,
                         };
                         // §11 (Q6): the local shred step precedes any mirror.
-                        let kept = team::shred_step(&mut w, replica).map_err(|e| (MAIN, e))?;
+                        let kept =
+                            team::shred_step(&mut w, &todo, &notes).map_err(|e| (MAIN, e))?;
+                        let r = contextdb_team::catchup::catch_up_all(&mut w, team, h).map(|_| ());
                         if !kept.is_empty() {
                             eprintln!(
-                                "ctxd: team {}: {} shredded content(s) kept: a local record holds them",
+                                "ctxd: team {}: {} shredded content(s) kept: local data holds them",
                                 contextdb_team::commit::hex(&team),
                                 kept.len()
                             );
+                            self.shred_kept.extend(kept);
                         }
-                        contextdb_team::catchup::catch_up_all(&mut w, team, h).map(|_| ())
+                        r
                     };
                     lines.push(team::import(j, &live, &mut catch_up));
                 }
@@ -547,8 +567,11 @@ impl<D: Durability + Clone> Actor<D> {
                 refused,
                 reply,
             } => {
+                let committed = (batch.client_txn_id).is_some_and(|t| {
+                    matches!(self.store.txn_status(&t), Ok(TxnStatus::Committed { .. }))
+                });
                 let r = match self.store.kernel() {
-                    Ok(k) => team::propose(&mut self.teams, k, &batch, &blobs, refused),
+                    Ok(k) => team::propose(&mut self.teams, k, &batch, &blobs, refused, committed),
                     Err(_) => Err(refused),
                 };
                 if let Ok(Some((t, _))) = &r
@@ -580,6 +603,21 @@ impl<D: Durability + Clone> Actor<D> {
         }
     }
     fn commit(&mut self, writes: Vec<WriteRequest>) {
+        // A client transaction id a team proposal holds is not committed
+        // locally (SPEC §6.1): `TxnIdReuse`, which `team_route` resolves
+        // to the proposal for a retry of the same request.
+        let (writes, held): (Vec<_>, Vec<_>) = writes.into_iter().partition(|w| {
+            (w.batch.client_txn_id).is_none_or(|t| team::proposal_by_txn(&self.teams, &t).is_none())
+        });
+        for w in held {
+            let id = w.batch.client_txn_id.expect("held by its id");
+            let _ = w
+                .reply
+                .send(Err(StoreError::Tx(TxError::TxnIdReuse { id })));
+        }
+        if writes.is_empty() {
+            return;
+        }
         // Payloads first: a blob failure poisons the store, which fails the group.
         // Ordered, not flushed: the group's op_log sync makes them durable
         // (ADR 0008 §17).

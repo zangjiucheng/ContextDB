@@ -1333,3 +1333,230 @@ fn an_import_during_a_publish_never_loses_the_outcome() {
         queue_states(&s)
     );
 }
+
+#[test]
+fn an_announce_is_dropped_only_by_a_ref_read_after_its_process_ended() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("announce-race");
+    let (a1, ba) = blob(b"a1");
+    let t0 = w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    // T1 is fetched (the ref moved), its git process is gone, and the
+    // replica is still at T0: a ref read before the process ended said T0.
+    let (b1, bb) = blob(b"b1");
+    let t1 = w.entry(vec![new_op("k/b", b1, true)], vec![bb]);
+    w.push();
+    w.fetch();
+    let mut child = Command::new("true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    let live = team::LiveMap::default();
+    let tracking = format!("refs/contextdb/remotes/origin/team/{}/g0", hex(&TEAM));
+    live.lock()
+        .unwrap()
+        .entry(TEAM)
+        .or_default()
+        .pending
+        .insert((tracking.clone(), t1.clone()), dead);
+    let dir = w.tmp.join("ann-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = Repo::open(&w.edge).unwrap();
+    team::resolve_announces(&dir, TEAM, &repo, Some(&t0), &live);
+    assert_eq!(
+        live.lock().unwrap()[&TEAM].pending.len(),
+        1,
+        "the ref holds T1: still pending"
+    );
+    // Once the replica has T1, it resolves.
+    team::resolve_announces(&dir, TEAM, &repo, Some(&t1), &live);
+    assert!(live.lock().unwrap()[&TEAM].pending.is_empty());
+}
+
+#[test]
+fn a_client_txn_id_is_idempotent_across_proposals_and_local_commits() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("txn");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let sid = session(&s);
+    let send = |ops: Vec<Op>, blobs: Vec<Vec<u8>>, txn: [u8; 16]| {
+        s.handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(sid),
+                ops,
+                blobs,
+                expect_cert_valid: false,
+                client_txn_id: Some(txn),
+            },
+        )
+        .response
+    };
+    let team_write = |path: &str| {
+        let body = path.as_bytes().to_vec();
+        (
+            vec![Op::CreateLogical {
+                origin: Origin::Local,
+                key: key(path),
+                kind: RecordKind::Decision,
+                scope_lane: format!("team:{}/main", hex(&TEAM)),
+                content: *blake3::hash(&body).as_bytes(),
+                adopt_as_base: false,
+            }],
+            vec![body],
+        )
+    };
+    let local_write = |name: &str| {
+        let body = name.as_bytes().to_vec();
+        (
+            vec![Op::CreateLogical {
+                origin: Origin::Local,
+                key: format!("local/{name}"),
+                kind: RecordKind::Decision,
+                scope_lane: "main".into(),
+                content: *blake3::hash(&body).as_bytes(),
+                adopt_as_base: false,
+            }],
+            vec![body],
+        )
+    };
+    let reuse = |r: &Response| code(r) == "TxnIdReuse";
+    // A proposal and its retry: one proposal, the same id.
+    let (ops, blobs) = team_write("p1");
+    let first = match send(ops.clone(), blobs.clone(), [1; 16]) {
+        Response::Proposed { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    match send(ops, blobs, [1; 16]) {
+        Response::Proposed { id, .. } => assert_eq!(id, first),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(queue_states(&s).len(), 1, "{:?}", queue_states(&s));
+    // Another team write under the proposal's id.
+    let (ops, blobs) = team_write("p2");
+    let r = send(ops, blobs, [1; 16]);
+    assert!(reuse(&r), "{r:?}");
+    // A local write under the proposal's id commits nothing.
+    let (ops, blobs) = local_write("l1");
+    let r = send(ops, blobs, [1; 16]);
+    assert!(reuse(&r), "{r:?}");
+    // A team write under a locally committed id.
+    let (ops, blobs) = local_write("l2");
+    let r = send(ops, blobs, [2; 16]);
+    assert!(matches!(r, Response::Committed { .. }), "{r:?}");
+    let (ops, blobs) = team_write("p3");
+    let r = send(ops, blobs, [2; 16]);
+    assert!(reuse(&r), "{r:?}");
+    assert_eq!(queue_states(&s).len(), 1, "{:?}", queue_states(&s));
+    // The id survives a restart of the queue.
+    drop(s);
+    let s = daemon(&w);
+    let sid = session(&s);
+    let (ops, blobs) = team_write("p1");
+    let r = s
+        .handle(
+            AGENT,
+            Request::Commit {
+                binding: Binding::root(sid),
+                ops,
+                blobs,
+                expect_cert_valid: false,
+                client_txn_id: Some([1; 16]),
+            },
+        )
+        .response;
+    match r {
+        Response::Proposed { id, .. } => assert_eq!(id, first),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_team_shred_keeps_bytes_a_local_artifact_or_note_holds() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("shredkeep");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let raw = |blobs: Vec<Vec<u8>>, ops: Vec<Op>| match s
+        .handle(
+            ADMIN,
+            Request::Raw {
+                blobs,
+                batch: Batch::new(ops),
+            },
+        )
+        .response
+    {
+        Response::Committed { result } => result,
+        other => panic!("{other:?}"),
+    };
+    let x = b"local record".to_vec();
+    let r = raw(
+        vec![x.clone()],
+        vec![Op::CreateLogical {
+            origin: Origin::Local,
+            key: "dec:x".into(),
+            kind: RecordKind::Decision,
+            scope_lane: "repo".into(),
+            content: *blake3::hash(&x).as_bytes(),
+            adopt_as_base: true,
+        }],
+    );
+    let rev = r.allocations.new_revisions[0];
+    // A local artifact's payload and its resolution note.
+    let (p, bp) = blob(b"payload");
+    let (n, bn) = blob(b"note");
+    let r = raw(
+        vec![bp.1.clone()],
+        vec![Op::OpenArtifact {
+            ty: ArtifactType::PendingReview,
+            target: rev.into(),
+            payload_hash: p,
+        }],
+    );
+    let art = r.allocations.new_artifacts[0];
+    raw(
+        vec![bn.1.clone()],
+        vec![Op::ResolveArtifact {
+            id: ArtifactRef::Existing(art),
+            note: Some(n),
+        }],
+    );
+    // The team writes and shreds the same bytes, and bytes nothing local
+    // holds.
+    let (q, bq) = blob(b"team only");
+    w.entry(
+        vec![
+            new_op("k/p", p, false),
+            new_op("k/n", n, false),
+            new_op("k/q", q, false),
+        ],
+        vec![bp, bn, bq],
+    );
+    for h in [p, n, q] {
+        w.entry(vec![TeamOp::TeamShred { content: h }], vec![]);
+    }
+    w.push();
+    w.fetch();
+    let lines = sync(&s);
+    assert!(!lines[0].contains("Stalled"), "{lines:?}");
+    let k = &s.actor.snapshot().kernel;
+    assert!(k.is_shredded(&q));
+    assert!(!k.is_shredded(&p), "an artifact payload is kept");
+    assert!(!k.is_shredded(&n), "a resolution note is kept");
+}

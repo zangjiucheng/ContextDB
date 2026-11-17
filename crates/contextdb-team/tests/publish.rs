@@ -850,3 +850,85 @@ fn an_entry_over_the_limits_is_split_and_the_rest_waits() {
     w.sync();
     assert_eq!(w.state(&y), State::Accepted);
 }
+
+#[test]
+fn a_dependent_of_a_deferred_proposal_waits_too_and_oversized_is_refused() {
+    if !have_git() {
+        return;
+    }
+    let mut w = World::new("defer");
+    let acc = local(true);
+    let (a, ba) = blob(b"base");
+    let base = w
+        .propose("bob", &acc, vec![new("conv/a", "main", a, true)], ba)
+        .unwrap();
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(p.entry.as_ref().unwrap().proposals, vec![base]);
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    let expect = |n: usize| -> Vec<TeamOp> {
+        (0..n)
+            .map(|_| TeamOp::Expect {
+                path: "conv/a".into(),
+                content: a,
+            })
+            .collect()
+    };
+    let x = w
+        .propose("bob", &acc, expect(501), BTreeMap::new())
+        .unwrap();
+    let (b, bb) = blob(b"b1");
+    let mut y_ops = vec![new("conv/b", "main", b, false)];
+    y_ops.extend(expect(500));
+    let y = w.propose("bob", &acc, y_ops, bb).unwrap();
+    let (b2, bb2) = blob(b"b2");
+    let z = w
+        .propose(
+            "bob",
+            &acc,
+            vec![TeamOp::Revise {
+                path: "conv/b".into(),
+                content: b2,
+                adopt_as_base: false,
+            }],
+            bb2,
+        )
+        .unwrap();
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(p.entry.as_ref().unwrap().proposals, vec![x]);
+    assert!(
+        p.conflicted.is_empty(),
+        "z waits with y: {:?}",
+        p.conflicted
+    );
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    assert_eq!(w.state(&z), State::Queued);
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(p.entry.as_ref().unwrap().proposals, vec![y, z]);
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    assert_eq!(
+        (w.state(&y), w.state(&z)),
+        (State::Accepted, State::Accepted)
+    );
+    // Q11: a proposal no entry can hold is refused at enqueue.
+    let mut ops = Vec::new();
+    let mut blobs = BTreeMap::new();
+    for i in 0..9u8 {
+        let body = vec![i; (1 << 20) - 16];
+        let h = *blake3::hash(&body).as_bytes();
+        ops.push(new(&format!("big/{i}"), "main", h, false));
+        blobs.insert(h, body);
+    }
+    assert!(matches!(
+        w.propose("bob", &acc, ops, blobs),
+        Err(ProposeError::TooLarge("entry"))
+    ));
+}

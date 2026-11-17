@@ -189,8 +189,15 @@ pub fn prepare_on(
     let mut ops_all = Vec::new();
     let mut blobs: BTreeMap<Hash, Vec<u8>> = BTreeMap::new();
     let (mut n_ops, mut bytes) = (0usize, 0usize);
+    // Proposals that wait for the next entry, and so their dependents
+    // (review finding 5): never conflicted for want of room.
+    let mut deferred: BTreeSet<[u8; 16]> = BTreeSet::new();
     for id in &set {
         let p = queue.get(id).expect("queued").clone();
+        if p.deps.iter().any(|d| deferred.contains(d)) {
+            deferred.insert(p.id);
+            continue;
+        }
         if p.deps.iter().any(|d| dead.contains(d)) {
             dead.insert(p.id);
             out.conflicted.push((p.id, "dependency".into()));
@@ -219,6 +226,7 @@ pub fn prepare_on(
             || bytes + size + extra + blobs.values().map(Vec::len).sum::<usize>() > MAX_ENTRY_BYTES
         {
             // Next entry.
+            deferred.insert(p.id);
             continue;
         }
         let mut trial = scratch.clone();

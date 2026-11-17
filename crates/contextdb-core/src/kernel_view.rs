@@ -289,6 +289,11 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
             .map(|((_, v), rec)| (self.g_vector(v), rec.clone()))
             .collect()
     }
+    /// The metadata blobs of the branch's ValidationRecords (ADR 0015 §3):
+    /// local bytes a team shred must not destroy (ADR 0018 §11).
+    pub fn validation_metas(&self) -> impl Iterator<Item = ContentHash> + '_ {
+        (self.b.db.validations().values()).filter_map(|rec| rec.meta)
+    }
     /// Visible rules with a Sem incidence on logical `l` (global ids).
     pub fn sem_rules_of(&self, l: LogicalId) -> Vec<RuleId> {
         let Ok(local) = self.ll(l) else {

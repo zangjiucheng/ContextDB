@@ -453,6 +453,21 @@ impl Replica {
         self.db.logical_by_key(&self.key(path))
     }
 
+    /// Whether `commit` carries a valid signature by a key of the member
+    /// its `Ctx-Author` names, under the document in force: a rejected
+    /// entry decides that member's proposals only then (review finding 9;
+    /// anyone may push an entry that names another member).
+    pub fn signed_by_author(&self, commit: &[u8]) -> bool {
+        let (Some(doc), Ok(c)) = (&self.doc, commit::parse(commit, self.format)) else {
+            return false;
+        };
+        let (Some(author), Some(sig)) = (&c.trailers.author, &c.signature) else {
+            return false;
+        };
+        let keys = doc.keys_of(author);
+        !keys.is_empty() && sshsig::verify(sig, "git", &c.payload, &keys).is_ok()
+    }
+
     /// The team's shred set (§11).
     pub fn shredded(&self) -> &BTreeSet<Hash> {
         &self.shred

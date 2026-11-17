@@ -327,11 +327,20 @@ fn import_restart_and_torn_log() {
     assert_eq!(s.replica().digest(), p.replica.digest());
     // `ctx team rebuild`: discarded and replayed from the genesis.
     drop(s);
-    let (mut s, status) = TeamStore::rebuild(&dir, &repo).unwrap();
+    let (s, status) = TeamStore::rebuild(&dir, &repo).unwrap();
     assert_eq!(status, Status::Imported(4));
     assert_eq!(s.replica().digest(), p.replica.digest());
     assert_eq!(s.history().entries.len(), 4);
     assert!(!dir.join("log.rebuild").exists());
+    // A rebuild interrupted after the old log was set aside: open puts it
+    // back over the partial new one.
+    drop(s);
+    std::fs::rename(dir.join("log"), dir.join("log.rebuild")).unwrap();
+    std::fs::write(dir.join("log"), b"").unwrap();
+    let mut s = TeamStore::open(&dir).unwrap();
+    assert!(!dir.join("log.rebuild").exists());
+    assert_eq!(s.replica().digest(), p.replica.digest());
+    assert_eq!(s.history().entries.len(), 4);
     // More entries later.
     let (c, bc) = blob(b"c");
     p.entry(&BOB, "bob", vec![vec![new_op("k/c", c)]], vec![bc]);
@@ -502,10 +511,17 @@ fn compaction_with_real_objects() {
     .unwrap();
     assert_eq!(off.import(&frepo).unwrap(), Status::Imported(4));
     assert_eq!(off.replica().digest(), p.replica.digest());
-    // A checkpoint joiner given F out of band.
-    let mut joiner =
-        TeamStore::create_from_checkpoint(&w.tmp.join("d-join"), TEAM, &frepo, "origin", &f)
-            .unwrap();
+    // A checkpoint joiner given F out of band. A crash after the Join
+    // frame and before the anchor leaves no joined team (never one that
+    // opens at genesis); the join runs again.
+    let jdir = w.tmp.join("d-join");
+    TeamStore::create_from_checkpoint(&jdir, TEAM, &frepo, "origin", &f).unwrap();
+    std::fs::remove_file(jdir.join("anchor")).unwrap();
+    assert!(TeamStore::open(&jdir).is_err());
+    let joiner = TeamStore::create_from_checkpoint(&jdir, TEAM, &frepo, "origin", &f).unwrap();
+    assert_eq!(joiner.replica().digest(), p.replica.digest());
+    drop(joiner);
+    let mut joiner = TeamStore::open(&jdir).unwrap();
     assert_eq!(joiner.replica().digest(), p.replica.digest());
     // Generation 1 continues for everyone, and restarts replay it.
     let (b, bb) = blob(b"b");
@@ -628,4 +644,108 @@ fn partial_clone_reports_missing_blobs_until_fetched() {
         }
     }
     assert_eq!(s.replica().digest(), p.replica.digest());
+}
+
+#[test]
+fn a_rejected_entry_decides_proposals_only_when_its_author_signed_it() {
+    if !have_git() {
+        return;
+    }
+    let w = World::new("forged");
+    let mut p = Publisher::new(&w);
+    let genesis = p.entry(
+        &ALICE,
+        "alice",
+        vec![vec![TeamOp::SetTeamAccess {
+            doc: Box::new(doc()),
+        }]],
+        vec![],
+    );
+    // Alice's key signs an entry that names bob: rejected (`Signature`),
+    // and bob's proposal stays undecided.
+    let (a, ba) = blob(b"a");
+    let forged = [p.next_id; 16];
+    p.entry(
+        &ALICE,
+        "bob",
+        vec![vec![new_op("k/a", a)]],
+        vec![ba.clone()],
+    );
+    // Bob signs an entry with a wrong batch hash: rejected, and decided.
+    let own = [0x55; 16];
+    let batch = TeamBatch {
+        proposals: vec![vec![new_op("k/b", a)]],
+    }
+    .encode();
+    let seq = p.seq.to_string();
+    p.write(
+        vec![
+            ("Ctx-Team", hex(&TEAM)),
+            ("Ctx-Team-Seq", seq),
+            ("Ctx-Author", "bob".into()),
+            ("Ctx-Batch-Hash", "00".repeat(32)),
+            ("Ctx-Accept-Version", "1".into()),
+            ("Ctx-Proposal", hex(&own)),
+        ],
+        vec![("batch".to_owned(), batch), ba],
+        &BOB,
+        "ctx team: entry",
+    );
+    p.push();
+    let edge = w.edge("edge", &[]);
+    git(&edge, &["fetch", "-q", "origin"]);
+    let repo = Repo::open(&edge).unwrap();
+    let dir = w.tmp.join("data-edge");
+    let mut s = TeamStore::create(&dir, TEAM, ObjectFormat::Sha1, "origin", &genesis).unwrap();
+    assert_eq!(s.import(&repo).unwrap(), Status::Imported(3));
+    assert_eq!(s.decision("bob", &forged), None);
+    assert!(
+        matches!(s.decision("bob", &own), Some(Err(r)) if r.code == "BatchHash"),
+        "{:?}",
+        s.decision("bob", &own)
+    );
+    // The same after a restart (the log replays the decisions).
+    drop(s);
+    let s = TeamStore::open(&dir).unwrap();
+    assert_eq!(s.decision("bob", &forged), None);
+    assert!(s.decision("bob", &own).is_some());
+}
+
+#[test]
+fn replace_refs_and_grafts_never_change_what_is_imported() {
+    if !have_git() {
+        return;
+    }
+    let w = World::new("replace");
+    let mut p = Publisher::new(&w);
+    let genesis = p.entry(
+        &ALICE,
+        "alice",
+        vec![vec![TeamOp::SetTeamAccess {
+            doc: Box::new(doc()),
+        }]],
+        vec![],
+    );
+    let (a, ba) = blob(b"a");
+    let first = p.entry(&BOB, "bob", vec![vec![new_op("k/a", a)]], vec![ba]);
+    let (b, bb) = blob(b"b");
+    let second = p.entry(&BOB, "bob", vec![vec![new_op("k/b", b)]], vec![bb]);
+    p.push();
+    let edge = w.edge("edge", &[]);
+    git(&edge, &["fetch", "-q", "origin"]);
+    // A replace ref puts the second entry in the first's place, and a graft
+    // file drops the second entry's parent.
+    git(&edge, &["replace", &first, &second]);
+    std::fs::write(edge.join(".git/info/grafts"), format!("{second}\n")).unwrap();
+    let repo = Repo::open(&edge).unwrap();
+    let dir = w.tmp.join("data-edge");
+    let mut s = TeamStore::create(&dir, TEAM, ObjectFormat::Sha1, "origin", &genesis).unwrap();
+    assert_eq!(s.import(&repo).unwrap(), Status::Imported(3));
+    assert_eq!(s.replica().digest(), p.replica.digest());
+    let objects = repo.read_entries(std::slice::from_ref(&first)).unwrap();
+    let e = objects[0].as_ref().unwrap();
+    assert_eq!(
+        hex(&contextdb_team::gitobj::object_id(ObjectFormat::Sha1, "commit", &e.commit).unwrap()),
+        first
+    );
 }

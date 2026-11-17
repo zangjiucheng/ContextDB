@@ -2959,7 +2959,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let (Some((batch, blobs)), StoreError::Tx(refused)) = (team, &e) else {
             return refusal(&e);
         };
-        if !contextdb_team::frontend::may_be_team(&batch, refused) {
+        // `TxnIdReuse` may be the retry of a proposed request (the actor
+        // holds a proposal's id back from the kernel).
+        if !contextdb_team::frontend::may_be_team(&batch, refused)
+            && !matches!(refused, TxError::TxnIdReuse { .. })
+        {
             return refusal(&e);
         }
         let refused = refused.clone();

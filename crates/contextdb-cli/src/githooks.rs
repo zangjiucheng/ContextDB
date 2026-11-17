@@ -393,14 +393,17 @@ pub fn is_dry_run(args: &[String]) -> Option<bool> {
             let name = long.split('=').next().unwrap_or("");
             if name == "no-dry-run" {
                 dry = false;
-            } else if name.len() >= 3 && "dry-run".starts_with(name) {
-                // `--dry`, `--dry-r`, … : git's unique abbreviations.
+            } else if name == "d" {
+                // Ambiguous in git (`--dry-run`, `--delete`): cannot tell.
+                return None;
+            } else if name.len() >= 2 && "dry-run".starts_with(name) {
+                // `--dr`, `--dry`, `--dry-r`, … : git's unique abbreviations.
                 dry = true;
-            } else if matches!(
-                name,
-                "repo" | "receive-pack" | "exec" | "push-option" | "signed"
-            ) && !long.contains('=')
+            } else if matches!(name, "repo" | "receive-pack" | "exec" | "push-option")
+                && !long.contains('=')
             {
+                // These take the next argument as their value; `--signed`
+                // takes one only as `--signed=<value>` (review finding 1).
                 j += 1;
             }
         } else if let Some(short) = a.strip_prefix('-').filter(|s| !s.is_empty()) {
@@ -445,6 +448,11 @@ mod tests {
             ("git push -- -n", Some(false)),
             ("git push -o n origin", Some(false)),
             ("git push -on origin", Some(false)),
+            ("git push --dr origin", Some(true)),
+            ("git push --d origin", None),
+            ("git push --signed --dry-run origin", Some(true)),
+            ("git push --signed=if-asked -n origin", Some(true)),
+            ("git push --push-option -n origin", Some(false)),
             ("git -c core.x=1 -C /tmp push -n", Some(true)),
             ("git p -n", None),
             ("git --dry-run", None),

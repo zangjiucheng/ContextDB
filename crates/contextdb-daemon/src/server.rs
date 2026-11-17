@@ -248,6 +248,7 @@ impl Daemon {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let mut sockets = Vec::new();
+        let mut listeners = Vec::new();
         for (n, (channel, name)) in CHANNELS.iter().enumerate() {
             let path = channel_dir(&run, *channel).join(name);
             // Stale sockets are removed only now that the flock is held,
@@ -260,15 +261,14 @@ impl Daemon {
                 channel: *channel,
                 principal: options.principals[n],
             };
-            let (service, stop, hook) = (service.clone(), stop.clone(), options.peer_uid.clone());
-            std::thread::Builder::new()
-                .name(format!("ctxd-accept-{name}"))
-                .spawn(move || accept(listener, identity, uid, service, stop, hook))?;
+            listeners.push((listener, identity, *name));
             sockets.push(path);
         }
-        // P10 (ADR 0018 §8.3): the socket is bound before the announce files
-        // are read, so an announce written after this read is acknowledged
-        // over the socket; until resolved, reads over the team lag.
+        // P10 (ADR 0018 §8.3): the sockets are bound before the announce
+        // files are read, and nothing is served before that (review finding
+        // 3): an announce written after this read finds a socket and waits in
+        // its backlog for the acknowledgement; until resolved, reads over the
+        // team lag.
         if let Ok(entries) = std::fs::read_dir(dir.join(crate::team::TEAMS_DIR)) {
             for e in entries.flatten() {
                 let Some(team) = e
@@ -288,6 +288,12 @@ impl Daemon {
                     pending.insert((a.refname, a.oid), a.pid);
                 }
             }
+        }
+        for (listener, identity, name) in listeners {
+            let (service, stop, hook) = (service.clone(), stop.clone(), options.peer_uid.clone());
+            std::thread::Builder::new()
+                .name(format!("ctxd-accept-{name}"))
+                .spawn(move || accept(listener, identity, uid, service, stop, hook))?;
         }
         // P10 `lag_check` (ADR 0018 §8.3): re-read the team refs, catching
         // ref moves that bypassed the hooks; an unchanged ref imports

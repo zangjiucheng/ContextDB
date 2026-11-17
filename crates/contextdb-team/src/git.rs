@@ -73,6 +73,11 @@ impl Repo {
             // Never fetch from a promisor remote behind the caller's back: a
             // partial clone reports missing objects instead (§8.1).
             .env("GIT_NO_LAZY_FETCH", "1")
+            // The objects named, never what a replace ref or a graft puts in
+            // their place (review finding 11); a graft file that cannot be
+            // opened is no grafts.
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("GIT_GRAFT_FILE", "/nonexistent/contextdb-no-grafts")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -198,7 +203,7 @@ impl Repo {
         }
         let mut res = Vec::with_capacity(oids.len());
         let mut rest = &out[..];
-        for _ in oids {
+        for oid in oids {
             let nl = rest
                 .iter()
                 .position(|b| *b == b'\n')
@@ -219,7 +224,14 @@ impl Repo {
             if rest.len() < size + 1 {
                 return Err(failed("cat-file: truncated body"));
             }
-            res.push(Some((kind.to_owned(), rest[..size].to_vec())));
+            let body = &rest[..size];
+            // Each object hashes to the id it was asked by.
+            let id = crate::gitobj::object_id(self.format, kind, body)
+                .map_err(|_| failed(format!("{oid}: SHA-1 collision attack")))?;
+            if crate::commit::hex(&id) != *oid {
+                return Err(failed(format!("{oid}: object does not hash to its id")));
+            }
+            res.push(Some((kind.to_owned(), body.to_vec())));
             rest = &rest[size + 1..];
         }
         Ok(res)
