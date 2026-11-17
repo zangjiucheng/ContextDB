@@ -76,13 +76,16 @@ pub enum Outcome {
     InvalidSuccessor(Reason),
 }
 
+/// One rule of [`Why`]: enabled, and its premises and references as
+/// `(path, edge kind, content)`.
+pub type WhyRule = (bool, Vec<(String, EdgeKind, Hash)>);
 /// A team record's justification ([`Replica::why`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Why {
     pub head: Hash,
     pub status: Summary,
     pub base: bool,
-    pub rules: Vec<(bool, Vec<(String, EdgeKind, Hash)>)>,
+    pub rules: Vec<WhyRule>,
 }
 
 /// An accepted `Compact` awaiting its successor (`CompactPending`).
