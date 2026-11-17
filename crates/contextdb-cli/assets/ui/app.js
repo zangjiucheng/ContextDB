@@ -18,6 +18,8 @@ const state = {
   view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "records", laidOut: false,
   branch: 0, focus: 0, collapsed: new Set(), changedSummaries: false, level: "abstract",
   layout: "network",
+  // Network layout: the live simulation, kept across refreshes.
+  sim: { pos: new Map(), alpha: 0, raf: 0, drag: null, tick: null, dots: null, edges: [] },
 };
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, parent) => {
@@ -294,6 +296,9 @@ function render() {
   if (!g) return;
   const model = build(g);
   const net = state.layout === "network";
+  if (net) { renderNetwork(model); return; }
+  stopSim();
+  $("graph").classList.remove("net", "far", "hovering");
   const xy = net ? layoutNetwork(model) : layout(model);
   const W = net ? NET_W : NODE_W, H = net ? NET_H : NODE_H;
   const vp = $("viewport");
@@ -390,6 +395,259 @@ function render() {
   }
   applyView();
   if (!state.laidOut && model.nodes.size) { fit(xy, W, H); state.laidOut = true; }
+}
+// ---- network view (Obsidian-like) ----------------------------------------
+
+/// A live force simulation drawn as dots: radius from the number of
+/// neighbours, colour from the status, the name under the dot (faded out
+/// when zoomed out). Positions persist across refreshes, so only new nodes
+/// move in; dragging a node pulls its neighbours along; at rest every dot
+/// floats a little (a CSS animation, no simulation cost).
+function renderNetwork(model) {
+  const sim = state.sim;
+  const svg = $("graph"), vp = $("viewport");
+  vp.replaceChildren();
+  svg.classList.add("net");
+  $("empty").hidden = model.nodes.size > 0;
+  const q = state.search.trim().toLowerCase();
+  const visible = (n) => !state.hidden.has(n.rev.class);
+  const matches = (n) => !q || n.logical.key.toLowerCase().includes(q);
+  const hl = state.highlight;
+  const ids = [...model.nodes.keys()];
+  // Neighbours and degree.
+  const near = new Map(ids.map((id) => [id, new Set()]));
+  for (const e of model.edges) { near.get(e.from)?.add(e.to); near.get(e.to)?.add(e.from); }
+  const radius = (id) => 6 + Math.sqrt(near.get(id).size) * 2.8;
+  // Hubs: the best-connected nodes keep their names when zoomed out.
+  const degrees = ids.map((id) => near.get(id).size).sort((a, b) => b - a);
+  const hubMin = Math.max(3, degrees[Math.min(degrees.length - 1, Math.max(5, Math.round(ids.length * 0.12)))] ?? 3);
+  // Start positions: kept ones stay; new ones near a placed neighbour, or
+  // on the deterministic seed layout (spread out).
+  const seed = layoutNetwork(model);
+  let fresh = 0;
+  for (const id of ids) {
+    if (sim.pos.has(id)) continue;
+    fresh++;
+    const anchor = [...near.get(id)].map((n) => sim.pos.get(n)).find(Boolean);
+    const s0 = seed.get(id);
+    const j = fresh * 2.39996;
+    sim.pos.set(id, anchor
+      ? { x: anchor.x + 40 * Math.cos(j), y: anchor.y + 40 * Math.sin(j), vx: 0, vy: 0 }
+      : { x: s0.x * 0.9, y: s0.y * 1.8, vx: 0, vy: 0 });
+  }
+  for (const id of [...sim.pos.keys()]) if (!model.nodes.has(id)) sim.pos.delete(id);
+  const groupOf = new Map(ids.map((id) => [id, splitKey(label(model.nodes.get(id).logical))[0]]));
+  const groupSize = new Map();
+  for (const g of groupOf.values()) groupSize.set(g, (groupSize.get(g) || 0) + 1);
+
+  // Edges first (under the dots).
+  const edgeLayer = el("g", {}, vp);
+  const edges = [];
+  for (const e of model.edges) {
+    const na = model.nodes.get(e.from), nb = model.nodes.get(e.to);
+    const dim = !visible(na) || !visible(nb) || (hl && !(hl.has(e.from) && hl.has(e.to))) || (q && !(matches(na) || matches(nb)));
+    const line = el("line", { class: ["edge-line", e.kind, e.disabled ? "disabled" : "", dim ? "dim" : ""].join(" "), "marker-end": "url(#arrow-net)" }, edgeLayer);
+    const t = el("title", {}, line);
+    t.textContent = `${e.kind}${e.disabled ? " (disabled)" : ""}${e.rule !== undefined ? ` · rule ${e.rule}` : ""}${e.old != null ? ` · old r${e.old}` : ""}`;
+    edges.push({ line, from: e.from, to: e.to });
+  }
+  // Group names, at each group's centre (groups of three or more).
+  const groupLayer = el("g", {}, vp);
+  const groupEls = new Map();
+  for (const [g, n] of groupSize) {
+    if (!g || n < 3) continue;
+    const t = el("text", { class: "group-label", "text-anchor": "middle" }, groupLayer);
+    t.textContent = clip(g, 48, true);
+    groupEls.set(g, t);
+  }
+  // Dots.
+  const nodeLayer = el("g", {}, vp);
+  const dots = new Map();
+  let k = 0;
+  for (const [id, n] of model.nodes) {
+    const dim = !visible(n) || (hl && !hl.has(id)) || (q && !matches(n));
+    const cls = ["node", "dot", near.get(id).size > hubMin ? "hub" : "", n.rev.class, n.rev.base ? "base" : "", !n.rev.head ? "old" : "",
+      state.selected === n.rev.id ? "selected" : "", q && matches(n) ? "hit" : "", dim ? "dim" : ""].join(" ");
+    const outer = el("g", { class: cls }, nodeLayer);
+    // The float: an inner group drifts a few pixels, each on its own phase.
+    // (A class per phase: the page's CSP allows no inline styles.)
+    const bob = el("g", { class: `bob p${k++ % 6}` }, outer);
+    const r = radius(id);
+    el("circle", { r, fill: `var(--${n.rev.class})` }, bob);
+    const t = el("text", { y: r, dy: "1.25em", "text-anchor": "middle" }, bob);
+    t.textContent = clipMiddle(splitKey(label(n.logical))[1], 30);
+    el("title", {}, outer).textContent = `${n.logical.key}\n${kindLabel(n.logical)} · r${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}${n.rev.abstract ? `\n\n${n.rev.abstract}` : ""}`;
+    outer.addEventListener("mousedown", (ev) => startDrag(ev, id, n.rev.id));
+    outer.addEventListener("mouseenter", () => hoverNet(id, near, true));
+    outer.addEventListener("mouseleave", () => hoverNet(id, near, false));
+    dots.set(id, { el: outer, r });
+  }
+
+  sim.dots = dots;
+  sim.edges = edges;
+  const draw = () => {
+    for (const [id, d] of dots) {
+      const p = sim.pos.get(id);
+      d.el.setAttribute("transform", `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`);
+    }
+    for (const e of edges) {
+      const a = sim.pos.get(e.from), b = sim.pos.get(e.to);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+      const ra = dots.get(e.from).r + 1, rb = dots.get(e.to).r + 3;
+      e.line.setAttribute("x1", (a.x + (dx / d) * ra).toFixed(1));
+      e.line.setAttribute("y1", (a.y + (dy / d) * ra).toFixed(1));
+      e.line.setAttribute("x2", (b.x - (dx / d) * rb).toFixed(1));
+      e.line.setAttribute("y2", (b.y - (dy / d) * rb).toFixed(1));
+    }
+    const c = new Map();
+    for (const id of ids) {
+      const g = groupOf.get(id);
+      if (!groupEls.has(g)) continue;
+      const p = sim.pos.get(id), t = c.get(g) || { x: 0, y: 0, top: Infinity, n: 0 };
+      t.x += p.x; t.n++; t.top = Math.min(t.top, p.y);
+      c.set(g, t);
+    }
+    for (const [g, t] of c) {
+      const el2 = groupEls.get(g);
+      el2.setAttribute("x", (t.x / t.n).toFixed(1));
+      el2.setAttribute("y", (t.top - 26).toFixed(1));
+    }
+  };
+
+  // Forces, d3-style: velocity with decay, strength scaled by alpha.
+  const springs = [];
+  const seen = new Set();
+  for (const e of model.edges) {
+    const key = e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`;
+    if (e.from === e.to || seen.has(key)) continue;
+    seen.add(key);
+    springs.push([e.from, e.to]);
+  }
+  const P = ids.map((id) => sim.pos.get(id));
+  const G = ids.map((id) => groupOf.get(id));
+  const step = () => {
+    const a = sim.alpha;
+    const n = P.length;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const ex = P[i].x - P[j].x, ey = P[i].y - P[j].y;
+        const d2 = ex * ex + ey * ey + 1;
+        if (d2 > 360000) continue;
+        const f = (4200 * a) / d2;
+        P[i].vx += ex * f; P[i].vy += ey * f; P[j].vx -= ex * f; P[j].vy -= ey * f;
+      }
+    }
+    for (const [u, v] of springs) {
+      const pu = sim.pos.get(u), pv = sim.pos.get(v);
+      const ex = pv.x - pu.x, ey = pv.y - pu.y, d = Math.hypot(ex, ey) || 1;
+      const f = ((d - 100) / d) * 0.05 * a;
+      pu.vx += ex * f; pu.vy += ey * f; pv.vx -= ex * f; pv.vy -= ey * f;
+    }
+    const cx = new Map();
+    for (let i = 0; i < n; i++) {
+      const t = cx.get(G[i]) || { x: 0, y: 0, n: 0 };
+      t.x += P[i].x; t.y += P[i].y; t.n++;
+      cx.set(G[i], t);
+    }
+    for (let i = 0; i < n; i++) {
+      const t = cx.get(G[i]);
+      P[i].vx += ((t.x / t.n - P[i].x) * 0.012 - P[i].x * 0.005) * a;
+      P[i].vy += ((t.y / t.n - P[i].y) * 0.012 - P[i].y * 0.0085) * a;
+    }
+    for (const p of P) {
+      if (p.fx !== undefined) { p.x = p.fx; p.y = p.fy; p.vx = p.vy = 0; continue; }
+      p.vx *= 0.62; p.vy *= 0.62;
+      p.x += p.vx; p.y += p.vy;
+    }
+    const target = sim.drag ? 0.25 : 0;
+    sim.alpha += (target - sim.alpha) * 0.025;
+  };
+  sim.tick = () => {
+    step();
+    draw();
+    if (sim.alpha < 0.004 && !sim.drag) { sim.raf = 0; return; }
+    sim.raf = requestAnimationFrame(sim.tick);
+  };
+  // A new graph settles mostly out of sight, then floats in; a refresh
+  // with a few new nodes just warms up.
+  const first = fresh === ids.length;
+  sim.alpha = first ? 1 : fresh ? 0.35 : Math.max(sim.alpha, 0.05);
+  if (first) for (let i = 0; i < 160; i++) step();
+  draw();
+  applyView();
+  updateZoomClass();
+  if (!state.laidOut && ids.length) { fitNet(ids, dots); state.laidOut = true; }
+  if (!sim.raf) sim.raf = requestAnimationFrame(sim.tick);
+}
+function stopSim() {
+  if (state.sim.raf) cancelAnimationFrame(state.sim.raf);
+  state.sim.raf = 0;
+}
+function reheat(alpha) {
+  const sim = state.sim;
+  sim.alpha = Math.max(sim.alpha, alpha);
+  if (!sim.raf && sim.tick) sim.raf = requestAnimationFrame(sim.tick);
+}
+/// Graph coordinates of a pointer event.
+function toGraph(ev) {
+  const r = $("graph").getBoundingClientRect();
+  return { x: (ev.clientX - r.left - state.view.x) / state.view.k, y: (ev.clientY - r.top - state.view.y) / state.view.k };
+}
+function startDrag(ev, id, rev) {
+  ev.stopPropagation();
+  ev.preventDefault();
+  const p = state.sim.pos.get(id);
+  const at = toGraph(ev);
+  state.sim.drag = { id, rev, dx: p.x - at.x, dy: p.y - at.y, x0: ev.clientX, y0: ev.clientY, moved: false };
+  p.fx = p.x; p.fy = p.y;
+  reheat(0.12);
+}
+function moveDrag(ev) {
+  const d = state.sim.drag;
+  if (!d) return false;
+  if (Math.abs(ev.clientX - d.x0) + Math.abs(ev.clientY - d.y0) > 3) d.moved = true;
+  const at = toGraph(ev), p = state.sim.pos.get(d.id);
+  p.fx = at.x + d.dx; p.fy = at.y + d.dy;
+  reheat(0.12);
+  return true;
+}
+function endDrag() {
+  const d = state.sim.drag;
+  if (!d) return false;
+  const p = state.sim.pos.get(d.id);
+  if (p) { delete p.fx; delete p.fy; }
+  state.sim.drag = null;
+  if (!d.moved) select(d.rev);
+  return true;
+}
+function hoverNet(id, near, on) {
+  const sim = state.sim;
+  if (state.highlight || sim.drag || !sim.dots) return;
+  $("graph").classList.toggle("hovering", on);
+  for (const d of sim.dots.values()) d.el.classList.remove("near");
+  for (const e of sim.edges) e.line.classList.remove("near");
+  if (!on) return;
+  for (const n of [id, ...near.get(id)]) sim.dots.get(n)?.el.classList.add("near");
+  for (const e of sim.edges) if (e.from === id || e.to === id) e.line.classList.add("near");
+}
+/// Labels show once the view is close enough to read them.
+/// Text keeps its size on screen at any zoom (the --inv factor; set through
+/// the CSSOM, which the page's CSP allows).
+function updateZoomClass() {
+  const svg = $("graph");
+  svg.classList.toggle("far", state.view.k < 0.55);
+  svg.style.setProperty("--inv", (1 / Math.max(state.view.k, 0.25)).toFixed(3));
+}
+function fitNet(ids, dots) {
+  const svg = $("graph").getBoundingClientRect();
+  const P = ids.map((id) => state.sim.pos.get(id));
+  const x0 = Math.min(...P.map((p) => p.x)) - 60, x1 = Math.max(...P.map((p) => p.x)) + 60;
+  const y0 = Math.min(...P.map((p) => p.y)) - 40, y1 = Math.max(...P.map((p) => p.y)) + 40;
+  const k = Math.min(1.6, Math.max(0.15, Math.min((svg.width - 40) / (x1 - x0), (svg.height - 100) / (y1 - y0))));
+  state.view = { k, x: (svg.width - (x1 - x0) * k) / 2 - x0 * k, y: 70 + (svg.height - 100 - (y1 - y0) * k) / 2 - y0 * k };
+  applyView();
+  updateZoomClass();
+  void dots;
 }
 function hover(model, id, on) {
   if (state.highlight) return;
@@ -821,6 +1079,7 @@ function renderChrome() {
     html("div", "muted", "ref: never changes status"), html("div", "muted", "purple = open conflict"));
 }
 function setTab(tab) {
+  if (tab !== "graph") stopSim();
   state.tab = tab;
   for (const t of ["records", "graph", "timeline"]) $(`tab-${t}`).classList.toggle("active", tab === t);
   $("records-view").hidden = tab !== "records";
@@ -856,8 +1115,9 @@ function wire() {
   const svg = $("graph");
   let drag = null;
   svg.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: state.view.x, vy: state.view.y }; svg.classList.add("dragging"); });
-  window.addEventListener("mouseup", () => { drag = null; svg.classList.remove("dragging"); });
+  window.addEventListener("mouseup", () => { endDrag(); drag = null; svg.classList.remove("dragging"); });
   window.addEventListener("mousemove", (e) => {
+    if (moveDrag(e)) return;
     if (!drag) return;
     state.view.x = drag.vx + e.clientX - drag.x;
     state.view.y = drag.vy + e.clientY - drag.y;
@@ -872,6 +1132,7 @@ function wire() {
     state.view.y = my - ((my - state.view.y) * k) / state.view.k;
     state.view.k = k;
     applyView();
+    updateZoomClass();
   }, { passive: false });
   svg.addEventListener("click", () => { if (state.highlight) { state.highlight = null; render(); } });
   $("search").addEventListener("input", (e) => { state.search = e.target.value; renderView(); });
@@ -882,6 +1143,7 @@ function wire() {
   $("focus").addEventListener("change", (e) => { state.focus = Number(e.target.value); state.laidOut = false; render(); });
   $("fit").addEventListener("click", () => { state.laidOut = false; render(); });
   $("layout").addEventListener("change", (e) => { state.layout = e.target.value; state.laidOut = false; render(); });
+  $("fit").addEventListener("dblclick", () => { state.sim.pos.clear(); state.laidOut = false; render(); });
   $("tab-timeline").addEventListener("click", () => setTab("timeline"));
   $("timeline-here").addEventListener("change", renderTimeline);
   $("branch").addEventListener("change", (e) => {

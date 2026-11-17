@@ -49,9 +49,38 @@ main { flex: 1; position: relative; overflow: hidden; display: flex; }
 .edge.disabled path { stroke-dasharray: 1 4; opacity: 0.5; }
 .edge.chain path { stroke: var(--line); stroke-width: 2; stroke-dasharray: 3 3; }
 .edge text { font-size: 10px; fill: var(--stale); }
-#graph.net .edge path { stroke-width: 1.2; opacity: 0.55; }
-#graph.net .node text { font-size: 12.5px; }
+/* Network view: dots, faint lines, names under the dots, a slow float. */
+#graph.net { background: radial-gradient(circle at 50% 45%, var(--panel), var(--bg) 70%); }
+.edge-line { stroke: var(--ref); stroke-width: 1; opacity: 0.32; transition: opacity .15s; vector-effect: non-scaling-stroke; }
+.edge-line.pin { stroke: var(--pin); }
+.edge-line.cur { stroke: var(--cur); }
+.edge-line.sem { stroke: var(--sem); stroke-dasharray: 4 3; }
+.edge-line.ref { stroke-dasharray: 2 3; }
+.edge-line.disabled { stroke-dasharray: 1 4; }
+.edge-line.dim { opacity: 0.06; }
+#arrow-net path { fill: var(--muted); }
+.node.dot circle { stroke: var(--bg); stroke-width: 1.5; transition: r .15s; }
+.node.dot.base circle { stroke: var(--fg); stroke-width: 2; stroke-opacity: .45; }
+.node.dot.old circle { stroke-dasharray: 2 2; stroke: var(--muted); }
+.node.dot.selected circle { stroke: var(--accent) !important; stroke-width: 3.5; stroke-opacity: 1; }
+.node.dot.hit circle { stroke: var(--accent); stroke-width: 2.5; stroke-opacity: 1; }
+.node.dot circle { vector-effect: non-scaling-stroke; }
+.node.dot text { font-size: calc(13.5px * var(--inv, 1)); fill: var(--fg); opacity: .9; paint-order: stroke; stroke: var(--bg); stroke-width: calc(3.5px * var(--inv, 1)); stroke-linejoin: round; transition: opacity .2s; }
+#graph.far .node.dot text { opacity: 0; }
+#graph.far .node.dot.selected text, #graph.far .node.dot.hit text, #graph.hovering .node.dot.near text { opacity: .95; }
+#graph.far .node.dot.hub text { opacity: .8; font-weight: 600; }
+#graph.far.hovering .node.dot.hub:not(.near) text { opacity: 0; }
+#graph.hovering .node.dot:not(.near) { opacity: .18; }
+#graph.hovering .edge-line { opacity: .05; }
+#graph.hovering .edge-line.near { opacity: .9; stroke-width: 1.6; }
+.node.dot .bob { animation: float 6s ease-in-out infinite; }
+.node.dot .bob.p1 { animation-delay: -1s; } .node.dot .bob.p2 { animation-delay: -2s; }
+.node.dot .bob.p3 { animation-delay: -3s; animation-duration: 7s; } .node.dot .bob.p4 { animation-delay: -4s; animation-duration: 5s; }
+.node.dot .bob.p5 { animation-delay: -5s; animation-duration: 8s; }
+@keyframes float { 0%, 100% { transform: translate(0, 0); } 33% { transform: translate(1.6px, -2.2px); } 66% { transform: translate(-1.8px, 1.4px); } }
+@media (prefers-reduced-motion: reduce) { .node.dot .bob { animation: none; } }
 .group-label { fill: var(--muted); font-size: 13px; font-weight: 600; pointer-events: none; }
+#graph.net .group-label { font-size: calc(16px * var(--inv, 1)); opacity: .55; }
 #legend { position: absolute; left: 12px; bottom: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; display: grid; grid-template-columns: auto auto; gap: 3px 12px; }
 #legend .sw { display: inline-block; width: 22px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
 #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
