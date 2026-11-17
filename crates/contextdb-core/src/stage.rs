@@ -54,6 +54,8 @@ pub(crate) struct Stage<'a> {
     /// Set by the kernel: the shredded content hashes (ADR 0017 §8.3).
     pub shredded: Option<&'a std::collections::BTreeMap<ContentHash, Epoch>>,
     pub auth: Option<Option<&'a crate::access::AccessState>>,
+    /// Set by the kernel: the reserved team namespaces apply (P10).
+    pub reserved: bool,
 }
 /// What a stage publishes, detached from the published state it borrows.
 pub(crate) struct Parts {
@@ -126,6 +128,14 @@ impl<'a> Stage<'a> {
             foreign_key: None,
             auth: None,
             shredded: None,
+            reserved: false,
+        }
+    }
+    /// A published or staged logical's origin (P10, SD21.7).
+    pub fn logical_origin(&self, l: LogicalId) -> Origin {
+        match l.index().checked_sub(self.published_logicals()) {
+            Some(n) => self.new_logicals[n].origin,
+            None => self.logicals.origin_of(l),
         }
     }
     /// `(key, lane, owner)` of a published or staged logical.

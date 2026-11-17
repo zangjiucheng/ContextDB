@@ -47,15 +47,20 @@ fn l(l: &LogicalRef, logicals: &LogicalArena) -> Result<LogicalId, TxError> {
     }
     Ok(id)
 }
-fn channel(b: &Batch, op: &Op, anchor: bool) -> Result<(), TxError> {
-    // P10 milestone 3, first slice: the replica channel is not admitted yet.
-    if b.channel == Channel::Replica || (b.channel == Channel::Observer && !anchor) {
+/// The fast path's slice of `txn::channel` (same order): `mirror` is
+/// whether the op writes replica-origin state, `anchor` CodeAnchor state.
+fn channel(b: &Batch, op: &Op, anchor: bool, mirror: bool) -> Result<(), TxError> {
+    let c = b.channel;
+    if (c == Channel::Observer && !anchor) || (c == Channel::Replica && !mirror) {
         return Err(TxError::ChannelRestricted {
             op: op.name().into(),
-            channel: b.channel,
+            channel: c,
         });
     }
-    if b.channel != Channel::Observer && anchor {
+    if mirror && c != Channel::Replica {
+        return Err(TxError::ReplicaReadOnly);
+    }
+    if anchor && c != Channel::Observer {
         return Err(TxError::KindRestricted);
     }
     Ok(())
@@ -108,8 +113,10 @@ impl Undo {
                 match op {
                     Op::AssertBase { rev } | Op::RetractBase { rev } => {
                         let r = r(*rev, revisions)?;
-                        let kind = logicals.kind(revisions.logical(r));
-                        channel(b, op, kind == RecordKind::CodeAnchor)?;
+                        let logical = revisions.logical(r);
+                        let kind = logicals.kind(logical);
+                        let mirror = logicals.origin_of(logical) != Origin::Local;
+                        channel(b, op, kind == RecordKind::CodeAnchor, mirror)?;
                         undo.base.entry(r).or_insert(i.base[r.index()]);
                         i.base[r.index()] = matches!(op, Op::AssertBase { .. });
                     }
@@ -122,7 +129,8 @@ impl Undo {
                         let expected = r(*expected, revisions)?;
                         let new = r(*new, revisions)?;
                         let kind = logicals.kind(logical);
-                        channel(b, op, kind == RecordKind::CodeAnchor)?;
+                        let mirror = logicals.origin_of(logical) != Origin::Local;
+                        channel(b, op, kind == RecordKind::CodeAnchor, mirror)?;
                         if kind == RecordKind::Evidence {
                             return Err(TxError::ImmutableKind);
                         }
@@ -149,7 +157,9 @@ impl Undo {
                         if j.index() >= rules.len() {
                             return Err(TxError::UnknownRef);
                         }
-                        channel(b, op, false)?;
+                        // A rule never concludes a mirror (A8), so this is
+                        // local state.
+                        channel(b, op, false, false)?;
                         undo.enabled.entry(*j).or_insert(rules.enabled[j.index()]);
                         rules.enabled[j.index()] = *enabled;
                     }
@@ -162,6 +172,7 @@ impl Undo {
                 if i.base[r.index()]
                     && i.policy.require_deps.contains(&kind)
                     && !matches!(kind, RecordKind::Evidence | RecordKind::CodeAnchor)
+                    && logicals.origin_of(logical) == Origin::Local
                 {
                     return Err(TxError::PolicyViolation {
                         kind,

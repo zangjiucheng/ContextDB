@@ -463,7 +463,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         if source.0 as usize >= self.branches.len() || source == target {
             return Err(TxError::InvalidMerge);
         }
-        if b.channel == Channel::Observer {
+        if matches!(b.channel, Channel::Observer | Channel::Replica) {
             return Err(TxError::ChannelRestricted {
                 op: "Merge".into(),
                 channel: b.channel,

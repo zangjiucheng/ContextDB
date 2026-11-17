@@ -206,25 +206,9 @@ fn a(a: ArtifactRef) -> ArtifactId {
 fn kind(i: &Stage, r: RevisionId) -> RecordKind {
     i.logical_kind(i.revision_logical(r))
 }
+/// Channel admission (§2.5 A7, A8; SPEC §6.1 contract 7), in the §6.2
+/// order: `ChannelRestricted`, then `ReplicaReadOnly`, then `KindRestricted`.
 fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
-    // P10 milestone 3, first slice: the replica channel and its ops are
-    // encodable but not yet admitted.
-    if c == Channel::Replica
-        || matches!(
-            op,
-            Op::MirrorAttach { .. }
-                | Op::CreateLogical {
-                    origin: Origin::Replica { .. },
-                    ..
-                }
-                | Op::ObserverWatermark { gap: true, .. }
-        )
-    {
-        return Err(TxError::ChannelRestricted {
-            op: op.name().to_owned(),
-            channel: c,
-        });
-    }
     let anchor = match op {
         Op::CreateLogical { kind, .. } => *kind == RecordKind::CodeAnchor,
         Op::AddRevision { logical, .. } | Op::SetHead { logical, .. } => {
@@ -235,6 +219,32 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
         }
         _ => false,
     };
+    let replica_l = |x: LogicalId| i.logical_origin(x) != Origin::Local;
+    let replica_r = |x: RevisionId| replica_l(i.revision_logical(x));
+    // A write to replica-origin state: only the replica channel may do it.
+    let mirror_write = match op {
+        Op::CreateLogical { origin, .. } => *origin != Origin::Local,
+        Op::AddRevision { logical, .. }
+        | Op::SetHead { logical, .. }
+        | Op::SetMetadata { logical, .. } => replica_l(l(logical)),
+        Op::AssertBase { rev } | Op::RetractBase { rev } => replica_r(r(*rev)),
+        Op::MirrorAttach { .. } => true,
+        _ => false,
+    };
+    // Local state that would name a mirror where it must not.
+    let local_on_mirror = match op {
+        Op::AddRule { conclusion, .. } => replica_r(r(*conclusion)),
+        Op::Rebind { rule, .. }
+        | Op::SetRuleEnabled { rule, .. }
+        | Op::RecordValidation { rule, .. } => replica_r(i.conclusion(j(*rule))),
+        Op::OpenArtifact { target, .. } => replica_r(r(*target)),
+        Op::ResolveArtifact { id, .. } => replica_r(i.artifact(a(*id)).1),
+        _ => false,
+    };
+    let (watermark, team_scope, gap) = match op {
+        Op::ObserverWatermark { scope, gap, .. } => (true, scope.starts_with("team:"), *gap),
+        _ => (false, false, false),
+    };
     let broken = match op {
         Op::OpenArtifact { ty, target, .. } => Some((*ty, *target)),
         Op::ResolveArtifact { id, .. } => {
@@ -244,22 +254,37 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
         _ => None,
     };
     let is_broken = broken.is_some_and(|(t, _)| t == ArtifactType::AnchorBroken);
-    let observer_allowed = matches!(op, Op::ObserverWatermark { .. } | Op::ExpectHeads { .. })
+    let observer_allowed = (watermark && !team_scope)
+        || matches!(op, Op::ExpectHeads { .. })
         || anchor
         || broken.is_some_and(|(t, p)| {
             t == ArtifactType::AnchorBroken && kind(i, r(p)) == RecordKind::CodeAnchor
         });
     if (c == Channel::Observer && !observer_allowed)
+        || (c == Channel::Replica && !(mirror_write || team_scope))
         || (matches!(op, Op::SetPolicy { .. }) && c != Channel::Admin)
-        || ((matches!(op, Op::ObserverWatermark { .. }) || is_broken) && c != Channel::Observer)
+        || (watermark && team_scope && c != Channel::Replica)
+        || (watermark && !team_scope && c != Channel::Observer)
+        || (gap && !team_scope)
+        || (is_broken && c != Channel::Observer)
     {
         return Err(TxError::ChannelRestricted {
             op: op.name().to_owned(),
             channel: c,
         });
     }
+    if (mirror_write && c != Channel::Replica) || local_on_mirror {
+        return Err(TxError::ReplicaReadOnly);
+    }
     if anchor && c != Channel::Observer {
         return Err(TxError::KindRestricted);
+    }
+    // MirrorAttach lands in the next slice.
+    if matches!(op, Op::MirrorAttach { .. }) {
+        return Err(TxError::ChannelRestricted {
+            op: op.name().to_owned(),
+            channel: c,
+        });
     }
     Ok(())
 }
@@ -663,8 +688,30 @@ pub(crate) fn apply<S: StatsSink>(
             {
                 return Err(TxError::InvalidKey { key });
             }
-            shredded(i, &content)?;
-            if !blobs.contains(&content) {
+            // P10: a replica-origin logical lives in its own team's namespace;
+            // a Local one may not use the reserved namespaces in a kernel.
+            match origin {
+                Origin::Replica { team } => {
+                    let hex: String = team.iter().map(|b| format!("{b:02x}")).collect();
+                    if !key.starts_with(&format!("team/{hex}/")) {
+                        return Err(TxError::InvalidKey { key });
+                    }
+                    if !scope_lane.starts_with(&format!("team:{hex}/")) {
+                        return Err(TxError::InvalidLane { lane: scope_lane });
+                    }
+                }
+                Origin::Local => {
+                    if i.reserved && (key.starts_with("team/") || scope_lane.starts_with("team:")) {
+                        return Err(TxError::ReservedNamespace);
+                    }
+                }
+            }
+            // A local shred never refuses a replica write: the revision is
+            // kept and reads unavailable (SD21.7, ADR 0018 §11).
+            if b.channel != Channel::Replica {
+                shredded(i, &content)?;
+            }
+            if !blobs.contains(&content) && !replica_shredded(i, b, &content) {
                 return Err(TxError::MissingBlob { content });
             }
             if i.find_key(&key).is_some() || i.key_taken_elsewhere(&key) {
@@ -706,8 +753,10 @@ pub(crate) fn apply<S: StatsSink>(
             if i.logical_kind(logical) == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
-            shredded(i, &content)?;
-            if !blobs.contains(&content) {
+            if b.channel != Channel::Replica {
+                shredded(i, &content)?;
+            }
+            if !blobs.contains(&content) && !replica_shredded(i, b, &content) {
                 return Err(TxError::MissingBlob { content });
             }
             let revision = match i.find_revision(logical, &content) {
@@ -919,6 +968,11 @@ pub(crate) fn apply<S: StatsSink>(
             dirs,
         } => {
             let logical = l(&logical);
+            // Only tags are mirrored: a team member never changes local dir
+            // grants (ADR 0018 §5.1, Q9).
+            if b.channel == Channel::Replica && !dirs.is_empty() {
+                return Err(TxError::InvalidMetadata);
+            }
             let before = i.metadata_of(logical).dirs;
             for path in &dirs {
                 if path.is_empty()
@@ -1003,6 +1057,11 @@ pub(crate) fn apply<S: StatsSink>(
 
     Ok(())
 }
+/// A replica write of shredded content needs no blob: the bytes are gone
+/// and the revision reads unavailable (P10, ADR 0018 §11).
+fn replica_shredded(i: &Stage, b: &Batch, content: &ContentHash) -> bool {
+    b.channel == Channel::Replica && i.shredded.is_some_and(|s| s.contains_key(content))
+}
 /// `ContentShredded` for an op naming a shredded payload (ADR 0017 §8.3),
 /// before `MissingBlob`.
 fn shredded(i: &Stage, content: &ContentHash) -> Result<(), TxError> {
@@ -1049,8 +1108,11 @@ pub(crate) fn final_policy(i: &Stage) -> Result<(), TxError> {
     for r in candidates {
         let logical = i.revision_logical(r);
         let k = i.logical_kind(logical);
+        // Replica-origin logicals follow the root, not the local policy
+        // (P10 A5 exemption, by origin, never by key).
         if matches!(k, RecordKind::CodeAnchor | RecordKind::Evidence)
             || !policy.require_deps.contains(&k)
+            || i.logical_origin(logical) != Origin::Local
         {
             continue;
         }

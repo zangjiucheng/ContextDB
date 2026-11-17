@@ -239,20 +239,33 @@ fn p10_replica_encodings_and_local_bytes_unchanged() {
     assert_eq!(lb[5], RecordKind::Plan as u8);
     assert_eq!(rb[5], RecordKind::Plan as u8 | 0x80);
     assert_eq!(rb.len(), lb.len() + 16);
-    assert_eq!(Logical::from_bytes(&rb).unwrap(), mk(Origin::Replica { team }));
+    assert_eq!(
+        Logical::from_bytes(&rb).unwrap(),
+        mk(Origin::Replica { team })
+    );
     assert_eq!(Logical::from_bytes(&lb).unwrap(), mk(Origin::Local));
     // EventLog: v4 for anything P10, and a v4 batch under a lower version
     // is refused.
     let mut b = Batch::new(vec![wm(false)]);
     b.channel = Channel::Replica;
-    for batch in [b, Batch::new(vec![replica]), Batch::new(vec![attach]), Batch::new(vec![wm(true)])] {
+    for batch in [
+        b,
+        Batch::new(vec![replica]),
+        Batch::new(vec![attach]),
+        Batch::new(vec![wm(true)]),
+    ] {
         assert_eq!(EventLog::version_of(&batch), 4);
         assert_eq!(Batch::from_bytes(&batch.canonical_bytes()).unwrap(), batch);
-        let log = EventLog { batches: vec![batch] };
+        let log = EventLog {
+            batches: vec![batch],
+        };
         let text = log.to_jsonl();
         assert_eq!(EventLog::from_jsonl(&text).unwrap(), log);
         let forged = text.replacen("\"version\":4", "\"version\":3", 1);
-        assert_eq!(EventLog::from_jsonl(&forged), Err(WireError::UnknownVersion));
+        assert_eq!(
+            EventLog::from_jsonl(&forged),
+            Err(WireError::UnknownVersion)
+        );
     }
     assert_eq!(EventLog::version_of(&Batch::new(vec![local])), 0);
 }

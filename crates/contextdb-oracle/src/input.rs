@@ -32,7 +32,7 @@ impl InputModel {
         if batch.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
-        self.apply_inner(batch, blobs, &|_| false, None)
+        self.apply_inner(batch, blobs, &|_| false, None, false)
     }
     /// A model over one branch's projected inputs (the branch oracle).
     pub fn from_inputs(inputs: Inputs, epoch: Epoch) -> Self {
@@ -46,7 +46,7 @@ impl InputModel {
         batch: &Batch,
         foreign: &dyn Fn(&str) -> bool,
     ) -> Result<ApplyResult, TxError> {
-        self.apply_inner(batch, &AllPresent, foreign, None)
+        self.apply_inner(batch, &AllPresent, foreign, None, true)
     }
     /// `apply_on_branch` with write authorisation against `access` (ADR
     /// 0017 §6), as the multi-branch kernel commits.
@@ -56,7 +56,7 @@ impl InputModel {
         foreign: &dyn Fn(&str) -> bool,
         access: Option<&crate::AccessModel>,
     ) -> Result<ApplyResult, TxError> {
-        self.apply_inner(batch, &AllPresent, foreign, Some(access))
+        self.apply_inner(batch, &AllPresent, foreign, Some(access), true)
     }
     fn apply_inner(
         &mut self,
@@ -64,6 +64,8 @@ impl InputModel {
         blobs: &dyn BlobPresence,
         foreign: &dyn Fn(&str) -> bool,
         auth: Option<Option<&crate::AccessModel>>,
+        // P10: the reserved team namespaces apply (a multi-branch store).
+        reserved: bool,
     ) -> Result<ApplyResult, TxError> {
         let mut staged = self.inputs.clone();
         let mut ids = Allocations::default();
@@ -82,12 +84,14 @@ impl InputModel {
                 &mut read_set,
                 foreign,
                 auth,
+                reserved,
             )?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
             let logical = &staged.logicals[revision.logical.index()];
             if matches!(logical.kind, RecordKind::Evidence | RecordKind::CodeAnchor)
                 || !staged.policy.require_deps.contains(&logical.kind)
+                || logical.origin != Origin::Local
             {
                 continue;
             }
@@ -551,24 +555,6 @@ fn anchor_write(i: &Inputs, op: &Op) -> bool {
     }
 }
 fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
-    // P10 milestone 3, first slice: the replica channel and its ops are
-    // encodable but not yet admitted.
-    if c == Channel::Replica
-        || matches!(
-            op,
-            Op::MirrorAttach { .. }
-                | Op::CreateLogical {
-                    origin: Origin::Replica { .. },
-                    ..
-                }
-                | Op::ObserverWatermark { gap: true, .. }
-        )
-    {
-        return Err(TxError::ChannelRestricted {
-            op: op.name().into(),
-            channel: c,
-        });
-    }
     let anchor_art = match op {
         Op::OpenArtifact {
             ty: ArtifactType::AnchorBroken,
@@ -588,8 +574,43 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
         }
         _ => false,
     };
+    // P10 (A7/A8): which ops touch replica-origin state, and where.
+    let is_mirror = |l: LogicalId| i.logicals[l.index()].origin != Origin::Local;
+    let mirror_rev = |r: RevisionId| is_mirror(i.revisions[r.index()].logical);
+    let writes_mirror = match op {
+        Op::CreateLogical { origin, .. } => *origin != Origin::Local,
+        Op::AddRevision { logical, .. }
+        | Op::SetHead { logical, .. }
+        | Op::SetMetadata { logical, .. } => is_mirror(lid(logical)),
+        Op::AssertBase { rev } | Op::RetractBase { rev } => mirror_rev(rid(*rev)),
+        Op::MirrorAttach { .. } => true,
+        _ => false,
+    };
+    let names_mirror_locally = match op {
+        Op::AddRule { conclusion, .. } => mirror_rev(rid(*conclusion)),
+        Op::Rebind { rule, .. }
+        | Op::SetRuleEnabled { rule, .. }
+        | Op::RecordValidation { rule, .. } => mirror_rev(i.rules[jid(*rule).index()].conclusion),
+        Op::OpenArtifact { target, .. } => mirror_rev(rid(*target)),
+        Op::ResolveArtifact { id, .. } => mirror_rev(i.artifacts[aid(*id).index()].target),
+        _ => false,
+    };
+    let team_watermark =
+        matches!(op, Op::ObserverWatermark { scope, .. } if scope.starts_with("team:"));
+    let gap_elsewhere = matches!(op, Op::ObserverWatermark { gap: true, .. }) && !team_watermark;
+    let code_watermark = matches!(op, Op::ObserverWatermark { .. }) && !team_watermark;
+    if (c == Channel::Replica && !writes_mirror && !team_watermark)
+        || (team_watermark && c != Channel::Replica)
+        || gap_elsewhere
+        || (c == Channel::Observer && team_watermark)
+    {
+        return Err(TxError::ChannelRestricted {
+            op: op.name().into(),
+            channel: c,
+        });
+    }
     let violation = (matches!(op, Op::SetPolicy { .. }) && c != Channel::Admin)
-        || ((matches!(op, Op::ObserverWatermark { .. }) || broken) && c != Channel::Observer)
+        || ((code_watermark || broken) && c != Channel::Observer)
         || (c == Channel::Observer
             && !matches!(op, Op::ObserverWatermark { .. } | Op::ExpectHeads { .. })
             && !anchor_write(i, op)
@@ -600,8 +621,18 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
             channel: c,
         });
     }
+    if (writes_mirror && c != Channel::Replica) || names_mirror_locally {
+        return Err(TxError::ReplicaReadOnly);
+    }
     if anchor_write(i, op) && c != Channel::Observer {
         return Err(TxError::KindRestricted);
+    }
+    // MirrorAttach lands in the next slice.
+    if matches!(op, Op::MirrorAttach { .. }) {
+        return Err(TxError::ChannelRestricted {
+            op: op.name().into(),
+            channel: c,
+        });
     }
     Ok(())
 }
@@ -748,6 +779,7 @@ fn apply_op(
     read_set: &mut std::collections::BTreeMap<LogicalId, RevisionId>,
     foreign: &dyn Fn(&str) -> bool,
     auth: Option<Option<&crate::AccessModel>>,
+    reserved: bool,
 ) -> Result<(), TxError> {
     let original = op;
     let published = i.logicals.len() - a.new_logicals.len();
@@ -788,6 +820,17 @@ fn apply_op(
                 && (key.starts_with("code:") == (kind == RecordKind::CodeAnchor));
             if !valid {
                 return Err(TxError::InvalidKey { key });
+            }
+            if let Origin::Replica { team } = origin {
+                let hex: String = team.iter().map(|b| format!("{b:02x}")).collect();
+                if !key.starts_with(&format!("team/{hex}/")) {
+                    return Err(TxError::InvalidKey { key });
+                }
+                if !scope_lane.starts_with(&format!("team:{hex}/")) {
+                    return Err(TxError::InvalidLane { lane: scope_lane });
+                }
+            } else if reserved && (key.starts_with("team/") || scope_lane.starts_with("team:")) {
+                return Err(TxError::ReservedNamespace);
             }
             if !blobs.contains(&content) {
                 return Err(TxError::MissingBlob { content });
@@ -1011,6 +1054,9 @@ fn apply_op(
             dirs,
         } => {
             let l = lid(&logical);
+            if b.channel == Channel::Replica && !dirs.is_empty() {
+                return Err(TxError::InvalidMetadata);
+            }
             let old = &i.metadata[l.index()].dirs;
             let valid = dirs.iter().all(|d| {
                 !d.is_empty()

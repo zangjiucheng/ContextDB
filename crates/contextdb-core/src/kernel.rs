@@ -351,6 +351,15 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 })?,
         );
         let mut report = None;
+        // P10: the replica channel writes mirrors only, never branches.
+        if b.channel == Channel::Replica
+            && let Some(op @ (Op::CreateBranch { .. } | Op::ArchiveBranch { .. })) = b.ops.first()
+        {
+            return Err(TxError::ChannelRestricted {
+                op: op.name().into(),
+                channel: b.channel,
+            });
+        }
         let result = match b.ops.first() {
             Some(Op::CreateBranch { name }) if b.ops.len() == 1 => {
                 self.create_branch(b.branch, b.principal, name, next, publish)?
@@ -530,6 +539,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             staged: Some(&sink),
             auth: Some(access.as_deref()),
             shredded: Some(shredded),
+            reserved: true,
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch

@@ -549,6 +549,15 @@ impl BranchOracle {
                 allocations: Allocations::default(),
             }
         };
+        // P10: the replica channel never forks or archives a branch.
+        if b.channel == Channel::Replica
+            && let [op @ (Op::CreateBranch { .. } | Op::ArchiveBranch { .. })] = &b.ops[..]
+        {
+            return Err(TxError::ChannelRestricted {
+                op: op.name().into(),
+                channel: b.channel,
+            });
+        }
         match &b.ops[..] {
             [Op::CreateBranch { name }] => {
                 if !valid_name(name) {
@@ -777,7 +786,7 @@ impl BranchOracle {
         if source.0 as usize >= self.branches.len() || source == t {
             return Err(TxError::InvalidMerge);
         }
-        if b.channel == Channel::Observer {
+        if matches!(b.channel, Channel::Observer | Channel::Replica) {
             return Err(TxError::ChannelRestricted {
                 op: "Merge".into(),
                 channel: b.channel,
