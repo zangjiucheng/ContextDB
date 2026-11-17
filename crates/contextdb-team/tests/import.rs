@@ -289,11 +289,18 @@ fn import_restart_and_torn_log() {
     assert_eq!(s.import(&repo).unwrap(), Status::Imported(4));
     assert_eq!(s.import(&repo).unwrap(), Status::UpToDate);
     assert_eq!(s.replica().digest(), p.replica.digest());
-    // Restart: the log replays to the same state.
+    // The catch-up history ends at the tip, one position per entry.
+    let projection = contextdb_team::catchup::projection(s.replica());
+    assert_eq!(s.history().tip(), s.tip());
+    assert_eq!(s.history().entries.len(), 4);
+    assert_eq!(s.history().current(), &projection);
+    // Restart: the log replays to the same state and history.
+    let entries = s.history().entries.clone();
     drop(s);
     let s = TeamStore::open(&dir).unwrap();
     assert_eq!(s.replica().digest(), p.replica.digest());
     assert_eq!(s.replica().seq(), Some(3));
+    assert_eq!(s.history().entries, entries);
     drop(s);
     // A torn tail: garbage after the last frame is cut on open.
     let log = dir.join("log");
@@ -504,12 +511,18 @@ fn compaction_with_real_objects() {
     ] {
         assert_eq!(d, p.replica.digest());
     }
-    let dir = joiner.dir().to_owned();
-    drop(joiner);
+    // A checkpoint joiner's history starts at its anchor and follows on.
+    assert_eq!(joiner.history().tip(), joiner.tip());
     assert_eq!(
-        TeamStore::open(&dir).unwrap().replica().digest(),
-        p.replica.digest()
+        joiner.history().current(),
+        &contextdb_team::catchup::projection(joiner.replica())
     );
+    let dir = joiner.dir().to_owned();
+    let entries = joiner.history().entries.clone();
+    drop(joiner);
+    let reopened = TeamStore::open(&dir).unwrap();
+    assert_eq!(reopened.replica().digest(), p.replica.digest());
+    assert_eq!(reopened.history().entries, entries);
     let dir = off.dir().to_owned();
     drop(off);
     assert_eq!(

@@ -8,6 +8,7 @@
 //! from git. Import walks the tracking ref's first-parent path from the
 //! trusted anchor of the current generation and decides each entry once.
 
+use crate::catchup::{self, History};
 use crate::commit::{ObjectFormat, hex};
 use crate::enc::{Reader, Writer};
 use crate::git::{GitError, Repo};
@@ -146,6 +147,9 @@ pub struct TeamStore {
     /// Every decided proposal: `(member, proposal id)` → its outcome, from
     /// the entries imported (the publish side reads its outcomes here).
     decisions: BTreeMap<(String, [u8; 16]), Result<(), Reason>>,
+    /// The projection after every entry this edge decided (§5.2): what
+    /// catch-up splits by. Rebuilt by the log replay at open.
+    history: History,
 }
 
 /// `(author, proposal ids)` of an entry, from its trailers.
@@ -215,6 +219,7 @@ impl TeamStore {
         s.append(&[frame])?;
         s.replica = r;
         s.last = Some(first.to_owned());
+        s.history = History::starting_at(s.last.clone(), catchup::projection(&s.replica));
         Ok(s)
     }
 
@@ -262,6 +267,7 @@ impl TeamStore {
             last: None,
             log,
             decisions: BTreeMap::new(),
+            history: History::default(),
         };
         for f in frames {
             s.replay(&f)?;
@@ -275,6 +281,8 @@ impl TeamStore {
                 .map_err(StoreError::Join)?;
             self.anchor = f.oid.clone();
             self.last = Some(f.oid.clone());
+            self.history =
+                History::starting_at(self.last.clone(), catchup::projection(&self.replica));
             return Ok(());
         }
         let out = self.replica.accept(&EntryInput {
@@ -296,8 +304,25 @@ impl TeamStore {
                 )));
             }
         }
-        self.last = Some(f.oid.clone());
+        self.advanced(&f.oid);
         Ok(())
+    }
+
+    /// `oid` is decided (or followed as a successor): it is the tip.
+    fn advanced(&mut self, oid: &str) {
+        self.last = Some(oid.to_owned());
+        self.history
+            .record(oid, catchup::projection(&self.replica));
+    }
+
+    /// The projection after every entry decided here, for catch-up.
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    /// The team id.
+    pub fn team(&self) -> [u8; 16] {
+        self.team
     }
 
     fn append(&mut self, frames: &[Frame]) -> Result<(), StoreError> {
@@ -398,7 +423,7 @@ impl TeamStore {
                             tree: objs.tree,
                         }])?;
                         self.anchor = root.clone();
-                        self.last = Some(root);
+                        self.advanced(&root);
                         imported += 1;
                         continue;
                     }
@@ -480,7 +505,7 @@ impl TeamStore {
                     commit: objs.commit,
                     tree: objs.tree,
                 }])?;
-                self.last = Some(oid.clone());
+                self.advanced(oid);
                 imported += 1;
                 if self.replica.pending().is_some() {
                     break;
