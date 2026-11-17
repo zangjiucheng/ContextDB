@@ -77,6 +77,12 @@ fn same_error(a: &TxError, b: &TxError) -> bool {
 struct Gen {
     rng: ChaCha8Rng,
     keys: u32,
+    /// P10: mirror keys created so far, with the contents seen for each.
+    mirrors: Vec<(String, Vec<ContentHash>)>,
+}
+const TEAM: [u8; 16] = [0x13; 16];
+fn team_key(n: usize) -> String {
+    format!("team/{}/m{n}", "13".repeat(16))
 }
 impl Gen {
     fn pick(&mut self, n: usize) -> usize {
@@ -94,6 +100,108 @@ impl Gen {
             format!("k{}", self.keys)
         }
     }
+    /// A random replica-channel batch (P10): create, attach (sometimes a
+    /// bogus head or an already visible key), revise by key (often a dedup
+    /// import of another branch's revision), head moves, base flips, tags,
+    /// `team:` watermarks with and without `gap`.
+    fn replica_batch(&mut self, c: &Canonical, b: BranchId) -> Batch {
+        let visible: Vec<u32> = (c.logicals.iter())
+            .filter(|(_, v)| v.0.origin != Origin::Local)
+            .map(|(l, _)| *l)
+            .collect();
+        let content = |g: &mut Self| [100 + g.pick(6) as u8; 32];
+        let mut ops = Vec::new();
+        for _ in 0..1 + self.pick(2) {
+            let op = match self.pick(8) {
+                0 | 1 => {
+                    let n = self.mirrors.len();
+                    let h = content(self);
+                    self.mirrors.push((team_key(n), vec![h]));
+                    Op::CreateLogical {
+                        origin: Origin::Replica { team: TEAM },
+                        key: team_key(n),
+                        kind: [RecordKind::Decision, RecordKind::Fact, RecordKind::Plan]
+                            [self.pick(3)],
+                        scope_lane: format!("team:{}/main", "13".repeat(16)),
+                        content: h,
+                        adopt_as_base: self.coin(60),
+                    }
+                }
+                2 | 3 if !self.mirrors.is_empty() => {
+                    let i = self.pick(self.mirrors.len());
+                    let (key, seen) = self.mirrors[i].clone();
+                    let head = if self.coin(85) {
+                        seen[self.pick(seen.len())]
+                    } else {
+                        [99; 32]
+                    };
+                    Op::MirrorAttach {
+                        key,
+                        head,
+                        base: self.coin(60),
+                    }
+                }
+                4 if !self.mirrors.is_empty() => {
+                    let i = self.pick(self.mirrors.len());
+                    let h = content(self);
+                    self.mirrors[i].1.push(h);
+                    Op::AddRevision {
+                        logical: LogicalRef::Key(self.mirrors[i].0.clone()),
+                        content: h,
+                        adopt_as_base: self.coin(40),
+                    }
+                }
+                5 if !visible.is_empty() => {
+                    let l = visible[self.pick(visible.len())];
+                    let of_l: Vec<u32> = (c.revisions.iter())
+                        .filter(|(_, v)| v.0.logical.0 == l)
+                        .map(|(r, _)| *r)
+                        .collect();
+                    Op::SetHead {
+                        logical: LogicalRef::Existing(LogicalId(l)),
+                        expected: RevisionId(c.logicals[&l].1).into(),
+                        new: RevisionId(of_l[self.pick(of_l.len())]).into(),
+                    }
+                }
+                6 if !visible.is_empty() => {
+                    let l = visible[self.pick(visible.len())];
+                    let of_l: Vec<u32> = (c.revisions.iter())
+                        .filter(|(_, v)| v.0.logical.0 == l)
+                        .map(|(r, _)| *r)
+                        .collect();
+                    let r = RevisionId(of_l[self.pick(of_l.len())]).into();
+                    if self.coin(50) {
+                        Op::AssertBase { rev: r }
+                    } else {
+                        Op::RetractBase { rev: r }
+                    }
+                }
+                7 if !visible.is_empty() => Op::SetMetadata {
+                    logical: LogicalRef::Existing(LogicalId(visible[self.pick(visible.len())])),
+                    tags: [format!("t{}", self.pick(3))].into(),
+                    dirs: if self.coin(5) {
+                        ["src".to_owned()].into()
+                    } else {
+                        Default::default()
+                    },
+                },
+                _ => {
+                    let scope = format!("team:{}", "13".repeat(16));
+                    Op::ObserverWatermark {
+                        expected: c.watermarks.get(&scope).cloned(),
+                        scope,
+                        position: vec![self.pick(250) as u8],
+                        gap: self.coin(30),
+                    }
+                }
+            };
+            ops.push(op);
+        }
+        let mut batch = Batch::new(ops);
+        batch.branch = b;
+        batch.channel = Channel::Replica;
+        batch
+    }
     /// A random batch on `b`, ids picked from the oracle's view.
     fn batch(&mut self, o: &BranchOracle, b: BranchId) -> Batch {
         let c = o.canonical(b);
@@ -101,13 +209,43 @@ impl Gen {
         let revisions: Vec<u32> = c.revisions.keys().copied().collect();
         let rules: Vec<u32> = c.rules.keys().copied().collect();
         let artifacts: Vec<u32> = c.artifacts.keys().copied().collect();
-        let fact = |c: &Canonical, l: u32| c.logicals[&l].0.kind != RecordKind::CodeAnchor;
+        // Facts: what agents write. Mirrors are the replica channel's.
+        let fact = |c: &Canonical, l: u32| {
+            c.logicals[&l].0.kind != RecordKind::CodeAnchor
+                && c.logicals[&l].0.origin == Origin::Local
+        };
         let facts: Vec<u32> = logicals.iter().copied().filter(|l| fact(&c, *l)).collect();
         let fact_revs: Vec<u32> = (revisions.iter().copied())
             .filter(|r| fact(&c, c.revisions[r].0.logical.0))
             .collect();
         let mut channel = Channel::Agent;
         let mut ops = Vec::new();
+        if self.coin(14) {
+            return self.replica_batch(&c, b);
+        }
+        // P10 probes: an agent write to a mirror, a local reserved key.
+        let mirror_revs: Vec<u32> = (revisions.iter().copied())
+            .filter(|r| c.logicals[&c.revisions[r].0.logical.0].0.origin != Origin::Local)
+            .collect();
+        if !mirror_revs.is_empty() && self.coin(2) {
+            let mut batch = Batch::new(vec![Op::AssertBase {
+                rev: RevisionId(mirror_revs[self.pick(mirror_revs.len())]).into(),
+            }]);
+            batch.branch = b;
+            return batch;
+        }
+        if self.coin(1) {
+            let mut batch = Batch::new(vec![Op::CreateLogical {
+                origin: Origin::Local,
+                key: format!("team/x{}", self.pick(3)),
+                kind: RecordKind::Fact,
+                scope_lane: "repo".into(),
+                content: [1; 32],
+                adopt_as_base: false,
+            }]);
+            batch.branch = b;
+            return batch;
+        }
         if (revisions.is_empty() && self.coin(50)) || self.coin(6) {
             // Code anchors and their watermark, on the observer channel.
             channel = Channel::Observer;
@@ -394,6 +532,7 @@ fn prop13_branches_equal_the_oracle() {
         let mut g = Gen {
             rng: ChaCha8Rng::seed_from_u64(seed ^ 0x13),
             keys: 0,
+            mirrors: Vec::new(),
         };
         let (mut k, mut o) = (
             Kernel::default(),
@@ -532,4 +671,19 @@ fn prop13_branches_equal_the_oracle() {
          {conflicts} conflicts, {imports} visibility rows; rejections {kinds:?}"
     );
     assert!(merges > seeds as usize / 2 && conflicts > 0 && imports > 0);
+    // P10 coverage over enough seeds (the gate runs 10,000).
+    if seeds - first >= 1000 {
+        for kind in [
+            "MirrorLag",
+            "ReplicaReadOnly",
+            "ReservedNamespace",
+            "LogicalExists",
+            "UnknownRef",
+        ] {
+            assert!(
+                kinds.get(kind).copied().unwrap_or(0) > 0,
+                "PROP13 never reached {kind}"
+            );
+        }
+    }
 }

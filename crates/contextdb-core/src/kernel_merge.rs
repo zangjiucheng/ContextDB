@@ -217,6 +217,11 @@ impl<M: Maintainer, S: StatsSink> View<'_, M, S> {
         let l = self.local(Kind::Logical, gl)?;
         Some(self.db.metadata(LogicalId(l)))
     }
+    /// Whether a visible logical is a mirror (replica origin, P10).
+    fn replica(&self, gl: u32) -> bool {
+        self.local(Kind::Logical, gl)
+            .is_some_and(|l| self.db.logical_origin(LogicalId(l)) != Origin::Local)
+    }
     fn kind(&self, gl: u32) -> Option<RecordKind> {
         Some(self.db.kind_of(LogicalId(self.local(Kind::Logical, gl)?)))
     }
@@ -542,6 +547,17 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                         || s.db.artifact_record(ArtifactId(s.local(k, *g).unwrap())).ty
                             != ArtifactType::AnchorBroken
                 })
+                // P10: a merge never makes replica-origin state visible; only
+                // catch-up attaches a mirror (SD19 team supplement).
+                .filter(|g| match k {
+                    Kind::Logical => !s.replica(*g),
+                    Kind::Revision => !s.replica(s.logical_of(*g)),
+                    Kind::Artifact => {
+                        let a = s.db.artifact_record(ArtifactId(s.local(k, *g).unwrap()));
+                        !s.replica(s.logical_of(s.global(Kind::Revision, a.target.0)))
+                    }
+                    Kind::Rule => true,
+                })
                 .collect();
             v.sort_unstable();
             v
@@ -557,7 +573,8 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut heads: BTreeMap<u32, u32> = BTreeMap::new();
         let mut metadata: BTreeMap<u32, Metadata> = BTreeMap::new();
         for &gl in s.all(Kind::Logical) {
-            if t.local(Kind::Logical, gl).is_none() {
+            // Mirrors are the replica channel's alone: nothing of theirs moves.
+            if t.local(Kind::Logical, gl).is_none() || s.replica(gl) {
                 continue;
             }
             if !observed_in_t(gl) {
@@ -632,6 +649,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut base: BTreeMap<u32, bool> = BTreeMap::new();
         for &gr in s.all(Kind::Revision) {
             let gl = s.logical_of(gr);
+            if s.replica(gl) {
+                continue;
+            }
             let existing_logical = t.local(Kind::Logical, gl).is_some();
             if existing_logical && observed_in_t(gl) {
                 // Observer domain: new revisions arrive unobserved, not base.
@@ -791,6 +811,23 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                     base.insert(gr, false);
                 }
             }
+        }
+        // P10 MirrorLag: a carried rule or validation naming a mirror
+        // revision the target cannot see yet; catch the target up first.
+        let lagging =
+            |gr: u32| t.local(Kind::Revision, gr).is_none() && s.replica(s.logical_of(gr));
+        let rule_lags = new_ids[2].iter().any(|&gj| {
+            let j = s.db.rule_record(RuleId(
+                s.local(Kind::Rule, gj).expect("visible in the source"),
+            ));
+            (j.premises.iter().map(|p| p.premise))
+                .chain(j.references.iter().copied())
+                .any(|r| lagging(s.global(Kind::Revision, r.0)))
+        });
+        let validation_lags =
+            (validations.keys()).any(|(_, curvec)| curvec.iter().any(|(_, gr)| lagging(*gr)));
+        if rule_lags || validation_lags {
+            return Err(TxError::MirrorLag);
         }
         report.convergent = convergent;
         report.newly_visible = [0, 1, 2, 3].map(|k| new_ids[k].len());

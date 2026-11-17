@@ -941,8 +941,11 @@ impl BranchOracle {
         let mut found: Vec<Found> = Vec::new();
         let mut next = tstate.clone();
         let in_t = |kind: usize, g: u32| tv[kind].contains(&g);
+        // P10: mirrors belong to the replica channel; a merge takes nothing
+        // of theirs and never makes them visible.
+        let mirror = |o: &Self, l: u32| o.logicals[l as usize].origin != Origin::Local;
         for &l in &sv[0] {
-            if !in_t(0, l) {
+            if !in_t(0, l) || mirror(self, l) {
                 continue;
             }
             if !anchor(self, l) {
@@ -1019,6 +1022,9 @@ impl BranchOracle {
         }
         for &r in &sv[1] {
             let l = rev_logical(self, r);
+            if mirror(self, l) {
+                continue;
+            }
             if in_t(0, l) && anchor(self, l) {
                 if !in_t(1, r) {
                     next.base.insert(r, false);
@@ -1096,6 +1102,7 @@ impl BranchOracle {
         // `meta` takes no part in classification (ADR 0015 §3.1): records are
         // compared without it, and a taken record keeps the source's.
         let bare = |r: Option<ValidationRecord>| r.map(|r| ValidationRecord { meta: None, ..r });
+        let mut taken_validations = Vec::new();
         for (key, record) in &s.validations {
             let bv: Vec<_> = bases
                 .iter()
@@ -1111,6 +1118,7 @@ impl BranchOracle {
                 None => {}
                 Some(Ok(_)) => {
                     next.validations.insert(key.clone(), record.clone());
+                    taken_validations.push(key.clone());
                 }
                 Some(Err(())) if tr.as_ref().is_some_and(|x| x.verdict == record.verdict) => {
                     out.convergent += 1;
@@ -1139,6 +1147,15 @@ impl BranchOracle {
             (sv[k].iter().copied())
                 .filter(|g| !in_t(k, *g))
                 .filter(|g| k != 3 || self.artifacts[*g as usize].ty != ArtifactType::AnchorBroken)
+                .filter(|g| match k {
+                    0 => !mirror(self, *g),
+                    1 => !mirror(self, rev_logical(self, *g)),
+                    3 => !mirror(
+                        self,
+                        rev_logical(self, self.artifacts[*g as usize].target.0),
+                    ),
+                    _ => true,
+                })
                 .collect()
         });
         out.newly_visible = [0, 1, 2, 3].map(|k| new[k].len());
@@ -1267,6 +1284,20 @@ impl BranchOracle {
                 }
             }
         }
+        // P10 MirrorLag: a carried rule or validation naming a mirror
+        // revision the target cannot see yet.
+        let lagging = |r: u32| !in_t(1, r) && mirror(self, rev_logical(self, r));
+        let rule_lags = new[2].iter().any(|&j| {
+            let rule = &self.rules[j as usize];
+            (rule.premises.iter().map(|p| p.premise.0))
+                .chain(rule.references.iter().map(|r| r.0))
+                .any(lagging)
+        });
+        let validation_lags =
+            (taken_validations.iter()).any(|(_, curvec)| curvec.iter().any(|(_, r)| lagging(*r)));
+        if rule_lags || validation_lags {
+            return Err(TxError::MirrorLag);
+        }
         // The merged state, tried on a copy: cycles, certification, reads.
         let mut merged = self.clone();
         for (k, list) in new.iter().enumerate() {
@@ -1364,8 +1395,10 @@ impl BranchOracle {
         let merged_policy = &p.inputs.policy;
         for (n, r) in p.inputs.revisions.iter().enumerate() {
             let logical = &p.inputs.logicals[r.logical.index()];
+            // P10: mirrors follow the root, not the local policy.
             if matches!(logical.kind, RecordKind::Evidence | RecordKind::CodeAnchor)
                 || !merged_policy.require_deps.contains(&logical.kind)
+                || logical.origin != Origin::Local
             {
                 continue;
             }
