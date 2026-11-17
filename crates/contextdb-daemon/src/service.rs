@@ -1749,6 +1749,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamWhy { team, path } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                self.team_call(Some(team), crate::team::Call::Why { path })
+            }
             Request::TeamStatus { team } => {
                 drop(snap);
                 let call = crate::team::Call::Status { who: id.principal };

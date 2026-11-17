@@ -192,6 +192,14 @@ fn p10_ctx_team_create_publish_join() {
     let (code, out) = ctx(&["team", "status", data_b.to_str().unwrap()]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("member alice seq 1"), "{out}");
+    let (code, out) = ctx(&[
+        "team",
+        "why",
+        data_b.to_str().unwrap(),
+        &format!("team/{team}/conv/naming"),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("team record conv/naming@"), "{out}");
     // Joining twice is refused.
     let (code, out) = ctx(&[
         "team",

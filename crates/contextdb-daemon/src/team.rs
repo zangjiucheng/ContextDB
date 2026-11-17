@@ -393,6 +393,9 @@ pub enum Call {
         commit: String,
     },
     Refused,
+    Why {
+        path: String,
+    },
 }
 
 /// A prepared entry: the unsigned commit, its tree id (written to the
@@ -528,6 +531,32 @@ pub fn call(
                 Ok(Err(e)) => fail(&format!("{e:?}"), "prepare again"),
                 Err(e) => fail("ReplicaStalled", e.to_string()),
             }
+        }
+        Call::Why { path } => {
+            let r = j.store.replica();
+            let Some(w) = r.why(&path) else {
+                return fail("UnknownKey", path);
+            };
+            let short = |h: &[u8; 32]| hex(&h[..6]);
+            let mut lines = vec![format!(
+                "team record {path}@{}: {:?} at the root (seq {}){}",
+                short(&w.head),
+                w.status,
+                r.seq().map_or("-".to_owned(), |s| s.to_string()),
+                if w.base { ", base" } else { "" }
+            )];
+            for (enabled, premises) in w.rules {
+                let named: Vec<String> = premises
+                    .iter()
+                    .map(|(p, k, c)| format!("{k:?} {p}@{}", short(c)))
+                    .collect();
+                lines.push(format!(
+                    "  rule{}: {}",
+                    if enabled { "" } else { " (disabled)" },
+                    named.join(", ")
+                ));
+            }
+            Answer::Lines(lines)
         }
         Call::Refused => {
             let Some(p) = j.prepared.take() else {

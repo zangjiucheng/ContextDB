@@ -133,6 +133,21 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        Some("why") => {
+            let team = pick(data, args)?;
+            let target = args
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with("--") && commit::parse_id128(a).is_none())
+                .ok_or("ctx team why <dir> <key or path>")?;
+            // A full key `team/<hex>/<path>` or the path alone.
+            let path = target
+                .strip_prefix(&format!("team/{}/", hex(&team)))
+                .unwrap_or(target)
+                .to_owned();
+            let mut c = connect(data, "admin.sock")?;
+            lines(call(&mut c, Request::TeamWhy { team, path })?.response)
+        }
         Some("leave") => {
             let team = pick(data, args)?;
             if !args.iter().any(|a| a == "--yes") {

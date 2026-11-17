@@ -764,6 +764,12 @@ pub enum Request {
     TeamLeave {
         team: [u8; 16],
     },
+    /// P10 `ctx team why` (ADR 0018 §5.4): the replica's justification of
+    /// a team record. Store owner, admin socket.
+    TeamWhy {
+        team: [u8; 16],
+        path: String,
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2196,6 +2202,11 @@ impl Wire for Request {
                 54u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamWhy { team, path } => {
+                55u8.encode(o);
+                team.encode(o);
+                path.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2484,6 +2495,10 @@ impl Wire for Request {
             },
             54 => Self::TeamLeave {
                 team: Wire::decode(i)?,
+            },
+            55 => Self::TeamWhy {
+                team: Wire::decode(i)?,
+                path: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })

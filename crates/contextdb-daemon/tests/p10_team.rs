@@ -369,6 +369,36 @@ fn p10_daemon_imports_routes_and_lags() {
     let lines = sync(&s);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("Imported(2)"), "{lines:?}");
+    // The replica's justification, in team terms (§5.4).
+    match s
+        .handle(
+            ADMIN,
+            Request::TeamWhy {
+                team: TEAM,
+                path: "k/a".into(),
+            },
+        )
+        .response
+    {
+        Response::TeamLines { lines } => {
+            assert!(lines[0].starts_with("team record k/a@"), "{lines:?}");
+            assert!(
+                lines[0].contains("Certified") && lines[0].contains("base"),
+                "{lines:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let r = s
+        .handle(
+            ADMIN,
+            Request::TeamWhy {
+                team: TEAM,
+                path: "k/none".into(),
+            },
+        )
+        .response;
+    assert_eq!(code(&r), "UnknownKey");
     // Mirrors on main, at the fetched tip: certified.
     let sid = session(&s);
     assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);

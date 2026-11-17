@@ -76,6 +76,15 @@ pub enum Outcome {
     InvalidSuccessor(Reason),
 }
 
+/// A team record's justification ([`Replica::why`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Why {
+    pub head: Hash,
+    pub status: Summary,
+    pub base: bool,
+    pub rules: Vec<(bool, Vec<(String, EdgeKind, Hash)>)>,
+}
+
 /// An accepted `Compact` awaiting its successor (`CompactPending`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
@@ -1213,6 +1222,41 @@ impl Replica {
 
     /// The team status of a record: `certified` iff its head is CERTIFIED in
     /// the replica (no Sem, validators or Conflicts: L1 = L2, §4.3).
+    /// `ctx team why` (ADR 0018 §5.4): a record's head, its team status,
+    /// whether its head is base, and every rule concluding the head, each
+    /// as `(enabled, [(path, edge kind, content)])` — team records named by
+    /// `(key, content)`, never by replica ids (m15).
+    pub fn why(&self, path: &str) -> Option<Why> {
+        let l = self.logical(path)?;
+        let head = self.db.head(l)?;
+        let content = self.db.revision_content(head).ok()?;
+        let name = |r: RevisionId| -> Option<(String, Hash)> {
+            let c = self.db.revision_content(r).ok()?;
+            let (key, ..) = self.db.logical_info(self.db.revision_logical(r)?)?;
+            Some((key.strip_prefix(&self.key(""))?.to_owned(), c))
+        };
+        let rules = (self.db.rules_concluding(head).into_iter())
+            .map(|(_, enabled, premises, refs)| {
+                let mut named: Vec<(String, EdgeKind, Hash)> = premises
+                    .iter()
+                    .filter_map(|p| name(p.premise).map(|(k, c)| (k, p.kind, c)))
+                    .chain(
+                        refs.iter()
+                            .filter_map(|r| name(*r).map(|(k, c)| (k, EdgeKind::Ref, c))),
+                    )
+                    .collect();
+                named.sort();
+                (enabled, named)
+            })
+            .collect();
+        Some(Why {
+            head: content,
+            status: self.db.status(head).ok()?,
+            base: self.db.is_base(head).unwrap_or(false),
+            rules,
+        })
+    }
+
     pub fn certified(&self, path: &str) -> Option<bool> {
         let l = self.logical(path)?;
         let head = self.db.head(l)?;
