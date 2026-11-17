@@ -116,7 +116,8 @@ fn t104_a_format4_store_migrates_encrypted_with_every_payload() {
         Err(StoreError::FormatMigrationRequired(4))
     ));
     let report = migrate::migrate(&disk, dir).unwrap();
-    assert_eq!((report.from, report.to), (4, 5));
+    // P10: the log goes straight to the current format (6).
+    assert_eq!((report.from, report.to), (4, log::FORMAT_VERSION));
     let enc = report.encryption.expect("steps 3 and 4 ran");
     assert_eq!((enc.segments, enc.loose, enc.records), (2, 1, 4));
     assert_eq!(enc.missing, 0);
@@ -140,7 +141,7 @@ fn t104_a_format4_store_migrates_encrypted_with_every_payload() {
             f.display()
         );
     }
-    // A second run reports "already at format 5" and changes nothing.
+    // A second run reports "already at the current format" and changes nothing.
     let before: Vec<_> = files(&disk, dir);
     let again = migrate::migrate(&disk, dir).unwrap();
     assert!(again.encryption.is_none());
@@ -224,8 +225,12 @@ fn t104_every_intermediate_state_is_refused_and_a_rerun_completes() {
                     .collect();
                 assert_eq!(now, packs_before);
             } else {
-                // From step 2 on, a P8 binary refuses the format-5 log.
-                assert_eq!(migrate::log_format(&disk, dir).unwrap(), Some(5));
+                // From step 2 on, a P8 binary refuses the migrated log
+                // (format 6 since P10).
+                assert_eq!(
+                    migrate::log_format(&disk, dir).unwrap(),
+                    Some(log::FORMAT_VERSION)
+                );
             }
             let r = migrate::migrate(&disk, dir).unwrap();
             assert!(r.encryption.is_some(), "{at:?}");

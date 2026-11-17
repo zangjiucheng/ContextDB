@@ -78,7 +78,7 @@ fn replay_snapshot_doctor_on_a_real_store() {
 
 /// T104 through the binary (ADR 0017 §10): `ctx doctor` refuses a store
 /// marked mid-migration and names `ctx migrate`; `ctx migrate` completes
-/// (log, packs, modes) and a second run reports "already at format 5".
+/// (log, packs, modes) and a second run reports "already at format 6".
 #[test]
 fn migrate_completes_and_openers_refuse_a_marked_store() {
     use contextdb_store::{Durability, migrate, migrate5};
@@ -113,14 +113,15 @@ fn migrate_completes_and_openers_refuse_a_marked_store() {
     );
     let (ok, out) = ctx(&["migrate", d]);
     assert!(ok, "{out}");
-    assert!(out.contains("migrated format 4 -> 5"), "{out}");
+    // P10: straight to the current format.
+    assert!(out.contains("migrated format 4 -> 6"), "{out}");
     assert!(
         out.contains("re-encrypted 1 records from 1 pack segments"),
         "{out}"
     );
     assert!(!dir.join(migrate5::MARKER).exists());
     let (ok, out) = ctx(&["migrate", d]);
-    assert!(ok && out.contains("already at format 5"), "{out}");
+    assert!(ok && out.contains("already at format 6"), "{out}");
     let (ok, out) = ctx(&["doctor", d]);
     assert!(ok, "{out}");
     let _ = std::fs::remove_dir_all(&dir);

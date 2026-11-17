@@ -210,7 +210,9 @@ dependencies = [
  "contextdb-proto",
  "contextdb-store",
  "contextdb-symbols",
+ "contextdb-team",
  "contextdb-testkit",
+ "nix",
  "serde_json",
  "toml",
 ]
@@ -236,6 +238,7 @@ dependencies = [
  "contextdb-oracle",
  "contextdb-proto",
  "contextdb-store",
+ "contextdb-team",
  "contextdb-testkit",
  "contextdb-validate",
  "loom",
