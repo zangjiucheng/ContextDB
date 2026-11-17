@@ -575,8 +575,9 @@ fn connect_within(
     data: &Path,
     timeout: std::time::Duration,
 ) -> Option<contextdb_proto::client::Client> {
-    let l = contextdb_proto::lease::read_lease(&data.join("ctxd.lease"))
-        .filter(contextdb_proto::lease::Lease::is_live)?;
+    // No liveness check through `ps` (G5: hooks run on every fetch): a
+    // daemon that is gone refuses the connection at once.
+    let l = contextdb_proto::lease::read_lease(&data.join("ctxd.lease"))?;
     let path = l.sockets.iter().find(|s| s.ends_with("admin.sock"))?;
     contextdb_proto::client::Client::connect_timeout(path, timeout).ok()
 }
@@ -688,7 +689,9 @@ pub fn reference_transaction(data: &Path, state: &str, input: &str) -> Result<()
                 e.1.push(format!("{old}:{oid}"));
             }
             for (team, (dir, ranges, remote)) in by_team {
-                if let Ok(cfg) = TeamConfig::load(dir) {
+                if let Ok(cfg) = TeamConfig::load(dir)
+                    && partial_clone(&cfg.repo)
+                {
                     spawn_fetch_missing(data, &team, &cfg.repo, &remote, &ranges);
                 }
             }
@@ -1076,4 +1079,12 @@ fn propose_portable(data: &Path, team: [u8; 16], ops: Vec<TeamOp>) -> Result<u8,
         )?
         .response,
     )
+}
+
+/// Whether the clone is partial (`extensions.partialclone` or a promisor
+/// remote in its config), read from the file: no git process (G5).
+fn partial_clone(repo: &Path) -> bool {
+    std::fs::read_to_string(repo.join(".git").join("config"))
+        .map(|c| c.contains("partialclone") || c.contains("promisor = true"))
+        .unwrap_or(true)
 }

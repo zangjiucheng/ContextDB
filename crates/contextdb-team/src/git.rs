@@ -155,22 +155,30 @@ impl Repo {
     /// (G5: an import walks only what is new). `None` when it does not, or
     /// cannot be told: the caller walks the whole path and decides.
     pub fn first_parent_since(&self, tip: &str, last: &str) -> Result<Option<Vec<String>>> {
-        let not = format!("^{last}");
-        let (ok, out, _) =
-            self.raw(&["rev-list", "--first-parent", "--reverse", tip, &not], &[])?;
-        if !ok {
-            return Ok(None);
+        // Newest first, in a growing window: only the new commits (and
+        // `last`) are read, never the history behind `last`.
+        let mut window = 16usize;
+        loop {
+            let n = window.to_string();
+            let (ok, out, _) =
+                self.raw(&["rev-list", "--first-parent", "--max-count", &n, tip], &[])?;
+            if !ok {
+                return Ok(None);
+            }
+            let list: Vec<String> = String::from_utf8_lossy(&out)
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect();
+            if let Some(i) = list.iter().position(|o| o == last) {
+                let mut tail: Vec<String> = list[..i].to_vec();
+                tail.reverse();
+                return Ok((!tail.is_empty()).then_some(tail));
+            }
+            if list.len() < window || window >= 1 << 20 {
+                return Ok(None);
+            }
+            window *= 16;
         }
-        let list: Vec<String> = String::from_utf8_lossy(&out)
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        let Some(first) = list.first() else {
-            return Ok(None);
-        };
-        let (ok, out, _) =
-            self.raw(&["rev-parse", "--verify", "-q", &format!("{first}^1")], &[])?;
-        Ok((ok && String::from_utf8_lossy(&out).trim() == last).then_some(list))
     }
 
     /// Whether `a` is an ancestor of (or equal to) `b`.
