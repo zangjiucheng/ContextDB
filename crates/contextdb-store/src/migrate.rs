@@ -17,7 +17,7 @@ use crate::{
     log::{self, FrameFault, LogRow},
     store::StoreError,
 };
-use contextdb_core::{Db, Kernel};
+use contextdb_core::Kernel;
 use contextdb_model::*;
 use std::path::Path;
 
@@ -105,6 +105,10 @@ pub fn migrate_with(
                 }
             }
             Some(0..=4) => {}
+            // Format 5 → 6 (P10) changes only the log: its packs, keys,
+            // projections and modes are format 5's, already done. The swap
+            // is the log step's; an interrupted one resumes above.
+            Some(5) => return migrate_log(disk, dir, 5),
             Some(f) if f > log::FORMAT_VERSION => return Err(StoreError::FormatTooNew(f)),
             Some(f) => return Err(StoreError::FormatUnsupported(f)),
             None => return Err(StoreError::Io("no log to migrate".into())),
@@ -149,7 +153,7 @@ fn log_step(
     match log_format(disk, dir)? {
         Some(f) if f == log::FORMAT_VERSION => current(disk, dir, f),
         None if disk.exists(&dir.join("log")) => current(disk, dir, log::FORMAT_VERSION),
-        Some(f @ (0..=4)) if faults.skip_log => Ok(MigrationReport {
+        Some(f @ (0..=5)) if faults.skip_log => Ok(MigrationReport {
             from: f,
             to: f,
             frames: 0,
@@ -157,7 +161,7 @@ fn log_step(
             changed: Vec::new(),
             encryption: None,
         }),
-        Some(f @ (0..=4)) => migrate_log(disk, dir, f),
+        Some(f @ (0..=5)) => migrate_log(disk, dir, f),
         Some(f) if f > log::FORMAT_VERSION => Err(StoreError::FormatTooNew(f)),
         Some(f) => Err(StoreError::FormatUnsupported(f)),
         None => Err(StoreError::Io("no log to migrate".into())),
@@ -445,6 +449,14 @@ pub fn write_format4(
 ) -> Result<u64, StoreError> {
     write_format(disk, dir, batches, 4)
 }
+/// Test and tooling support: writes a format-5 log (P9 layout).
+pub fn write_format5(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 5)
+}
 /// Test and tooling support: writes a format-1 log (P2 layout, no group header).
 pub fn write_format1(
     disk: &dyn Durability,
@@ -473,11 +485,14 @@ fn write_format_with(
     let seg = log_dir.join(log::segment_name(Epoch(1)));
     let header = log::segment_header_with(&log::OP_LOG, 1, log::GENESIS, format);
     disk.write_new(&seg, &header).map_err(io)?;
-    let mut db = Db::default();
+    // The kernel, so fixtures may hold branches and merges (format 3 on).
+    let mut kernel = Kernel::default();
     let mut prev = log::GENESIS;
     let mut n = 0;
     for b in batches {
-        let Ok(result) = db.commit(b) else { continue };
+        let Ok((result, merge)) = kernel.commit_detailed(b) else {
+            continue;
+        };
         let result = recorded(b, result);
         let batch_blob = b.canonical_bytes();
         let row = LogRow {
@@ -494,7 +509,7 @@ fn write_format_with(
                     &result,
                     &ResultTrailer {
                         branch: b.branch,
-                        merge: None,
+                        merge,
                     },
                 ),
                 _ => result.canonical_bytes(),

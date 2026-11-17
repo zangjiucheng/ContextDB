@@ -10,9 +10,12 @@ use std::path::{Path, PathBuf};
 /// the branch ops (tags 14–17) and the result trailer (ADR 0013 §8); format
 /// 4 adds `RecordValidation4` and `ResolveArtifact4` (tags 18, 19; ADR 0015
 /// §9) with an unchanged frame layout; format 5 adds `SetAccess` (tag 20;
-/// ADR 0017 §10), again with an unchanged frame layout. Older formats
-/// migrate explicitly (`migrate`).
-pub const FORMAT_VERSION: u32 = 5;
+/// ADR 0017 §10), again with an unchanged frame layout; format 6 (P10,
+/// ADR 0018, SPEC §6.1 contract 16) adds the replica channel, replica-origin
+/// creates, `MirrorAttach` and gap watermarks (tags 22–24, channel 3, a
+/// Logical's origin), again with an unchanged frame layout and Local
+/// encodings unchanged. Older formats migrate explicitly (`migrate`).
+pub const FORMAT_VERSION: u32 = 6;
 pub const SEGMENT_TARGET: usize = 64 * 1024 * 1024;
 /// magic 8 + format 4 + first record number 8 + prev_checksum 32 + header_check 8.
 pub const HEADER_LEN: usize = 60;
