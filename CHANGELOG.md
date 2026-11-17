@@ -4,6 +4,14 @@
 
 - **P10 team exchange implemented** (milestones 1–5; gate evidence in progress, see [the P10 gate](docs/gates/P10.md)). Knowledge shared through the git remote as a signed chain the remote's ref CAS decides; per-clone replicas, mirrors on every branch, a proposal queue published from `pre-push`, an announce fence against stale reads, compaction, and the `ctx team` commands (see [REFERENCE](docs/REFERENCE.md#team-exchange-p10)).
   **Upgrade notes.** Op_log format 6 and IPC protocol 7 → 8: stop `ctxd`, install all binaries together, run `ctx migrate <dir>` (log only; the old log is kept as `log.v5.bak`). Re-run `ctx anchors hooks … install` (or `ctx setup`) so the git hooks become the dispatcher; your own hooks are kept and chained.
+- **P10 G8 implementation review fixes** (thirteen findings, all fixed; [dispositions](docs/gates/P10.md)):
+  - **Publish.** The pre-push hook reads `--signed` and `--dr` as git does. A dependent of a proposal held for the next entry waits for it instead of conflicting, and a proposal no single entry can hold is refused at enqueue (`ProposalTooLarge`). Publish waits while a Compact is pending.
+  - **Lag.** An announce is dropped only after a fresh read of the ref. `ctxd` reads the announce file before it serves any request. Publish and compaction pushes announce their own ref update.
+  - **Idempotency.** `client_txn_id` covers team proposals: a retry returns the same `Proposed`. Reusing the id for another request, or across a proposal and a local commit, is `TxnIdReuse`.
+  - **Trust.** A rejected entry decides proposals only when its author signed it. Git reads ignore replace refs and grafts, and each object must hash to its id. A refusal never gives the reason that a hidden proposal caused.
+  - **Shred.** A team shred keeps bytes that a local artifact payload, a ValidationRecord's metadata or a resolution note holds.
+  - **Crashes.** A checkpoint join writes its Join frame before its anchor. Opening a team puts back the log of an interrupted `ctx team rebuild`.
+- **P10 G2 additions.** G-LAG as a property (T113); catch-up kill points against an uninterrupted run (T114); a push whose command line cannot be read publishes nothing; mirror read redaction through the daemon (T117).
 - **P10 G0 passed (2026-11-16).** ADR 0018 r0.6 is accepted and its §12 amendments are incorporated into SPEC v1.10.0: Git-root team exchange, replicas/mirrors, proposal authorisation and publishing, lag fences, strict history and compaction limits. Ordinary proposals reserve one Compact id; Compact checks its actual size. The previous scale/GC phase moves to P11 and recursion to P12. Implementation, format 6 / protocol 8 and G1–G8 remain pending; see [the P10 gate](docs/gates/P10.md).
 
 ## 0.3.0 — 2026-11-10
