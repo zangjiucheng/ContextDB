@@ -104,6 +104,7 @@ fn share(s: &Svc) {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     };
     let r = s
         .handle(

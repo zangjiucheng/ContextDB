@@ -3060,6 +3060,7 @@ mod tests {
                     code_lanes: LaneEntry::code_default(),
                     personal_egress: true,
                     default_lane: LaneEntry::owner_only(),
+                    team_lanes: None,
                 },
                 client_txn_id: Some([3; 16]),
             },

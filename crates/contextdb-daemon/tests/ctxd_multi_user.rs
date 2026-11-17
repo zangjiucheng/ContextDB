@@ -78,6 +78,7 @@ fn doc() -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 /// Commits the document and reports whether the daemon is now multi-user.

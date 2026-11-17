@@ -89,6 +89,7 @@ fn doc(repo_members: &[&str]) -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 
@@ -1267,6 +1268,7 @@ impl Gen {
             code_lanes,
             personal_egress: self.coin(50),
             default_lane,
+            team_lanes: None,
         }
     }
 }

@@ -38,9 +38,12 @@ The encoder emits lowercase hex. Binary layout:
   adds tag 22 `CreateLogical` with a replica origin (tag 0's fields, then
   `team: [u8;16]`), tag 23 `MirrorAttach` (`key: string`, `head: [u8;32]`,
   `base: bool`), tag 24 `ObserverWatermark` with `gap = true` (tag 10's
-  fields; tag 10 always means `gap = false`), and Channel `Replica = 3`. A
-  Local create keeps tag 0 and a `gap = false` watermark tag 10, so their
-  bytes are unchanged. In a `Logical` record a replica origin sets the
+  fields; tag 10 always means `gap = false`), Channel `Replica = 3`, and
+  `[team_lanes]` in `SetAccess`: bit 1 of the `personal_egress` byte (so
+  the byte is 0–3) marks a `team_lanes: LaneEntry` after `default_lane`. A
+  Local create keeps tag 0, a `gap = false` watermark tag 10 and an access
+  document without `[team_lanes]` its v3 bytes, so their bytes are
+  unchanged. In a `Logical` record a replica origin sets the
   RecordKind byte's high bit (`kind | 0x80`) and appends the team after it.
   Each line carries the lowest version that can represent it.
 - Edge tags: Ref=0, Pin=1, Sem=2, Cur=3. Channel: Agent=0, Observer=1, Admin=2,

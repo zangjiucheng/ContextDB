@@ -86,6 +86,9 @@ pub fn run(dir: &Path, args: &[String]) -> Result<u8, String> {
                 show_entry(name, e);
             }
             show_entry("code_lanes", &doc.code_lanes);
+            if let Some(t) = &doc.team_lanes {
+                show_entry("team_lanes", t);
+            }
             show_entry("default_lane", &doc.default_lane);
             println!("  personal: egress={}", doc.personal_egress);
             Ok(0)

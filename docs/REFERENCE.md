@@ -304,7 +304,7 @@ Several OS users on one machine can share a store. Each user is a **principal** 
    members = ["*owner"]
    ```
 
-   Groups (`@billing`), dir grants, key-prefix denies, `code_lanes` and `personal:<name>` lanes are described in ADR 0017 §4.
+   Groups (`@billing`), dir grants, key-prefix denies, `code_lanes` and `personal:<name>` lanes are described in ADR 0017 §4. `[team_lanes]` (P10, ADR 0018 §5.4) is the entry for every `team:` lane the document does not list; without it they fall to `default_lane`, and the document hashes as before P10.
 2. Run `ctx access apply <data dir>` (it reads `.contextdb/access.toml`; `--file` names another), then check with `ctx access show <data dir>` and `ctx access check <data dir> <principal> <key>`.
 3. Start the daemon with `ctxd <data dir> --multi-user`, or install it with `ctx service install <data dir> --multi-user`. Without the switch, a document that names other principals maps nobody.
 4. Multi-user mode checks the file system before it maps anyone:

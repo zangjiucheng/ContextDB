@@ -548,6 +548,7 @@ fn a_hidden_side_is_never_revealed_by_open_or_by_revision_targets() {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     };
     let r = call(
         &s,

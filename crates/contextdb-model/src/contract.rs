@@ -216,6 +216,10 @@ pub struct AccessDoc {
     /// `[personal] egress` (F6: default `false`).
     pub personal_egress: bool,
     pub default_lane: LaneEntry,
+    /// `[team_lanes]` (P10, ADR 0018 §5.4): the entry of every `team:` lane
+    /// the document does not list. Absent, they fall to `default_lane`, and
+    /// the canonical form and hash are those of a P9 document (m11).
+    pub team_lanes: Option<Box<LaneEntry>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

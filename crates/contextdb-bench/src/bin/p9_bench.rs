@@ -147,6 +147,7 @@ fn doc() -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 /// `n` records over the 10 lanes: 1 % in `l9`, the rest spread over l0–l8.

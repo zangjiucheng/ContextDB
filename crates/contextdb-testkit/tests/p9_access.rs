@@ -55,6 +55,7 @@ fn example() -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 fn admin(ops: Vec<Op>) -> Batch {
@@ -413,7 +414,15 @@ impl Gen {
             .collect()
     }
     const NAMES: [&'static str; 6] = ["alice", "bob", "carol", "dave", "erin", "frank"];
-    const LANES: [&'static str; 6] = ["repo", "billing", "notes", "code:r1", "personal:bob", "x"];
+    const LANES: [&'static str; 7] = [
+        "repo",
+        "billing",
+        "notes",
+        "code:r1",
+        "personal:bob",
+        "x",
+        "team:aa/main",
+    ];
     const DIRS: [&'static str; 5] = [
         "src",
         "src/billing",
@@ -521,6 +530,8 @@ impl Gen {
             code_lanes,
             personal_egress: self.coin(50),
             default_lane,
+            // P10 (ADR 0018 §5.4): unlisted `team:` lanes.
+            team_lanes: self.coin(50).then(|| Box::new(entry(self, false))),
         }
     }
 }
@@ -566,6 +577,8 @@ fn prop15_authorized_and_ids_match_the_reference() {
             "personal:bob",
             "personal:zed",
             "other",
+            "team:aa/main",
+            "team:bb/x",
         ];
         for _ in 0..40 {
             let p = principals[g.pick(principals.len())];

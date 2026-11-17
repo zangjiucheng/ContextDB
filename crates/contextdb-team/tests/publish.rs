@@ -96,6 +96,7 @@ fn local(egress_main: bool) -> AccessState {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     };
     AccessState::apply(None, &doc).unwrap()
 }

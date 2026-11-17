@@ -469,19 +469,41 @@ impl Wire for AccessDoc {
         self.groups.encode(o);
         self.lanes.encode(o);
         self.code_lanes.encode(o);
-        self.personal_egress.encode(o);
+        // Bit 1 of the `personal_egress` byte marks a `[team_lanes]` entry
+        // after `default_lane`; without one the bytes are P9's (m11).
+        (u8::from(self.personal_egress) | if self.team_lanes.is_some() { 2 } else { 0 }).encode(o);
         self.default_lane.encode(o);
+        if let Some(t) = &self.team_lanes {
+            t.encode(o);
+        }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let version = Wire::decode(i)?;
+        let owner = Wire::decode(i)?;
+        let principals = Wire::decode(i)?;
+        let groups = Wire::decode(i)?;
+        let lanes = Wire::decode(i)?;
+        let code_lanes = Wire::decode(i)?;
+        let flags = u8::decode(i)?;
+        if flags > 3 {
+            return Err(WireError::InvalidEncoding);
+        }
+        let default_lane = Wire::decode(i)?;
+        let team_lanes = if flags & 2 != 0 {
+            Some(Box::new(Wire::decode(i)?))
+        } else {
+            None
+        };
         Ok(Self {
-            version: Wire::decode(i)?,
-            owner: Wire::decode(i)?,
-            principals: Wire::decode(i)?,
-            groups: Wire::decode(i)?,
-            lanes: Wire::decode(i)?,
-            code_lanes: Wire::decode(i)?,
-            personal_egress: Wire::decode(i)?,
-            default_lane: Wire::decode(i)?,
+            version,
+            owner,
+            principals,
+            groups,
+            lanes,
+            code_lanes,
+            personal_egress: flags & 1 != 0,
+            default_lane,
+            team_lanes,
         })
     }
 }
@@ -1444,8 +1466,9 @@ impl EventLog {
     /// v1 (P6, ADR 0013 §8) adds the branch ops and non-main branches; v2
     /// (P7, ADR 0015 §9) adds the format-4 op encodings (tags 18, 19); v3
     /// (P9, ADR 0017 §10) adds `SetAccess` (tag 20) and `ShredContent`
-    /// (tag 21).
-    pub const VERSION: u16 = 3;
+    /// (tag 21); v4 (P10, ADR 0018) adds the replica channel and origin,
+    /// `MirrorAttach`, gap watermarks and `[team_lanes]` in `SetAccess`.
+    pub const VERSION: u16 = 4;
     /// The lowest version that can carry `batch`.
     pub fn version_of(batch: &Batch) -> u16 {
         let p6 = batch.branch != MAIN
@@ -1482,7 +1505,7 @@ impl EventLog {
                         ..
                     } | Op::MirrorAttach { .. }
                         | Op::ObserverWatermark { gap: true, .. }
-                )
+                ) || matches!(op, Op::SetAccess { doc } if doc.team_lanes.is_some())
             });
         if p10 {
             4

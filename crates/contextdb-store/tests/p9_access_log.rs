@@ -30,6 +30,7 @@ fn doc(extra: &[(&str, u32)]) -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 fn set_access(d: AccessDoc) -> Batch {

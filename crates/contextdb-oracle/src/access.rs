@@ -146,6 +146,9 @@ fn check(doc: &AccessDoc) -> Result<(), TxError> {
         check_entry(doc, e, lane.starts_with("code:"))?;
     }
     check_entry(doc, &doc.code_lanes, true)?;
+    if let Some(t) = &doc.team_lanes {
+        check_entry(doc, t, false)?;
+    }
     check_entry(doc, &doc.default_lane, false)
 }
 
@@ -228,10 +231,10 @@ impl AccessModel {
                 deny: BTreeSet::new(),
             };
         }
-        if lane.starts_with("code:") {
-            self.doc.code_lanes.clone()
-        } else {
-            self.doc.default_lane.clone()
+        match &self.doc.team_lanes {
+            _ if lane.starts_with("code:") => self.doc.code_lanes.clone(),
+            Some(t) if lane.starts_with("team:") => (**t).clone(),
+            _ => self.doc.default_lane.clone(),
         }
     }
     /// `Authorized(p, l, b)` as a decision table: every predicate first,

@@ -102,6 +102,7 @@ pub fn access_doc(src: &str, owner_uid: u32) -> Result<AccessDoc, String> {
             "groups",
             "lanes",
             "code_lanes",
+            "team_lanes",
             "personal",
             "default_lane",
         ],
@@ -159,6 +160,16 @@ pub fn access_doc(src: &str, owner_uid: u32) -> Result<AccessDoc, String> {
         )?,
         None => LaneEntry::code_default(),
     };
+    // P10: absent, `team:` lanes fall to `default_lane` and the document
+    // hashes as a P9 one (ADR 0018 §5.4, m11).
+    let team_lanes = match t.get("team_lanes") {
+        Some(v) => Some(Box::new(entry(
+            subtable(v, "team_lanes")?,
+            "team_lanes",
+            &LaneEntry::owner_only(),
+        )?)),
+        None => None,
+    };
     let default_lane = match t.get("default_lane") {
         Some(v) => entry(
             subtable(v, "default_lane")?,
@@ -184,5 +195,6 @@ pub fn access_doc(src: &str, owner_uid: u32) -> Result<AccessDoc, String> {
         code_lanes,
         personal_egress,
         default_lane,
+        team_lanes,
     })
 }

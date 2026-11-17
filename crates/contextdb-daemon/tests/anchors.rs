@@ -1567,6 +1567,7 @@ fn recall_dir_ignores_anchors_the_principal_cannot_read() {
         },
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     };
     let r = s
         .handle(

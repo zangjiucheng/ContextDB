@@ -103,6 +103,7 @@ fn doc(secret_egress: bool) -> AccessDoc {
         code_lanes: LaneEntry::code_default(),
         personal_egress: false,
         default_lane: LaneEntry::owner_only(),
+        team_lanes: None,
     }
 }
 fn set_access(s: &Svc, d: AccessDoc) {

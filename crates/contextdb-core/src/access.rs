@@ -68,6 +68,7 @@ pub struct LogicalFacts<'a> {
 
 const PERSONAL: &str = "personal:";
 const CODE: &str = "code:";
+const TEAM: &str = "team:";
 
 /// A principal name (ADR 0017 §4.2): 1 to 32 of `a-z`, `0-9`, `_`, `-`.
 pub fn valid_name(n: &str) -> bool {
@@ -122,6 +123,9 @@ pub fn validate(doc: &AccessDoc) -> Result<(), TxError> {
         entry_ok(doc, lane, e, lane.starts_with(CODE))?;
     }
     entry_ok(doc, "code_lanes", &doc.code_lanes, true)?;
+    if let Some(t) = &doc.team_lanes {
+        entry_ok(doc, "team_lanes", t, false)?;
+    }
     entry_ok(doc, "default_lane", &doc.default_lane, false)
 }
 fn entry_ok(doc: &AccessDoc, lane: &str, e: &LaneEntry, code: bool) -> Result<(), TxError> {
@@ -322,6 +326,11 @@ impl AccessState {
         if lane.starts_with(CODE) {
             return Cow::Borrowed(&self.doc.code_lanes);
         }
+        if lane.starts_with(TEAM)
+            && let Some(t) = &self.doc.team_lanes
+        {
+            return Cow::Borrowed(t);
+        }
         Cow::Borrowed(&self.doc.default_lane)
     }
     /// Whether `name` is in `group` (no nesting).
@@ -375,10 +384,14 @@ pub struct ReadLanes {
     pub lanes: BTreeSet<String>,
     /// Every `code:` lane the document does not list (`code_lanes`).
     pub code: bool,
+    /// Every `team:` lane the document does not list (`team_lanes`).
+    pub team: bool,
 }
 impl ReadLanes {
     pub fn contains(&self, lane: &str) -> bool {
-        self.lanes.contains(lane) || (self.code && lane.starts_with(CODE))
+        self.lanes.contains(lane)
+            || (self.code && lane.starts_with(CODE))
+            || (self.team && lane.starts_with(TEAM))
     }
     /// The prefix [`Self::code`] stands for.
     pub const CODE_PREFIX: &'static str = CODE;
@@ -409,6 +422,9 @@ impl AccessState {
         Some(ReadLanes {
             lanes,
             code: member(&self.doc.code_lanes),
+            // Without `[team_lanes]` team lanes fall to `default_lane`, of
+            // which `name` is not a member here.
+            team: self.doc.team_lanes.as_deref().is_some_and(member),
         })
     }
 }
@@ -580,6 +596,7 @@ mod tests {
                 code_lanes,
                 personal_egress: false,
                 default_lane,
+                team_lanes: None,
             };
             let st = AccessState::apply(None, &doc).unwrap();
             let ids: Vec<PrincipalId> = ["o", "a", "b", "c"]
