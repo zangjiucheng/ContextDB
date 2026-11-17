@@ -775,6 +775,12 @@ pub enum Request {
     TeamRebuild {
         team: [u8; 16],
     },
+    /// P10 `ctx team compact` (ADR 0018 §8.6), admins: the `Compact` entry
+    /// to sign, or with one pending, its successor. Answered
+    /// `TeamPrepared` with the entry.
+    TeamCompact {
+        team: [u8; 16],
+    },
 }
 /// A confirm listing (publish step 5): its token and `(proposal, author)`.
 pub type TeamListing = ([u8; 32], Vec<([u8; 16], PrincipalId)>);
@@ -2221,6 +2227,10 @@ impl Wire for Request {
                 56u8.encode(o);
                 team.encode(o);
             }
+            Self::TeamCompact { team } => {
+                57u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2515,6 +2525,9 @@ impl Wire for Request {
                 path: Wire::decode(i)?,
             },
             56 => Self::TeamRebuild {
+                team: Wire::decode(i)?,
+            },
+            57 => Self::TeamCompact {
                 team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),

@@ -448,6 +448,133 @@ pub enum Call {
         path: String,
     },
     Rebuild,
+    /// §8.6: step 1 (`Compact`) when none is pending, else step 2 (the
+    /// successor, `--resume`).
+    Compact,
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    s.len()
+        .is_multiple_of(2)
+        .then(|| {
+            (0..s.len() / 2)
+                .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok())
+                .collect()
+        })
+        .flatten()
+}
+
+/// §8.6 for the bound member, an admin: the unsigned `Compact` entry on
+/// `g<n>`, or with a `Compact` pending, the successor `F` on `g<n+1>`.
+/// Every checkpoint object is written to the repository first.
+fn compact(j: &Joined, t: TeamId) -> Answer {
+    use contextdb_team::ops::{TeamBatch, TeamOp};
+    let r = j.store.replica();
+    let member = j.cfg.member.as_str();
+    let doc = match r.doc() {
+        Some(d) => d,
+        None => return fail("Genesis", "no team document"),
+    };
+    if !doc.is_admin(member) {
+        return fail("NotAdmin", format!("{member} is not an admin"));
+    }
+    let repo = match Repo::open(&j.cfg.repo) {
+        Ok(r) => r,
+        Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+    };
+    let refname = |g: u32| format!("refs/contextdb/team/{}/g{g}", hex(&t));
+    let accept = doc.accept_version.to_string();
+    if let Some(p) = r.pending() {
+        // Step 2: the replica after the accepted `Compact` is Σc.
+        let Some(sc) = r.keyed_state() else {
+            return fail("Genesis", "no team document");
+        };
+        let files = r.checkpoint_files(&sc, p.generation);
+        let tree = match repo.write_tree(&files) {
+            Ok(t) => t,
+            Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+        };
+        if unhex(&tree).as_deref() != Some(p.tree.as_slice()) {
+            return fail(
+                "CheckpointMismatch",
+                "the rebuilt checkpoint differs from the one Compact committed",
+            );
+        }
+        let seq = p.compact_seq + 1;
+        let trailers: Vec<(&str, String)> = vec![
+            ("Ctx-Team", hex(&t)),
+            ("Ctx-Team-Seq", seq.to_string()),
+            ("Ctx-Author", member.to_owned()),
+            ("Ctx-Accept-Version", accept),
+            ("Ctx-Compacts", p.compact_oid.clone()),
+        ];
+        let payload = contextdb_team::commit::build(&tree, &[], "ctx team: checkpoint", &trailers);
+        return Answer::Compact(Entry {
+            unsigned: contextdb_team::publish::Unsigned {
+                payload,
+                tree: Vec::new(),
+                proposals: Vec::new(),
+                seq,
+                parent: None,
+            },
+            tree,
+            refname: refname(p.generation),
+        });
+    }
+    // Step 1: Σc from the replica at the tip and a fresh proposal id.
+    let Some(tip) = j.store.tip().map(str::to_owned) else {
+        return fail("Genesis", "nothing to compact");
+    };
+    let id = contextdb_team::proposals::fresh_id();
+    let seq = r.seq().map_or(0, |s| s + 1);
+    let Some(sc) = r.sigma_c(member, id, seq) else {
+        return fail("Genesis", "no team document");
+    };
+    let next = r.generation() + 1;
+    let ckpt = match repo.write_tree(&r.checkpoint_files(&sc, next)) {
+        Ok(t) => t,
+        Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+    };
+    let Some(raw) = unhex(&ckpt) else {
+        return fail("ReplicaStalled", "tree id");
+    };
+    let batch = TeamBatch {
+        proposals: vec![vec![TeamOp::Compact {
+            generation: next,
+            tree: raw,
+            digest: sc.digest(),
+        }]],
+    }
+    .encode();
+    let trailers: Vec<(&str, String)> = vec![
+        ("Ctx-Team", hex(&t)),
+        ("Ctx-Team-Seq", seq.to_string()),
+        ("Ctx-Author", member.to_owned()),
+        ("Ctx-Batch-Hash", TeamBatch::hash_hex(&batch)),
+        ("Ctx-Accept-Version", accept),
+        ("Ctx-Proposal", hex(&id)),
+    ];
+    let tree = match repo.write_tree(&[("batch".to_owned(), batch)]) {
+        Ok(t) => t,
+        Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
+    };
+    let payload = contextdb_team::commit::build(
+        &tree,
+        std::slice::from_ref(&tip),
+        "ctx team: compact",
+        &trailers,
+    );
+    Answer::Compact(Entry {
+        unsigned: contextdb_team::publish::Unsigned {
+            payload,
+            tree: Vec::new(),
+            proposals: vec![id],
+            seq,
+            parent: Some(tip),
+        },
+        tree,
+        refname: refname(r.generation()),
+    })
 }
 
 /// A prepared entry: the unsigned commit, its tree id (written to the
@@ -471,6 +598,8 @@ pub enum Answer {
         code: String,
         detail: String,
     },
+    /// §8.6: an entry to sign and push (no publish bookkeeping).
+    Compact(Entry),
 }
 
 fn fail(code: &str, detail: impl Into<String>) -> Answer {
@@ -500,12 +629,18 @@ pub fn call(
             }
             let r = j.store.replica();
             lines.push(format!(
-                "team {} member {} seq {} generation {} import {:?}",
+                "team {} member {} seq {} generation {} digest {} import {:?}{}",
                 hex(t),
                 j.cfg.member,
                 r.seq().map_or("-".to_owned(), |s| s.to_string()),
                 r.generation(),
+                r.digest().map_or("-".to_owned(), |d| hex(&d[..8])),
                 j.status,
+                if r.pending().is_some() {
+                    " CompactPending"
+                } else {
+                    ""
+                },
             ));
             // §6.2: only proposals `who` may see, and no count of others.
             for p in j.queue.listing_for(who, r, &policy) {
@@ -610,6 +745,7 @@ pub fn call(
             }
             Answer::Lines(lines)
         }
+        Call::Compact => compact(j, t),
         Call::Rebuild => {
             let repo = match Repo::open(&j.cfg.repo) {
                 Ok(r) => r,

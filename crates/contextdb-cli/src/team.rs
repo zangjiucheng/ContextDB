@@ -133,6 +133,28 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        Some("compact") => {
+            let team = pick(data, args)?;
+            compact(
+                data,
+                team,
+                args.iter().any(|a| a == "--resume"),
+                args.iter().any(|a| a == "--force-ref"),
+            )
+        }
+        Some("prune") => {
+            let team = pick(data, args)?;
+            prune(data, team, args.iter().any(|a| a == "--yes"))
+        }
+        Some("rejoin") => {
+            let team = pick(data, args)?;
+            let genesis = flag(args, "--genesis").ok_or("--genesis <oid> (from an admin)")?;
+            let dir = team_dir(data, &team);
+            let cfg = TeamConfig::load(&dir)?;
+            let remote = anchor_field(&dir, "remote")?;
+            leave(data, team)?;
+            join(data, &cfg.repo, genesis, Path::new(&cfg.key), &remote)
+        }
         Some("rebuild") => {
             let team = pick(data, args)?;
             let mut c = connect(data, "admin.sock")?;
@@ -844,4 +866,138 @@ fn spawn_fetch_missing(data: &Path, team: &[u8; 16], repo: &Path, remote: &str, 
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// Pushes `oid` to `refname` without hooks; `force` replaces the ref.
+fn push_force(
+    dir: &Path,
+    remote: &str,
+    oid: &str,
+    refname: &str,
+    force: bool,
+) -> Result<bool, String> {
+    if !force {
+        return push(dir, remote, oid, refname);
+    }
+    git(
+        dir,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "-q",
+            remote,
+            &format!("+{oid}:{refname}"),
+        ],
+    )?;
+    Ok(true)
+}
+
+fn compact_entry(
+    c: &mut contextdb_proto::client::Client,
+    team: [u8; 16],
+) -> Result<TeamEntry, String> {
+    match call(c, Request::TeamCompact { team })?.response {
+        Response::TeamPrepared { entry: Some(e), .. } => Ok(e),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// `ctx team compact` (§8.6), an admin: step 1 pushes `Compact` to the
+/// current generation; step 2 (also `--resume`) pushes the successor that
+/// starts the next. `--force-ref` replaces a squatted successor ref.
+fn compact(data: &Path, team: [u8; 16], resume: bool, force: bool) -> Result<u8, String> {
+    let dir = team_dir(data, &team);
+    let cfg = TeamConfig::load(&dir)?;
+    let remote = anchor_field(&dir, "remote")?;
+    let repo = Repo::open(&cfg.repo).map_err(|e| format!("{e:?}"))?;
+    let mut c = connect(data, "admin.sock")?;
+    let sync = |c: &mut contextdb_proto::client::Client| -> Result<(), String> {
+        git(&cfg.repo, &["fetch", "-q", &remote])?;
+        call(c, Request::TeamSync { team: Some(team) })?;
+        Ok(())
+    };
+    sync(&mut c)?;
+    let mut e = compact_entry(&mut c, team)?;
+    // Step 1, unless a Compact is pending already.
+    if !e.proposals.is_empty() {
+        if resume {
+            return Err("no Compact is pending: run `ctx team compact` without --resume".into());
+        }
+        let oid = sign_commit(&repo, Path::new(&cfg.key), &e.payload)?;
+        if !push(&cfg.repo, &remote, &oid, &e.refname)? {
+            return Err("the team moved while compacting: run it again".into());
+        }
+        println!("Compact {oid} pushed to {}", e.refname);
+        sync(&mut c)?;
+        e = compact_entry(&mut c, team)?;
+        if !e.proposals.is_empty() {
+            return Err("the Compact entry was not accepted".into());
+        }
+    }
+    // Step 2: the successor.
+    let oid = sign_commit(&repo, Path::new(&cfg.key), &e.payload)?;
+    if push_force(&cfg.repo, &remote, &oid, &e.refname, force)? {
+        println!("successor {oid} pushed to {}", e.refname);
+    } else {
+        // Another admin's successor stands; both were valid.
+        println!("{} already has a successor; following it", e.refname);
+    }
+    sync(&mut c)?;
+    lines(call(&mut c, Request::TeamStatus { team: Some(team) })?.response)
+}
+
+/// `ctx team prune` (§8.6), an admin: deletes the remote's generations
+/// older than the one this edge follows, with hooks off (the dispatcher
+/// refuses team-ref deletions). An edge offline past them stops with
+/// `ReplicaDiverged`.
+fn prune(data: &Path, team: [u8; 16], yes: bool) -> Result<u8, String> {
+    let dir = team_dir(data, &team);
+    let cfg = TeamConfig::load(&dir)?;
+    let remote = anchor_field(&dir, "remote")?;
+    let mut c = connect(data, "admin.sock")?;
+    let status = match call(&mut c, Request::TeamStatus { team: Some(team) })?.response {
+        Response::TeamLines { lines } => lines.join("\n"),
+        other => return Err(format!("unexpected response: {other:?}")),
+    };
+    let current: u32 = status
+        .split("generation ")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|g| g.parse().ok())
+        .ok_or("cannot read the followed generation")?;
+    let prefix = format!("refs/contextdb/team/{}/g", hex(&team));
+    let old: Vec<String> = git(&cfg.repo, &["ls-remote", &remote, &format!("{prefix}*")])?
+        .lines()
+        .filter_map(|l| l.split('\t').nth(1))
+        .filter(|r| {
+            r.strip_prefix(&prefix)
+                .and_then(|g| g.parse::<u32>().ok())
+                .is_some_and(|g| g < current)
+        })
+        .map(str::to_owned)
+        .collect();
+    if old.is_empty() {
+        println!("nothing to prune: generation {current} is the oldest on {remote}");
+        return Ok(0);
+    }
+    if !yes {
+        println!(
+            "would delete {} from {remote}; confirm with --yes",
+            old.join(", ")
+        );
+        return Ok(1);
+    }
+    let mut args = vec![
+        "-c",
+        "core.hooksPath=/dev/null",
+        "push",
+        "-q",
+        remote.as_str(),
+    ];
+    let deletions: Vec<String> = old.iter().map(|r| format!(":{r}")).collect();
+    args.extend(deletions.iter().map(String::as_str));
+    git(&cfg.repo, &args)?;
+    println!("pruned {}", old.join(", "));
+    Ok(0)
 }

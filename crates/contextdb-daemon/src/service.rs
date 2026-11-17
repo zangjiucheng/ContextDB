@@ -1749,6 +1749,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     Err(e) => submit_err(e),
                 }
             }
+            Request::TeamCompact { team } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                self.team_call(Some(team), crate::team::Call::Compact)
+            }
             Request::TeamRebuild { team } => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx team requires the admin socket");
@@ -2893,6 +2900,18 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }),
                 listed,
                 conflicted,
+            },
+            Ok(Answer::Compact(e)) => Response::TeamPrepared {
+                entry: Some(TeamEntry {
+                    payload: e.unsigned.payload,
+                    tree: e.tree,
+                    seq: e.unsigned.seq,
+                    parent: e.unsigned.parent,
+                    proposals: e.unsigned.proposals,
+                    refname: e.refname,
+                }),
+                listed: None,
+                conflicted: Vec::new(),
             },
             Ok(Answer::Error { code, detail }) => err(&code, detail),
             Err(e) => submit_err(e),

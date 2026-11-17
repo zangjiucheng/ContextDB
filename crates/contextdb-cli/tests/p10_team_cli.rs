@@ -396,3 +396,181 @@ fn p10_ctx_team_create_publish_join() {
     drop(db);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+fn status_field<'a>(out: &'a str, field: &str) -> &'a str {
+    out.split(&format!("{field} "))
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap_or("")
+}
+
+#[test]
+fn p10_ctx_team_compact_resume_follow_and_prune() {
+    if Command::new("ssh-keygen").arg("-?").output().is_err()
+        || Command::new("git").arg("--version").output().is_err()
+    {
+        return;
+    }
+    let tmp = temp("compact");
+    let remote = tmp.join("remote.git");
+    git(&tmp, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    let url = format!("file://{}", remote.display());
+    let (a, b) = (tmp.join("a"), tmp.join("b"));
+    git(&tmp, &["clone", "-q", &url, a.to_str().unwrap()]);
+    git(&tmp, &["clone", "-q", &url, b.to_str().unwrap()]);
+    let key = tmp.join("alice");
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "alice", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (data_a, data_b) = (tmp.join("data-a"), tmp.join("data-b"));
+    let da = Daemon::start(&data_a, &Options::default()).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "create",
+        data_a.to_str().unwrap(),
+        "--repo",
+        a.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--member",
+        "alice",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let genesis = status_field(&out, "genesis").to_owned();
+    let team = team_dir_id(&data_a);
+    let sid = session(&da);
+    let propose = |name: &str| {
+        let body = name.as_bytes().to_vec();
+        let r = da
+            .service
+            .handle(
+                AGENT,
+                Request::Commit {
+                    binding: Binding::root(sid),
+                    ops: vec![Op::CreateLogical {
+                        origin: Origin::Local,
+                        key: format!("team/{team}/conv/{name}"),
+                        kind: RecordKind::Convention,
+                        scope_lane: format!("team:{team}/main"),
+                        content: *blake3::hash(&body).as_bytes(),
+                        adopt_as_base: false,
+                    }],
+                    blobs: vec![body],
+                    expect_cert_valid: false,
+                    client_txn_id: None,
+                },
+            )
+            .response;
+        assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
+        let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
+        assert_eq!(code, 0, "{out}");
+    };
+    propose("one");
+    let db = Daemon::start(&data_b, &Options::default()).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "join",
+        data_b.to_str().unwrap(),
+        "--repo",
+        b.to_str().unwrap(),
+        "--genesis",
+        &genesis,
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // Step 1 by hand, then a crash: the Compact is accepted, no successor.
+    let mut c = contextdb_daemon::server::Client::connect(da.socket(Channel::Admin)).unwrap();
+    let hexid = |s: &str| {
+        let mut t = [0u8; 16];
+        for (i, x) in t.iter_mut().enumerate() {
+            *x = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
+        }
+        t
+    };
+    let entry = match c
+        .call(&Request::TeamCompact { team: hexid(&team) })
+        .unwrap()
+        .response
+    {
+        Response::TeamPrepared { entry: Some(e), .. } => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(entry.proposals.len(), 1, "step 1: the Compact entry");
+    let repo = contextdb_team::git::Repo::open(&a).unwrap();
+    let sig = contextdb_team::sign::sign(&key, &entry.payload).unwrap();
+    let raw = contextdb_team::commit::with_signature(&entry.payload, &sig, repo.format());
+    let oid = repo.write_commit(&raw).unwrap();
+    git(
+        &a,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "-q",
+            "origin",
+            &format!("{oid}:{}", entry.refname),
+        ],
+    );
+    let (_, out) = ctx(&["team", "sync", data_a.to_str().unwrap()]);
+    let (_, out2) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(out2.contains("CompactPending"), "{out}\n{out2}");
+    // Another admin (here the same) resumes.
+    let (code, out) = ctx(&["team", "compact", data_a.to_str().unwrap(), "--resume"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(status_field(&out, "generation"), "1", "{out}");
+    // The follower follows the Compact and its successor: same state.
+    run_git(&b, &["fetch", "-q", "origin"]);
+    let (_, sb) = ctx(&["team", "sync", data_b.to_str().unwrap()]);
+    let (_, sb) = (sb, ctx(&["team", "status", data_b.to_str().unwrap()]).1);
+    assert_eq!(status_field(&sb, "generation"), "1", "{sb}");
+    assert_eq!(
+        status_field(&sb, "digest"),
+        status_field(&out, "digest"),
+        "{sb}\n{out}"
+    );
+    // Publishing goes on in generation 1.
+    propose("two");
+    run_git(&b, &["fetch", "-q", "origin"]);
+    ctx(&["team", "sync", data_b.to_str().unwrap()]);
+    let snap = db.service.actor.snapshot();
+    assert!(
+        snap.view(MAIN)
+            .logical_by_key(&format!("team/{team}/conv/two"))
+            .is_some()
+    );
+    drop(snap);
+    // Prune: g0 leaves the remote.
+    let (code, out) = ctx(&["team", "prune", data_a.to_str().unwrap(), "--yes"]);
+    assert_eq!(code, 0, "{out}");
+    let refs = git(
+        &a,
+        &[
+            "ls-remote",
+            "origin",
+            &format!("refs/contextdb/team/{team}/*"),
+        ],
+    );
+    assert!(!refs.contains("/g0") && refs.contains("/g1"), "{refs}");
+    drop(da);
+    drop(db);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let o = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
