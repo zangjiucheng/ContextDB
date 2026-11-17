@@ -830,3 +830,158 @@ fn p10_a_merge_catches_branches_up_first() {
         assert_eq!(v.revision_content(v.head(l).unwrap()).unwrap(), a2, "{b:?}");
     }
 }
+
+/// Prepares (`--yes token` when given) and returns the entry to sign.
+fn prepare_entry(s: &Service<SimDisk>, yes: Option<[u8; 32]>, confirm: bool) -> Response {
+    s.handle(
+        ADMIN,
+        Request::TeamPublishPrepare {
+            team: TEAM,
+            yes,
+            confirm,
+        },
+    )
+    .response
+}
+
+fn sign_entry(w: &World, e: &TeamEntry) -> String {
+    let raw = commit::with_signature(
+        &e.payload,
+        &sshsig::sign(&ALICE, "git", &e.payload),
+        ObjectFormat::Sha1,
+    );
+    Repo::open(&w.edge).unwrap().write_commit(&raw).unwrap()
+}
+
+fn begin(s: &Service<SimDisk>, oid: &str) -> Response {
+    s.handle(
+        ADMIN,
+        Request::TeamPublishBegin {
+            team: TEAM,
+            commit: oid.to_owned(),
+        },
+    )
+    .response
+}
+
+fn push_entry(w: &World, oid: &str, e: &TeamEntry) {
+    git(
+        &w.edge,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "-q",
+            "origin",
+            &format!("{oid}:{}", e.refname),
+        ],
+    );
+}
+
+fn queue_states(s: &Service<SimDisk>) -> Vec<String> {
+    status(s)
+        .into_iter()
+        .filter(|l| l.trim_start().starts_with("proposal"))
+        .collect()
+}
+
+#[test]
+fn t114_every_publish_crash_row_recovers() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("t114");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    let sid = session(&s);
+    let propose = |s: &Service<SimDisk>, sid: SessionId, path: &str| {
+        let body = path.as_bytes().to_vec();
+        match commit(
+            s,
+            sid,
+            vec![Op::CreateLogical {
+                origin: Origin::Local,
+                key: key(path),
+                kind: RecordKind::Decision,
+                scope_lane: format!("team:{}/main", hex(&TEAM)),
+                content: *blake3::hash(&body).as_bytes(),
+                adopt_as_base: false,
+            }],
+            vec![body],
+        ) {
+            Response::Proposed { id, .. } => id,
+            other => panic!("{other:?}"),
+        }
+    };
+    let entry = |r: Response| match r {
+        Response::TeamPrepared { entry: Some(e), .. } => e,
+        other => panic!("{other:?}"),
+    };
+    // Row 1, before step 7: an unreferenced commit, proposals queued. The
+    // next publish rebuilds (and checks the local layer) again.
+    propose(&s, sid, "r1");
+    let e = entry(prepare_entry(&s, None, false));
+    let _orphan = sign_entry(&w, &e);
+    assert!(queue_states(&s).iter().all(|l| l.contains("Queued")));
+    // Row 2, between step 7 and the push: `published`, not on the remote.
+    // A crash (the daemon restarts), then the next fetch finds it absent:
+    // queued again.
+    let e = entry(prepare_entry(&s, None, false));
+    let oid = sign_entry(&w, &e);
+    assert!(matches!(begin(&s, &oid), Response::TeamLines { .. }));
+    assert!(queue_states(&s).iter().any(|l| l.contains("Published")));
+    drop(s);
+    let s = daemon(&w);
+    sync(&s);
+    assert!(
+        queue_states(&s).iter().all(|l| l.contains("Queued")),
+        "{:?}",
+        queue_states(&s)
+    );
+    // Row 3, push outcome unknown: pushed, no reply seen; the next fetch
+    // finds it on the chain and takes the outcome from the replica.
+    let e = entry(prepare_entry(&s, None, false));
+    let oid = sign_entry(&w, &e);
+    assert!(matches!(begin(&s, &oid), Response::TeamLines { .. }));
+    push_entry(&w, &oid, &e);
+    drop(s);
+    let s = daemon(&w);
+    w.fetch();
+    sync(&s);
+    assert!(
+        queue_states(&s).iter().all(|l| l.contains("Accepted")),
+        "{:?}",
+        queue_states(&s)
+    );
+    // Row 4, a confirm listing shown and not confirmed: the `listed` frame
+    // survives a restart; `--yes <token>` publishes from it, not a proposal
+    // queued after it; an unknown token is refused.
+    let sid = session(&s);
+    let listed = propose(&s, sid, "r4");
+    let token = match prepare_entry(&s, None, true) {
+        Response::TeamPrepared {
+            listed: Some((t, who)),
+            ..
+        } => {
+            assert_eq!(
+                who.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![listed]
+            );
+            t
+        }
+        other => panic!("{other:?}"),
+    };
+    drop(s);
+    let s = daemon(&w);
+    let sid = session(&s);
+    let later = propose(&s, sid, "r4-later");
+    let r = prepare_entry(&s, Some([7; 32]), false);
+    assert!(matches!(r, Response::Error { .. }), "{r:?}");
+    let e = entry(prepare_entry(&s, Some(token), false));
+    assert_eq!(e.proposals, vec![listed]);
+    assert!(!e.proposals.contains(&later));
+}

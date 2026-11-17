@@ -342,7 +342,15 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
     let published = Arc::new(Published::new(snapshot));
     let stats = Arc::new(ActorStats::default());
     let (tx, rx) = mpsc::sync_channel(QUEUE);
+    // Every joined team is known from the start: routing sees it, and its
+    // reads lag (no position) until its first import.
     let team_live = team::LiveMap::default();
+    {
+        let mut l = team_live.lock().expect("team live");
+        for t in teams.keys() {
+            l.entry(*t).or_default();
+        }
+    }
     let mut actor = Actor {
         store,
         published: published.clone(),
