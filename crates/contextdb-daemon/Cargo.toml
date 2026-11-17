@@ -16,6 +16,7 @@ contextdb-model.workspace = true
 contextdb-core.workspace = true
 contextdb-store.workspace = true
 contextdb-proto.workspace = true
+contextdb-team.workspace = true
 contextdb-validate.workspace = true
 nix = { version = "=0.30.1", default-features = false, features = ["fs", "socket", "user", "process", "signal"] }
 arc-swap = "=1.9.3"

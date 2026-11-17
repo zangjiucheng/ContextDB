@@ -311,8 +311,7 @@ impl TeamStore {
     /// `oid` is decided (or followed as a successor): it is the tip.
     fn advanced(&mut self, oid: &str) {
         self.last = Some(oid.to_owned());
-        self.history
-            .record(oid, catchup::projection(&self.replica));
+        self.history.record(oid, catchup::projection(&self.replica));
     }
 
     /// The projection after every entry decided here, for catch-up.

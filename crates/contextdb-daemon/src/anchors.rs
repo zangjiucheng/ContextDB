@@ -96,11 +96,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
     }
     /// Config is operator-controlled and outside kernel truth; absent/bad data
     /// yields no live evidence and thus Unknown, including after restart.
+    /// `live_pos`: the code scopes sampled now, and (P10) each team's
+    /// fetched tip unless a lag cause withholds it (ADR 0018 §8.3).
     pub(crate) fn anchor_live(&self, db: &BranchView<'_>) -> BTreeMap<String, Vec<u8>> {
-        self.anchor_evidence(db)
+        let mut live: BTreeMap<String, Vec<u8>> = self
+            .anchor_evidence(db)
             .into_iter()
             .map(|(scope, (position, _))| (scope, position))
-            .collect()
+            .collect();
+        live.extend(crate::team::live_positions(&self.actor.team_live));
+        live
     }
     fn anchor_evidence(&self, db: &BranchView<'_>) -> BTreeMap<String, (Vec<u8>, Vec<u8>)> {
         let deadline = Instant::now() + *self.anchor_live_timeout.lock().expect("timeout");

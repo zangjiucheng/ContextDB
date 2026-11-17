@@ -145,7 +145,12 @@ impl Daemon {
         let (store, _) = Store::open(disk.clone(), &dir, &open)?;
         lease::probe_flock(&dir.join("LOCK"))?;
         let (log, events, _) = SessionLog::open(disk.clone(), &dir, false, 64 << 20)?;
-        let actor = actor::spawn(store)?;
+        // P10: joined teams live on the actor (ADR 0018 §7.1).
+        let (teams, team_errors) = crate::team::open_all(&dir);
+        for e in team_errors {
+            eprintln!("ctxd: team not opened (its reads lag): {e}");
+        }
+        let actor = actor::spawn_with_teams(store, teams)?;
         let recall = dir.join("recall.sqlite");
         let service = Arc::new(
             Service::with_recall(actor, log, events, Some(&recall))
@@ -177,6 +182,19 @@ impl Daemon {
                 }
             }
             Err(e) => service.vectors_unavailable(e),
+        }
+        // P10: import at start, then catch every open branch up, before
+        // any request is served (ADR 0018 §8.1 step 5).
+        match service
+            .actor
+            .request(|reply| actor::Message::TeamImport { team: None, reply })
+        {
+            Ok(lines) => {
+                for l in lines {
+                    eprintln!("ctxd: team {l}");
+                }
+            }
+            Err(e) => eprintln!("ctxd: team import at start: {e:?}"),
         }
         // Shreds whose purge did not complete before the last stop are
         // purged again, before any request is served (ADR 0017 §8.4).
@@ -243,6 +261,31 @@ impl Daemon {
                 .name(format!("ctxd-accept-{name}"))
                 .spawn(move || accept(listener, identity, uid, service, stop, hook))?;
             sockets.push(path);
+        }
+        // P10 `lag_check` (ADR 0018 §8.3): re-read the team refs, catching
+        // ref moves that bypassed the hooks; an unchanged ref imports
+        // nothing. Idle while no team is joined.
+        {
+            let (service, stop) = (service.clone(), stop.clone());
+            std::thread::Builder::new()
+                .name("ctxd-team-lag".into())
+                .spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(crate::team::LAG_CHECK);
+                        if service
+                            .actor
+                            .team_live
+                            .lock()
+                            .expect("team live")
+                            .is_empty()
+                        {
+                            continue;
+                        }
+                        let _ = service
+                            .actor
+                            .request(|reply| actor::Message::TeamImport { team: None, reply });
+                    }
+                })?;
         }
         // The public discovery record (ADR 0017 §3.2): no pid, no paths.
         lease::write_endpoint(

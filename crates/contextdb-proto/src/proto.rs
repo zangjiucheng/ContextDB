@@ -8,7 +8,7 @@ use contextdb_model::*;
 use std::io::{self, Read, Write};
 
 /// 7 (P9, ADR 0017 §10): addressed handoffs, `dropped_unauthorized`.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const MAX_FRAME: u32 = 16 << 20;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
@@ -708,6 +708,11 @@ pub enum Request {
         confirm: bool,
         client_txn_id: Option<[u8; 16]>,
     },
+    /// P10 `ctx team sync` (ADR 0018 §8.1): import every joined team (or
+    /// one), then catch every open branch up. Store owner only.
+    TeamSync {
+        team: Option<[u8; 16]>,
+    },
 }
 /// One payload `ctx shred` names: what it is and where it is attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1233,6 +1238,16 @@ pub enum Response {
         targets: Vec<ShredTarget>,
         epoch: Option<Epoch>,
         purged: bool,
+    },
+    /// P10 (ADR 0018 §6.2): the write is a team proposal, now queued;
+    /// it publishes on the next `git push`.
+    Proposed {
+        team: [u8; 16],
+        id: [u8; 16],
+    },
+    /// P10: one line per team (`ctx team sync`).
+    TeamLines {
+        lines: Vec<String>,
     },
     Conflicts {
         items: Vec<ConflictItem>,
@@ -2056,6 +2071,10 @@ impl Wire for Request {
                 confirm.encode(o);
                 client_txn_id.encode(o);
             }
+            Self::TeamSync { team } => {
+                45u8.encode(o);
+                team.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2306,6 +2325,9 @@ impl Wire for Request {
                 with_reviews: Wire::decode(i)?,
                 confirm: Wire::decode(i)?,
                 client_txn_id: Wire::decode(i)?,
+            },
+            45 => Self::TeamSync {
+                team: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -2580,6 +2602,15 @@ impl Wire for Response {
                 epoch.encode(o);
                 purged.encode(o);
             }
+            Self::Proposed { team, id } => {
+                39u8.encode(o);
+                team.encode(o);
+                id.encode(o);
+            }
+            Self::TeamLines { lines } => {
+                40u8.encode(o);
+                lines.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2747,6 +2778,13 @@ impl Wire for Response {
                 targets: Wire::decode(i)?,
                 epoch: Wire::decode(i)?,
                 purged: Wire::decode(i)?,
+            },
+            39 => Self::Proposed {
+                team: Wire::decode(i)?,
+                id: Wire::decode(i)?,
+            },
+            40 => Self::TeamLines {
+                lines: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })

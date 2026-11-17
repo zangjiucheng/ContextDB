@@ -440,6 +440,25 @@ impl Queue {
             .collect()
     }
 
+    /// The replica with every pending proposal `who` may see applied, in
+    /// queue order, as `member` (§6.2's overlay): what `who`'s writes are
+    /// translated against (expected values, records only queued).
+    pub fn overlay(
+        &self,
+        replica: &Replica,
+        member: &str,
+        who: PrincipalId,
+        policy: &LocalPolicy,
+    ) -> Replica {
+        let mut scratch = replica.clone();
+        for p in self.proposals.iter().filter(|p| p.state.pending()) {
+            if self.visible_to(p, who, replica, policy) {
+                let _ = scratch.scratch_apply(member, p.id, &p.ops, &self.blobs_of(p));
+            }
+        }
+        scratch
+    }
+
     /// Enters a proposal: both layers, then a durable enqueue frame.
     #[allow(clippy::too_many_arguments)]
     pub fn propose(

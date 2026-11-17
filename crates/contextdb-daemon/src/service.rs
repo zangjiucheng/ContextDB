@@ -472,6 +472,9 @@ fn random_id() -> [u8; 16] {
 }
 /// Stable error code: the SPEC §6.2 name of the variant.
 pub fn code(e: &TxError) -> String {
+    if let TxError::Team { code, .. } = e {
+        return code.clone();
+    }
     let s = format!("{e:?}");
     s.split(['{', '(', ' '])
         .next()
@@ -1653,6 +1656,19 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     other => other,
                 }
             }
+            Request::TeamSync { team } => {
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx team requires the admin socket");
+                }
+                drop(snap);
+                match self
+                    .actor
+                    .request(|reply| Message::TeamImport { team, reply })
+                {
+                    Ok(lines) => Response::TeamLines { lines },
+                    Err(e) => submit_err(e),
+                }
+            }
             Request::AccessShow => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx access requires the admin socket");
@@ -2679,6 +2695,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         batch.channel = id.channel;
         batch.principal = id.principal;
         batch.client_txn_id = Some(txn.unwrap_or_else(random_id));
+        let team = self
+            .may_touch_team(&batch)
+            .then(|| (batch.clone(), blobs.clone()));
         match self.actor.write(blobs, batch) {
             Ok(Ok(result)) => {
                 if sets_access && let Err(v) = self.apply_access() {
@@ -2686,11 +2705,69 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 Response::Committed { result }
             }
-            Ok(Err(e)) => {
-                let (c, d) = store_code(&e);
-                err(&c, d)
-            }
+            Ok(Err(e)) => self.team_route(team, e),
             Err(e) => submit_err(e),
+        }
+    }
+    /// P10: whether a batch may write a team record, so that a refusal may
+    /// be a team proposal (ADR 0018 §6.1). Nothing for a store that joined
+    /// no team.
+    fn may_touch_team(&self, batch: &Batch) -> bool {
+        if self.actor.team_live.lock().expect("team live").is_empty() {
+            return false;
+        }
+        let snap = self.actor.snapshot();
+        let v = snap.view(batch.branch);
+        let mirror = |l: LogicalId| {
+            v.logical_info(l)
+                .is_some_and(|(k, _, _)| k.starts_with("team/"))
+        };
+        let rev = |r: &RevRef| match r {
+            RevRef::Existing(r) => v.revision_logical(*r).is_some_and(mirror),
+            RevRef::New(_) => false,
+        };
+        let logical = |l: &LogicalRef| match l {
+            LogicalRef::Existing(l) => mirror(*l),
+            LogicalRef::Key(k) => k.starts_with("team/"),
+            LogicalRef::New(_) => false,
+        };
+        batch.ops.iter().any(|op| match op {
+            Op::CreateLogical {
+                key, scope_lane, ..
+            } => key.starts_with("team/") || scope_lane.starts_with("team:"),
+            Op::AddRevision { logical: l, .. }
+            | Op::SetHead { logical: l, .. }
+            | Op::SetMetadata { logical: l, .. } => logical(l),
+            Op::AssertBase { rev: r } | Op::RetractBase { rev: r } => rev(r),
+            Op::AddRule { conclusion, .. } => rev(conclusion),
+            Op::ExpectHeads { entries, .. } => entries.iter().any(|(l, _)| logical(l)),
+            _ => false,
+        })
+    }
+    /// A refused write that may be a team write: queued as a proposal, or
+    /// the refusal as is.
+    fn team_route(&self, team: Option<(Batch, Vec<Vec<u8>>)>, e: StoreError) -> Response {
+        let refusal = |e: &StoreError| {
+            let (c, d) = store_code(e);
+            err(&c, d)
+        };
+        let (Some((batch, blobs)), StoreError::Tx(refused)) = (team, &e) else {
+            return refusal(&e);
+        };
+        if !contextdb_team::frontend::may_be_team(&batch, refused) {
+            return refusal(&e);
+        }
+        let refused = refused.clone();
+        match self.actor.request(|reply| Message::TeamRoute {
+            batch,
+            blobs,
+            refused,
+            reply,
+        }) {
+            Ok(Ok(Some((team, id)))) => Response::Proposed { team, id },
+            Ok(Ok(None)) => refusal(&e),
+            Ok(Err(t)) => err(&code(&t), format!("{t:?}")),
+            Err(s) => submit_err(s),
         }
     }
     /// `ctx_commit` (ADR 0013 §4).
@@ -2767,6 +2844,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let txn = client_txn_id.unwrap_or_else(random_id);
         batch.client_txn_id = Some(txn);
         let with_deps = (batch.ops.iter()).any(|op| matches!(op, Op::AddRule { .. }));
+        let team = self
+            .may_touch_team(&batch)
+            .then(|| (batch.clone(), blobs.clone()));
         match self
             .actor
             .write_expecting(blobs, batch, client_hash, expect)
@@ -2780,10 +2860,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             Ok(Err(StoreError::CertificateNotValid(validation))) => Response::Refused {
                 validation: *validation,
             },
-            Ok(Err(e)) => {
-                let (c, d) = store_code(&e);
-                err(&c, d)
-            }
+            Ok(Err(e)) => self.team_route(team, e),
             Err(e) => submit_err(e),
         }
     }

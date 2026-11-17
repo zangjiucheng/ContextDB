@@ -8,6 +8,7 @@
 //! new published snapshot. A replica still held by a reader after a bounded
 //! wait is replaced by a clone (counted; the fallback trigger of §3.3).
 use crate::publish::{self, Published};
+use crate::team;
 use contextdb_core::{BranchView, Db, Kernel};
 use contextdb_model::*;
 use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus, Write};
@@ -103,6 +104,21 @@ pub enum Message {
         max: usize,
         reply: mpsc::Sender<Result<contextdb_store::ChangePage, StoreError>>,
     },
+    /// P10: import every joined team (or one), then catch every open
+    /// branch up (ADR 0018 §8.1). One line per team.
+    TeamImport {
+        team: Option<TeamId>,
+        reply: mpsc::Sender<Vec<String>>,
+    },
+    /// P10: a write the kernel refused as a team write (ADR 0018 §6.1):
+    /// `Ok(Some((team, proposal id)))` when it is now queued, `Ok(None)` when
+    /// it is not a team write (the refusal stands).
+    TeamRoute {
+        batch: Batch,
+        blobs: Vec<Vec<u8>>,
+        refused: TxError,
+        reply: mpsc::Sender<team::Routed>,
+    },
     Shutdown {
         reply: mpsc::Sender<()>,
     },
@@ -127,6 +143,8 @@ pub struct ActorHandle<D: Durability> {
     pub stats: Arc<ActorStats>,
     /// How long a caller waits for its reply ([`REQUEST_TIMEOUT`]).
     pub timeout: Duration,
+    /// P10: per team, what reads decide `ReplicationLag` from.
+    pub team_live: team::LiveMap,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum SubmitError {
@@ -223,10 +241,48 @@ struct Actor<D: Durability> {
     previous: Vec<(Batch, CommitResult)>,
     stats: Arc<ActorStats>,
     epochs: Arc<(Mutex<Epoch>, Condvar)>,
+    /// P10: joined teams; only the actor reads or writes them.
+    teams: std::collections::BTreeMap<TeamId, team::Joined>,
+    team_live: team::LiveMap,
+}
+/// A catch-up writer over the store's single writer: each batch carries
+/// the mirror payloads, read from the replica.
+struct ActorWriter<'a, D: Durability + Clone> {
+    actor: &'a mut Actor<D>,
+    replica: &'a contextdb_team::replica::Replica,
+}
+impl<D: Durability + Clone> contextdb_team::catchup::Writer for ActorWriter<'_, D> {
+    type Error = StoreError;
+    fn kernel(&self) -> &Kernel {
+        // Checked readable before the catch-up starts; a failed commit ends
+        // it before the next read.
+        self.actor.store.kernel().expect("a readable store")
+    }
+    fn commit(&mut self, b: &Batch) -> Result<CommitResult, StoreError> {
+        let blobs: Vec<Vec<u8>> = team::contents(b)
+            .filter_map(|h| self.replica.blob(&h).map(<[u8]>::to_vec))
+            .collect();
+        let (reply, rx) = mpsc::channel();
+        self.actor.commit(vec![WriteRequest {
+            blobs,
+            batch: b.clone(),
+            client_hash: None,
+            expect: None,
+            reply,
+        }]);
+        rx.recv().unwrap_or(Err(StoreError::Poisoned))
+    }
 }
 /// Starts the actor thread over an opened store.
 pub fn spawn<D: Durability + Clone + 'static>(
     store: Store<D>,
+) -> Result<ActorHandle<D>, StoreError> {
+    spawn_with_teams(store, Default::default())
+}
+/// [`spawn`] with the joined teams (P10).
+pub fn spawn_with_teams<D: Durability + Clone + 'static>(
+    store: Store<D>,
+    teams: std::collections::BTreeMap<TeamId, team::Joined>,
 ) -> Result<ActorHandle<D>, StoreError> {
     let kernel = store.kernel()?.clone();
     let snapshot = Snapshot {
@@ -239,6 +295,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
     let published = Arc::new(Published::new(snapshot));
     let stats = Arc::new(ActorStats::default());
     let (tx, rx) = mpsc::sync_channel(QUEUE);
+    let team_live = team::LiveMap::default();
     let mut actor = Actor {
         store,
         published: published.clone(),
@@ -246,6 +303,8 @@ pub fn spawn<D: Durability + Clone + 'static>(
         previous: Vec::new(),
         stats: stats.clone(),
         epochs: epochs.clone(),
+        teams,
+        team_live: team_live.clone(),
     };
     std::thread::Builder::new()
         .name("ctxd-actor".into())
@@ -264,6 +323,7 @@ pub fn spawn<D: Durability + Clone + 'static>(
         epochs,
         stats,
         timeout: REQUEST_TIMEOUT,
+        team_live,
     })
 }
 impl<D: Durability + Clone> Actor<D> {
@@ -326,6 +386,44 @@ impl<D: Durability + Clone> Actor<D> {
             }
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
+            }
+            Message::TeamImport { team, reply } => {
+                let mut teams = std::mem::take(&mut self.teams);
+                let live = self.team_live.clone();
+                let mut lines = Vec::new();
+                for (t, j) in teams.iter_mut() {
+                    if team.is_some_and(|x| x != *t) {
+                        continue;
+                    }
+                    let mut catch_up = |team: TeamId,
+                                        replica: &contextdb_team::replica::Replica,
+                                        h: &contextdb_team::catchup::History|
+                     -> Result<(), (BranchId, StoreError)> {
+                        if let Err(e) = self.store.kernel() {
+                            return Err((MAIN, e));
+                        }
+                        let mut w = ActorWriter {
+                            actor: self,
+                            replica,
+                        };
+                        contextdb_team::catchup::catch_up_all(&mut w, team, h).map(|_| ())
+                    };
+                    lines.push(team::import(j, &live, &mut catch_up));
+                }
+                self.teams = teams;
+                let _ = reply.send(lines);
+            }
+            Message::TeamRoute {
+                batch,
+                blobs,
+                refused,
+                reply,
+            } => {
+                let r = match self.store.kernel() {
+                    Ok(k) => team::propose(&mut self.teams, k, &batch, &blobs, refused),
+                    Err(_) => Err(refused),
+                };
+                let _ = reply.send(r);
             }
             Message::KeyPurge { retry, reply } => {
                 let r = if retry {

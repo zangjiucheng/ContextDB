@@ -50,6 +50,9 @@ pub use contextdb_proto::proto;
 pub mod server;
 #[cfg(not(loom))]
 pub mod service;
+/// P10 team exchange on the single writer (ADR 0018 §7–8).
+#[cfg(not(loom))]
+pub mod team;
 #[cfg(not(loom))]
 pub mod validators;
 

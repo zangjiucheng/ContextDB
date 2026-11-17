@@ -503,6 +503,13 @@ pub enum TxError {
     /// P10 (O3): a local batch relying on a record that exists only in a
     /// queued proposal.
     Unpublished,
+    /// P10: a team proposal refused by the team layer or the queue; `code`
+    /// is the SPEC §6.1 name (`accept`'s reason, `EgressDenied`,
+    /// `ProposalTooLarge`, `conflicted`, `ReplicaStalled`).
+    Team {
+        code: String,
+        detail: String,
+    },
     ArtifactNotOpen {
         id: ArtifactId,
     },

@@ -1373,6 +1373,15 @@ impl<B: Backend> Server<B> {
     }
 }
 fn committed(env: Envelope) -> Result<Value, String> {
+    // P10 (ADR 0018 §6.2): a team write is queued, not committed.
+    if let Response::Proposed { team, id } = &env.response {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        return Ok(json!({
+            "proposed": hex(id),
+            "team": hex(team),
+            "note": "queued team proposal; publishes on the next git push",
+        }));
+    }
     let Response::Committed { result } = env.response else {
         return Err("unexpected response".into());
     };
