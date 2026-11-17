@@ -1,6 +1,10 @@
 use contextdb_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The replica-origin logicals of other branches by key and head content
+/// (P10 MirrorAttach): the mirror's record and head revision.
+pub type Mirrors<'a> = &'a dyn Fn(&str, &ContentHash) -> Option<(Logical, Revision)>;
+
 /// Independent clone-and-stage reference input model. Never calls the core front-end.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputModel {
@@ -32,7 +36,7 @@ impl InputModel {
         if batch.branch != MAIN {
             return Err(TxError::UnknownRef);
         }
-        self.apply_inner(batch, blobs, &|_| false, None, false)
+        self.apply_inner(batch, blobs, &|_| false, None, false, &|_, _| None)
     }
     /// A model over one branch's projected inputs (the branch oracle).
     pub fn from_inputs(inputs: Inputs, epoch: Epoch) -> Self {
@@ -46,7 +50,7 @@ impl InputModel {
         batch: &Batch,
         foreign: &dyn Fn(&str) -> bool,
     ) -> Result<ApplyResult, TxError> {
-        self.apply_inner(batch, &AllPresent, foreign, None, true)
+        self.apply_inner(batch, &AllPresent, foreign, None, true, &|_, _| None)
     }
     /// `apply_on_branch` with write authorisation against `access` (ADR
     /// 0017 §6), as the multi-branch kernel commits.
@@ -56,7 +60,21 @@ impl InputModel {
         foreign: &dyn Fn(&str) -> bool,
         access: Option<&crate::AccessModel>,
     ) -> Result<ApplyResult, TxError> {
-        self.apply_inner(batch, &AllPresent, foreign, Some(access), true)
+        self.apply_inner(batch, &AllPresent, foreign, Some(access), true, &|_, _| {
+            None
+        })
+    }
+    /// [`Self::apply_authorised`] with the replica-origin logicals of other
+    /// branches, for `MirrorAttach` (P10): a key and head content → the
+    /// mirror's record and head revision (its `logical` is rewritten here).
+    pub fn apply_branch(
+        &mut self,
+        batch: &Batch,
+        foreign: &dyn Fn(&str) -> bool,
+        access: Option<&crate::AccessModel>,
+        mirror: Mirrors<'_>,
+    ) -> Result<ApplyResult, TxError> {
+        self.apply_inner(batch, &AllPresent, foreign, Some(access), true, mirror)
     }
     fn apply_inner(
         &mut self,
@@ -66,6 +84,7 @@ impl InputModel {
         auth: Option<Option<&crate::AccessModel>>,
         // P10: the reserved team namespaces apply (a multi-branch store).
         reserved: bool,
+        mirror: Mirrors<'_>,
     ) -> Result<ApplyResult, TxError> {
         let mut staged = self.inputs.clone();
         let mut ids = Allocations::default();
@@ -85,6 +104,7 @@ impl InputModel {
                 foreign,
                 auth,
                 reserved,
+                mirror,
             )?;
         }
         for (r, revision) in staged.revisions.iter().enumerate() {
@@ -627,13 +647,6 @@ fn check_channel(i: &Inputs, c: Channel, op: &Op) -> Result<(), TxError> {
     if anchor_write(i, op) && c != Channel::Observer {
         return Err(TxError::KindRestricted);
     }
-    // MirrorAttach lands in the next slice.
-    if matches!(op, Op::MirrorAttach { .. }) {
-        return Err(TxError::ChannelRestricted {
-            op: op.name().into(),
-            channel: c,
-        });
-    }
     Ok(())
 }
 fn checked_id(len: usize, kind: CapacityKind) -> Result<u32, TxError> {
@@ -780,6 +793,7 @@ fn apply_op(
     foreign: &dyn Fn(&str) -> bool,
     auth: Option<Option<&crate::AccessModel>>,
     reserved: bool,
+    mirror: Mirrors<'_>,
 ) -> Result<(), TxError> {
     let original = op;
     let published = i.logicals.len() - a.new_logicals.len();
@@ -1126,7 +1140,24 @@ fn apply_op(
         | Op::ShredContent { .. } => {
             unreachable!("rejected by resolve")
         }
-        Op::MirrorAttach { .. } => unreachable!("refused by check_channel"),
+        Op::MirrorAttach { key, head, base } => {
+            if i.logicals.iter().any(|l| l.key == key) {
+                return Err(TxError::LogicalExists { key });
+            }
+            let Some((record, revision)) = mirror(&key, &head) else {
+                return Err(TxError::UnknownRef);
+            };
+            let l = LogicalId(checked_id(i.logicals.len(), CapacityKind::Logical)?);
+            let r = RevisionId(checked_id(i.revisions.len(), CapacityKind::Revision)?);
+            i.logicals.push(record);
+            i.revisions.push(Revision {
+                logical: l,
+                ..revision
+            });
+            i.heads.push(r);
+            i.base.push(base);
+            i.metadata.push(Metadata::default());
+        }
     }
     Ok(())
 }

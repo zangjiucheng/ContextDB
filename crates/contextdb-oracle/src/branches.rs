@@ -647,17 +647,37 @@ impl BranchOracle {
             (self.logicals.iter().enumerate())
                 .any(|(n, l)| l.key == key && !p.to_local[0].contains_key(&(n as u32)))
         };
+        // P10: a replica-origin logical invisible here, by key, with the
+        // revision holding `head` (MirrorAttach).
+        let mirror = |key: &str, head: &ContentHash| {
+            let (n, l) = (self.logicals.iter().enumerate()).find(|(n, l)| {
+                l.key == key
+                    && l.origin != Origin::Local
+                    && !p.to_local[0].contains_key(&(*n as u32))
+            })?;
+            let r =
+                (self.revisions.iter()).find(|r| r.logical.index() == n && r.content == *head)?;
+            Some((l.clone(), r.clone()))
+        };
         let mut model = InputModel::from_inputs(p.inputs.clone(), self.epoch);
         let mut local_batch = local;
         local_batch.branch = MAIN;
         let result = model
-            .apply_authorised(&local_batch, &foreign, self.access.as_ref())
+            .apply_branch(&local_batch, &foreign, self.access.as_ref(), &mirror)
             .map_err(|e| map_ids(e, &p))?;
         // Records name the batch's branch, not the projection's.
         let staged = model.inputs().clone();
         let lens = [0, 1, 2, 3].map(|k| p.to_global[k].len());
         let mut to_global = p.to_global.clone();
         for r in staged.logicals.iter().skip(lens[0]) {
+            // An attached mirror (P10) is an import of the existing logical.
+            if r.origin != Origin::Local
+                && let Some(g) = self.logicals.iter().position(|x| x.key == r.key)
+            {
+                self.rows.push((b.branch, Obj::Logical(g as u32), epoch));
+                to_global[0].push(g as u32);
+                continue;
+            }
             let mut r = r.clone();
             r.origin_branch = b.branch;
             to_global[0].push(self.logicals.len() as u32);

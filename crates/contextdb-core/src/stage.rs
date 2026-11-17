@@ -56,9 +56,15 @@ pub(crate) struct Stage<'a> {
     pub auth: Option<Option<&'a crate::access::AccessState>>,
     /// Set by the kernel: the reserved team namespaces apply (P10).
     pub reserved: bool,
+    /// Set by the kernel: the `MirrorAttach` lookup (P10).
+    pub mirror: Option<crate::MirrorLookup<'a>>,
+    /// Per staged logical, the global id it attaches (P10).
+    pub attached: Vec<Option<u32>>,
 }
 /// What a stage publishes, detached from the published state it borrows.
 pub(crate) struct Parts {
+    /// Per new logical, the global id it attaches (P10).
+    pub attached: Vec<Option<u32>>,
     pub new_logicals: Vec<Logical>,
     pub new_heads: Vec<RevisionId>,
     pub new_revisions: Vec<Revision>,
@@ -77,6 +83,7 @@ pub(crate) struct Parts {
 impl<'a> Stage<'a> {
     pub fn into_parts(self) -> Parts {
         Parts {
+            attached: self.attached,
             new_logicals: self.new_logicals,
             new_heads: self.new_heads,
             new_revisions: self.new_revisions,
@@ -129,6 +136,8 @@ impl<'a> Stage<'a> {
             auth: None,
             shredded: None,
             reserved: false,
+            mirror: None,
+            attached: Vec::new(),
         }
     }
     /// A published or staged logical's origin (P10, SD21.7).
@@ -246,6 +255,17 @@ impl<'a> Stage<'a> {
         self.policy.as_ref().unwrap_or(&self.tables.policy)
     }
     pub fn push_logical(&mut self, l: Logical, head: RevisionId) -> LogicalId {
+        self.push_logical_as(l, head, None)
+    }
+    /// Stages a logical; `attached` is the global id of an existing mirror
+    /// this batch makes visible here (P10 MirrorAttach).
+    pub fn push_logical_as(
+        &mut self,
+        l: Logical,
+        head: RevisionId,
+        attached: Option<u32>,
+    ) -> LogicalId {
+        self.attached.push(attached);
         let id = LogicalId((self.published_logicals() + self.new_logicals.len()) as u32);
         self.new_keys.insert(l.key.clone(), id);
         self.new_logicals.push(l);

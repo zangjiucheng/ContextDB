@@ -362,10 +362,14 @@ pub(crate) fn unhex(s: &str) -> Option<ContentHash> {
     }
     Some(out)
 }
-/// Every collection in a Batch must fit its u32 Wire length (ADR 0006 §2).
+/// Every collection in a Batch must fit its u32 Wire length (ADR 0006 §2),
+/// and the batch must be representable in op_log format 5: P10's replica
+/// channel, replica-origin creates, MirrorAttach and gap watermarks
+/// (EventLog v4) wait for format 6 (P10 milestone 5).
 fn encodable(b: &Batch) -> bool {
     let fits = |n: usize| u32::try_from(n).is_ok();
-    fits(b.ops.len())
+    contextdb_model::EventLog::version_of(b) < 4
+        && fits(b.ops.len())
         && b.ops.iter().all(|op| match op {
             Op::CreateLogical {
                 key, scope_lane, ..

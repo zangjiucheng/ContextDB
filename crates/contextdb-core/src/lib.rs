@@ -81,6 +81,9 @@ pub struct CommitContext<'a> {
     /// replica-origin logicals (P10, SPEC §6.1 contract 6). A plain `Db` —
     /// the team replica's own store — leaves it unset.
     pub reserved: bool,
+    /// Set by the kernel: replica-origin logicals on other branches, for
+    /// `MirrorAttach`. A plain `Db` has none (`UnknownRef`).
+    pub mirror: Option<MirrorLookup<'a>>,
     /// Receives the revisions and rules the batch staged, in staging order,
     /// whether it commits or fails: the kernel gives them global ids.
     pub staged: Option<&'a std::cell::RefCell<Staged>>,
@@ -91,7 +94,13 @@ pub struct CommitContext<'a> {
 pub struct Staged {
     pub revisions: Vec<Revision>,
     pub rules: Vec<Rule>,
+    /// Per staged logical: the global id it attaches (P10 MirrorAttach), or
+    /// `None` for a new one.
+    pub logicals: Vec<Option<u32>>,
 }
+/// The kernel's replica-origin lookup for `MirrorAttach` (P10): a key and a
+/// head content → the mirror's global id, record and head revision.
+pub type MirrorLookup<'a> = &'a dyn Fn(&str, &ContentHash) -> Option<(u32, Logical, Revision)>;
 #[derive(Clone, Debug)]
 pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     maintainer: M,
@@ -657,6 +666,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         staged.auth = ctx.auth;
         staged.shredded = ctx.shredded;
         staged.reserved = ctx.reserved;
+        staged.mirror = ctx.mirror;
         let pk = &mut self.pk;
         let result = (|| {
             for (n, op) in b.ops.iter().enumerate() {
@@ -682,6 +692,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             *sink.borrow_mut() = Staged {
                 revisions: parts.new_revisions.clone(),
                 rules: parts.new_rules.clone(),
+                logicals: parts.attached.clone(),
             };
         }
         let epoch = match result {
@@ -709,6 +720,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         stats: S,
     ) -> CommitResult {
         let stage::Parts {
+            attached: _,
             new_logicals,
             new_heads,
             new_revisions,

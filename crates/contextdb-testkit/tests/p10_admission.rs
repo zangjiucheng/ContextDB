@@ -275,8 +275,8 @@ fn a8_only_the_replica_channel_writes_mirrors() {
         )),
         TxError::ChannelRestricted { .. }
     ));
-    // Not yet: MirrorAttach lands in the next slice.
-    assert!(matches!(
+    // MirrorAttach of a mirror already visible here.
+    assert_eq!(
         s.err(batch(
             Channel::Replica,
             vec![Op::MirrorAttach {
@@ -285,8 +285,10 @@ fn a8_only_the_replica_channel_writes_mirrors() {
                 base: true
             }]
         )),
-        TxError::ChannelRestricted { .. }
-    ));
+        TxError::LogicalExists {
+            key: format!("team/{}/conv/a", hex())
+        }
+    );
     assert_eq!(
         s.err(batch(
             Channel::Agent,

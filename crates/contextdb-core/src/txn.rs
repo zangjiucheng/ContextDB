@@ -279,13 +279,6 @@ fn channel(i: &Stage, op: &Op, c: Channel) -> Result<(), TxError> {
     if anchor && c != Channel::Observer {
         return Err(TxError::KindRestricted);
     }
-    // MirrorAttach lands in the next slice.
-    if matches!(op, Op::MirrorAttach { .. }) {
-        return Err(TxError::ChannelRestricted {
-            op: op.name().to_owned(),
-            channel: c,
-        });
-    }
     Ok(())
 }
 /// Write authorisation (ADR 0017 §6.1, §6.2), right after the op's refs
@@ -1052,7 +1045,27 @@ pub(crate) fn apply<S: StatsSink>(
         | Op::ShredContent { .. } => {
             unreachable!("rejected by the resolver")
         }
-        Op::MirrorAttach { .. } => unreachable!("refused by channel()"),
+        // P10 (SPEC §6.1 contract 16): an existing mirror, created on another
+        // branch, becomes visible here with its head revision. Nothing new
+        // is allocated globally; the kernel maps both objects to their ids.
+        Op::MirrorAttach { key, head, base } => {
+            if i.find_key(&key).is_some() {
+                return Err(TxError::LogicalExists { key });
+            }
+            let Some((global, record, revision)) = i.mirror.and_then(|f| f(&key, &head)) else {
+                return Err(TxError::UnknownRef);
+            };
+            id(i.logical_count(), CapacityKind::Logical)?;
+            let rev = RevisionId(id(i.revision_count(), CapacityKind::Revision)?);
+            let logical = i.push_logical_as(record, rev, Some(global));
+            i.push_revision(
+                Revision {
+                    logical,
+                    ..revision
+                },
+                base,
+            );
+        }
     }
 
     Ok(())

@@ -122,6 +122,9 @@ pub struct Kernel<M: Maintainer = Counting, S: StatsSink = NoStats> {
     /// Every shredded content hash and the epoch that shredded it (ADR
     /// 0017 §8.3), global.
     shredded: Arc<BTreeMap<ContentHash, Epoch>>,
+    /// P10: every replica-origin logical by key — its global id and record —
+    /// for `MirrorAttach` (the kernel otherwise keeps keys only as a set).
+    replica_keys: HashMap<String, (u32, Logical)>,
 }
 impl Default for Kernel<Counting, NoStats> {
     fn default() -> Self {
@@ -168,6 +171,10 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
         }
         let keys = inputs.logicals.iter().map(|l| l.key.clone()).collect();
+        let replica_keys = (inputs.logicals.iter().enumerate())
+            .filter(|(_, l)| l.origin != Origin::Local)
+            .map(|(n, l)| (l.key.clone(), (n as u32, l.clone())))
+            .collect();
         let revision_ids = (inputs.revisions.iter().enumerate())
             .map(|(n, r)| ((r.logical.0, r.content), n as u32))
             .collect();
@@ -204,6 +211,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             syncs: Vec::new(),
             access: None,
             shredded: Arc::default(),
+            replica_keys,
         }
     }
     /// The committed access document and its ids, if any (ADR 0017 §4).
@@ -527,11 +535,20 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             rule_ids,
             access,
             shredded,
+            replica_keys,
             ..
         } = self;
         let branch = &mut branches[b.branch.0 as usize];
         let sink = RefCell::new(Staged::default());
         let foreign = |key: &str| keys.contains(key);
+        let lookup = |key: &str, head: &ContentHash| {
+            let (g, record) = replica_keys.get(key)?;
+            let gr = revision_ids.get(&(*g, *head))?;
+            Some((*g, record.clone(), revisions[*gr as usize].clone()))
+        };
+        // A batch that attaches mirrors names new logicals by `New(k)` or by
+        // key, never by a global id it has not been assigned yet.
+        let attaches = b.ops.iter().any(|op| matches!(op, Op::MirrorAttach { .. }));
         let ctx = CommitContext {
             epoch: Some(epoch),
             kernel: true,
@@ -540,6 +557,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             auth: Some(access.as_deref()),
             shredded: Some(shredded),
             reserved: true,
+            mirror: Some(&lookup),
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch
@@ -554,7 +572,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut backup = None;
         let mut attempts = 0;
         let (result, staged, assigned) = loop {
-            let local = map_batch(b, &|k, g| resolve(&branch.ids, next, plan.as_ref(), k, g));
+            let local = map_batch(b, &|k, g| {
+                resolve_in(&branch.ids, next, plan.as_ref(), k, g, attaches)
+            });
             if ambiguous && publish && backup.is_none() {
                 backup = Some(Arc::clone(&branch.db));
             }
@@ -571,7 +591,9 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             attempts += 1;
             let settled = !ambiguous
                 || attempts > b.ops.len()
-                || map_batch(b, &|k, g| resolve(&branch.ids, next, Some(&assigned), k, g)) == local;
+                || map_batch(b, &|k, g| {
+                    resolve_in(&branch.ids, next, Some(&assigned), k, g, attaches)
+                }) == local;
             if settled {
                 break (result, staged, assigned);
             }
@@ -588,15 +610,28 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         }
         let db = Arc::make_mut(&mut branch.db);
         let ids = Arc::make_mut(&mut branch.ids);
-        // Logicals and artifacts are never shared: fresh ids in local order.
-        for (k, n) in [
-            (Kind::Logical, db.logical_count()),
-            (Kind::Artifact, db.artifact_count()),
-        ] {
-            while ids.len(k) < n {
-                ids.push(k, next[k as usize]);
-                next[k as usize] += 1;
+        // Logicals: an attached mirror keeps its global id and is an import
+        // here (P10 MirrorAttach); any other is fresh, in local order.
+        // Artifacts are never shared.
+        for attached in &staged.logicals {
+            match attached {
+                Some(g) => {
+                    ids.push(Kind::Logical, *g);
+                    branch.imports.push((Import::Logical(LogicalId(*g)), epoch));
+                }
+                None => {
+                    ids.push(Kind::Logical, next[Kind::Logical as usize]);
+                    next[Kind::Logical as usize] += 1;
+                }
             }
+        }
+        crate::invariant_assert!(
+            ids.len(Kind::Logical) == db.logical_count(),
+            "every staged logical is assigned"
+        );
+        while ids.len(Kind::Artifact) < db.artifact_count() {
+            ids.push(Kind::Artifact, next[Kind::Artifact as usize]);
+            next[Kind::Artifact as usize] += 1;
         }
         crate::invariant_assert!(
             ids.len(Kind::Revision) + assigned.revisions.len() == db.revision_count()
@@ -639,6 +674,13 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             if let Some((key, ..)) = db.logical_info(*l) {
                 keys.insert(key);
             }
+            let record = db.logical_record(*l);
+            if record.origin != Origin::Local {
+                let g = ids.global(Kind::Logical, l.0);
+                replica_keys
+                    .entry(record.key.clone())
+                    .or_insert((g, record));
+            }
         }
         Ok(map_result(result, &|k, x| ids.global(k, x)))
     }
@@ -648,6 +690,8 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
 /// order: an existing object's id for an import, else the next fresh id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Assignment {
+    /// Staged logicals: an attached mirror's id, else the next fresh one.
+    logicals: Vec<u32>,
     revisions: Vec<u32>,
     rules: Vec<u32>,
 }
@@ -669,9 +713,16 @@ fn assign(
                 .unwrap_or(next[k as usize] + i),
         }
     };
+    let mut fresh = next[Kind::Logical as usize];
+    for attached in &staged.logicals {
+        out.logicals.push(attached.unwrap_or_else(|| {
+            fresh += 1;
+            fresh - 1
+        }));
+    }
     let mut fresh = next[Kind::Revision as usize];
     for r in &staged.revisions {
-        let logical = staged_global(Kind::Logical, r.logical.0, &[]);
+        let logical = staged_global(Kind::Logical, r.logical.0, &out.logicals);
         let g = match revision_ids.get(&(logical, r.content)) {
             Some(&g) => g,
             None => {
@@ -728,6 +779,23 @@ fn resolve(ids: &IdMap, next: &[u32; 4], plan: Option<&Assignment>, k: Kind, g: 
         Some(i) => len.saturating_add(staged.len() as u32).saturating_add(i),
         None => INVISIBLE,
     }
+}
+/// [`resolve`], except that in a batch that attaches mirrors an invisible
+/// logical id never resolves to a staged logical: attached and fresh
+/// logicals interleave there, so such a batch names them by `New(k)` or key
+/// (P10).
+fn resolve_in(
+    ids: &IdMap,
+    next: &[u32; 4],
+    plan: Option<&Assignment>,
+    k: Kind,
+    g: u32,
+    attaches: bool,
+) -> u32 {
+    if attaches && k == Kind::Logical && ids.local(k, g) == INVISIBLE {
+        return INVISIBLE;
+    }
+    resolve(ids, next, plan, k, g)
 }
 /// Whether the batch names a revision or rule not visible in the branch.
 fn names_invisible(b: &Batch, ids: &IdMap) -> bool {
@@ -881,6 +949,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         let mut keys = HashSet::new();
         let mut revisions: BTreeMap<u32, Revision> = BTreeMap::new();
         let mut rules: BTreeMap<u32, (RuleKey, (BranchId, Epoch))> = BTreeMap::new();
+        let mut replica_keys = HashMap::new();
         for b in &branches {
             let inputs = b.db.inputs();
             let g = |k: Kind, l: u32| b.ids.global(k, l);
@@ -898,6 +967,13 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 }
             }
             keys.extend(inputs.logicals.iter().map(|l| l.key.clone()));
+            for (n, l) in inputs.logicals.iter().enumerate() {
+                if l.origin != Origin::Local {
+                    replica_keys
+                        .entry(l.key.clone())
+                        .or_insert_with(|| (g(Kind::Logical, n as u32), l.clone()));
+                }
+            }
             for (n, r) in inputs.revisions.iter().enumerate() {
                 let logical = LogicalId(g(Kind::Logical, r.logical.0));
                 revisions
@@ -952,6 +1028,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 None => None,
             },
             shredded: Arc::new(s.shredded),
+            replica_keys,
         })
     }
 }
@@ -1146,9 +1223,10 @@ fn map_result(r: CommitResult, map: &dyn Fn(Kind, u32) -> u32) -> CommitResult {
 fn staged_global(ids: &IdMap, next: &[u32; 4], assigned: &Assignment, k: Kind, x: u32) -> u32 {
     let len = ids.len(k) as u32;
     let staged: &[u32] = match k {
+        Kind::Logical => &assigned.logicals,
         Kind::Revision => &assigned.revisions,
         Kind::Rule => &assigned.rules,
-        _ => &[],
+        Kind::Artifact => &[],
     };
     match x.checked_sub(len) {
         None => ids.global(k, x),
