@@ -287,6 +287,21 @@ fn p10_ctx_team_create_publish_join() {
     );
     let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
     assert!(status_a.contains("Queued"), "{status_a}");
+    // A push to another remote publishes nothing (§7.2 step 3).
+    let other = tmp.join("other.git");
+    git(&tmp, &["init", "-q", "--bare", other.to_str().unwrap()]);
+    run(
+        &a,
+        &[
+            "remote",
+            "add",
+            "other",
+            &format!("file://{}", other.display()),
+        ],
+    );
+    run(&a, &["push", "-q", "other", "HEAD:refs/heads/main"]);
+    let (_, status_a) = ctx(&["team", "status", data_a.to_str().unwrap()]);
+    assert!(status_a.contains("Queued"), "{status_a}");
     // The real push publishes it (pre-push: sync, gate, publish).
     let out = run(&a, &["push", "origin", "HEAD:refs/heads/main"]);
     assert!(out.contains("published 1 proposal"), "{out}");
@@ -540,8 +555,49 @@ fn p10_ctx_team_compact_resume_follow_and_prune() {
     let (_, out) = ctx(&["team", "sync", data_a.to_str().unwrap()]);
     let (_, out2) = ctx(&["team", "status", data_a.to_str().unwrap()]);
     assert!(out2.contains("CompactPending"), "{out}\n{out2}");
-    // Another admin (here the same) resumes.
-    let (code, out) = ctx(&["team", "compact", data_a.to_str().unwrap(), "--resume"]);
+    // A squatter takes refs/.../g1 first with a commit that is no
+    // successor: `--resume` does not replace it (still pending) ...
+    let squat = {
+        let o = Command::new("git")
+            .current_dir(&a)
+            .args([
+                "commit-tree",
+                "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "-m",
+                "squat",
+            ])
+            .envs([
+                ("GIT_AUTHOR_NAME", "s"),
+                ("GIT_AUTHOR_EMAIL", "s@s"),
+                ("GIT_COMMITTER_NAME", "s"),
+                ("GIT_COMMITTER_EMAIL", "s@s"),
+            ])
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_owned()
+    };
+    run_git(
+        &a,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "-q",
+            "origin",
+            &format!("{squat}:refs/contextdb/team/{team}/g1"),
+        ],
+    );
+    let (_, out) = ctx(&["team", "compact", data_a.to_str().unwrap(), "--resume"]);
+    assert_ne!(status_field(&out, "generation"), "1", "{out}");
+    // ... and `--resume --force-ref` does.
+    let (code, out) = ctx(&[
+        "team",
+        "compact",
+        data_a.to_str().unwrap(),
+        "--resume",
+        "--force-ref",
+    ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(status_field(&out, "generation"), "1", "{out}");
     // The follower follows the Compact and its successor: same state.
@@ -710,8 +766,21 @@ fn p10_ctx_team_access_adds_a_member_who_joins_and_publishes() {
         )
         .response;
     assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
-    let (code, out) = ctx(&["team", "publish", data_b.to_str().unwrap()]);
-    assert_eq!(code, 0, "{out}");
+    // Signing never uses git's signing configuration (N8): bob's global
+    // config asks for OpenPGP signing of every commit.
+    let gitconfig = tmp.join("gitconfig-openpgp");
+    std::fs::write(
+        &gitconfig,
+        "[gpg]\n\tformat = openpgp\n[user]\n\tsigningkey = DEADBEEFDEADBEEF\n[commit]\n\tgpgsign = true\n",
+    )
+    .unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_ctx"))
+        .args(["team", "publish", data_b.to_str().unwrap()])
+        .env("GIT_CONFIG_GLOBAL", &gitconfig)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{out}");
     assert!(out.contains("Accepted"), "{out}");
     run_git(&a, &["fetch", "-q", "origin"]);
     ctx(&["team", "sync", data_a.to_str().unwrap()]);

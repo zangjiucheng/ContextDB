@@ -796,3 +796,57 @@ fn published_but_never_pushed_is_queued_again() {
     w.sync();
     assert_eq!(w.state(&id), State::Accepted);
 }
+
+#[test]
+fn an_entry_over_the_limits_is_split_and_the_rest_waits() {
+    if !have_git() {
+        return;
+    }
+    let mut w = World::new("split");
+    let acc = local(true);
+    let (a, ba) = blob(b"base record");
+    let first = w
+        .propose("bob", &acc, vec![new("conv/a", "main", a, true)], ba)
+        .unwrap();
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(p.entry.as_ref().unwrap().proposals, vec![first]);
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    // Two proposals of 501 ops each: together over MAX_OPS (1,000).
+    let expect = |n: usize| -> Vec<TeamOp> {
+        (0..n)
+            .map(|_| TeamOp::Expect {
+                path: "conv/a".into(),
+                content: a,
+            })
+            .collect()
+    };
+    let x = w
+        .propose("bob", &acc, expect(501), BTreeMap::new())
+        .unwrap();
+    let y = w
+        .propose("bob", &acc, expect(501), BTreeMap::new())
+        .unwrap();
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(
+        p.entry.as_ref().unwrap().proposals,
+        vec![x],
+        "y waits for the next entry"
+    );
+    assert!(p.conflicted.is_empty());
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    assert_eq!(w.state(&x), State::Accepted);
+    assert_eq!(w.state(&y), State::Queued);
+    let pol = World::policy(&acc, b"v1");
+    let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+    assert_eq!(p.entry.as_ref().unwrap().proposals, vec![y]);
+    let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+    assert_eq!((begun, pushed), (Ok(()), true));
+    w.sync();
+    assert_eq!(w.state(&y), State::Accepted);
+}
