@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **P10 team exchange implemented** (milestones 1–5; gate evidence in progress, see [the P10 gate](docs/gates/P10.md)). Knowledge shared through the git remote as a signed chain the remote's ref CAS decides; per-clone replicas, mirrors on every branch, a proposal queue published from `pre-push`, an announce fence against stale reads, compaction, and the `ctx team` commands (see [REFERENCE](docs/REFERENCE.md#team-exchange-p10)).
+  **Upgrade notes.** Op_log format 6 and IPC protocol 7 → 8: stop `ctxd`, install all binaries together, run `ctx migrate <dir>` (log only; the old log is kept as `log.v5.bak`). Re-run `ctx anchors hooks … install` (or `ctx setup`) so the git hooks become the dispatcher; your own hooks are kept and chained.
 - **P10 G0 passed (2026-11-16).** ADR 0018 r0.6 is accepted and its §12 amendments are incorporated into SPEC v1.10.0: Git-root team exchange, replicas/mirrors, proposal authorisation and publishing, lag fences, strict history and compaction limits. Ordinary proposals reserve one Compact id; Compact checks its actual size. The previous scale/GC phase moves to P11 and recursion to P12. Implementation, format 6 / protocol 8 and G1–G8 remain pending; see [the P10 gate](docs/gates/P10.md).
 
 ## 0.3.0 — 2026-11-10
