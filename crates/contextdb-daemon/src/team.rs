@@ -48,6 +48,10 @@ pub struct TeamConfig {
     pub push_timeout: Duration,
     pub lag_check: Duration,
     pub warn_after: Duration,
+    /// Where the chain lives on the remote (O4): custom refs, or the
+    /// orphan-branch fallback. A config written before this field is
+    /// `refs`.
+    pub refs: contextdb_team::layout::RefLayout,
 }
 
 impl TeamConfig {
@@ -61,11 +65,12 @@ impl TeamConfig {
             push_timeout: Duration::from_secs(30),
             lag_check: Duration::from_secs(2),
             warn_after: Duration::from_secs(24 * 3600),
+            refs: contextdb_team::layout::RefLayout::Refs,
         }
     }
     fn encode(&self) -> String {
         format!(
-            "repo {}\nmember {}\nkey {}\npublish {}\nstrict_push {}\npush_timeout_ms {}\nlag_check_ms {}\nwarn_after_s {}\n",
+            "repo {}\nmember {}\nkey {}\npublish {}\nstrict_push {}\npush_timeout_ms {}\nlag_check_ms {}\nwarn_after_s {}\nrefs {}\n",
             self.repo.display(),
             self.member,
             self.key,
@@ -77,6 +82,7 @@ impl TeamConfig {
             self.push_timeout.as_millis(),
             self.lag_check.as_millis(),
             self.warn_after.as_secs(),
+            self.refs.name(),
         )
     }
     fn decode(text: &str) -> Result<Self, String> {
@@ -103,6 +109,11 @@ impl TeamConfig {
             push_timeout: Duration::from_millis(num("push_timeout_ms")?),
             lag_check: Duration::from_millis(num("lag_check_ms")?),
             warn_after: Duration::from_secs(num("warn_after_s")?),
+            refs: match field("refs") {
+                Err(_) => contextdb_team::layout::RefLayout::Refs,
+                Ok(v) => contextdb_team::layout::RefLayout::parse(v)
+                    .ok_or_else(|| format!("team config: refs = {v}"))?,
+            },
         })
     }
     pub fn load(dir: &Path) -> Result<Self, String> {
@@ -531,7 +542,8 @@ fn compact(j: &Joined, t: TeamId) -> Answer {
         Ok(r) => r,
         Err(e) => return fail("ReplicaStalled", format!("{e:?}")),
     };
-    let refname = |g: u32| format!("refs/contextdb/team/{}/g{g}", hex(&t));
+    let layout = j.cfg.refs;
+    let refname = |g: u32| layout.remote_ref(&t, g);
     let accept = doc.accept_version.to_string();
     if let Some(p) = r.pending() {
         // Step 2: the replica after the accepted `Compact` is Σc.
@@ -746,11 +758,7 @@ pub fn call(
                     Some(Entry {
                         unsigned: u.clone(),
                         tree,
-                        refname: format!(
-                            "refs/contextdb/team/{}/g{}",
-                            hex(&t),
-                            j.store.replica().generation()
-                        ),
+                        refname: j.cfg.refs.remote_ref(&t, j.store.replica().generation()),
                     })
                 }
             };

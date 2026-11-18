@@ -20,15 +20,20 @@ use contextdb_proto::proto::*;
 use contextdb_team::commit::{self, hex};
 use contextdb_team::doc::TeamDoc;
 use contextdb_team::git::Repo;
+use contextdb_team::layout::{self, RefLayout};
 use contextdb_team::ops::{TeamBatch, TeamOp};
 use contextdb_team::store::{Status, TeamStore};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const USAGE: &str = "ctx team create|join|status|sync|publish <dir> …";
-/// The fetch refspec a join adds (§7.5).
-fn refspec(remote: &str) -> String {
-    format!("+refs/contextdb/team/*:refs/contextdb/remotes/{remote}/team/*")
+/// `--orphan-branch`: the chain on orphan branches (O4).
+fn layout_flag(args: &[String]) -> RefLayout {
+    if args.iter().any(|a| a == "--orphan-branch") {
+        RefLayout::Branch
+    } else {
+        RefLayout::Refs
+    }
 }
 
 fn flags<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
@@ -97,7 +102,7 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             let genesis = flag(args, "--genesis").ok_or("--genesis <oid> (from an admin)")?;
             let key = PathBuf::from(flag(args, "--key").ok_or("--key <ssh key path>")?);
             let remote = flag(args, "--remote").unwrap_or("origin");
-            join(data, &repo, genesis, &key, remote)
+            join(data, &repo, genesis, &key, remote, layout_flag(args))
         }
         Some("status") => {
             let team = flag(args, "--team").map(|_| pick(data, args)).transpose()?;
@@ -210,7 +215,14 @@ pub fn run(data: &Path, args: &[String]) -> Result<u8, String> {
             let cfg = TeamConfig::load(&dir)?;
             let remote = anchor_field(&dir, "remote")?;
             leave(data, team)?;
-            join(data, &cfg.repo, genesis, Path::new(&cfg.key), &remote)
+            join(
+                data,
+                &cfg.repo,
+                genesis,
+                Path::new(&cfg.key),
+                &remote,
+                cfg.refs,
+            )
         }
         Some("rebuild") => {
             let team = pick(data, args)?;
@@ -359,15 +371,21 @@ fn create(data: &Path, args: &[String]) -> Result<u8, String> {
         .map_err(|e| format!("{e:?}"))?;
     let payload = commit::build(&tree, &[], "ctx team: genesis", &trailers);
     let oid = sign_commit(&repo, &key, &payload)?;
-    let refname = format!("refs/contextdb/team/{}/g0", hex(&team));
+    let refs = layout_flag(args);
+    let refname = refs.remote_ref(&team, 0);
     if !push(&repo_dir, remote, &oid, &refname)? {
         return Err(format!("{refname} already exists on {remote}"));
     }
     println!("team {} created; genesis {oid}", hex(&team));
     println!(
-        "members join with: ctx team join <dir> --repo <work tree> --genesis {oid} --key <their key>"
+        "members join with: ctx team join <dir> --repo <work tree> --genesis {oid} --key <their key>{}",
+        if refs == RefLayout::Branch {
+            " --orphan-branch"
+        } else {
+            ""
+        }
     );
-    join(data, &repo_dir, &oid, &key, remote)
+    join(data, &repo_dir, &oid, &key, remote, refs)
 }
 
 fn join(
@@ -376,6 +394,7 @@ fn join(
     genesis: &str,
     key: &Path,
     remote: &str,
+    refs: RefLayout,
 ) -> Result<u8, String> {
     let public = contextdb_team::sign::public_key(key)?;
     let repo = Repo::open(repo_dir).map_err(|e| format!("{e:?}"))?;
@@ -384,7 +403,7 @@ fn join(
         .canonicalize()
         .map_err(|e| format!("{}: {e}", repo.dir().display()))?;
     // The refspec, then a fetch in this environment (credentials).
-    let spec = refspec(remote);
+    let spec = refs.refspec(remote);
     let have = git(
         repo_dir,
         &["config", "--get-all", &format!("remote.{remote}.fetch")],
@@ -412,6 +431,30 @@ fn join(
     if dir.exists() {
         return Err(format!("team {} is already joined", hex(&team)));
     }
+    // The layout given must be the one the remote uses (O4): git's branch
+    // refspec fetches an orphan-branch chain's objects either way.
+    let on = |l: RefLayout| -> Result<bool, String> {
+        let pattern = format!("{}{}/*", l.prefix(), hex(&team));
+        Ok(!git(repo_dir, &["ls-remote", remote, &pattern])?
+            .trim()
+            .is_empty())
+    };
+    let other = match refs {
+        RefLayout::Refs => RefLayout::Branch,
+        RefLayout::Branch => RefLayout::Refs,
+    };
+    if !on(refs)? && on(other)? {
+        return Err(format!(
+            "team {} is on {}* on {remote}: join {} --orphan-branch",
+            hex(&team),
+            other.prefix(),
+            if other == RefLayout::Branch {
+                "with"
+            } else {
+                "without"
+            },
+        ));
+    }
     let built = (|| -> Result<String, String> {
         let mut s = TeamStore::create(&dir, team, repo.format(), remote, genesis)
             .map_err(|e| format!("{e:?}"))?;
@@ -434,9 +477,9 @@ fn join(
             .member_of(&public)
             .ok_or_else(|| format!("NotTeamMember: {} is not listed", key.display()))?
             .to_owned();
-        TeamConfig::new(root, member.clone(), key.display().to_string())
-            .save(&dir)
-            .map_err(|e| e.to_string())?;
+        let mut cfg = TeamConfig::new(root, member.clone(), key.display().to_string());
+        cfg.refs = refs;
+        cfg.save(&dir).map_err(|e| e.to_string())?;
         Ok(member)
     })();
     let member = match built {
@@ -446,7 +489,6 @@ fn join(
             return Err(e);
         }
     };
-    println!("joined team {} as {member}", hex(&team));
     // The hooks: announce, notify, publish (§7.5).
     let hooks = crate::githooks::hooks_dir(repo_dir)?;
     crate::githooks::register(
@@ -461,10 +503,23 @@ fn join(
     // A running ctxd opens it now; otherwise at its next start.
     match connect(data, "admin.sock") {
         Ok(mut c) => {
-            lines(call(&mut c, Request::TeamOpen { team })?.response)?;
+            let r = call(&mut c, Request::TeamOpen { team }).and_then(|r| lines(r.response));
+            if let Err(e) = r {
+                // ctxd did not open it. A key mismatch never resolves
+                // (§8.7, Q14): the team is not joined.
+                if e.contains("TeamKeyMismatch") {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(format!(
+                        "{e}\nthe chain gives a mirror key this store holds another kind or \
+                         lane; such a team must be joined under a new team id"
+                    ));
+                }
+                return Err(e);
+            }
         }
         Err(_) => println!("ctxd is not running: it opens the team at its next start"),
     }
+    println!("joined team {} as {member}", hex(&team));
     Ok(0)
 }
 
@@ -730,7 +785,8 @@ pub fn refuse_team_refs(_data: &Path, input: &str) -> Result<(), String> {
                 "refusing to push {remote_ref}: tracking refs stay local"
             ));
         }
-        if remote_ref.starts_with("refs/contextdb/team/") && local_oid.bytes().all(|b| b == b'0') {
+        if layout::strip_remote_prefix(remote_ref).is_some() && local_oid.bytes().all(|b| b == b'0')
+        {
             return Err(format!(
                 "refusing to delete {remote_ref}: the team chain is append-only"
             ));
@@ -848,16 +904,18 @@ fn leave(data: &Path, team: [u8; 16]) -> Result<u8, String> {
         git(&cfg.repo, &["update-ref", "-d", r])?;
     }
     if joined(data).is_empty() {
-        let _ = git(
-            &cfg.repo,
-            &[
-                "config",
-                "--fixed-value",
-                "--unset-all",
-                &format!("remote.{remote}.fetch"),
-                &refspec(&remote),
-            ],
-        );
+        for l in [RefLayout::Refs, RefLayout::Branch] {
+            let _ = git(
+                &cfg.repo,
+                &[
+                    "config",
+                    "--fixed-value",
+                    "--unset-all",
+                    &format!("remote.{remote}.fetch"),
+                    &l.refspec(&remote),
+                ],
+            );
+        }
         crate::githooks::register(
             &crate::githooks::hooks_dir(&cfg.repo)?,
             crate::githooks::Component {
@@ -1033,7 +1091,7 @@ fn prune(data: &Path, team: [u8; 16], yes: bool) -> Result<u8, String> {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|g| g.parse().ok())
         .ok_or("cannot read the followed generation")?;
-    let prefix = format!("refs/contextdb/team/{}/g", hex(&team));
+    let prefix = format!("{}{}/g", cfg.refs.prefix(), hex(&team));
     let old: Vec<String> = git(&cfg.repo, &["ls-remote", &remote, &format!("{prefix}*")])?
         .lines()
         .filter_map(|l| l.split('\t').nth(1))
@@ -1110,7 +1168,7 @@ fn announce_own(
     refname: &str,
     oid: &str,
 ) -> Result<(), String> {
-    let Some(rest) = refname.strip_prefix("refs/contextdb/team/") else {
+    let Some(rest) = layout::strip_remote_prefix(refname) else {
         return Ok(());
     };
     let tracking = format!("refs/contextdb/remotes/{remote}/team/{rest}");

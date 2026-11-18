@@ -14,6 +14,7 @@ pub mod enc;
 pub mod frontend;
 pub mod git;
 pub mod gitobj;
+pub mod layout;
 pub mod ops;
 pub mod proposals;
 pub mod publish;

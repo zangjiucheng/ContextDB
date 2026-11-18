@@ -24,7 +24,7 @@
 use crate::commit::{self, hex};
 use crate::git::Repo;
 use crate::gitobj;
-use crate::ops::{Hash, MAX_BATCH_BYTES, MAX_ENTRY_BYTES, MAX_OPS, TeamBatch};
+use crate::ops::{Hash, MAX_BATCH_BYTES, MAX_ENTRY_BYTES, MAX_OPS, TeamBatch, TeamOp};
 use crate::proposals::{LocalPolicy, ProposeError, Queue, State, recheck};
 use crate::store::TeamStore;
 use contextdb_model::PrincipalId;
@@ -209,6 +209,13 @@ pub fn prepare_on(
             ));
             continue;
         }
+        // A sole op (`SetTeamAccess`) must be its entry's only op (accept's
+        // `SoleOpRequired`): it waits for an entry of its own, and nothing
+        // after it in queue order joins that entry or overtakes it.
+        let sole = p.ops.iter().any(TeamOp::is_sole);
+        if sole && !included.is_empty() {
+            break;
+        }
         let pb = queue.blobs_of(&p);
         let new_blobs: BTreeMap<Hash, Vec<u8>> = pb
             .iter()
@@ -238,6 +245,9 @@ pub fn prepare_on(
                 blobs.extend(new_blobs);
                 included.push(p.id);
                 ops_all.push(p.ops.clone());
+                if sole {
+                    break;
+                }
             }
             Err(r) => {
                 dead.insert(p.id);

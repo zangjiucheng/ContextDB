@@ -219,6 +219,11 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     pub fn replica_logical(&self, key: &str) -> Option<LogicalId> {
         self.replica_keys.get(key).map(|(g, _)| LogicalId(*g))
     }
+    /// The record of the replica-origin logical with `key`, on any branch
+    /// (P10: a mirror key keeps its kind and lane for good).
+    pub fn replica_record(&self, key: &str) -> Option<&Logical> {
+        self.replica_keys.get(key).map(|(_, l)| l)
+    }
     /// The committed access document and its ids, if any (ADR 0017 §4).
     pub fn access(&self) -> Option<&AccessState> {
         self.access.as_deref()

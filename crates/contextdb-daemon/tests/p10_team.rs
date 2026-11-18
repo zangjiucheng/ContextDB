@@ -1819,3 +1819,93 @@ fn t113_g_lag_holds_at_every_step() {
     }
     eprintln!("G-LAG over {seeds} seeds: {counts:?}");
 }
+
+/// ADR 0018 §8.7, Q14: local keys are permanent. After a leave, a rejoin
+/// whose chain gives a mirror key this store holds another kind (or lane)
+/// is refused with `TeamKeyMismatch` and the team is not opened; a chain
+/// that keeps the kind and lane reuses the mirror.
+#[test]
+fn a_rejoin_that_changes_a_mirror_keys_kind_is_refused() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let mut w = World::new("rejoin-kind");
+    let (a1, ba) = blob(b"a1");
+    w.entry(vec![new_op("k/a", a1, true)], vec![ba.clone()]);
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    s.set_data_dir(w.tmp.join("data"));
+    sync(&s);
+    let sid = session(&s);
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+    let r = s.handle(ADMIN, Request::TeamLeave { team: TEAM }).response;
+    assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+    let dir = w.tmp.join("data").join(team::TEAMS_DIR).join(hex(&TEAM));
+    // The remote is rewritten under the same team id: the genesis, then
+    // `k/a` as another kind.
+    let rewrite = |w: &mut World, kind: RecordKind| {
+        let r = w.refname();
+        git(&w.publisher, &["update-ref", "-d", &r]);
+        w.parent = None;
+        w.seq = 0;
+        let doc = TeamDoc::from_toml(&format!(
+            "version = 1\naccept_version = 1\nid = \"{}\"\nadmins = [\"alice\"]\n\
+             [members.alice]\nkeys = [\"{}\"]\n\
+             [lanes.main]\nwriters = [\"*members\"]\ncurators = [\"*members\"]\n",
+            hex(&TEAM),
+            sshsig::public_key(&ALICE).to_line(),
+        ))
+        .unwrap();
+        w.entry(vec![TeamOp::SetTeamAccess { doc: Box::new(doc) }], vec![]);
+        w.entry(
+            vec![TeamOp::New {
+                path: "k/a".into(),
+                lane: "main".into(),
+                kind,
+                content: a1,
+                adopt_as_base: true,
+            }],
+            vec![ba.clone()],
+        );
+        git(
+            &w.publisher,
+            &["push", "-q", "-f", "origin", &format!("{r}:{r}")],
+        );
+        w.fetch();
+    };
+    let join = |w: &World| {
+        TeamStore::create(&dir, TEAM, ObjectFormat::Sha1, "origin", &w.genesis()).unwrap();
+        TeamConfig::new(w.edge.clone(), "alice".into(), "k".into())
+            .save(&dir)
+            .unwrap();
+        let repo = Repo::open(&w.edge).unwrap();
+        let mut st = TeamStore::open(&dir).unwrap();
+        st.import(&repo).unwrap();
+        s.handle(ADMIN, Request::TeamOpen { team: TEAM }).response
+    };
+    rewrite(&mut w, RecordKind::Convention);
+    let r = join(&w);
+    assert_eq!(code(&r), "TeamOpenFailed", "{r:?}");
+    assert!(format!("{r:?}").contains("TeamKeyMismatch"), "{r:?}");
+    // Not opened: nothing was written, the branch stays `left`.
+    let snap = s.actor.snapshot();
+    assert_eq!(
+        snap.view(MAIN).watermark(&team_scope(&TEAM)),
+        Some(TEAM_LEFT)
+    );
+    drop(snap);
+    let r = s
+        .handle(ADMIN, Request::TeamStatus { team: Some(TEAM) })
+        .response;
+    assert!(
+        matches!(&r, Response::TeamLines { lines } if lines.is_empty()),
+        "{r:?}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    // The same kind and lane: the rejoin reuses the mirror.
+    rewrite(&mut w, RecordKind::Decision);
+    let r = join(&w);
+    assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
+    assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
+}

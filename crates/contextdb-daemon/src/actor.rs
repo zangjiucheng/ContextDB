@@ -536,6 +536,15 @@ impl<D: Durability + Clone> Actor<D> {
                     if self.teams.contains_key(&t) {
                         return Err("already joined".into());
                     }
+                    // A rejoin whose chain gives a mirror key this store
+                    // holds another kind or lane (§8.7, Q14).
+                    let k = self.store.kernel().map_err(|e| format!("{e:?}"))?;
+                    let want = contextdb_team::catchup::projection(j.store.replica());
+                    if let Some(TxError::Team { code, detail }) =
+                        contextdb_team::catchup::key_mismatch_error(k, t, &want)
+                    {
+                        return Err(format!("{code}: {detail}"));
+                    }
                     self.teams.insert(t, j);
                     self.team_live
                         .lock()

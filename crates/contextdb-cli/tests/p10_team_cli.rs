@@ -835,3 +835,141 @@ fn p10_ctx_team_access_adds_a_member_who_joins_and_publishes() {
     drop(db);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// O4's fallback: a team on orphan branches (`--orphan-branch`) for a host
+/// that refuses custom refs. The chain lives at
+/// `refs/heads/contextdb-team/<id>/g<n>`; publish, join, a later sync and
+/// the deletion guard work as with custom refs, and a join that names the
+/// wrong layout is refused with the flag to use.
+#[test]
+fn p10_a_team_on_orphan_branches() {
+    if Command::new("ssh-keygen").arg("-?").output().is_err()
+        || Command::new("git").arg("--version").output().is_err()
+    {
+        return;
+    }
+    let tmp = temp("orphan");
+    let remote = tmp.join("remote.git");
+    git(&tmp, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    let url = format!("file://{}", remote.display());
+    let a = tmp.join("a");
+    let b = tmp.join("b");
+    git(&tmp, &["clone", "-q", &url, a.to_str().unwrap()]);
+    git(&tmp, &["clone", "-q", &url, b.to_str().unwrap()]);
+    let key = tmp.join("alice");
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "alice", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (data_a, data_b) = (tmp.join("data-a"), tmp.join("data-b"));
+    let da = Daemon::start(&data_a, &Options::default()).unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "create",
+        data_a.to_str().unwrap(),
+        "--repo",
+        a.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--member",
+        "alice",
+        "--orphan-branch",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("--orphan-branch"), "{out}");
+    let genesis = out
+        .split("genesis ")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let team = team_dir_id(&data_a);
+    let branch = format!("refs/heads/contextdb-team/{team}/g0");
+    let refs = git(&remote, &["for-each-ref", "--format=%(refname)"]);
+    assert_eq!(refs.trim(), branch, "only the orphan branch: {refs}");
+    // A team write, published to the branch.
+    let write = |d: &Daemon, path: &str, body: &[u8]| {
+        let sid = session(d);
+        let r = d
+            .service
+            .handle(
+                AGENT,
+                Request::Commit {
+                    binding: Binding::root(sid),
+                    ops: vec![Op::CreateLogical {
+                        origin: Origin::Local,
+                        key: format!("team/{team}/{path}"),
+                        kind: RecordKind::Convention,
+                        scope_lane: format!("team:{team}/main"),
+                        content: *blake3::hash(body).as_bytes(),
+                        adopt_as_base: false,
+                    }],
+                    blobs: vec![body.to_vec()],
+                    expect_cert_valid: false,
+                    client_txn_id: None,
+                },
+            )
+            .response;
+        assert!(matches!(r, Response::Proposed { .. }), "{r:?}");
+    };
+    write(&da, "conv/one", b"on a branch");
+    let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Accepted"), "{out}");
+    assert_ne!(git(&remote, &["rev-parse", &branch]).trim(), genesis);
+    // Joining with the wrong layout is refused, naming the flag.
+    let db = Daemon::start(&data_b, &Options::default()).unwrap();
+    let join = |extra: &[&str]| {
+        let mut args = vec![
+            "team",
+            "join",
+            data_b.to_str().unwrap(),
+            "--repo",
+            b.to_str().unwrap(),
+            "--genesis",
+            &genesis,
+            "--key",
+            key.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        ctx(&args)
+    };
+    let (code, out) = join(&[]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("with --orphan-branch"), "{out}");
+    assert!(!data_b.join("teams").join(&team).exists());
+    let (code, out) = join(&["--orphan-branch"]);
+    assert_eq!(code, 0, "{out}");
+    let has = |d: &Daemon, path: &str| {
+        d.service
+            .actor
+            .snapshot()
+            .view(MAIN)
+            .logical_by_key(&format!("team/{team}/{path}"))
+            .is_some()
+    };
+    assert!(has(&db, "conv/one"), "{out}");
+    // A later entry reaches B through the branch refspec.
+    write(&da, "conv/two", b"still on a branch");
+    let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    git(&b, &["fetch", "-q", "origin"]);
+    let (code, out) = ctx(&["team", "sync", data_b.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(has(&db, "conv/two"), "{out}");
+    // The branch is append-only through the hooks too.
+    let o = Command::new("git")
+        .current_dir(&a)
+        .args(["push", "origin", &format!(":{branch}")])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("append-only"));
+    drop(da);
+    drop(db);
+    let _ = std::fs::remove_dir_all(&tmp);
+}

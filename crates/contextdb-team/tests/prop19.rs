@@ -282,6 +282,13 @@ fn run(seed: u64, stats: &mut BTreeMap<&'static str, usize>) {
     let mut team = Team::new();
     let mut k = Kernel::default();
     let mut local = 0u32;
+    // Odd seeds catch up at most 1–3 new revisions per batch, so a step
+    // often needs revision batches before its last one.
+    let limit = if seed.is_multiple_of(2) {
+        catchup::MAX_NEW_REVISIONS
+    } else {
+        1 + (seed as usize / 2) % 3
+    };
     for step in 0..60 {
         let at = format!("seed {seed} step {step}");
         let open: Vec<BranchId> = k.branches().filter(|b| !b.archived).map(|b| b.id).collect();
@@ -366,8 +373,11 @@ fn run(seed: u64, stats: &mut BTreeMap<&'static str, usize>) {
                         .watermark(&catchup::scope(TEAM))
                         .map(|w| String::from_utf8(w.to_vec()).unwrap());
                     let from = team.history.position(before.as_deref()).unwrap_or(0);
-                    let done = catchup::catch_up(&mut k, b, TEAM, &team.history)
+                    let done = catchup::catch_up_limited(&mut k, b, TEAM, &team.history, limit)
                         .unwrap_or_else(|e| panic!("{at}: catch-up of {b:?}: {e:?}"));
+                    if done.len() > 1 && limit < catchup::MAX_NEW_REVISIONS {
+                        *stats.entry("limited-multi").or_default() += 1;
+                    }
                     *stats.entry("batches").or_default() += done.len();
                     if done.len() > 1 {
                         *stats.entry("split").or_default() += 1;
@@ -430,7 +440,13 @@ fn prop19_mirrors_equal_the_projection_and_keep_their_history() {
     }
     eprintln!("PROP19 over {seeds} seeds: {stats:?}");
     if seeds >= 100 {
-        for s in ["batches", "split", "merge", "root-changes-seen"] {
+        for s in [
+            "batches",
+            "split",
+            "merge",
+            "root-changes-seen",
+            "limited-multi",
+        ] {
             assert!(
                 stats.get(s).copied().unwrap_or(0) > 0,
                 "PROP19 never reached {s}"
@@ -571,4 +587,191 @@ fn t114_a_catch_up_killed_after_any_batch_recovers_on_restart() {
     }
     eprintln!("kill points: {points} over {seeds} seeds ({multi} with more than one batch)");
     assert!(points > 0 && multi > 0);
+}
+
+/// A catch-up that needs more new revisions than one batch holds commits
+/// them in batches first; the branch's watermark moves only with the last
+/// batch. Killed after any batch and run again, the branch holds the
+/// projection at the tip. Seeds: `CONTEXTDB_KILL_SEEDS` (default 200).
+#[test]
+fn a_catch_up_in_revision_batches_killed_after_any_batch_recovers() {
+    let seeds: u64 = std::env::var("CONTEXTDB_KILL_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    let scope = catchup::scope(TEAM);
+    let (mut points, mut early) = (0usize, 0usize);
+    for seed in 0..seeds {
+        let mut rng = Rng(ChaCha8Rng::seed_from_u64(seed ^ 0x65536));
+        let mut team = Team::new();
+        for _ in 0..12 {
+            team.random(&mut rng);
+        }
+        let limit = 1 + rng.n(2);
+        let k = Kernel::default();
+        let mut reference = k.clone();
+        let total = catchup::catch_up_limited(&mut reference, MAIN, TEAM, &team.history, limit)
+            .unwrap()
+            .len();
+        check_branch(&reference, MAIN, &team.history, &format!("seed {seed}"));
+        for kill in 0..total {
+            let at = format!("seed {seed} limit {limit} killed after batch {kill} of {total}");
+            let mut c = k.clone();
+            let r = catchup::catch_up_limited(
+                &mut Killed {
+                    k: &mut c,
+                    left: kill,
+                },
+                MAIN,
+                TEAM,
+                &team.history,
+                limit,
+            );
+            assert!(r.is_err(), "{at}: the kill did not happen");
+            // Between batches: the projection at the branch's position, plus
+            // revisions that are not base.
+            let w = c
+                .branch(MAIN)
+                .unwrap()
+                .db()
+                .watermark(&scope)
+                .map(<[u8]>::to_vec);
+            if w.is_none() {
+                early += 1;
+            }
+            check_between(&c, &team.history, w.as_deref(), &at);
+            catchup::catch_up_limited(&mut c, MAIN, TEAM, &team.history, limit)
+                .unwrap_or_else(|e| panic!("{at}: restart: {e:?}"));
+            check_branch(&c, MAIN, &team.history, &at);
+            points += 1;
+        }
+    }
+    eprintln!("kill points: {points} over {seeds} seeds ({early} before any watermark)");
+    assert!(points > 0 && early > 0);
+}
+
+/// The state between a limited catch-up's batches on `main`: every mirror
+/// the projection at `position` holds has its head, base bits and tags;
+/// every other revision of the team is not base.
+fn check_between(k: &Kernel, h: &History, position: Option<&[u8]>, at: &str) {
+    let v = k.branch(MAIN).unwrap();
+    let db = v.db();
+    let n = position.map(|w| h.position(Some(std::str::from_utf8(w).unwrap())).unwrap());
+    let want: Projection = n.map(|n| h.projection_at(n)).unwrap_or_default();
+    let prefix = format!("team/{}/", hex(&TEAM));
+    for l in (0..db.logical_count() as u32).map(LogicalId) {
+        if db.logical_origin(l) == Origin::Local {
+            continue;
+        }
+        let (key, ..) = db.logical_info(l).unwrap();
+        let path = key.strip_prefix(&prefix).unwrap();
+        let revs: Vec<(Hash, bool)> = (0..db.revision_count() as u32)
+            .map(RevisionId)
+            .filter(|r| db.revision_logical(*r) == Some(l))
+            .map(|r| (db.revision_content(r).unwrap(), db.is_base(r).unwrap()))
+            .collect();
+        match want.get(path) {
+            None => assert!(
+                revs.iter().all(|(_, base)| !base),
+                "{at}: {path}, not yet at the position, has a base"
+            ),
+            Some(st) => {
+                let head = db.revision_content(db.head(l).unwrap()).unwrap();
+                assert_eq!(head, st.head, "{at}: head of {path}");
+                for c in &st.revisions {
+                    assert!(
+                        revs.iter().any(|(x, _)| x == c),
+                        "{at}: {path} lost a revision"
+                    );
+                }
+                for (c, base) in &revs {
+                    assert_eq!(*base, *c == st.head && st.certified, "{at}: base of {path}");
+                }
+                let tags = v.metadata(v.global_logical(l)).unwrap().tags;
+                assert_eq!(tags, st.tags, "{at}: tags of {path}");
+            }
+        }
+    }
+}
+
+/// More new records than `RevRef::New` can number (65,536) in one
+/// catch-up: split, never an overflow.
+#[test]
+fn a_catch_up_past_65536_new_revisions_is_split() {
+    let n = catchup::MAX_NEW_REVISIONS + 1;
+    let want: Projection = (0..n)
+        .map(|i| {
+            let c = *blake3::hash(format!("r{i}").as_bytes()).as_bytes();
+            (
+                format!("k/{i:06}"),
+                catchup::MirrorState {
+                    kind: RecordKind::Decision,
+                    lane: "main".into(),
+                    revisions: vec![c],
+                    head: c,
+                    certified: true,
+                    tags: BTreeSet::new(),
+                },
+            )
+        })
+        .collect();
+    let h = History::starting_at(Some("e".repeat(40)), want);
+    let mut k = Kernel::default();
+    let done = catchup::catch_up(&mut k, MAIN, TEAM, &h).unwrap();
+    assert_eq!(
+        done.len(),
+        2,
+        "one batch of 65,536 revisions, then the rest"
+    );
+    let db = k.branch(MAIN).unwrap().db();
+    assert_eq!(db.logical_count(), n);
+    assert_eq!(
+        db.watermark(&catchup::scope(TEAM)),
+        Some("e".repeat(40).as_bytes())
+    );
+    assert!((0..n as u32).all(|r| db.is_base(RevisionId(r)).unwrap()));
+}
+
+/// Catch-up never writes past a mirror key whose kind or lane the history
+/// changes (`TeamKeyMismatch`, §8.7): nothing is committed and the
+/// watermark stays where it was.
+#[test]
+fn catch_up_refuses_a_mirror_key_with_another_kind_or_lane() {
+    let c = *blake3::hash(b"k").as_bytes();
+    let state = |kind: RecordKind, lane: &str| catchup::MirrorState {
+        kind,
+        lane: lane.into(),
+        revisions: vec![c],
+        head: c,
+        certified: true,
+        tags: BTreeSet::new(),
+    };
+    let at = |oid: char, kind: RecordKind, lane: &str| {
+        History::starting_at(
+            Some(oid.to_string().repeat(40)),
+            [("k/a".to_owned(), state(kind, lane))].into(),
+        )
+    };
+    let mut k = Kernel::default();
+    catchup::catch_up(&mut k, MAIN, TEAM, &at('a', RecordKind::Decision, "main")).unwrap();
+    let before = k.epoch();
+    for h in [
+        at('b', RecordKind::Convention, "main"),
+        at('c', RecordKind::Decision, "arch"),
+    ] {
+        match catchup::catch_up(&mut k, MAIN, TEAM, &h) {
+            Err(TxError::Team { code, .. }) => assert_eq!(code, "TeamKeyMismatch"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(k.epoch(), before);
+        assert_eq!(
+            k.branch(MAIN)
+                .unwrap()
+                .db()
+                .watermark(&catchup::scope(TEAM)),
+            Some("a".repeat(40).as_bytes())
+        );
+    }
+    // The same kind and lane at another position: caught up.
+    catchup::catch_up(&mut k, MAIN, TEAM, &at('d', RecordKind::Decision, "main")).unwrap();
 }

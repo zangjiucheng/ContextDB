@@ -932,3 +932,44 @@ fn a_dependent_of_a_deferred_proposal_waits_too_and_oversized_is_refused() {
         Err(ProposeError::TooLarge("entry"))
     ));
 }
+
+/// A `SetTeamAccess` proposal is never packed with another proposal: accept
+/// refuses such an entry (`SoleOpRequired`) and every proposal in it with
+/// it. It takes an entry of its own, and the proposals after it wait.
+/// (Team administration is the store owner's, zed's, locally.)
+#[test]
+fn a_team_access_proposal_takes_an_entry_of_its_own() {
+    if !have_git() {
+        return;
+    }
+    let mut w = World::new("sole");
+    let acc = local(true);
+    let (a, ba) = blob(b"before the access change");
+    let (b, bb) = blob(b"after the access change");
+    let first = w
+        .propose("zed", &acc, vec![new("conv/a", "main", a, true)], ba)
+        .unwrap();
+    let access = w
+        .propose(
+            "zed",
+            &acc,
+            vec![TeamOp::SetTeamAccess {
+                doc: Box::new(team_doc()),
+            }],
+            BTreeMap::new(),
+        )
+        .unwrap();
+    let last = w
+        .propose("zed", &acc, vec![new("conv/b", "main", b, true)], bb)
+        .unwrap();
+    for expect in [first, access, last] {
+        let pol = World::policy(&acc, b"v1");
+        let p = publish::prepare(&w.store, &mut w.queue, "alice", &pol, Mode::Auto).unwrap();
+        assert!(p.conflicted.is_empty(), "{:?}", p.conflicted);
+        assert_eq!(p.entry.as_ref().unwrap().proposals, vec![expect]);
+        let (_, begun, pushed) = w.sign_and_push(&p, b"v1");
+        assert_eq!((begun, pushed), (Ok(()), true));
+        w.sync();
+        assert_eq!(w.state(&expect), State::Accepted);
+    }
+}

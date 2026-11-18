@@ -287,10 +287,53 @@ fn held_paths(
     out
 }
 
+/// Mirror keys this store already holds with another kind or lane than
+/// `want` gives them, as `path: have → want` (ADR 0018 §8.7, Q14: local
+/// keys are permanent, so a rejoin whose chain changes one is refused with
+/// `TeamKeyMismatch`, and catch-up never writes past one).
+pub fn key_mismatches(k: &Kernel, team: TeamId, want: &Projection) -> Vec<String> {
+    want.iter()
+        .filter_map(|(path, st)| {
+            let l = k.replica_record(&key(team, path))?;
+            let lane = format!("team:{}/{}", hex(&team), st.lane);
+            (l.kind != st.kind || l.scope_lane != lane).then(|| {
+                format!(
+                    "{path}: {:?} in {} → {:?} in {lane}",
+                    l.kind, l.scope_lane, st.kind
+                )
+            })
+        })
+        .collect()
+}
+
+/// [`key_mismatches`] as the error catch-up and a join refuse with.
+pub fn key_mismatch_error(k: &Kernel, team: TeamId, want: &Projection) -> Option<TxError> {
+    let m = key_mismatches(k, team, want);
+    (!m.is_empty()).then(|| TxError::Team {
+        code: "TeamKeyMismatch".into(),
+        detail: m.join("; "),
+    })
+}
+
+/// Revisions one catch-up batch may create: `RevRef::New` is a `u16`.
+pub const MAX_NEW_REVISIONS: usize = 1 << 16;
+
+/// The ops that bring a branch's mirrors to a projection.
+struct Diff {
+    /// Attach/create and revisions, in order; `true` for an op that
+    /// creates a revision (takes a `RevRef::New` slot).
+    create: Vec<(Op, bool)>,
+    /// Base retractions, head moves, base assertions, tags.
+    rest: Vec<Op>,
+    /// Revisions `create` makes.
+    slots: usize,
+}
+
 /// The ops that bring branch state `have` to `want`, in the order of §5.2:
 /// attach/create, revisions, base retractions, head moves, base
-/// assertions, tags.
-fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projection) -> Vec<Op> {
+/// assertions, tags. Slots are counted without bound; `rest` refers to
+/// them by `RevRef::New`, so it is committed only when they fit a `u16`.
+fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projection) -> Diff {
     let mut first = Vec::new();
     let mut revs = Vec::new();
     let mut retract = Vec::new();
@@ -298,8 +341,8 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
     let mut assert = Vec::new();
     let mut tags = Vec::new();
     // Revision slots: (path, content) → New(k).
-    let mut slots: BTreeMap<(String, Hash), u16> = BTreeMap::new();
-    let mut next_slot = 0u16;
+    let mut slots: BTreeMap<(String, Hash), usize> = BTreeMap::new();
+    let mut next_slot = 0usize;
     let mut later: Vec<(&String, &MirrorState, Option<&Held>)> = Vec::new();
     let mut attached: BTreeSet<&String> = BTreeSet::new();
     for (path, st) in want {
@@ -308,24 +351,30 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
             Some(h) => later.push((path, st, Some(h))),
             None if k.replica_logical(&key).is_some() => {
                 // Attach at the head; the other revisions follow by dedup.
-                first.push(Op::MirrorAttach {
-                    key,
-                    head: st.head,
-                    base: st.certified,
-                });
+                first.push((
+                    Op::MirrorAttach {
+                        key,
+                        head: st.head,
+                        base: st.certified,
+                    },
+                    false,
+                ));
                 attached.insert(path);
                 later.push((path, st, None));
             }
             None => {
                 let base = st.revisions[0] == st.head && st.certified;
-                first.push(Op::CreateLogical {
-                    key,
-                    kind: st.kind,
-                    scope_lane: format!("team:{}/{}", hex(&team), st.lane),
-                    content: st.revisions[0],
-                    adopt_as_base: base,
-                    origin: Origin::Replica { team },
-                });
+                first.push((
+                    Op::CreateLogical {
+                        key,
+                        kind: st.kind,
+                        scope_lane: format!("team:{}/{}", hex(&team), st.lane),
+                        content: st.revisions[0],
+                        adopt_as_base: base,
+                        origin: Origin::Replica { team },
+                    },
+                    true,
+                ));
                 slots.insert((path.clone(), st.revisions[0]), next_slot);
                 next_slot += 1;
                 later.push((path, st, None));
@@ -335,25 +384,30 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
     for (path, st, h) in &later {
         let key = key(team, path);
         let is_attached = attached.contains(path);
-        let present = |c: &Hash, slots: &BTreeMap<(String, Hash), u16>| {
+        let present = |c: &Hash, slots: &BTreeMap<(String, Hash), usize>| {
             h.is_some_and(|h| h.revisions.contains_key(c))
                 || slots.contains_key(&((*path).clone(), *c))
                 || (is_attached && *c == st.head)
         };
         for c in &st.revisions {
             if !present(c, &slots) {
-                revs.push(Op::AddRevision {
-                    logical: LogicalRef::Key(key.clone()),
-                    content: *c,
-                    adopt_as_base: false,
-                });
+                revs.push((
+                    Op::AddRevision {
+                        logical: LogicalRef::Key(key.clone()),
+                        content: *c,
+                        adopt_as_base: false,
+                    },
+                    true,
+                ));
                 slots.insert(((*path).clone(), *c), next_slot);
                 next_slot += 1;
             }
         }
+        // Past `u16` only when `rest` is never committed (see `Diff`).
+        let new = |s: usize| RevRef::New(u16::try_from(s).unwrap_or(u16::MAX));
         let rev = |c: &Hash| -> RevRef {
             match slots.get(&((*path).clone(), *c)) {
-                Some(s) => RevRef::New(*s),
+                Some(s) => new(*s),
                 None => h.expect("visible").revisions[c].0.into(),
             }
         };
@@ -392,7 +446,7 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
                 {
                     heads.push(Op::SetHead {
                         logical: LogicalRef::Key(key.clone()),
-                        expected: RevRef::New(*first_slot),
+                        expected: new(*first_slot),
                         new: rev(&st.head),
                     });
                     if st.certified {
@@ -409,7 +463,11 @@ fn diff(k: &Kernel, team: TeamId, have: &BTreeMap<String, Held>, want: &Projecti
             }
         }
     }
-    [first, revs, retract, heads, assert, tags].concat()
+    Diff {
+        create: [first, revs].concat(),
+        rest: [retract, heads, assert, tags].concat(),
+        slots: next_slot,
+    }
 }
 
 /// Where catch-up batches go: the kernel itself, or a store that logs them
@@ -437,6 +495,25 @@ pub fn catch_up<W: Writer + ?Sized>(
     team: TeamId,
     h: &History,
 ) -> Result<Vec<CommitResult>, W::Error> {
+    catch_up_limited(w, b, team, h, MAX_NEW_REVISIONS)
+}
+
+/// [`catch_up`] with at most `limit` new revisions per batch (at most
+/// [`MAX_NEW_REVISIONS`]). A step that needs more first commits its
+/// records and revisions in batches of `limit`, none of them base and
+/// without a watermark: until the step's last batch, which moves heads and
+/// base bits and the watermark, the branch holds its position's projection
+/// plus non-base revisions. Each batch is diffed from the branch's actual
+/// state, so a crash between them resumes where it stopped.
+#[doc(hidden)]
+pub fn catch_up_limited<W: Writer + ?Sized>(
+    w: &mut W,
+    b: BranchId,
+    team: TeamId,
+    h: &History,
+    limit: usize,
+) -> Result<Vec<CommitResult>, W::Error> {
+    let limit = limit.clamp(1, MAX_NEW_REVISIONS);
     let mut done = Vec::new();
     let Some(tip) = h.tip().map(str::to_owned) else {
         return Ok(done);
@@ -455,28 +532,83 @@ pub fn catch_up<W: Writer + ?Sized>(
     }
     // `paths`: the only records that can differ (the entries since the
     // branch's position changed nothing else); `None` for every record.
-    let commit =
-        |w: &mut W, want: &Projection, oid: &str, gap: bool, paths: Option<&BTreeSet<String>>| {
+    let commit = |w: &mut W,
+                  done: &mut Vec<CommitResult>,
+                  want: &Projection,
+                  oid: &str,
+                  gap: bool,
+                  paths: Option<&BTreeSet<String>>|
+     -> Result<(), W::Error> {
+        if let Some(e) = key_mismatch_error(w.kernel(), team, want) {
+            return Err(e.into());
+        }
+        loop {
             let k = w.kernel();
             let have = match paths {
                 Some(p) => held_paths(k, b, team, p),
                 None => held(k, b, team),
             };
-            let mut ops = diff(k, team, &have, want);
-            ops.push(Op::ObserverWatermark {
-                scope: scope.clone(),
-                expected: watermark(k),
-                position: oid.as_bytes().to_vec(),
-                gap,
-            });
+            let d = diff(k, team, &have, want);
+            let last = d.slots <= limit;
+            let mut ops: Vec<Op> = Vec::new();
+            if last {
+                ops.extend(d.create.into_iter().map(|(op, _)| op));
+                ops.extend(d.rest);
+                ops.push(Op::ObserverWatermark {
+                    scope: scope.clone(),
+                    expected: watermark(k),
+                    position: oid.as_bytes().to_vec(),
+                    gap,
+                });
+            } else {
+                // Records and revisions first, `limit` at a time, none of
+                // them base: until the step's last batch no mirror's head
+                // or base moves, and a new mirror is not base.
+                let mut n = 0;
+                for (op, slot) in d.create {
+                    if slot {
+                        if n == limit {
+                            break;
+                        }
+                        n += 1;
+                    }
+                    ops.push(match op {
+                        Op::CreateLogical {
+                            key,
+                            kind,
+                            scope_lane,
+                            content,
+                            origin,
+                            ..
+                        } => Op::CreateLogical {
+                            key,
+                            kind,
+                            scope_lane,
+                            content,
+                            adopt_as_base: false,
+                            origin,
+                        },
+                        Op::MirrorAttach { key, head, .. } => Op::MirrorAttach {
+                            key,
+                            head,
+                            base: false,
+                        },
+                        op => op,
+                    });
+                }
+            }
             let mut batch = Batch::new(ops);
             batch.branch = b;
             batch.channel = Channel::Replica;
-            w.commit(&batch)
-        };
+            done.push(w.commit(&batch)?);
+            if last {
+                return Ok(());
+            }
+        }
+    };
     let Some(from) = h.position(at.as_deref()) else {
-        // A position the history does not hold: one net batch, gap.
-        done.push(commit(w, h.current(), &tip, true, None)?);
+        // A position the history does not hold: one net step, gap.
+        commit(w, &mut done, h.current(), &tip, true, None)?;
         return Ok(done);
     };
     // G5: only the records the entries since `from` changed can differ.
@@ -501,7 +633,7 @@ pub fn catch_up<W: Writer + ?Sized>(
         });
         if returns {
             let prev = &h.entries[i - 1].0;
-            done.push(commit(w, &proj, prev, false, Some(&paths))?);
+            commit(w, &mut done, &proj, prev, false, Some(&paths))?;
             seen.clear();
             for (p, v) in &value {
                 seen.entry(p.clone()).or_default().insert(*v);
@@ -514,7 +646,7 @@ pub fn catch_up<W: Writer + ?Sized>(
             proj.insert(p.clone(), st.clone());
         }
     }
-    done.push(commit(w, &proj, &tip, false, Some(&paths))?);
+    commit(w, &mut done, &proj, &tip, false, Some(&paths))?;
     Ok(done)
 }
 
