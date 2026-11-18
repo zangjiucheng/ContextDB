@@ -546,7 +546,11 @@ pub fn publish(
     let _held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
         .map_err(|_| format!("team {}: another publish is running", hex(&team)))?;
     let mut c = connect(data, "admin.sock")?;
-    for _ in 0..3 {
+    // One entry per round until the queue has nothing left to publish (a
+    // sole op, or the limits, may need several); three tries per entry
+    // against a moving ref.
+    let (mut published, mut tries) = (0usize, 0usize);
+    while tries < 3 {
         // A fetch and import first: the entry's parent is the tip.
         git(&cfg.repo, &["fetch", "-q", &remote])?;
         call(&mut c, Request::TeamSync { team: Some(team) })?;
@@ -573,8 +577,11 @@ pub fn publish(
             return Ok(0);
         }
         let Some(e) = entry else {
-            println!("nothing to publish");
-            return Ok(0);
+            if published == 0 {
+                println!("nothing to publish");
+                return Ok(0);
+            }
+            return lines(call(&mut c, Request::TeamStatus { team: Some(team) })?.response);
         };
         let oid = sign_commit(&repo, Path::new(&cfg.key), &e.payload)?;
         match call(
@@ -586,7 +593,10 @@ pub fn publish(
         ) {
             Ok(_) => {}
             // The policy or the queue moved since step 5: again.
-            Err(e) if e.starts_with("PolicyChanged") || e.starts_with("QueueChanged") => continue,
+            Err(e) if e.starts_with("PolicyChanged") || e.starts_with("QueueChanged") => {
+                tries += 1;
+                continue;
+            }
             Err(e) => return Err(e),
         }
         announce_own(data, team, &remote, &e.refname, &oid)?;
@@ -595,10 +605,12 @@ pub fn publish(
                 git(&cfg.repo, &["fetch", "-q", &remote])?;
                 call(&mut c, Request::TeamSync { team: Some(team) })?;
                 println!("published {} proposal(s) in {oid}", e.proposals.len());
-                return lines(call(&mut c, Request::TeamStatus { team: Some(team) })?.response);
+                published += 1;
+                tries = 0;
             }
             Ok(false) => {
                 call(&mut c, Request::TeamPublishRefused { team })?;
+                tries += 1;
             }
             Err(err) => {
                 // The outcome is unknown: `published` until a fetch shows
@@ -607,7 +619,10 @@ pub fn publish(
             }
         }
     }
-    Err("the team ref kept moving: not published after 3 attempts".into())
+    Err(format!(
+        "the team ref kept moving: not published after 3 attempts ({published} entries published \
+         before)"
+    ))
 }
 
 // ----- the team component of the hook dispatcher (§7.2, §7.5, §8.1, §8.3) -----

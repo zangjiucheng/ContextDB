@@ -953,10 +953,46 @@ fn p10_a_team_on_orphan_branches() {
             .is_some()
     };
     assert!(has(&db, "conv/one"), "{out}");
-    // A later entry reaches B through the branch refspec.
+    // A later entry reaches B through the branch refspec. With a team
+    // document queued behind it (a sole op), one publish drains the queue
+    // in two entries.
     write(&da, "conv/two", b"still on a branch");
+    let public = std::fs::read_to_string(tmp.join("alice.pub")).unwrap();
+    let public: Vec<&str> = public.split_whitespace().take(2).collect();
+    let doc = tmp.join("team.toml");
+    std::fs::write(
+        &doc,
+        format!(
+            "version = 1\naccept_version = 1\nid = \"{team}\"\nadmins = [\"alice\"]\n\
+             [members.alice]\nkeys = [\"{}\"]\n\
+             [lanes.main]\nwriters = [\"*members\"]\ncurators = [\"*admins\"]\n\
+             [lanes.arch]\nwriters = [\"*members\"]\ncurators = [\"*admins\"]\n",
+            public.join(" ")
+        ),
+    )
+    .unwrap();
+    let (code, out) = ctx(&[
+        "team",
+        "access",
+        data_a.to_str().unwrap(),
+        "--file",
+        doc.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // Two local authors (the agent, the store owner): confirm, then
+    // publish exactly the listed set.
     let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap()]);
     assert_eq!(code, 0, "{out}");
+    let token = out
+        .split("--yes ")
+        .nth(1)
+        .and_then(|s| s.split('`').next())
+        .unwrap_or_else(|| panic!("{out}"))
+        .to_owned();
+    let (code, out) = ctx(&["team", "publish", data_a.to_str().unwrap(), "--yes", &token]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.matches("published 1 proposal(s)").count(), 2, "{out}");
+    assert!(!out.contains("conflicted"), "{out}");
     git(&b, &["fetch", "-q", "origin"]);
     let (code, out) = ctx(&["team", "sync", data_b.to_str().unwrap()]);
     assert_eq!(code, 0, "{out}");
