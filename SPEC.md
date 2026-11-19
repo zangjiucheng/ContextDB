@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.10.0 · Date: 2026-11-16 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.10.1 · Date: 2026-11-18 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -276,7 +276,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 - Conflict 指向 revision 而非 logical：supersede a 后 Conflict 留在 a，新 head 不受阻；另一侧 b 在解决前保持 CONFLICTED（`ctx_conflicts` 标注 `side superseded`）。
 - `not A` 从不作为记录存在；矛盾是两条记录之间的关系，只能作为输入断言。规则结论只能是 revision（SD7），任何推导都不能产生 Conflict；矛盾候选与 LLM 判断也从不开启 Conflict（只能写不 gate 的 PendingReview）。agent 与 admin 通道可开启与解决 Conflict（owner 决定 D3）。
 
-**SD21 团队交换（v1.10.0，P10 G0，ADR 0018 r0.6）。** 以下是规范性契约；实现与 G1–G8 尚待验证。
+**SD21 团队交换（v1.10.0，P10 G0，ADR 0018 r0.6）。** 以下是规范性契约；已实现，Gate P10 于 2026-11-18 通过（v1.10.1）。
 
 1. **三个域与身份。** root 是共享 Git remote 的单根、append-only 签名链，不运行远端 daemon；每个 clone 的 edge 有独立本地 store。`<data>/teams/<team-id>/` 的单 branch replica 只重放 root，不读取本地 keys、policy、shred 集合、ACL 或 blobs。团队身份为文档中的 member 与 SSH key，不是任何 edge 的本地 principal。portable ops 只用 key、ContentHash 和期望值，不携带本地稠密 id。团队 id 为创建时选定、跨 compaction 不变的随机 128 bit；team key 为 `team/<32-hex-team-id>/<path>`，lane 为 `team:<id>/<lane>`。`team/` 与 `team:` 保留给 replica，join 遇到已有本地占用即拒绝。
 
@@ -1515,6 +1515,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 1.10.1 | 2026-11-18 | Gate P10 通过（owner 验收，非语义变更）：格式 6 / protocol 8 已实现；G1–G8 证据见 `docs/gates/P10.md`。owner 声明的偏离：G4 中 `team_doc` 模糊测试只跑 17.4 h（libFuzzer 4 GB RSS 上限，源于 ASan 分配器保留内存，非目标代码），其余六个目标 24 h，均 0 崩溃；G5 的 `git commit` 预算以 trivial hook 为基线测量；G6 只做 bare-remote 试运行，跳过 ≥ 5 天真实 remote 部分。owner 复核的四项缺陷已修复：独占 op 单独成 entry、rejoin 时 `TeamKeyMismatch`、超过 65,536 个新 revision 的追平分批提交（前缀批不置 base、不推进 watermark）、O4 orphan-branch 回退（`--orphan-branch`）。 |
 | 1.10.0 | 2026-11-16 | P10 G0：ADR 0018 r0.6 accepted，O1–O7确认；r0.5的1 blocker/5 major/4补充与r0.6的1 P1/3 P2闭环，Compact只消费一次预留。新增SD21（root签名链、frozen accept、replica/mirrors、队列双层授权、egress发布时复核、announce fence、strict历史/gap、Σc单向checkpoint与格式容量）；SD3/6/7/11–15/18–20和A8、API、错误、存储、T109–T121/PROP17–19、威胁边界同步。团队交换为P10，旧规模/GC为P11、递归为P12；计划格式6/protocol8，尚未实现；仅G0通过。 |
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |
 | 1.6.5 | 2026-10-22 | P5b G0（ADR 0012 r0.3）：symbol key 可逆编码（哈希段为冻结的源文本哈希）、文件路径禁止 `#`；descriptor `CTXANC02` 与机械导出的 normaliser 版本（仅 migrate 跨版本）；同路径声明合并代替歧义；局部解析错误规则；宿主文件粒度的 `CTXPOS02` 位置，daemon 不解析；G6 改为 missed ≤ 文件级 + 2 个百分点（owner 决定），加权点估计；新增 T42d、T42e、T45b、T46d、T46e |

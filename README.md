@@ -11,7 +11,7 @@ When several agents (Claude Code, Codex, OpenCode and their subagents) work in t
 
 - **Specification**: [`SPEC.md`](SPEC.md) (v1.10.0, the only normative document; written mainly in Chinese with English systems terminology)
 - **Documentation site**: <https://zangjiucheng.github.io/ContextDB/>
-- **Status**: P0–P9 have passed their gates; see [Phases and status](#phases-and-status)
+- **Status**: P0–P10 have passed their gates; see [Phases and status](#phases-and-status)
 - **Harnesses**: Claude Code, Codex CLI and OpenCode 2.0, through MCP tools and hooks
 
 ## Why
@@ -102,7 +102,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P7 | Semantic validation and conflicts | ✅ passed |
 | P8 | Retrieval, packing and git mirroring | ✅ passed |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | ✅ passed (G6 two-user run skipped by owner decision) |
-| P10 | Git-root team exchange | [G0 passed](docs/gates/P10.md); implementation pending |
+| P10 | Git-root team exchange | ✅ [passed](docs/gates/P10.md) (G4 `team_doc` fuzz 17.4 h and G6 bare-remote trial only, by owner decision) |
 | P11 | Mixed eager / lazy maintenance and scale | planned |
 | P12 | Recursive support (research) | planned |
 
@@ -112,7 +112,7 @@ Evidence for every layer is in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTA
 
 - **Version consistency is not semantic truth**: ContextDB proves "usable under the declared dependency revisions and validation rules"; it does not judge whether natural-language content is correct.
 - **The trust boundary is cooperative for the store owner's uid**: an agent that can run a shell as the same OS user can uninstall hooks or connect to the admin socket directly. Isolation between OS users, multi-principal permissions and crypto-shred are P9's multi-user mode ([reference](docs/REFERENCE.md#multi-user-mode-egress-and-shred-p9)).
-- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P12); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); cross-machine replication (team exchange is designed in P10, pending implementation).
+- **Not supported yet**: cyclic dependencies (cyclic writes are refused; research in P12); negation, default logic, non-monotonic rules; valid-time / bitemporal queries (only transaction time is modelled); replication of a whole store across machines (P10 shares only team knowledge, through a git remote).
 - **TOCTOU**: there is still a window between the pre-action check and the actual write; Bash side effects are found only afterwards, by drift.
 
 ## Built on

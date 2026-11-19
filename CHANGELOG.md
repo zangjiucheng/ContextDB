@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **P10 team exchange implemented** (milestones 1–5; gate evidence in progress, see [the P10 gate](docs/gates/P10.md)). Knowledge shared through the git remote as a signed chain the remote's ref CAS decides; per-clone replicas, mirrors on every branch, a proposal queue published from `pre-push`, an announce fence against stale reads, compaction, and the `ctx team` commands (see [REFERENCE](docs/REFERENCE.md#team-exchange-p10)).
+- **Gate P10 passed (2026-11-18).** The owner accepted the gate. Deviations, all by owner decision: G4's `team_doc` fuzz ran 17.4 h instead of 24 h, G5's `git commit` budget is measured over a trivial hook, and G6 ran the bare-remote trial only. See [the P10 gate](docs/gates/P10.md); SPEC v1.10.1.
+- **P10 team exchange implemented** (see [the P10 gate](docs/gates/P10.md)). Knowledge shared through the git remote as a signed chain the remote's ref CAS decides; per-clone replicas, mirrors on every branch, a proposal queue published from `pre-push`, an announce fence against stale reads, compaction, and the `ctx team` commands (see [REFERENCE](docs/REFERENCE.md#team-exchange-p10)).
   **Upgrade notes.** Op_log format 6 and IPC protocol 7 → 8: stop `ctxd`, install all binaries together, run `ctx migrate <dir>` (log only; the old log is kept as `log.v5.bak`). Re-run `ctx anchors hooks … install` (or `ctx setup`) so the git hooks become the dispatcher; your own hooks are kept and chained.
 - **P10 G8 implementation review fixes** (thirteen findings, all fixed; [dispositions](docs/gates/P10.md)):
   - **Publish.** The pre-push hook reads `--signed` and `--dr` as git does. A dependent of a proposal held for the next entry waits for it instead of conflicting, and a proposal no single entry can hold is refused at enqueue (`ProposalTooLarge`). Publish waits while a Compact is pending.

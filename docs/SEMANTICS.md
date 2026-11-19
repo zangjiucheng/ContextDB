@@ -140,7 +140,7 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 | SD17 | Conflict=None P0; raw cyclic oracle lfp | T09u, T11 Motik; Conflict gate P7, recursive product P12 |
 | SD18 | Observer-only CodeAnchor/watermark inputs and dedup | T09h/q/r/t, T24; filesystem observer P5 |
 | SD19 | MAIN branch only; reserve origin branch data | T15e, T26; multi-branch product tests P6 |
-| SD21 | Git-root team exchange, replicas, mirrors and proposals | T109–T121, PROP17–PROP19 planned; P10 implementation pending |
+| SD21 | Git-root team exchange, replicas, mirrors and proposals | T109–T121, PROP17–PROP19; Gate P10 passed (2026-11-18) |
 | SD20 | Conflict pairs per branch: both sides CONFLICTED until resolved or superseded; LLM only PendingReview | T78, T50, T84; P7 PROP1 with artifacts |
 | §2.5 A1–A7 | Kind admission, immutability, policy, channels | T09h–v, compile-fail model tests |
 | §6.1–6.2 | IDs/local refs, canonical identity and errors | T09p–v, T29, wire.rs round trips |
