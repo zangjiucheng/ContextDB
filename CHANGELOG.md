@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-11-18
+
+P10 passes its gate: team exchange through the git remote (`ctx team`), with signed history, per-clone replicas, mirrors on every branch, proposals published from `pre-push`, and compaction. Teams are optional; a store without one works as before.
+
+**Upgrade notes.** IPC protocol 8 and op_log format 6.
+- Stop `ctxd` with the old binaries (`ctx shutdown <dir>`), install all four new binaries together, and run `ctx migrate <dir>` once. The migration rewrites only the log and keeps the old one as `log.v5.bak`. Back up the data directory first.
+- Clients from 0.3.x cannot talk to a 0.4.0 daemon. Re-run `ctx hooks install` (or `ctx setup`), re-trust the hooks in Codex with `/hooks`, and restart Claude Code and OpenCode sessions.
+- To use a team, re-run `ctx anchors hooks … install` (or `ctx setup`) so the git hooks become the dispatcher; your own hooks are kept and chained.
+
 - **Gate P10 passed (2026-11-18).** The owner accepted the gate. Deviations, all by owner decision: G4's `team_doc` fuzz ran 17.4 h instead of 24 h, G5's `git commit` budget is measured over a trivial hook, and G6 ran the bare-remote trial only. See [the P10 gate](docs/gates/P10.md); SPEC v1.10.1.
 - **P10 team exchange implemented** (see [the P10 gate](docs/gates/P10.md)). Knowledge shared through the git remote as a signed chain the remote's ref CAS decides; per-clone replicas, mirrors on every branch, a proposal queue published from `pre-push`, an announce fence against stale reads, compaction, and the `ctx team` commands (see [REFERENCE](docs/REFERENCE.md#team-exchange-p10)).
   **Upgrade notes.** Op_log format 6 and IPC protocol 7 → 8: stop `ctxd`, install all binaries together, run `ctx migrate <dir>` (log only; the old log is kept as `log.v5.bak`). Re-run `ctx anchors hooks … install` (or `ctx setup`) so the git hooks become the dispatcher; your own hooks are kept and chained.
