@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`ctx migrate` reports a format 5 → 6 migration.** 0.4.0 migrated the log correctly but printed "already at format 6; nothing changed", because that step re-encrypts nothing. It now prints `migrated format 5 -> 6 (N frames); backup …/log.v5.bak`.
+
 ## 0.4.0 — 2026-11-18
 
 P10 passes its gate: team exchange through the git remote (`ctx team`), with signed history, per-clone replicas, mirrors on every branch, proposals published from `pre-push`, and compaction. Teams are optional; a store without one works as before.

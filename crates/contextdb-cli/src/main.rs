@@ -340,7 +340,14 @@ fn run_p3(args: &[String]) -> Result<(), String> {
             )
             .map_err(|e| store_err("migrate", &e))?;
             match &r.encryption {
-                None => println!("already at format {}; nothing changed", r.to),
+                None if r.from == r.to => {
+                    println!("already at format {}; nothing changed", r.to)
+                }
+                // Format 5 → 6 rewrites only the log (ADR 0018 §12).
+                None => println!(
+                    "migrated format {} -> {} ({} frames); backup {}",
+                    r.from, r.to, r.frames, r.backup
+                ),
                 Some(enc) => {
                     println!(
                         "migrated format {} -> {} ({} frames); backup {}",

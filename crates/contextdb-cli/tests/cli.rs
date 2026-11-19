@@ -76,6 +76,39 @@ fn replay_snapshot_doctor_on_a_real_store() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T119 through the binary: a P9 store (format 5) is migrated, and says so;
+/// only a second run reports "already at format 6".
+#[test]
+fn migrate_reports_a_format5_log_it_rewrites() {
+    use contextdb_store::{Durability, migrate};
+    let dir = std::env::temp_dir().join(format!("contextdb-cli-migrate5-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let disk = StdDisk::default();
+    let batch = Batch::new(vec![Op::CreateLogical {
+        origin: Default::default(),
+        key: "k".into(),
+        kind: RecordKind::Fact,
+        scope_lane: "repo".into(),
+        content: [7; 32],
+        adopt_as_base: true,
+    }]);
+    migrate::write_format5(&disk, &dir, &[batch]).unwrap();
+    let d = dir.to_str().unwrap();
+    let (ok, out) = ctx(&["migrate", d]);
+    assert!(ok, "{out}");
+    assert!(out.contains("migrated format 5 -> 6 (1 frames)"), "{out}");
+    assert!(out.contains("log.v5.bak"), "{out}");
+    assert!(disk.exists(&dir.join("log.v5.bak")));
+    // This bare fixture has no format-5 key log or packs: the next run
+    // finishes those steps, and only then is the store current.
+    let (ok, out) = ctx(&["migrate", d]);
+    assert!(ok && !out.contains("format 5 -> 6"), "{out}");
+    let (ok, out) = ctx(&["migrate", d]);
+    assert!(ok && out.contains("already at format 6"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// T104 through the binary (ADR 0017 §10): `ctx doctor` refuses a store
 /// marked mid-migration and names `ctx migrate`; `ctx migrate` completes
 /// (log, packs, modes) and a second run reports "already at format 6".
