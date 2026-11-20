@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **`ctx ui`: the network graph is drawn on a canvas.** The SVG network spent most of each frame painting (one element per dot, edge and name): on the largest local store we run (131 nodes) dragging a node delayed input by up to 688 ms, hovering by 216 ms and a click by 176 ms. The canvas draws edges batched by style, then dots and names, only when something changes; every one of those interactions now stays at 60 fps with input delays of at most 24 ms. Selecting, searching, filtering and highlighting redraw the scene instead of rebuilding it; the start layout is computed only for new nodes with no placed neighbour; repulsion uses a Barnes–Hut quadtree (O(n log n)) in the simulation and the start layout. At 3,000 synthetic nodes a click went from 2.1 s to 4 ms and a simulation frame from 47 ms to 15 ms. The dots no longer float at rest (that cost a redraw every frame). The layered layout stays SVG.
+- **Nightly mutation audit: P10 lag code covered.** The kernel audit's tests now include `p10_admission`, with a test that a mirror read lags until its team is left (`TEAM_LEFT`), and unit tests that the memory accounting counts a gap row like a watermark row and a replica-origin logical as one origin row. The unused `Db::replication_scopes` is removed.
 
 - **`ctx migrate` reports a format 5 → 6 migration.** 0.4.0 migrated the log correctly but printed "already at format 6; nothing changed", because that step re-encrypts nothing. It now prints `migrated format 5 -> 6 (N frames); backup …/log.v5.bak`.
 

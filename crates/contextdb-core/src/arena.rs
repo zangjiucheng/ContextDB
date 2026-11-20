@@ -1067,6 +1067,42 @@ mod reserve_tests {
             origin_epoch: Epoch(0),
         }
     }
+    /// A replica-origin logical (P10, SD21.7) costs one origin row more than
+    /// a local one: a B-tree leaf of (LogicalId, TeamId) pairs.
+    #[test]
+    fn a_replica_origin_is_accounted_as_one_origin_row() {
+        let build = |origin| {
+            let mut a = LogicalArena::default();
+            let l = Logical {
+                origin,
+                ..logical("team/x")
+            };
+            a.reserve(std::slice::from_ref(&l));
+            a.append(&l);
+            a.retained_bytes()
+        };
+        let local = build(Origin::Local);
+        let mirror = build(Origin::Replica { team: [7; 16] });
+        let row = crate::memory::btree_slots(1)
+            * (std::mem::size_of::<LogicalId>() + std::mem::size_of::<TeamId>());
+        assert_eq!(mirror, local + row);
+    }
+    /// A rolled-back replica logical leaves no origin behind: the local
+    /// logical that later takes its id is local.
+    #[test]
+    fn truncate_drops_the_origin_of_every_removed_logical() {
+        let mut a = LogicalArena::default();
+        a.append(&logical("local-0"));
+        a.append(&Logical {
+            origin: Origin::Replica { team: [7; 16] },
+            ..logical("team/x")
+        });
+        assert_eq!(a.origin_of(LogicalId(1)), Origin::Replica { team: [7; 16] });
+        a.truncate(1);
+        a.append(&logical("local-1"));
+        assert_eq!(a.origin_of(LogicalId(1)), Origin::Local);
+        assert_eq!(a.origin_of(LogicalId(0)), Origin::Local);
+    }
     #[test]
     fn arenas_reserve_with_the_shared_growth_policy() {
         let mut a = LogicalArena::default();

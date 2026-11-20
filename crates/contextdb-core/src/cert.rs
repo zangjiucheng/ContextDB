@@ -228,12 +228,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn observation_scopes(&self, roots: &[RevisionId]) -> Result<BTreeSet<String>, TxError> {
         Ok(self.scopes_of(&self.observation_support(roots)?).0)
     }
-    /// The team scopes of the mirrors in the L2-witness closure of `roots`
-    /// (ADR 0018 §8.3): what `ReplicationLag` is decided over.
-    pub fn replication_scopes(&self, roots: &[RevisionId]) -> Result<BTreeSet<String>, TxError> {
-        Ok(self.scopes_of(&self.observation_support(roots)?).1)
-    }
-    /// `(code observation scopes, team scopes)` of a support set.
+    /// `(code observation scopes, team scopes)` of a support set. The team
+    /// scopes, of the mirrors in the L2-witness closure, are what
+    /// `ReplicationLag` is decided over (ADR 0018 §8.3).
     fn scopes_of(&self, support: &[RevisionId]) -> (BTreeSet<String>, BTreeSet<String>) {
         let (mut code, mut team) = (BTreeSet::new(), BTreeSet::new());
         for r in support {
@@ -643,6 +640,28 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A gap row (ADR 0018 §5.3) is held like a watermark row, so it costs
+    /// the same in the memory accounting, and both add to the other rows.
+    #[test]
+    fn gap_rows_are_accounted_like_watermark_rows() {
+        let rows = || BTreeMap::from([("team:ab".to_owned(), vec![Epoch(1), Epoch(2), Epoch(3)])]);
+        let moved = ChangeLog {
+            watermarks: rows(),
+            ..Default::default()
+        };
+        let gapped = ChangeLog {
+            gaps: rows(),
+            ..Default::default()
+        };
+        let both = ChangeLog {
+            watermarks: rows(),
+            gaps: rows(),
+            ..Default::default()
+        };
+        assert!(moved.retained_bytes() > 0);
+        assert_eq!(gapped.retained_bytes(), moved.retained_bytes());
+        assert_eq!(both.retained_bytes(), 2 * moved.retained_bytes());
+    }
     #[test]
     fn entry_table_is_total_over_sd13_summaries() {
         use EntryOutcome as O;

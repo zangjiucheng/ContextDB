@@ -476,3 +476,44 @@ fn a_local_shred_never_refuses_a_replica_write() {
     ))
     .unwrap();
 }
+
+/// SD21 lag (ADR 0018 §8.3, §8.5): a read over a mirror lags while the
+/// live position of its team is missing or differs from the committed
+/// watermark; once the store left the team (watermark `TEAM_LEFT`) it
+/// never lags, whatever the live position.
+#[test]
+fn a_mirror_read_lags_until_its_team_is_left() {
+    use std::collections::BTreeMap;
+    let mut s = Both::new();
+    let m = s.ok(batch(
+        Channel::Replica,
+        vec![mirror_create("conv/a", RecordKind::Decision, [1; 32], true)],
+    ));
+    let mr = m.allocations.new_revisions[0];
+    let scope = team_scope(&TEAM);
+    let watermark = |position: &[u8], expected: Option<&[u8]>| {
+        batch(
+            Channel::Replica,
+            vec![Op::ObserverWatermark {
+                gap: false,
+                scope: scope.clone(),
+                expected: expected.map(<[u8]>::to_vec),
+                position: position.to_vec(),
+            }],
+        )
+    };
+    s.ok(watermark(b"g0:1", None));
+    let summary = |s: &Both, live: &BTreeMap<String, Vec<u8>>| {
+        s.k.branch(MAIN).unwrap().summary_at(mr, live).unwrap()
+    };
+    let lag = Summary::Pending(PendingReason::ReplicationLag);
+    let missing = BTreeMap::new();
+    let same = BTreeMap::from([(scope.clone(), b"g0:1".to_vec())]);
+    let moved = BTreeMap::from([(scope.clone(), b"g0:2".to_vec())]);
+    assert_eq!(summary(&s, &missing), lag);
+    assert_eq!(summary(&s, &moved), lag);
+    assert_eq!(summary(&s, &same), Summary::Certified);
+    s.ok(watermark(TEAM_LEFT, Some(b"g0:1")));
+    assert_eq!(summary(&s, &missing), Summary::Certified);
+    assert_eq!(summary(&s, &moved), Summary::Certified);
+}
