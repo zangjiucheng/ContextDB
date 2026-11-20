@@ -1,6 +1,10 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.4), G0 pending.**
+Status: **Proposed (r0.4), G0 pending owner review.**
+
+The independent final check of r0.4 found no blocker or major in either
+part. Its two implementation notes are in §3.7 and §5.1 K5. The owner's
+review and the open points in §0.1 remain.
 
 r0.4 answers the second closure review of r0.3 (§12.5).
 
@@ -607,8 +611,16 @@ Wait bounds:
 
 - Steps are recorded in execution order. That includes a `Drain(Full)` the
   store ran at the top of a write: it precedes that write's `Commit`.
+- `publish` takes the spare's steps from the store's ordered step log.
+  - Today it builds them from `fresh` results, those with an epoch above
+    `before` (actor.rs:686–698).
+  - Built that way, a `Drain(Full)` with no `Commit` after it would be
+    lost: an idempotent hit, a refused write or a WHAT_IF settle.
 - The spare replays `Commit` steps with `commit_with` and `Drain` steps with
   `Kernel::drain`, and reaches the same frontier (R6).
+- The debug frontier comparison compares heaps as multisets sorted by
+  `(rank, r)`. A `BinaryHeap`'s internal layout depends on its push
+  history.
 - Any mismatch fail-stops, as today.
 
 Example:
@@ -774,6 +786,8 @@ snapshot still alive`.
 - No `Weak` reference is kept. `publish::reclaim`'s `Arc::get_mut`
   (publish.rs:46–58) fails whenever a `Weak` exists, which would force a
   kernel clone per group.
+- Guards are dropped on reader threads, so the `HeldEpochs` lock is a leaf
+  lock: nothing is acquired while holding it.
 
 With K3, this covers:
 
