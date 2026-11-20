@@ -23,6 +23,6 @@ contextdb-daemon.workspace = true
 contextdb-proto.workspace = true
 contextdb-team.workspace = true
 contextdb-validate.workspace = true
-contextdb-mcp = { path = "../contextdb-mcp", version = "=0.4.0" }
+contextdb-mcp = { path = "../contextdb-mcp", version = "=0.4.1" }
 serde_json = "=1.0.151"
 blake3 = "=1.8.7"
