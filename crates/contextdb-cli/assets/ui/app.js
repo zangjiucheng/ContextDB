@@ -13,13 +13,14 @@ const CLASSES = ["certified", "stale", "pending", "conflicted", "unavailable"];
 const KINDS = ["pin", "cur", "sem", "ref"];
 
 const state = {
-  graph: null, timeline: null, fingerprint: null,
+  graph: null, timeline: null, fingerprint: null, byRev: new Map(), byLogical: new Map(),
   selected: null, allRevs: false, search: "", hidden: new Set(),
   view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "records", laidOut: false,
   branch: 0, focus: 0, collapsed: new Set(), changedSummaries: false, level: "abstract",
   layout: "network",
   // Network layout: the live simulation, kept across refreshes.
-  sim: { pos: new Map(), alpha: 0, raf: 0, drag: null, tick: null, dots: null, edges: [] },
+  // `sig`: the structure the network scene was built for (see structure()).
+  sim: { pos: new Map(), alpha: 0, raf: 0, drag: null, tick: null, sig: null },
 };
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, parent) => {
@@ -170,6 +171,70 @@ function layout(model) {
   });
   return xy;
 }
+/// Repulsion between points closer than √cutoff2: point i gets
+/// strength·(pᵢ − q)/(|pᵢ − q|² + eps) from every other point q, added to
+/// (fx, fy). Barnes–Hut on a quadtree: a cell far enough away (size < θ ×
+/// distance) and not containing i acts as one point at its centre of mass,
+/// so a pass costs O(n log n) instead of O(n²). Deterministic.
+function repel(x, y, fx, fy, strength, cutoff2, eps) {
+  const n = x.length;
+  if (n < 2) return;
+  const LEAF = 8, THETA2 = 0.81;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (x[i] < x0) x0 = x[i]; if (x[i] > x1) x1 = x[i];
+    if (y[i] < y0) y0 = y[i]; if (y[i] > y1) y1 = y[i];
+  }
+  const cell = (cx, cy, s) => ({ x: cx, y: cy, s, m: 0, sx: 0, sy: 0, kids: null, pts: [] });
+  const root = cell(x0, y0, Math.max(x1 - x0, y1 - y0, 1) * 1.0001);
+  const place = (c, i, depth) => {
+    const h = c.s / 2, q = (x[i] >= c.x + h ? 1 : 0) + (y[i] >= c.y + h ? 2 : 0);
+    const k = c.kids[q] ||= cell(c.x + (q & 1 ? h : 0), c.y + (q & 2 ? h : 0), h);
+    insert(k, i, depth + 1);
+  };
+  const insert = (c, i, depth) => {
+    c.m++; c.sx += x[i]; c.sy += y[i];
+    if (c.kids) { place(c, i, depth); return; }
+    c.pts.push(i);
+    // Coincident points would split forever: a deep leaf just grows.
+    if (c.pts.length <= LEAF || depth > 32) return;
+    c.kids = [null, null, null, null];
+    for (const j of c.pts) place(c, j, depth);
+    c.pts = null;
+  };
+  for (let i = 0; i < n; i++) insert(root, i, 0);
+  for (let i = 0; i < n; i++) {
+    const px = x[i], py = y[i];
+    let ax = 0, ay = 0;
+    const stack = [root];
+    while (stack.length) {
+      const c = stack.pop();
+      // The box's nearest point is out of reach: nothing in it repels.
+      const nx = Math.max(c.x, Math.min(px, c.x + c.s)) - px, ny = Math.max(c.y, Math.min(py, c.y + c.s)) - py;
+      if (nx * nx + ny * ny > cutoff2) continue;
+      if (!c.kids) {
+        for (const j of c.pts) {
+          if (j === i) continue;
+          const ex = px - x[j], ey = py - y[j], d2 = ex * ex + ey * ey + eps;
+          if (d2 > cutoff2) continue;
+          const f = strength / d2;
+          ax += ex * f; ay += ey * f;
+        }
+        continue;
+      }
+      const inside = px >= c.x && px < c.x + c.s && py >= c.y && py < c.y + c.s;
+      if (!inside) {
+        const ex = px - c.sx / c.m, ey = py - c.sy / c.m, d2 = ex * ex + ey * ey + eps;
+        if (c.s * c.s < THETA2 * d2) {
+          if (d2 <= cutoff2) { const f = (strength * c.m) / d2; ax += ex * f; ay += ey * f; }
+          continue;
+        }
+      }
+      for (const k of c.kids) if (k) stack.push(k);
+    }
+    fx[i] += ax; fy[i] += ay;
+  }
+}
 /// Force-directed layout (Fruchterman–Reingold) for graphs too deep to read
 /// in layers: every node repels every other, each edge pulls its ends
 /// together, and nodes of the same key directory are drawn to their
@@ -210,17 +275,9 @@ function layoutNetwork(model) {
   const cx = new Float64Array(groups.length), cy = new Float64Array(groups.length), cn = new Float64Array(groups.length);
   for (let it = 0; it < iterations; it++) {
     dx.fill(0); dy.fill(0);
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const ex = x[i] - x[j], ey = y[i] - y[j];
-        const d2 = ex * ex + ey * ey + 0.01;
-        // Repulsion only nearby (grid variant): unconnected nodes would
-        // otherwise drift far out and shrink everything else on fit.
-        if (d2 > CUTOFF2) continue;
-        const f = (L * L) / d2;
-        dx[i] += ex * f; dy[i] += ey * f; dx[j] -= ex * f; dy[j] -= ey * f;
-      }
-    }
+    // Repulsion only nearby (grid variant): unconnected nodes would
+    // otherwise drift far out and shrink everything else on fit.
+    repel(x, y, dx, dy, L * L, CUTOFF2, 0.01);
     for (const [u, v] of springs) {
       const ex = x[u] - x[v], ey = y[u] - y[v];
       const f = Math.sqrt(ex * ex + ey * ey) / L;
@@ -243,10 +300,16 @@ function layoutNetwork(model) {
   // Back to real proportions, then push overlapping boxes apart.
   for (let i = 0; i < n; i++) x[i] *= ASPECT;
   const padX = NET_W + 14, padY = NET_H + 12;
+  const order = ids.map((_, i) => i);
   for (let pass = 0; pass < 40; pass++) {
     let moved = false;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
+    // Only boxes less than padX apart in x can overlap: a sweep in x order
+    // compares each box with the few after it, not with all of them.
+    order.sort((i, j) => x[i] - x[j] || i - j);
+    for (let a = 0; a < n; a++) {
+      for (let b = a + 1; b < n; b++) {
+        const i = Math.min(order[a], order[b]), j = Math.max(order[a], order[b]);
+        if (Math.abs(x[order[b]] - x[order[a]]) >= padX) break;
         const ox = padX - Math.abs(x[i] - x[j]), oy = padY - Math.abs(y[i] - y[j]);
         if (ox <= 0 || oy <= 0) continue;
         moved = true;
@@ -286,6 +349,14 @@ const premiseNote = (r, short) => {
 /// A code anchor shows its path (and symbol), not `code:<repo id>/…`.
 const label = (l) => l.anchor ?? l.key;
 const kindLabel = (l) => (l.kind === "CodeAnchor" ? (l.anchor?.includes("#") ? "symbol anchor" : "file anchor") : l.kind);
+/// Revisions and logicals of the current graph by id (see setGraph).
+const revOf = (id) => state.byRev.get(id);
+const logicalOf = (id) => state.byLogical.get(id);
+function setGraph(graph) {
+  state.graph = graph;
+  state.byRev = new Map(graph.revisions.map((r) => [r.id, r]));
+  state.byLogical = new Map(graph.logicals.map((l) => [l.id, l]));
+}
 const query = (extra) => `${extra}${extra.includes("?") ? "&" : "?"}branch=${state.branch}`;
 
 
@@ -295,44 +366,20 @@ function render() {
   const g = state.graph;
   if (!g) return;
   const model = build(g);
-  const net = state.layout === "network";
-  if (net) { renderNetwork(model); return; }
+  if (state.layout === "network") { renderNetwork(model); return; }
+  // Layers: premises above their conclusions.
   stopSim();
-  $("graph").classList.remove("net", "far", "hovering");
-  const xy = net ? layoutNetwork(model) : layout(model);
-  const W = net ? NET_W : NODE_W, H = net ? NET_H : NODE_H;
+  state.sim.sig = null;
+  $("net").hidden = true;
+  $("graph").hidden = false;
+  const xy = layout(model);
   const vp = $("viewport");
   vp.replaceChildren();
-  $("graph").classList.toggle("net", net);
   $("empty").hidden = model.nodes.size > 0;
   const q = state.search.trim().toLowerCase();
   const visible = (n) => !state.hidden.has(n.rev.class);
   const matches = (n) => !q || n.logical.key.toLowerCase().includes(q);
   const hl = state.highlight; // Set of node ids, or null
-
-  if (net) {
-    // Each key directory's name above its cluster.
-    const top = new Map();
-    for (const p of xy.values()) {
-      const t = top.get(p.group);
-      if (!t) top.set(p.group, { x0: p.x, x1: p.x + W, y: p.y });
-      else { t.x0 = Math.min(t.x0, p.x); t.x1 = Math.max(t.x1, p.x + W); t.y = Math.min(t.y, p.y); }
-    }
-    // Larger groups first; a label that would overlap one already placed
-    // moves up, and single-node groups get none (the node says enough).
-    const size = new Map();
-    for (const p of xy.values()) size.set(p.group, (size.get(p.group) || 0) + 1);
-    const placed = [];
-    const groupLayer = el("g", {}, vp);
-    for (const [name, t] of [...top].sort((a, b) => size.get(b[0]) - size.get(a[0]))) {
-      if (!name || size.get(name) < 2) continue;
-      const text = clip(name, 48, true), w = text.length * 7.4, cx = (t.x0 + t.x1) / 2;
-      let y = t.y - 10;
-      for (let tries = 0; tries < 12 && placed.some((b) => Math.abs(b.x - cx) < (b.w + w) / 2 && Math.abs(b.y - y) < 16); tries++) y -= 16;
-      placed.push({ x: cx, y, w });
-      el("text", { class: "group-label", x: cx, y, "text-anchor": "middle" }, groupLayer).textContent = text;
-    }
-  }
   const edgeLayer = el("g", {}, vp);
   for (const e of model.edges) {
     const a = xy.get(e.from), b = xy.get(e.to);
@@ -341,16 +388,6 @@ function render() {
     const dim = !visible(na) || !visible(nb) || (hl && !(hl.has(e.from) && hl.has(e.to))) || (q && !(matches(na) || matches(nb)));
     const cls = ["edge", e.kind, e.disabled ? "disabled" : "", dim ? "dim" : ""].join(" ");
     const grp = el("g", { class: cls }, edgeLayer);
-    if (net) {
-      // Straight, from box edge to box edge.
-      const ax = a.x + W / 2, ay = a.y + H / 2, bx = b.x + W / 2, by = b.y + H / 2;
-      const [x1, y1] = boxExit(ax, ay, bx - ax, by - ay, W / 2, H / 2);
-      const [x2, y2] = boxExit(bx, by, ax - bx, ay - by, W / 2 + 2, H / 2 + 2);
-      el("path", { d: `M${x1},${y1} L${x2},${y2}`, "marker-end": "url(#arrow)" }, grp);
-      const title = el("title", {}, grp);
-      title.textContent = `${e.kind}${e.disabled ? " (disabled)" : ""}${e.rule !== undefined ? ` · rule ${e.rule}` : ""}${e.old != null ? ` · old r${e.old}` : ""}`;
-      continue;
-    }
     const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = b.x + NODE_W / 2, y2 = b.y;
     const my = (y1 + y2) / 2;
     el("path", { d: `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 2}`, "marker-end": "url(#arrow)" }, grp);
@@ -369,21 +406,12 @@ function render() {
       state.selected === n.rev.id ? "selected" : "", q && matches(n) ? "hit" : "", dim ? "dim" : ""].join(" ");
     const grp = el("g", { class: cls, transform: `translate(${p.x},${p.y})` }, nodeLayer);
     el("rect", {
-      width: W, height: H, rx: 7,
+      width: NODE_W, height: NODE_H, rx: 7,
       fill: `var(--${n.rev.class}-bg)`, stroke: `var(--${n.rev.class})`,
     }, grp);
     // Path above, the last segment below: the part that tells records apart
     // is never the one cut.
     const [dir, leaf] = splitKey(label(n.logical));
-    if (net) {
-      // Compact: the last key segment; the cluster label names the path.
-      el("text", { x: 9, y: 18 }, grp).textContent = clipMiddle(leaf, 25);
-      el("title", {}, grp).textContent = `${n.logical.key}\n${kindLabel(n.logical)} · r${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}${n.rev.abstract ? `\n\n${n.rev.abstract}` : ""}`;
-      grp.addEventListener("click", (ev) => { ev.stopPropagation(); select(n.rev.id); });
-      grp.addEventListener("mouseenter", () => hover(model, id, true));
-      grp.addEventListener("mouseleave", () => hover(model, id, false));
-      continue;
-    }
     el("text", { x: 10, y: 16, class: "sub" }, grp).textContent = clip(dir, 38, true);
     el("text", { x: 10, y: 33 }, grp).textContent = clip(leaf, 34, false);
     el("text", { x: 10, y: 50, class: "sub" }, grp).textContent =
@@ -394,165 +422,146 @@ function render() {
     grp.addEventListener("mouseleave", () => hover(model, id, false));
   }
   applyView();
-  if (!state.laidOut && model.nodes.size) { fit(xy, W, H); state.laidOut = true; }
+  if (!state.laidOut && model.nodes.size) { fit(xy); state.laidOut = true; }
 }
 // ---- network view (Obsidian-like) ----------------------------------------
 
+/// What a network render draws, apart from styling: nodes with their labels
+/// and status, and edges. Equal strings mean the scene built is current.
+function structure(model) {
+  const parts = [];
+  for (const [id, n] of model.nodes) {
+    const r = n.rev, l = n.logical;
+    parts.push(`${id}|${r.id}|${r.class}|${r.base}|${r.head}|${r.summary}|${l.key}|${l.kind}|${l.anchor}|${r.abstract ?? ""}`);
+  }
+  for (const e of model.edges) parts.push(`${e.from}>${e.to}|${e.kind}|${e.disabled}|${e.rule}|${e.old}`);
+  return parts.join("\n");
+}
+/// The network scene, drawn on a canvas (no element per node or edge: an
+/// SVG of a few hundred dots spent most of each frame painting). `P` holds
+/// the simulation's position objects, index-aligned with the arrays here.
+const net = {
+  n: 0, ids: [], nodes: [], P: [], R: null, hub: null, labels: [], titles: [],
+  near: [], edges: [], groups: [], groupOf: null, colors: {}, hover: -1, raf: 0, ctx: null,
+};
+/// Colours from the stylesheet (light or dark).
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(`--${name}`).trim();
+  net.colors = Object.fromEntries(["bg", "fg", "muted", "line", "panel", "accent", ...CLASSES, ...KINDS].map((k) => [k, v(k)]));
+}
+/// Draws once on the next frame, unless the simulation already draws.
+function requestDraw() {
+  if (net.raf || state.sim.raf) return;
+  net.raf = requestAnimationFrame(() => { net.raf = 0; drawNet(); });
+}
 /// A live force simulation drawn as dots: radius from the number of
-/// neighbours, colour from the status, the name under the dot (faded out
-/// when zoomed out). Positions persist across refreshes, so only new nodes
-/// move in; dragging a node pulls its neighbours along; at rest every dot
-/// floats a little (a CSS animation, no simulation cost).
+/// neighbours, colour from the status, the name under the dot (only for
+/// hubs, the selection and search hits when zoomed out). Positions persist
+/// across refreshes, so only new nodes move in; dragging a node pulls its
+/// neighbours along. Nothing is drawn while nothing changes. When only the
+/// selection, search, filters or highlight changed, the scene is redrawn
+/// as it is.
 function renderNetwork(model) {
   const sim = state.sim;
-  const svg = $("graph"), vp = $("viewport");
-  vp.replaceChildren();
-  svg.classList.add("net");
+  const cv = $("net");
+  $("graph").hidden = true;
+  cv.hidden = false;
   $("empty").hidden = model.nodes.size > 0;
-  const q = state.search.trim().toLowerCase();
-  const visible = (n) => !state.hidden.has(n.rev.class);
-  const matches = (n) => !q || n.logical.key.toLowerCase().includes(q);
-  const hl = state.highlight;
   const ids = [...model.nodes.keys()];
+  const sig = structure(model);
+  if (sig === sim.sig) {
+    if (!state.laidOut && ids.length) { fitNet(ids); state.laidOut = true; }
+    requestDraw();
+    return;
+  }
+  sim.sig = sig;
+  readColors();
+  const n = ids.length;
+  const index = new Map(ids.map((id, i) => [id, i]));
   // Neighbours and degree.
-  const near = new Map(ids.map((id) => [id, new Set()]));
-  for (const e of model.edges) { near.get(e.from)?.add(e.to); near.get(e.to)?.add(e.from); }
-  const radius = (id) => 6 + Math.sqrt(near.get(id).size) * 2.8;
-  // Hubs: the best-connected nodes keep their names when zoomed out.
-  const degrees = ids.map((id) => near.get(id).size).sort((a, b) => b - a);
-  const hubMin = Math.max(3, degrees[Math.min(degrees.length - 1, Math.max(5, Math.round(ids.length * 0.12)))] ?? 3);
-  // Start positions: kept ones stay; new ones near a placed neighbour, or
-  // on the deterministic seed layout (spread out).
-  const seed = layoutNetwork(model);
-  let fresh = 0;
-  for (const id of ids) {
-    if (sim.pos.has(id)) continue;
-    fresh++;
-    const anchor = [...near.get(id)].map((n) => sim.pos.get(n)).find(Boolean);
-    const s0 = seed.get(id);
-    const j = fresh * 2.39996;
-    sim.pos.set(id, anchor
-      ? { x: anchor.x + 40 * Math.cos(j), y: anchor.y + 40 * Math.sin(j), vx: 0, vy: 0 }
-      : { x: s0.x * 0.9, y: s0.y * 1.8, vx: 0, vy: 0 });
-  }
-  for (const id of [...sim.pos.keys()]) if (!model.nodes.has(id)) sim.pos.delete(id);
-  const groupOf = new Map(ids.map((id) => [id, splitKey(label(model.nodes.get(id).logical))[0]]));
-  const groupSize = new Map();
-  for (const g of groupOf.values()) groupSize.set(g, (groupSize.get(g) || 0) + 1);
-
-  // Edges first (under the dots).
-  const edgeLayer = el("g", {}, vp);
-  const edges = [];
+  const near = ids.map(() => new Set());
   for (const e of model.edges) {
-    const na = model.nodes.get(e.from), nb = model.nodes.get(e.to);
-    const dim = !visible(na) || !visible(nb) || (hl && !(hl.has(e.from) && hl.has(e.to))) || (q && !(matches(na) || matches(nb)));
-    const line = el("line", { class: ["edge-line", e.kind, e.disabled ? "disabled" : "", dim ? "dim" : ""].join(" "), "marker-end": "url(#arrow-net)" }, edgeLayer);
-    const t = el("title", {}, line);
-    t.textContent = `${e.kind}${e.disabled ? " (disabled)" : ""}${e.rule !== undefined ? ` · rule ${e.rule}` : ""}${e.old != null ? ` · old r${e.old}` : ""}`;
-    edges.push({ line, from: e.from, to: e.to });
+    const u = index.get(e.from), v = index.get(e.to);
+    if (u === undefined || v === undefined || u === v) continue;
+    near[u].add(v); near[v].add(u);
   }
-  // Group names, at each group's centre (groups of three or more).
-  const groupLayer = el("g", {}, vp);
-  const groupEls = new Map();
-  for (const [g, n] of groupSize) {
-    if (!g || n < 3) continue;
-    const t = el("text", { class: "group-label", "text-anchor": "middle" }, groupLayer);
-    t.textContent = clip(g, 48, true);
-    groupEls.set(g, t);
-  }
-  // Dots.
-  const nodeLayer = el("g", {}, vp);
-  const dots = new Map();
-  let k = 0;
-  for (const [id, n] of model.nodes) {
-    const dim = !visible(n) || (hl && !hl.has(id)) || (q && !matches(n));
-    const cls = ["node", "dot", near.get(id).size > hubMin ? "hub" : "", n.rev.class, n.rev.base ? "base" : "", !n.rev.head ? "old" : "",
-      state.selected === n.rev.id ? "selected" : "", q && matches(n) ? "hit" : "", dim ? "dim" : ""].join(" ");
-    const outer = el("g", { class: cls }, nodeLayer);
-    // The float: an inner group drifts a few pixels, each on its own phase.
-    // (A class per phase: the page's CSP allows no inline styles.)
-    const bob = el("g", { class: `bob p${k++ % 6}` }, outer);
-    const r = radius(id);
-    el("circle", { r, fill: `var(--${n.rev.class})` }, bob);
-    const t = el("text", { y: r, dy: "1.25em", "text-anchor": "middle" }, bob);
-    t.textContent = clipMiddle(splitKey(label(n.logical))[1], 30);
-    el("title", {}, outer).textContent = `${n.logical.key}\n${kindLabel(n.logical)} · r${n.rev.id} ${n.rev.summary}${n.rev.base ? " · base" : ""}${n.rev.abstract ? `\n\n${n.rev.abstract}` : ""}`;
-    outer.addEventListener("mousedown", (ev) => startDrag(ev, id, n.rev.id));
-    outer.addEventListener("mouseenter", () => hoverNet(id, near, true));
-    outer.addEventListener("mouseleave", () => hoverNet(id, near, false));
-    dots.set(id, { el: outer, r });
-  }
-
-  sim.dots = dots;
-  sim.edges = edges;
-  const draw = () => {
-    for (const [id, d] of dots) {
-      const p = sim.pos.get(id);
-      d.el.setAttribute("transform", `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`);
+  // Hubs: the best-connected nodes keep their names when zoomed out.
+  const degrees = near.map((s) => s.size).sort((a, b) => b - a);
+  const hubMin = Math.max(3, degrees[Math.min(degrees.length - 1, Math.max(5, Math.round(n * 0.12)))] ?? 3);
+  // Start positions: kept ones stay; new ones near a placed neighbour, or
+  // on the deterministic seed layout (spread out), computed only when some
+  // new node needs it.
+  let seed = null, fresh = 0;
+  ids.forEach((id, i) => {
+    if (sim.pos.has(id)) return;
+    fresh++;
+    const anchor = [...near[i]].map((m) => sim.pos.get(ids[m])).find(Boolean);
+    const j = fresh * 2.39996;
+    if (anchor) {
+      sim.pos.set(id, { x: anchor.x + 40 * Math.cos(j), y: anchor.y + 40 * Math.sin(j), vx: 0, vy: 0 });
+    } else {
+      seed ||= layoutNetwork(model);
+      const s0 = seed.get(id);
+      sim.pos.set(id, { x: s0.x * 0.9, y: s0.y * 1.8, vx: 0, vy: 0 });
     }
-    for (const e of edges) {
-      const a = sim.pos.get(e.from), b = sim.pos.get(e.to);
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-      const ra = dots.get(e.from).r + 1, rb = dots.get(e.to).r + 3;
-      e.line.setAttribute("x1", (a.x + (dx / d) * ra).toFixed(1));
-      e.line.setAttribute("y1", (a.y + (dy / d) * ra).toFixed(1));
-      e.line.setAttribute("x2", (b.x - (dx / d) * rb).toFixed(1));
-      e.line.setAttribute("y2", (b.y - (dy / d) * rb).toFixed(1));
-    }
-    const c = new Map();
-    for (const id of ids) {
-      const g = groupOf.get(id);
-      if (!groupEls.has(g)) continue;
-      const p = sim.pos.get(id), t = c.get(g) || { x: 0, y: 0, top: Infinity, n: 0 };
-      t.x += p.x; t.n++; t.top = Math.min(t.top, p.y);
-      c.set(g, t);
-    }
-    for (const [g, t] of c) {
-      const el2 = groupEls.get(g);
-      el2.setAttribute("x", (t.x / t.n).toFixed(1));
-      el2.setAttribute("y", (t.top - 26).toFixed(1));
-    }
-  };
+  });
+  for (const id of [...sim.pos.keys()]) if (!model.nodes.has(id)) sim.pos.delete(id);
+  const nodes = ids.map((id) => model.nodes.get(id));
+  const groupNames = nodes.map((node) => splitKey(label(node.logical))[0]);
+  const groupIds = new Map();
+  const G = Int32Array.from(groupNames, (g) => {
+    if (!groupIds.has(g)) groupIds.set(g, groupIds.size);
+    return groupIds.get(g);
+  });
+  const size = new Array(groupIds.size).fill(0);
+  for (const g of G) size[g]++;
+  Object.assign(net, {
+    n, ids, nodes, near: near.map((s) => [...s]),
+    P: ids.map((id) => sim.pos.get(id)),
+    R: Float64Array.from(near, (s) => 6 + Math.sqrt(s.size) * 2.8),
+    hub: Uint8Array.from(near, (s) => (s.size > hubMin ? 1 : 0)),
+    labels: nodes.map((node) => clipMiddle(splitKey(label(node.logical))[1], 30)),
+    titles: nodes.map((node) => `${node.logical.key}\n${kindLabel(node.logical)} · r${node.rev.id} ${node.rev.summary}${node.rev.base ? " · base" : ""}${node.rev.abstract ? `\n\n${node.rev.abstract}` : ""}`),
+    groupOf: G,
+    // Group names, at each group's centre (groups of three or more).
+    groups: [...groupIds.keys()].map((name, g) => (name && size[g] >= 3 ? clip(name, 48, true) : null)),
+    edges: model.edges
+      .map((e) => ({ u: index.get(e.from), v: index.get(e.to), e }))
+      .filter(({ u, v }) => u !== undefined && v !== undefined && u !== v),
+    hover: -1,
+  });
 
   // Forces, d3-style: velocity with decay, strength scaled by alpha.
+  const P = net.P;
   const springs = [];
   const seen = new Set();
-  for (const e of model.edges) {
-    const key = e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`;
-    if (e.from === e.to || seen.has(key)) continue;
+  for (const { u, v } of net.edges) {
+    const key = u < v ? u * n + v : v * n + u;
+    if (seen.has(key)) continue;
     seen.add(key);
-    springs.push([e.from, e.to]);
+    springs.push(u, v);
   }
-  const P = ids.map((id) => sim.pos.get(id));
-  const G = ids.map((id) => groupOf.get(id));
+  const X = new Float64Array(n), Y = new Float64Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
+  const CX = new Float64Array(groupIds.size), CY = new Float64Array(groupIds.size), CN = new Float64Array(groupIds.size);
   const step = () => {
     const a = sim.alpha;
-    const n = P.length;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const ex = P[i].x - P[j].x, ey = P[i].y - P[j].y;
-        const d2 = ex * ex + ey * ey + 1;
-        if (d2 > 360000) continue;
-        const f = (4200 * a) / d2;
-        P[i].vx += ex * f; P[i].vy += ey * f; P[j].vx -= ex * f; P[j].vy -= ey * f;
-      }
-    }
-    for (const [u, v] of springs) {
-      const pu = sim.pos.get(u), pv = sim.pos.get(v);
+    for (let i = 0; i < n; i++) { X[i] = P[i].x; Y[i] = P[i].y; }
+    FX.fill(0); FY.fill(0);
+    repel(X, Y, FX, FY, 4200 * a, 360000, 1);
+    for (let i = 0; i < n; i++) { P[i].vx += FX[i]; P[i].vy += FY[i]; }
+    for (let s = 0; s < springs.length; s += 2) {
+      const pu = P[springs[s]], pv = P[springs[s + 1]];
       const ex = pv.x - pu.x, ey = pv.y - pu.y, d = Math.hypot(ex, ey) || 1;
       const f = ((d - 100) / d) * 0.05 * a;
       pu.vx += ex * f; pu.vy += ey * f; pv.vx -= ex * f; pv.vy -= ey * f;
     }
-    const cx = new Map();
+    CX.fill(0); CY.fill(0); CN.fill(0);
+    for (let i = 0; i < n; i++) { CX[G[i]] += P[i].x; CY[G[i]] += P[i].y; CN[G[i]]++; }
     for (let i = 0; i < n; i++) {
-      const t = cx.get(G[i]) || { x: 0, y: 0, n: 0 };
-      t.x += P[i].x; t.y += P[i].y; t.n++;
-      cx.set(G[i], t);
-    }
-    for (let i = 0; i < n; i++) {
-      const t = cx.get(G[i]);
-      P[i].vx += ((t.x / t.n - P[i].x) * 0.012 - P[i].x * 0.005) * a;
-      P[i].vy += ((t.y / t.n - P[i].y) * 0.012 - P[i].y * 0.0085) * a;
+      const g = G[i];
+      P[i].vx += ((CX[g] / CN[g] - P[i].x) * 0.012 - P[i].x * 0.005) * a;
+      P[i].vy += ((CY[g] / CN[g] - P[i].y) * 0.012 - P[i].y * 0.0085) * a;
     }
     for (const p of P) {
       if (p.fx !== undefined) { p.x = p.fx; p.y = p.fy; p.vx = p.vy = 0; continue; }
@@ -564,20 +573,178 @@ function renderNetwork(model) {
   };
   sim.tick = () => {
     step();
-    draw();
+    drawNet();
     if (sim.alpha < 0.004 && !sim.drag) { sim.raf = 0; return; }
     sim.raf = requestAnimationFrame(sim.tick);
   };
-  // A new graph settles mostly out of sight, then floats in; a refresh
+  // A new graph settles mostly out of sight, then moves in; a refresh
   // with a few new nodes just warms up.
-  const first = fresh === ids.length;
+  const first = fresh === n;
   sim.alpha = first ? 1 : fresh ? 0.35 : Math.max(sim.alpha, 0.05);
   if (first) for (let i = 0; i < 160; i++) step();
-  draw();
-  applyView();
-  updateZoomClass();
-  if (!state.laidOut && ids.length) { fitNet(ids, dots); state.laidOut = true; }
+  if (!state.laidOut && n) { fitNet(ids); state.laidOut = true; }
   if (!sim.raf) sim.raf = requestAnimationFrame(sim.tick);
+}
+/// One frame of the network: edges batched by style (one stroke each),
+/// arrowheads, dots, then names. Text keeps its size on screen at any zoom;
+/// names show once the view is close enough to read them.
+function drawNet() {
+  const cv = $("net");
+  if (cv.hidden) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  const c = (net.ctx ||= cv.getContext("2d"));
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  const { n, P, R, nodes, edges, colors: col } = net;
+  if (!n) return;
+  const { x: vx, y: vy, k } = state.view;
+  const far = k < 0.55;
+  const q = state.search.trim().toLowerCase();
+  const hl = state.highlight;
+  const matches = (i) => q && nodes[i].logical.key.toLowerCase().includes(q);
+  const SX = new Float64Array(n), SY = new Float64Array(n), dim = new Uint8Array(n), hit = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    SX[i] = P[i].x * k + vx; SY[i] = P[i].y * k + vy;
+    hit[i] = matches(i) ? 1 : 0;
+    dim[i] = state.hidden.has(nodes[i].rev.class) || (hl && !hl.has(net.ids[i])) || (q && !hit[i]) ? 1 : 0;
+  }
+  // Hover: the node, its neighbours and their edges stand out.
+  const hv = net.hover >= 0 && !hl && !state.sim.drag ? net.hover : -1;
+  const close = new Uint8Array(n);
+  if (hv >= 0) { close[hv] = 1; for (const m of net.near[hv]) close[m] = 1; }
+
+  // Edges, one path per (style, emphasis).
+  const buckets = new Map();
+  for (const { u, v, e } of edges) {
+    const a = hv >= 0 ? (u === hv || v === hv ? "near" : "faded")
+      : ((state.hidden.has(nodes[u].rev.class) || state.hidden.has(nodes[v].rev.class) || (hl && !(hl.has(e.from) && hl.has(e.to))) || (q && !(hit[u] || hit[v]))) ? "dim" : "normal");
+    const key = `${e.kind}|${e.disabled ? 1 : 0}|${a}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, (b = []));
+    b.push(u, v);
+  }
+  const ALPHA = { normal: 0.32, dim: 0.06, faded: 0.05, near: 0.9 };
+  c.lineCap = "butt";
+  for (const [key, list] of buckets) {
+    const [kind, disabled, a] = key.split("|");
+    c.globalAlpha = ALPHA[a];
+    c.strokeStyle = col[kind] || col.ref;
+    c.lineWidth = a === "near" ? 1.6 : 1;
+    c.setLineDash(disabled === "1" ? [1, 4] : kind === "sem" ? [4, 3] : kind === "ref" ? [2, 3] : []);
+    c.beginPath();
+    const heads = [];
+    for (let j = 0; j < list.length; j += 2) {
+      const u = list[j], v = list[j + 1];
+      const dx = SX[v] - SX[u], dy = SY[v] - SY[u], d = Math.hypot(dx, dy) || 1;
+      const ra = R[u] * k + 1, rb = R[v] * k + 3;
+      if (d <= ra + rb) continue;
+      const x1 = SX[u] + (dx / d) * ra, y1 = SY[u] + (dy / d) * ra, x2 = SX[v] - (dx / d) * rb, y2 = SY[v] - (dy / d) * rb;
+      if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > w || Math.max(y1, y2) < 0 || Math.min(y1, y2) > h) continue;
+      c.moveTo(x1, y1); c.lineTo(x2, y2);
+      heads.push(x2, y2, dx / d, dy / d);
+    }
+    c.stroke();
+    // Arrowheads in the muted colour, 4.5 px, as the old SVG markers.
+    if (heads.length) {
+      c.setLineDash([]);
+      c.fillStyle = col.muted;
+      c.beginPath();
+      for (let j = 0; j < heads.length; j += 4) {
+        const [x, y, ux, uy] = [heads[j], heads[j + 1], heads[j + 2], heads[j + 3]];
+        c.moveTo(x, y);
+        c.lineTo(x - ux * 4.5 - uy * 2.25, y - uy * 4.5 + ux * 2.25);
+        c.lineTo(x - ux * 4.5 + uy * 2.25, y - uy * 4.5 - ux * 2.25);
+        c.closePath();
+      }
+      c.fill();
+    }
+  }
+  c.setLineDash([]);
+  // Dots.
+  const alphaOf = (i) => (dim[i] ? 0.15 : hv >= 0 && !close[i] ? 0.18 : 1);
+  for (let i = 0; i < n; i++) {
+    const r = R[i] * k;
+    if (SX[i] + r < -4 || SX[i] - r > w + 4 || SY[i] + r < -4 || SY[i] - r > h + 4) continue;
+    const rev = nodes[i].rev, selected = state.selected === rev.id;
+    c.globalAlpha = alphaOf(i);
+    c.beginPath();
+    c.arc(SX[i], SY[i], r, 0, 2 * Math.PI);
+    c.fillStyle = col[rev.class];
+    c.fill();
+    if (selected) { c.strokeStyle = col.accent; c.lineWidth = 3.5; }
+    else if (hit[i]) { c.strokeStyle = col.accent; c.lineWidth = 2.5; }
+    else if (!rev.head) { c.strokeStyle = col.muted; c.lineWidth = 1.5; c.setLineDash([2, 2]); }
+    else if (rev.base) { c.strokeStyle = col.fg; c.lineWidth = 2; c.globalAlpha *= 0.45; }
+    else { c.strokeStyle = col.bg; c.lineWidth = 1.5; }
+    c.stroke();
+    c.setLineDash([]);
+  }
+  // Names under the dots; zoomed out, only hubs, the selection, search hits
+  // and the hovered neighbourhood.
+  const font = '13.5px -apple-system, system-ui, "Segoe UI", sans-serif';
+  c.textAlign = "center";
+  c.lineJoin = "round";
+  c.lineWidth = 3.5;
+  c.strokeStyle = col.bg;
+  c.fillStyle = col.fg;
+  for (let i = 0; i < n; i++) {
+    const r = R[i] * k;
+    const y = SY[i] + r + 16.9;
+    if (SX[i] < -200 || SX[i] > w + 200 || y < -20 || y - r > h + 40) continue;
+    const marked = state.selected === nodes[i].rev.id || hit[i] || (hv >= 0 && close[i]);
+    let a = 0.9, bold = false;
+    if (far) {
+      if (marked) a = 0.95;
+      else if (net.hub[i] && !(hv >= 0)) { a = 0.8; bold = true; }
+      else continue;
+    }
+    c.globalAlpha = a * alphaOf(i);
+    c.font = bold ? `600 ${font}` : font;
+    c.strokeText(net.labels[i], SX[i], y);
+    c.fillText(net.labels[i], SX[i], y);
+  }
+  // Group names above their clusters.
+  const gn = net.groups.length;
+  const gx = new Float64Array(gn), gtop = new Float64Array(gn).fill(Infinity), gc = new Float64Array(gn);
+  for (let i = 0; i < n; i++) {
+    const g = net.groupOf[i];
+    if (!net.groups[g]) continue;
+    gx[g] += P[i].x; gc[g]++; gtop[g] = Math.min(gtop[g], P[i].y);
+  }
+  c.globalAlpha = 0.55;
+  c.fillStyle = col.muted;
+  c.font = '600 16px -apple-system, system-ui, "Segoe UI", sans-serif';
+  net.groups.forEach((name, g) => {
+    if (name) c.fillText(name, (gx[g] / gc[g]) * k + vx, (gtop[g] - 26) * k + vy);
+  });
+  c.globalAlpha = 1;
+}
+/// The node under a pointer event, or -1: the nearest whose dot (plus a
+/// few pixels) contains the point.
+function netHit(ev) {
+  if (!net.n) return -1;
+  const at = toGraph(ev), k = state.view.k;
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < net.n; i++) {
+    const dx = net.P[i].x - at.x, dy = net.P[i].y - at.y, d2 = dx * dx + dy * dy;
+    const rr = net.R[i] + 4 / k;
+    if (d2 <= rr * rr && d2 < bd) { best = i; bd = d2; }
+  }
+  return best;
+}
+/// Pointer over the canvas: the hovered node (tooltip, highlight).
+function hoverAt(ev) {
+  const i = state.sim.drag ? net.hover : netHit(ev);
+  if (i === net.hover) return;
+  net.hover = i;
+  const cv = $("net");
+  cv.title = i >= 0 ? net.titles[i] : "";
+  cv.classList.toggle("on-node", i >= 0);
+  requestDraw();
 }
 function stopSim() {
   if (state.sim.raf) cancelAnimationFrame(state.sim.raf);
@@ -588,9 +755,11 @@ function reheat(alpha) {
   sim.alpha = Math.max(sim.alpha, alpha);
   if (!sim.raf && sim.tick) sim.raf = requestAnimationFrame(sim.tick);
 }
+/// The element the graph is drawn on: the canvas or the layered SVG.
+const surface = () => (state.layout === "network" ? $("net") : $("graph"));
 /// Graph coordinates of a pointer event.
 function toGraph(ev) {
-  const r = $("graph").getBoundingClientRect();
+  const r = surface().getBoundingClientRect();
   return { x: (ev.clientX - r.left - state.view.x) / state.view.k, y: (ev.clientY - r.top - state.view.y) / state.view.k };
 }
 function startDrag(ev, id, rev) {
@@ -620,42 +789,22 @@ function endDrag() {
   if (!d.moved) select(d.rev);
   return true;
 }
-function hoverNet(id, near, on) {
-  const sim = state.sim;
-  if (state.highlight || sim.drag || !sim.dots) return;
-  $("graph").classList.toggle("hovering", on);
-  for (const d of sim.dots.values()) d.el.classList.remove("near");
-  for (const e of sim.edges) e.line.classList.remove("near");
-  if (!on) return;
-  for (const n of [id, ...near.get(id)]) sim.dots.get(n)?.el.classList.add("near");
-  for (const e of sim.edges) if (e.from === id || e.to === id) e.line.classList.add("near");
-}
-/// Labels show once the view is close enough to read them.
-/// Text keeps its size on screen at any zoom (the --inv factor; set through
-/// the CSSOM, which the page's CSP allows).
-function updateZoomClass() {
-  const svg = $("graph");
-  svg.classList.toggle("far", state.view.k < 0.55);
-  svg.style.setProperty("--inv", (1 / Math.max(state.view.k, 0.25)).toFixed(3));
-}
-function fitNet(ids, dots) {
-  const svg = $("graph").getBoundingClientRect();
+function fitNet(ids) {
+  const box = $("net").getBoundingClientRect();
   const P = ids.map((id) => state.sim.pos.get(id));
   const x0 = Math.min(...P.map((p) => p.x)) - 60, x1 = Math.max(...P.map((p) => p.x)) + 60;
   const y0 = Math.min(...P.map((p) => p.y)) - 40, y1 = Math.max(...P.map((p) => p.y)) + 40;
-  const k = Math.min(1.6, Math.max(0.15, Math.min((svg.width - 40) / (x1 - x0), (svg.height - 100) / (y1 - y0))));
-  state.view = { k, x: (svg.width - (x1 - x0) * k) / 2 - x0 * k, y: 70 + (svg.height - 100 - (y1 - y0) * k) / 2 - y0 * k };
+  const k = Math.min(1.6, Math.max(0.15, Math.min((box.width - 40) / (x1 - x0), (box.height - 100) / (y1 - y0))));
+  state.view = { k, x: (box.width - (x1 - x0) * k) / 2 - x0 * k, y: 70 + (box.height - 100 - (y1 - y0) * k) / 2 - y0 * k };
   applyView();
-  updateZoomClass();
-  void dots;
 }
 function hover(model, id, on) {
   if (state.highlight) return;
   const near = new Set([id]);
   for (const e of model.edges) { if (e.from === id) near.add(e.to); if (e.to === id) near.add(e.from); }
+  const ids = [...model.nodes.keys()];
   document.querySelectorAll("#viewport .node").forEach((n, i) => {
-    const nid = [...model.nodes.keys()][i];
-    n.classList.toggle("dim", on && !near.has(nid));
+    n.classList.toggle("dim", on && !near.has(ids[i]));
   });
 }
 function fit(xy, W = NODE_W, H = NODE_H) {
@@ -669,7 +818,9 @@ function fit(xy, W = NODE_W, H = NODE_H) {
   state.view = { k, x: Math.max(20, (svg.width - w * k) / 2), y: 70 };
   applyView();
 }
+/// Pan and zoom: the layered SVG moves its viewport; the canvas redraws.
 function applyView() {
+  if (state.layout === "network") { requestDraw(); return; }
   const { x, y, k } = state.view;
   $("viewport").setAttribute("transform", `translate(${x},${y}) scale(${k})`);
 }
@@ -683,8 +834,8 @@ async function select(rev) {
   if (state.tab === "graph" && state.focus && moved) state.laidOut = false;
   renderView();
   const g = state.graph;
-  const r = g.revisions.find((x) => x.id === rev);
-  const l = g.logicals.find((x) => x.id === r.logical);
+  const r = revOf(rev);
+  const l = logicalOf(r.logical);
   const box = $("detail");
   box.replaceChildren();
   $("panel").hidden = false;
@@ -844,9 +995,8 @@ function whyNotTree(w, own) {
   return ul;
 }
 function revLink(rev, prefix) {
-  const g = state.graph;
-  const r = g.revisions.find((x) => x.id === rev);
-  const l = r && g.logicals.find((x) => x.id === r.logical);
+  const r = revOf(rev);
+  const l = r && logicalOf(r.logical);
   const s = html("span", "link", `${prefix}${l ? label(l) : "?"}@r${rev}`);
   s.title = r ? r.summary : "";
   s.addEventListener("click", () => select(rev));
@@ -855,7 +1005,7 @@ function revLink(rev, prefix) {
 function highlightRevs(revs) {
   const set = new Set();
   for (const rev of revs) {
-    const r = state.graph.revisions.find((x) => x.id === rev);
+    const r = revOf(rev);
     if (!r) continue;
     set.add(state.allRevs ? `r${rev}` : `l${r.logical}`);
   }
@@ -997,7 +1147,7 @@ function renderTimeline() {
   const box = $("timeline-view");
   box.replaceChildren();
   if (!t || !g) return;
-  const keyOfLogical = (id) => { const l = g.logicals.find((x) => x.id === id); return l ? label(l) : `logical ${id}`; };
+  const keyOfLogical = (id) => { const l = logicalOf(id); return l ? label(l) : `logical ${id}`; };
   const here = $("timeline-here").checked;
   for (const c of t.commits) {
     if (here && c.branch !== state.branch) continue;
@@ -1100,7 +1250,7 @@ async function refresh(force) {
     if (!force && fingerprint === state.fingerprint) return;
     const [graph, timeline] = await Promise.all([getJSON(query("/api/graph")), getJSON("/api/timeline?limit=300")]);
     state.fingerprint = fingerprint;
-    state.graph = graph;
+    setGraph(graph);
     state.timeline = timeline;
     showError(null);
     renderChrome();
@@ -1112,10 +1262,19 @@ async function refresh(force) {
 }
 
 function wire() {
-  const svg = $("graph");
+  const svg = $("graph"), cv = $("net");
   let drag = null;
-  svg.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: state.view.x, vy: state.view.y }; svg.classList.add("dragging"); });
-  window.addEventListener("mouseup", () => { endDrag(); drag = null; svg.classList.remove("dragging"); });
+  const pan = (e, el) => { drag = { x: e.clientX, y: e.clientY, vx: state.view.x, vy: state.view.y, el }; el.classList.add("dragging"); };
+  svg.addEventListener("mousedown", (e) => pan(e, svg));
+  // On the canvas a press on a dot drags the node; elsewhere it pans.
+  cv.addEventListener("mousedown", (e) => {
+    const i = netHit(e);
+    if (i >= 0) startDrag(e, net.ids[i], net.nodes[i].rev.id);
+    else pan(e, cv);
+  });
+  cv.addEventListener("mousemove", (e) => { if (!drag) hoverAt(e); });
+  cv.addEventListener("mouseleave", () => { if (net.hover >= 0 && !state.sim.drag) { net.hover = -1; cv.title = ""; cv.classList.remove("on-node"); requestDraw(); } });
+  window.addEventListener("mouseup", () => { endDrag(); drag?.el.classList.remove("dragging"); drag = null; });
   window.addEventListener("mousemove", (e) => {
     if (moveDrag(e)) return;
     if (!drag) return;
@@ -1123,18 +1282,22 @@ function wire() {
     state.view.y = drag.vy + e.clientY - drag.y;
     applyView();
   });
-  svg.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const r = svg.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    const k = Math.min(3, Math.max(0.1, state.view.k * Math.exp(-e.deltaY * 0.0015)));
-    state.view.x = mx - ((mx - state.view.x) * k) / state.view.k;
-    state.view.y = my - ((my - state.view.y) * k) / state.view.k;
-    state.view.k = k;
-    applyView();
-    updateZoomClass();
-  }, { passive: false });
-  svg.addEventListener("click", () => { if (state.highlight) { state.highlight = null; render(); } });
+  for (const el of [svg, cv]) {
+    el.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      const k = Math.min(3, Math.max(0.1, state.view.k * Math.exp(-e.deltaY * 0.0015)));
+      state.view.x = mx - ((mx - state.view.x) * k) / state.view.k;
+      state.view.y = my - ((my - state.view.y) * k) / state.view.k;
+      state.view.k = k;
+      applyView();
+    }, { passive: false });
+    el.addEventListener("click", () => { if (state.highlight) { state.highlight = null; render(); } });
+  }
+  // The canvas follows its box (window resize, the panel opening).
+  new ResizeObserver(() => requestDraw()).observe(cv);
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });
   $("search").addEventListener("input", (e) => { state.search = e.target.value; renderView(); });
   $("all-revs").addEventListener("change", (e) => { state.allRevs = e.target.checked; state.laidOut = false; state.highlight = null; render(); });
   $("close").addEventListener("click", () => { $("panel").hidden = true; state.selected = null; renderView(); });
@@ -1143,7 +1306,7 @@ function wire() {
   $("focus").addEventListener("change", (e) => { state.focus = Number(e.target.value); state.laidOut = false; render(); });
   $("fit").addEventListener("click", () => { state.laidOut = false; render(); });
   $("layout").addEventListener("change", (e) => { state.layout = e.target.value; state.laidOut = false; render(); });
-  $("fit").addEventListener("dblclick", () => { state.sim.pos.clear(); state.laidOut = false; render(); });
+  $("fit").addEventListener("dblclick", () => { state.sim.pos.clear(); state.sim.sig = null; state.laidOut = false; render(); });
   $("tab-timeline").addEventListener("click", () => setTab("timeline"));
   $("timeline-here").addEventListener("change", renderTimeline);
   $("branch").addEventListener("change", (e) => {
