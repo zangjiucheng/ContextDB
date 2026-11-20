@@ -1,6 +1,15 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.3), G0 pending.**
+Status: **Proposed (r0.4), G0 pending.**
+
+r0.4 answers the second closure review of r0.3 (§12.5).
+
+- Lazy: 1 blocker, 1 major and 6 minors.
+- GC: 2 majors and 6 minors.
+
+That review found every earlier lazy finding closed except a format-read
+detail (N9). Every earlier GC finding is closed or depends on the new
+fixes.
 
 Review history:
 
@@ -373,8 +382,16 @@ r (history.rs:96–102). So:
 - unsettled nodes are never read through history: their reads are gated
   (§3.6).
 
-**At full drain.** The `derived` patch runs once. Per-slice node pushes
-would trip its `n == snapshot.nodes.len()` check (lib.rs:1143–1145).
+**At full drain.**
+
+- The `derived` patch runs once. Per-slice node pushes would trip its
+  `n == snapshot.nodes.len()` check (lib.rs:1143–1145).
+- The open transition's changes are sorted by revision, as eager history
+  is (lib.rs:1035). `state_diff` (whatif.rs:172) and lockstep comparisons
+  then see identical history.
+
+While the transition is open its order is pop order. `state_at` does not
+depend on that order.
 
 **Copies.** The frontier is never persisted (R4). `Arc::make_mut` clones it
 with the `Db`. Nothing makes a second copy observable, because every
@@ -426,19 +443,27 @@ trial report this on chain.
 
 ### 3.5 I-L1: only the store settles
 
-1. **`Store::settle()`** is the only drain entry point. It drains the
-   frontier to empty, captures and applies the settled epoch's projections
-   (§3.8), and records `settled_since_publish`. The store calls it before
-   every kernel entry:
+1. **`Store::settle()`** is the only drain entry point for the live
+   kernel. It drains the frontier to empty, captures and applies the
+   settled epoch's projections (§3.8), and records `settled_since_publish`.
+   The store calls it before every kernel entry:
    - each write in `commit_group_with`, before the idempotency check and
      `prepare`;
    - `what_if_detailed` and `impact_exact`;
    - `snapshot`;
-   - `Message::Gc` (§5.2);
-   - `replace_kernel`.
-2. **`Kernel::run` and `Db::dry`** assert that no frontier exists. In debug
-   builds this panics; in release builds it returns
-   `TxError::Internal("frontier")`. This covers every op kind, including
+   - `Message::Gc` (§5.2).
+
+   `replace_kernel` is **not** on the list. The actor acks only after it
+   publishes (actor.rs:672–678), so settling there would drain every
+   cascade before its ack.
+
+   **The spare kernel is the second drainer.** It drains through
+   `Kernel::drain(Through)`, which needs no projections. It drains only
+   while replaying a recorded `Drain` step (§3.7).
+2. **`Kernel::run` and `Db::dry`** check that no frontier exists. In debug
+   builds a violation panics; in release builds it returns
+   `TxError::Unsettled`, a new variant (§8, SPEC §6.2, and the
+   error-equivalence suite). This covers every op kind, including
    kernel-level ops, merges and branch creation. So a branch never shares a
    frontier, and PK ranks never change while one exists.
 3. **Group commit.**
@@ -453,12 +478,18 @@ trial report this on chain.
    statuses.
 5. **Whole-state `&self` reads** (`derived()`, `digest()`,
    `derived_digest()`) assert that no frontier exists.
-   - `replace_kernel`'s debug digest comparison runs after its settle.
+   - `replace_kernel`'s debug check compares digests only when both kernels
+     are settled. Otherwise it compares inputs plus frontier equality:
+     cursor, both heaps' contents and the paused node.
    - `export` and kernel snapshots serialize inputs only (kernel.rs:862–897).
 6. **Publication.** After any message, the actor publishes if the store's
-   epoch advanced or if `settled_since_publish` is set. It records
-   `Step::Drain(Full)` for the spare. A drain caused by an idempotent retry,
-   a refused write or a dry run is therefore always published (§3.7).
+   epoch advanced or if `settled_since_publish` is set. So a drain caused
+   by an idempotent retry, a refused write or a dry run is always published
+   (§3.7).
+   - The store appends `Step::Drain(...)` to the actor's step list at the
+     moment it drains. A settle at the top of a write therefore lands
+     *before* that write's `Commit` step.
+   - The spare replays the steps in exactly that order.
 
 ### 3.6 Reads of unsettled nodes
 
@@ -514,8 +545,33 @@ vector', which need every head settled. A strict ABA over settled nodes is
 still caught by step 1, because the ChangeLog and history cover them.
 
 **History.** `Historical(e)` and `Snapshot(e)` are exact for e below the
-frontier's epoch. For e equal to it, they are exact for settled nodes;
-unsettled nodes read as above.
+frontier's epoch. For e equal to it:
+
+- they are exact for settled nodes, and unsettled nodes read as above;
+- `Snapshot(e)` picks the logical's head from the *input* head, not from
+  `state_at`'s Current scan (history.rs:117–126).
+
+The second rule matters because a SetHead seeds both the old and the new
+head. If the new one pops first and the slice stops, the old head's older
+transition would still read Current.
+
+**Verdict order.** For R2 and the PROP11 companion property, verdicts are
+ranked by the SPEC §6.4 priority:
+
+`Denied > Invalid > Conflicted > Ambiguous > Unknown > Pending > Ok`
+
+with `Valid` and `ValidRecertified` as `Ok`. "Never better than eager"
+means three things:
+
+- the lazy verdict is never `Ok`/`Valid`/`ValidRecertified` when eager's is
+  not;
+- when eager's is `Denied`, `Invalid` or `Conflicted`, lazy's is the same;
+- among `Ambiguous`, `Unknown` and `Pending`, the early return may answer
+  `Unknown` or `Pending` where eager would answer `Ambiguous`, because
+  `Ambiguous` needs every head settled.
+
+Its `lag` list covers settled heads only, so it may be a subset of
+eager's.
 
 ### 3.7 Pull, idle drain and publication
 
@@ -547,9 +603,19 @@ Wait bounds:
 - A slice that empties the frontier settles the epoch (§3.8).
 
 **The spare.** `previous` becomes a list of
-`Step::{Commit(Batch, Result), Drain(Units(E) | Rank(k) | Full)}`. The spare
-replays the steps and reaches the same frontier (R6). Any mismatch
-fail-stops, as today.
+`Step::{Commit(Batch, Result), Drain(Units(E) | Rank(k) | Full)}`.
+
+- Steps are recorded in execution order. That includes a `Drain(Full)` the
+  store ran at the top of a write: it precedes that write's `Commit`.
+- The spare replays `Commit` steps with `commit_with` and `Drain` steps with
+  `Kernel::drain`, and reaches the same frontier (R6).
+- Any mismatch fail-stops, as today.
+
+Example:
+
+1. Group 1 is [W1], a deferred cascade. Its steps are [Commit(W1)].
+2. Group 2 is [W2]. Its steps are [Drain(Full), Commit(W2)].
+3. The spare drains W1's frontier before it replays W2.
 
 **Clone cost.** `reclaim` falls back to a kernel clone when a reader still
 holds the spare (actor.rs:722–757). Readers drop snapshots before waiting.
@@ -602,6 +668,13 @@ For a deferred epoch e:
 both formats.
 
 - `LogRow::result()` decodes according to its segment's format.
+  - `FrameLoc` records the segment format.
+  - `read_frame` (store.rs:1654) decodes with it. Every log consumer goes
+    through `read_frame`: `LogReader::read_row`, idempotency, `TxnStatus`
+    and `checksum_at`.
+- `scan_with_formats` enforces a non-decreasing `header.format` across
+  segments. Today it only checks each segment against `min..=max`
+  (log.rs:510–517).
 - These places stop requiring a single format:
   - `Store::open`, which today returns `FormatMigrationRequired` for older
     segments (store.rs:492–497);
@@ -667,23 +740,48 @@ now (K1), or it was moved away in the window and its move is in a frame.
 This holds on branches too, because a fork's inherited heads that later
 move appear in the child's frames. No projection is used.
 
-**K4, held certificates.** `c` is the content of a revision named by:
+**K4, held certificates.** `c` is the content of a revision named by a
+certificate's `vector` or `entries`, wherever ctxd keeps it:
 
-- a certificate (`vector` and `entries`) held by an open session in the
-  daemon's session map;
-- or the certificate of a pending handoff.
+- `Session.certs` (service.rs:245);
+- `proof_history` and `AgentState.proofs`, the RootProof certificates
+  (service.rs:3410–3418);
+- `AgentState.session_cert` (service.rs:218, 4137);
+- the `cert` of a pending handoff (handoff.rs:37).
 
 These are exact pins. An abandoned session pins only its own certificates'
 revisions; it does not hold back the cutoff.
 
-**K5, held snapshots.** `cutoff ≤ min epoch of any published snapshot a
-reader still holds`.
+Anchor range certificates (anchors.rs:459) go only to the client and are
+not pinned. The threat model says so.
 
-- The actor keeps a `Weak<Snapshot>` per publication and prunes dead
-  entries. The minimum live epoch bounds the cutoff.
-- With K3, this covers a reader rendering a mirror (holds for ≤ 120 s per
-  git call), the indexer, and a certificate being issued. Issuance inserts
-  the certificate into the session map *before* dropping its snapshot.
+**Where K4 is computed.** Service computes K4 after phase 1 has taken its
+snapshot, and passes it in `Message::Gc`. A certificate issued after that
+point came from one of two places:
+
+- a snapshot that K5 bounded in phase 1;
+- a snapshot at an epoch ≥ E0, which the `(E0, now]` window (K3) covers.
+
+The actor takes no session lock.
+
+**K5, held snapshots.** `cutoff ≤ the minimum epoch of any published
+snapshot still alive`.
+
+- Each `Snapshot` carries a drop guard that registers its epoch in a shared
+  `HeldEpochs` multiset at publication and removes it on drop. The actor's
+  own published and spare snapshots count too. That bounds the cutoff to at
+  most one group behind, which is harmless.
+- No `Weak` reference is kept. `publish::reclaim`'s `Arc::get_mut`
+  (publish.rs:46–58) fails whenever a `Weak` exists, which would force a
+  kernel clone per group.
+
+With K3, this covers:
+
+- a reader rendering a mirror, which holds its snapshot for up to 120 s per
+  git call;
+- the indexer;
+- a certificate being issued. Issuance stores the certificate while still
+  holding its snapshot (service.rs:3410–3430, 3613–3617, 4135–4138).
 
 **The cutoff.** `cutoff = min(now − keep_epochs, K5 bound)`.
 `keep_epochs ≥ 100` is enforced (O3).
@@ -719,7 +817,9 @@ part of a commit group:
 2. Re-check only what can have changed since E0:
    - K3 for `(E0, now]`, which also covers K1 changes made since E0, since
      every way a revision becomes live is an op in a frame;
-   - K2 notes and metas in `(E0, now]`;
+   - every K2 kind in `(E0, now]`: artifact payloads (`OpenArtifact` does
+     no presence check, txn.rs:999–1011), notes, metas, and nested
+     `ReviewDoc.meta`;
    - K4 now;
    - the K5 bound now;
    - contents staged again since E0.
@@ -730,8 +830,11 @@ part of a commit group:
      - the ledger lives at `gc/ledger`, a framed append-only file with a
        blake3 per record;
      - each entry is `(content, key_pos, gc_generation, cutoff, now)`;
-     - `key_pos` is the key-log position (segment number, record index) of
-       the live key being collected;
+     - `key_pos` is the key-log position (segment number, byte offset) of
+       the live key being collected. It is matched together with the hash.
+     - A byte offset survives media damage to earlier records. A record
+       ordinal does not: `keys::parse` resyncs past a bad record
+       (keys.rs:94–111), which would shift every later ordinal.
      - after appending, sync the file and `sync_dir`.
    - (b) Update the shared `PackIndex` under its lock: insert the entries
      into `PackIndex.collected` and remove the hashes from `Store.blobs`.
@@ -789,6 +892,10 @@ The pack index points the hash at that record. A still-loaded key (left
 because the rewrite failed) is never reused for a hash whose loaded
 position matches a ledger entry.
 
+**Live key.** A *live key* is a loaded key whose `(hash, position)`
+matches no ledger entry. So a key that step (b) recorded but step (c) has
+not yet dropped is already not live. Readers see `Collected` from (b) on.
+
 **Reads.** `read_payload` checks in this order:
 
 1. Shredded → `Shredded`.
@@ -820,9 +927,14 @@ How the check is wired:
 
 - `BlobPresence` gains `collected(c)`, defaulting to false.
 - Replay uses `AllPresent`.
-- `Kernel::merge` and dry runs receive the store's presence. The actor
-  passes it to `what_if_detailed`, `impact_exact` and merges, so a WHAT_IF
-  and its commit agree.
+- `Kernel::merge` receives the store's presence.
+- Dry runs (`what_if_detailed`, `impact_exact`) receive a presence whose
+  `contains` is always true, as `AllPresent` is today (store.rs:1538–1549),
+  and whose `collected(c)` comes from the store.
+  - A WHAT_IF carries no blobs (service.rs:2101–2110), so a full presence
+    would fail every new content.
+  - The §5.4 check is the only difference from today, so a WHAT_IF and its
+    commit agree on it.
 - Shredded contents keep P9 semantics: none of these ops check them.
 
 **Team catch-up** must never be refused for local content (SPEC.md:295).
@@ -834,6 +946,8 @@ How the check is wired:
   `Channel::Replica` exemption applies, as it does for shredded content
   (txn.rs:1088–1092). The op is admitted, and the mirror's head reads
   `Collected`.
+- `ctx doctor` and `ctx team status` report a `Collected` **head** as a
+  problem. Only non-head collected contents are harmless.
 
 Rolling a head back past GC otherwise needs the bytes sent again, as
 `ctx_supersede` does. SPEC §6.2 and T107 gain these rows.
@@ -983,7 +1097,7 @@ Out of P11. SPEC §P11 gains an owner-decision note.
   - `Settling{epoch}`;
   - `ProjectionsBehind`, kept only for `--compact`'s replay check;
   - `Unavailable::Collected`;
-  - `TxError::Internal("frontier")`.
+  - `TxError::Unsettled`.
 - `MissingBlob` is raised on the §5.4 ops.
 
 **New fields and types.**
@@ -1255,3 +1369,31 @@ stays eager.
 | N6, reader snapshots older than the cutoff | K5 held-snapshot bound; `keep_epochs ≥ 100` |
 | N7, abandoned sessions pin the cutoff | Exact certificate pins (K4) |
 | n1–n5 and N8 (minors) | Presence in dry runs and merges; window scan covers `Rebind{from}`; truncation guard from the ledger; `ProjectionsBehind` no longer needed for apply; compact files outside `blobs/`, no intent file, record criterion stated; ledger generations at compact; daemon projections after GC stated and tested |
+
+### 12.5 r0.3 second closure review
+
+#### Lazy
+
+| Finding | Fix |
+|---|---|
+| B1, settling in `replace_kernel` drains before every ack | Removed from the settle list. The debug check compares inputs plus frontier equality while a frontier exists (§3.5 items 1 and 5) |
+| M1, spare step order and its drain entry | Steps recorded in execution order, so a settle precedes the write's `Commit`. `Kernel::drain` for the spare, which is the second drainer (§3.5, §3.7) |
+| N9 (partial), per-frame format | `FrameLoc` records the segment format, and `read_frame` decodes with it (§4) |
+| m1, history order; `Snapshot(e)` at the frontier epoch | Sorted at full drain; input head for `Snapshot(e)` (§3.3, §3.6) |
+| m4, validate order | Verdict order and "never better" defined; lag subset stated (§3.6) |
+| m5, missing `TxError::Internal` | New `TxError::Unsettled` (§3.5, §8) |
+| m6, scan order | Non-decreasing segment format enforced in `scan_with_formats` (§4) |
+| m2, m3 | Confirmed sound; no change |
+
+#### GC
+
+| Finding | Fix |
+|---|---|
+| G1, `Weak<Snapshot>` defeats reclaim | Drop-guard `HeldEpochs` multiset; no `Weak` (§5.1 K5) |
+| G2, store presence breaks dry runs | Dry runs: `contains` true, `collected` from the store (§5.4) |
+| G3, where certificates are held | K4 lists every holder; anchor range certificates are unpinned and noted in the threat model |
+| G4, phase-2 re-check of all K2 kinds | Added (§5.2) |
+| G5, robust `key_pos` | Byte offset, matched with the hash (§5.2) |
+| G6, live key | Defined; readers see `Collected` from step (b) (§5.3) |
+| G7, `Collected` mirror heads | Reported as problems (§5.4) |
+| G8, where K4 is computed | In Service, passed in `Message::Gc`; the actor takes no session lock (§5.1) |
