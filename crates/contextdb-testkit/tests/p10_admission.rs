@@ -517,3 +517,121 @@ fn a_mirror_read_lags_until_its_team_is_left() {
     assert_eq!(summary(&s, &missing), Summary::Certified);
     assert_eq!(summary(&s, &moved), Summary::Certified);
 }
+
+/// The blob check (ADR 0006 §3, SD21.7, ADR 0018 §11): a replica write of
+/// a payload this store shredded needs no blob, since it reads unavailable;
+/// every other write without its blob is `MissingBlob`, on every channel
+/// and for every op that names a payload (create, revision, attach).
+#[test]
+fn only_a_replica_write_of_shredded_content_skips_the_blob_check() {
+    use std::collections::BTreeSet;
+    // Shred is a store-level input the oracle does not model: kernel only.
+    let mut k = Kernel::default();
+    // `fresh` is shredded and held by no branch, so an attach of it has
+    // no revision to reuse.
+    let (secret, fresh, absent) = ([9; 32], [7; 32], [8; 32]);
+    let none: BTreeSet<ContentHash> = BTreeSet::new();
+    let on = |branch: BranchId, channel: Channel, ops: Vec<Op>| {
+        let mut b = batch(channel, ops);
+        b.branch = branch;
+        b
+    };
+    k.commit(&batch(
+        Channel::Admin,
+        vec![Op::CreateBranch { name: "b".into() }],
+    ))
+    .unwrap();
+    let fork = BranchId(1);
+    let m = k
+        .commit(&batch(
+            Channel::Replica,
+            vec![mirror_create("k/a", RecordKind::Fact, [1; 32], true)],
+        ))
+        .unwrap();
+    let ml = m.allocations.new_logicals[0];
+    let local = k
+        .commit(&batch(
+            Channel::Agent,
+            vec![local_create(
+                "fact:l",
+                "repo",
+                RecordKind::Fact,
+                [2; 32],
+                true,
+            )],
+        ))
+        .unwrap()
+        .allocations
+        .new_logicals[0];
+    k.commit(&batch(
+        Channel::Admin,
+        vec![
+            Op::ShredContent { content: secret },
+            Op::ShredContent { content: fresh },
+        ],
+    ))
+    .unwrap();
+    let revise = |logical: LogicalId, content| Op::AddRevision {
+        logical: logical.into(),
+        content,
+        adopt_as_base: false,
+    };
+    let attach = |head| Op::MirrorAttach {
+        key: format!("team/{}/k/a", hex()),
+        head,
+        base: false,
+    };
+    let missing = |r: Result<CommitResult, TxError>| r.expect_err("refused");
+    // Unshredded and absent: MissingBlob, replica or not.
+    assert_eq!(
+        missing(k.commit_with(&batch(Channel::Replica, vec![revise(ml, absent)]), &none)),
+        TxError::MissingBlob { content: absent }
+    );
+    assert_eq!(
+        missing(k.commit_with(
+            &batch(
+                Channel::Replica,
+                vec![mirror_create("k/b", RecordKind::Fact, absent, false)]
+            ),
+            &none
+        )),
+        TxError::MissingBlob { content: absent }
+    );
+    assert_eq!(
+        missing(k.commit_with(&on(fork, Channel::Replica, vec![attach(absent)]), &none)),
+        TxError::MissingBlob { content: absent }
+    );
+    assert_eq!(
+        missing(k.commit_with(&batch(Channel::Agent, vec![revise(local, absent)]), &none)),
+        TxError::MissingBlob { content: absent }
+    );
+    assert_eq!(
+        missing(k.commit_with(
+            &batch(
+                Channel::Agent,
+                vec![local_create(
+                    "fact:m",
+                    "repo",
+                    RecordKind::Fact,
+                    absent,
+                    false
+                )]
+            ),
+            &none
+        )),
+        TxError::MissingBlob { content: absent }
+    );
+    // Shredded and absent: the replica records it anyway.
+    k.commit_with(&batch(Channel::Replica, vec![revise(ml, secret)]), &none)
+        .unwrap();
+    k.commit_with(
+        &batch(
+            Channel::Replica,
+            vec![mirror_create("k/s", RecordKind::Fact, secret, false)],
+        ),
+        &none,
+    )
+    .unwrap();
+    k.commit_with(&on(fork, Channel::Replica, vec![attach(fresh)]), &none)
+        .unwrap();
+}

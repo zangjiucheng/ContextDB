@@ -10,3 +10,6 @@ crates/contextdb-core/src/layers\.rs: replace < with <= in LayerColumns::footpri
 crates/contextdb-core/src/engine/counting\.rs: replace < with <= in Counting::save  # the extra saved rule is one the rollback truncates, as for footprint (2026-11-02)
 crates/contextdb-core/src/cert\.rs: replace == with != in Db<M, S>::observation_scopes_at  # a certified Cur/Pin premise is its logical's head, and a Sem head's support is in the vector, caught in step 1 (2026-11-02)
 crates/contextdb-core/src/cert\.rs: replace && with \|\| in Db<M, S>::summary_at  # with no unobserved anchors the any() over an empty set is false either way (2026-11-02)
+# --- P10 kernel lines (scripts/mutation.sh --in-diff since v0.3.0), 2026-11-20 ---
+crates/contextdb-core/src/txn\.rs: delete match arm Op::Rebind\{rule, \.\.\} \| Op::SetRuleEnabled\{rule, \.\.\} \| Op::RecordValidation\{rule, \.\.\} in channel  # no rule concludes a mirror: AddRule naming one is refused on every channel (its arm is caught) and merges bring no replica-origin state (SD19); defence in depth
+crates/contextdb-core/src/txn\.rs: delete match arm Op::ResolveArtifact\{id, \.\.\} in channel  # no artifact targets a mirror: OpenArtifact on one is refused on every channel (its arm is caught) and merges open no Conflict on replica-origin state (SD19); defence in depth
