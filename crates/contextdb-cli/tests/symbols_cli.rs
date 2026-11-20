@@ -642,7 +642,9 @@ impl Rig {
         r
     }
 }
-/// Many functions: a host file that takes a while to parse.
+/// Many functions: a host file that takes a while to parse. 10,000 take
+/// ~0.6 s in a local debug build; 30,000 overran the observer's 5 s
+/// budget (`OBSERVER_TIMEOUT`) on the macOS CI runner.
 fn big_rust(functions: usize, value: u32) -> String {
     let mut s = format!("pub fn f0() -> u32 {{ {value} }}\n");
     for i in 1..functions {
@@ -655,7 +657,7 @@ fn big_rust(functions: usize, value: u32) -> String {
 /// submit) publishes all of the scan or nothing; the next scan converges.
 #[test]
 fn observer_killed_mid_scan_publishes_all_or_nothing() {
-    let rig = rig("g4-kill", &[("big.rs", &big_rust(30_000, 0))]);
+    let rig = rig("g4-kill", &[("big.rs", &big_rust(10_000, 0))]);
     let (rc, out) = ctx(&[
         "anchors",
         "add",
@@ -668,7 +670,7 @@ fn observer_killed_mid_scan_publishes_all_or_nothing() {
     assert_eq!(rc, 0, "{out}");
     // Both hosts change: foo's and f0's bodies, so a scan commits.
     rig.write(&LIB.replace("x + 1", "x + 9"));
-    std::fs::write(rig.root.join("big.rs"), big_rust(30_000, 7)).unwrap();
+    std::fs::write(rig.root.join("big.rs"), big_rust(10_000, 7)).unwrap();
     let before = rig.state();
 
     // How long one observation takes here (listing parses, commits nothing).
