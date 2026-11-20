@@ -3,8 +3,9 @@
 Status: **Proposed (r0.4), G0 pending owner review.**
 
 The independent final check of r0.4 found no blocker or major in either
-part. Its two implementation notes are in §3.7 and §5.1 K5. The owner's
-review and the open points in §0.1 remain.
+part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
+confirmed O1–O5 as recommended on 2026-11-20 (§0.1). The owner's review of
+the ADR remains.
 
 r0.4 answers the second closure review of r0.3 (§12.5).
 
@@ -117,7 +118,7 @@ The owner decided four things on 2026-11-20, after the baseline in §1.3.
 - Later ops that make an old revision live again must find its payload, or
   fail with `MissingBlob`.
 
-### 0.1 Open points for the owner
+### 0.1 Owner decisions on the open points (confirmed 2026-11-20, all as recommended)
 
 | # | Question | Recommendation |
 |---|---|---|
