@@ -1,6 +1,6 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.4), G0 pending owner review.**
+Status: **Proposed (r0.5), G0 pending owner review.** r0.5 answers the owner's review of r0.4 (§12.6).
 
 The independent final check of r0.4 found no blocker or major in either
 part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
@@ -261,10 +261,14 @@ These numbers are not gate evidence.
 - **R1, exactness.** Once settled, everything equals eager maintenance:
   derived state, `status_diff`, `l0_flips`, history, `ChangeLog`, digest,
   certificates and `diff_log` (PROP1-lazy, §9).
-- **R2, fail closed.** A STRICT consumer never gets a verdict better than
-  the eager verdict at the same epoch. In particular it never sees
-  CERTIFIED, `Ok`, `Valid`, `ValidRecertified` or `Ambiguous` computed
-  from unsettled state (T61).
+- **R2, fail closed.** A STRICT consumer never gets a positive verdict
+  that eager maintenance would not give at the same epoch. Positive here
+  means CERTIFIED, `Ok`, `Valid` or `ValidRecertified`. It also never gets
+  `Ambiguous` computed from unsettled state (T61).
+  - While a node the verdict depends on is unsettled, a *negative* eager
+    verdict may appear temporarily as `Pending` or `Unknown{lag}`.
+  - Once those nodes settle, the verdict equals eager's (§3.6, the
+    validate contract).
 - **R3, conflicts stay exact.** For an unsettled node, `conflicted` is read
   from `indexes.conflicted(r)`. `publish` updates it before maintenance
   (lib.rs:842–859).
@@ -560,23 +564,49 @@ The second rule matters because a SetHead seeds both the old and the new
 head. If the new one pops first and the slice stops, the old head's older
 transition would still read Current.
 
-**Verdict order.** For R2 and the PROP11 companion property, verdicts are
-ranked by the SPEC §6.4 priority:
+**The validate contract.** Let D be the set of nodes the eager verdict
+depends on: the required heads and their closure. Eager's verdict V is the
+SPEC §6.4 aggregation, ranked by priority as
 
 `Denied > Invalid > Conflicted > Ambiguous > Unknown > Pending > Ok`
 
-with `Valid` and `ValidRecertified` as `Ok`. "Never better than eager"
-means three things:
+with `Valid` and `ValidRecertified` counted as `Ok`. The lazy verdict L
+satisfies three rules:
 
-- the lazy verdict is never `Ok`/`Valid`/`ValidRecertified` when eager's is
-  not;
-- when eager's is `Denied`, `Invalid` or `Conflicted`, lazy's is the same;
-- among `Ambiguous`, `Unknown` and `Pending`, the early return may answer
-  `Unknown` or `Pending` where eager would answer `Ambiguous`, because
-  `Ambiguous` needs every head settled.
+1. **Settled ⇒ equal.** If every node of D is settled, L = V, including
+   `diffs`, `lag` and `rules`.
+2. **Input-level results are exact.** Some results come only from inputs:
+   - `Denied` (visibility);
+   - `Invalid{LogMismatch | BranchMismatch}`;
+   - `Invalid{StrictChange}` (from the ChangeLog, recorded at ack);
+   - `Invalid` for a recorded revision that is no longer head
+     (HeadSuperseded);
+   - `Conflicted` (R3).
 
-Its `lag` list covers settled heads only, so it may be a subset of
-eager's.
+   When V is one of these, L = V, even while D is unsettled.
+3. **Otherwise, unsettled ⇒ temporarily not positive.** While D has an
+   unsettled node, L is either V, or `Unknown{lag}`, or `Pending{rules: []}`.
+   L is never `Ok`, `Valid` or `ValidRecertified` unless V is too. The
+   `lag` list covers settled heads only, so it may be a subset of V's.
+
+Rule 3 covers the case where V is negative only because of derived state
+on an unsettled node. Example:
+
+1. Retract the base of A, where A supports B and B is a required entry.
+2. Eager maintenance sees B as STALE(Unsupported), so a non-strict
+   certificate is `Invalid`.
+3. Under lazy maintenance B is unsettled until the cascade reaches it, so
+   validate answers `Pending{rules: []}`.
+
+This is temporary and not positive:
+
+- validate first pulls up to `read_settle_ms` (§3.7), so within the wait
+  it already answers `Invalid`;
+- otherwise any validate after settlement answers `Invalid`.
+
+A client that treats `Pending` as "not certified, retry" is never misled.
+`Ambiguous` likewise appears only under rule 1, because it needs every
+head settled.
 
 ### 3.7 Pull, idle drain and publication
 
@@ -868,8 +898,8 @@ part of a commit group:
 
 | Failure point | Result |
 |---|---|
-| (a) fails | Nothing in memory has changed; the step answers an error |
-| (a) succeeds, (b)/(c) fail | The store is poisoned, as `put_blobs` failure is (store.rs:1161–1185). Reopen redoes (b) and (c) from the ledger |
+| (a) fails before any byte of the ledger record is written | Nothing on disk or in memory has changed; the step answers an error |
+| Any error once the ledger append has started (a write, sync or `sync_dir` error in (a), or any error in (b) or (c)) | The store is **poisoned**, as a `put_blobs` failure is (store.rs:1161–1185). No further write, staging or GC is accepted until reopen. A complete, checksummed ledger record may already be on disk even though the sync reported an error. If writes continued, the hash would still be in `blobs` under its old key, so a later op could make an old revision head again with that key; reopen would then drop that key by its `key_pos` and lose a live body. Poisoning makes reopen the only next step, and reopen applies whatever complete records exist (next row). Nothing ran in between, so either outcome is consistent |
 | Crash after (a) | Open reads the ledger. For each entry whose `key_pos` is the hash's *current* loaded key position, it drops the hash from `blobs` (before the key rewrite at store.rs:676–681, as shred's purge) and redoes (c). An entry whose hash has a newer key (staged again) is ignored |
 | During (c) | The key-log generation protocol (tmp, sync, rename, `sync_dir`, unlink) leaves the old or the new generation |
 
@@ -1141,8 +1171,12 @@ are the only lazy caller.
 
 ### G2
 
-- **T61.** A STRICT consumer of an unsettled node never gets a verdict
-  better than eager's. Cover:
+- **T61.** A STRICT consumer of an unsettled node never gets a positive
+  verdict eager would not give, and the validate contract (§3.6) holds.
+  Cover:
+  - the owner's case: A(base) → B, A's base retracted, B unsettled. A
+    non-strict certificate validates `Pending{rules: []}` while B is
+    unsettled, and `Invalid` after the drain, which is eager's verdict;
   - issue and validate across a frontier;
   - the N1 counterexample: a strict certificate whose base revision was
     retracted and settled in the first slice, which must be
@@ -1203,12 +1237,22 @@ are the only lazy caller.
     value equals the current one.
   - After full drain: `derived`, digest, history, stats and the epoch's
     `status_diff` and `l0_flips` equal eager.
-- **SPEC Gate P11 G3** ("STRICT 读 == oracle") is read as equal on settled
-  state, never better while unsettled. §11 amends the wording.
+- **SPEC Gate P11 G3** ("STRICT 读 == oracle") is read as follows:
+  - equal to the oracle once settled;
+  - while unsettled, the validate contract of §3.6: input-level verdicts
+    exact, never a positive verdict the oracle does not give, and
+    otherwise a temporary `Pending` or `Unknown`.
+
+  §11 amends the wording.
 - **PROP2 and PROP2b** run on the settled diff.
-- **PROP11** runs on settled states. A companion property checks that with
-  frontiers present, issue and validate never return a verdict better than
-  the oracle's at the same epoch.
+- **PROP11** runs on settled states.
+- **A companion property** checks the §3.6 validate contract with frontiers
+  present, against the oracle at the same epoch:
+  - rule 1 when every node of D is settled;
+  - rule 2 for input-level verdicts;
+  - rule 3 otherwise.
+
+  Issue never returns a certificate the oracle would refuse.
 - **PROP10** runs on mixed format-6/7 logs.
 - **GC property.** Random histories with GC at random points, re-staging,
   §5.4 ops, forks, sessions, held snapshots and reopen. Every content in
@@ -1399,6 +1443,13 @@ stays eager.
 | m5, missing `TxError::Internal` | New `TxError::Unsettled` (§3.5, §8) |
 | m6, scan order | Non-decreasing segment format enforced in `scan_with_formats` (§4) |
 | m2, m3 | Confirmed sound; no change |
+
+### 12.6 Owner review of r0.4
+
+| Finding | Fix |
+|---|---|
+| 1. GC ledger: an append that succeeds with a failed sync, followed by more writes, can lose a live body at reopen | Any error once the ledger append has started poisons the store until reopen (§5.2 failure table) |
+| 2. The validate rule "eager `Invalid` ⇒ lazy `Invalid`" contradicts the early return for derived `Invalid` (A(base) → B, B unsettled) | Validate contract restated (§3.6): settled ⇒ equal; input-level verdicts exact; otherwise a temporary `Pending`/`Unknown`, never positive. R2, T61, the G3 reading and the PROP11 companion property updated |
 
 #### GC
 
