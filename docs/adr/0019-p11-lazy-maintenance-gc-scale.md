@@ -1,6 +1,6 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.6), G0 pending owner review.** r0.5 answered the owner's review of r0.4 (§12.6), and r0.6 answers the review of r0.5 (§12.7).
+Status: **Proposed (r0.7), G0 pending owner review.** r0.5 answered the owner's review of r0.4 (§12.6), r0.6 answered the review of r0.5 (§12.7), and r0.7 answers the review of r0.6 (§12.8).
 
 The independent final check of r0.4 found no blocker or major in either
 part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
@@ -591,7 +591,14 @@ satisfies three rules:
      (HeadSuperseded);
    - `Conflicted` (R3).
 
-   When V is one of these, L = V, even while D is unsettled.
+   When V is one of these, L has the same variant and the same reason
+   (`LogMismatch`, `BranchMismatch`, `StrictChange`, `Changed` from
+   HeadSuperseded, `Conflicted`, `Denied`), even while D is unsettled.
+   - Payload fields may still be incomplete: `diffs`, `entries`, `lag` and
+     `rules`. Example: a strict `Invalid{StrictChange}`'s `diffs` can lack
+     entries whose change shows only after an unsettled node settles.
+   - Payload fields are required to equal V's only once D is settled
+     (rule 1).
 3. **Otherwise, unsettled ⇒ the aggregate of what is confirmed.** While D
    has an unsettled node:
    - L is exactly the aggregation the algorithm above defines: eager's
@@ -1288,11 +1295,17 @@ are the only lazy caller.
     value equals the current one.
   - After full drain: `derived`, digest, history, stats and the epoch's
     `status_diff` and `l0_flips` equal eager.
-- **SPEC Gate P11 G3** ("STRICT 读 == oracle") is read as follows:
-  - equal to the oracle once settled;
-  - while unsettled, the validate contract of §3.6: input-level verdicts
-    exact, never a positive verdict the oracle does not give, and
-    otherwise a temporary `Pending` or `Unknown`.
+- **SPEC Gate P11 G3** ("STRICT 读 == oracle") is read as the §3.6
+  validate contract:
+  - **Settled:** equal to the oracle in variant, reason and every payload
+    field.
+  - **Unsettled, input-level V:** the same variant and reason as the
+    oracle. Payload fields may be incomplete.
+  - **Unsettled, otherwise:** a temporary negative result. It is the §6.4
+    aggregation of confirmed per-entry results, so it can be `Pending`,
+    `Unknown{lag}`, or a confirmed negative such as a settled entry's
+    `Conflicted`, `Denied` or `Invalid`.
+  - Never a positive verdict the oracle does not give.
 
   §11 amends the wording.
 - **PROP2 and PROP2b** run on the settled diff.
@@ -1300,7 +1313,7 @@ are the only lazy caller.
 - **A companion property** checks the §3.6 validate contract with frontiers
   present, against the oracle at the same epoch:
   - rule 1 when every node of D is settled;
-  - rule 2 for input-level verdicts;
+  - rule 2 for input-level verdicts: variant and reason, with payloads compared only once settled;
   - rule 3 otherwise: L equals the §6.4 aggregation of the oracle's
     per-entry results, with each unsettled entry replaced by its
     input-level result or `Pending`.
@@ -1518,6 +1531,13 @@ stays eager.
 | P1. Multi-entry aggregation: lazy can return `Conflicted` (settled C) where eager returns `Invalid` (unsettled B), which rule 3 did not allow | The early return is the §6.4 aggregation of confirmed per-entry results, with unsettled entries contributing their input-level result or `Pending`. Rule 3 allows any such negative result and is checked exactly by the companion property. Multi-entry T61 case added (§3.6, §9) |
 | P2. Upgrade barrier when GC runs without a commit; key-log header encoding | A version barrier (empty format-7 segment, synced) precedes every format-7 change to persistent data, GC and compaction included. Open order shows older binaries refuse before writing. The key-log kind-2 header is defined, with reader rules (§4, §5.2) |
 | P3. Stale "not yet confirmed" text | Fixed |
+
+### 12.8 Owner review of r0.6
+
+| Finding | Fix |
+|---|---|
+| §3.6 required L = V while unsettled, but a strict result's `diffs` can be incomplete | Rule 2 requires the same variant and reason while unsettled; payload fields (`diffs`, `entries`, `lag`, `rules`) are equal only once settled |
+| §9 G3 reading still allowed only Pending/Unknown | Rewritten to the full §3.6 contract, including confirmed negatives such as `Conflicted` |
 
 #### GC
 
