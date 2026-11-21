@@ -1,6 +1,6 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.5), G0 pending owner review.** r0.5 answers the owner's review of r0.4 (§12.6).
+Status: **Proposed (r0.6), G0 pending owner review.** r0.5 answered the owner's review of r0.4 (§12.6), and r0.6 answers the review of r0.5 (§12.7).
 
 The independent final check of r0.4 found no blocker or major in either
 part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
@@ -44,9 +44,9 @@ What changed from r0.2:
 - **Mirror check** of a collected body compares the body hash and the
   re-rendered front matter.
 
-The owner's scope decisions of 2026-11-20 are in §0. The open points in
-§0.1 are not yet confirmed. Nothing here changes the SPEC until G0 passes;
-§11 lists the SPEC changes.
+The owner's scope decisions of 2026-11-20 are in §0, and the owner
+confirmed the open points in §0.1 the same day. Nothing here changes the
+SPEC until G0 passes. §11 lists the SPEC changes.
 
 ## 0. Scope and decisions taken
 
@@ -544,10 +544,18 @@ If a required head is still unsettled after the pull:
 
 1. Compute observation lag over the observation support of the *settled*
    required heads, as step 3 would (cert.rs:551–565).
-2. Return the highest of:
-   - any higher-priority result steps 0–2 already produced;
-   - `Unknown{lag}` if any scope lags;
-   - otherwise `Pending{rules: []}`.
+2. Aggregate by the SPEC §6.4 priority over:
+   - the step 0–1 results (log, branch, strict);
+   - each *settled* required entry's mapped result (`Denied`, `Invalid`,
+     `Conflicted`, `Pending` or `Ok`);
+   - each *unsettled* required entry's input-level result where one
+     exists (`Denied`, HeadSuperseded `Invalid`, `Conflicted` from R3), and
+     `Pending` otherwise;
+   - `Unknown{lag}` if any scope from step 1 lags.
+
+   An all-`Ok` aggregate cannot occur, because an unsettled entry
+   contributes at least `Pending`. `rules` lists the semantic-pending rules
+   of settled entries; unsettled entries add none.
 
 This is the SPEC §6.4 priority. It skips step 3's Ambiguous recompute and
 vector', which need every head settled. A strict ABA over settled nodes is
@@ -584,10 +592,20 @@ satisfies three rules:
    - `Conflicted` (R3).
 
    When V is one of these, L = V, even while D is unsettled.
-3. **Otherwise, unsettled ⇒ temporarily not positive.** While D has an
-   unsettled node, L is either V, or `Unknown{lag}`, or `Pending{rules: []}`.
-   L is never `Ok`, `Valid` or `ValidRecertified` unless V is too. The
-   `lag` list covers settled heads only, so it may be a subset of V's.
+3. **Otherwise, unsettled ⇒ the aggregate of what is confirmed.** While D
+   has an unsettled node:
+   - L is exactly the aggregation the algorithm above defines: eager's
+     per-entry results for settled entries, input-level results for
+     unsettled entries where they exist, and `Pending` for the rest.
+   - Every result that enters L is one eager also derives for that entry,
+     so L is always negative. It may be a *different* negative result
+     than V, for example:
+     - `Conflicted` from a settled entry C, where V is `Invalid` because of
+       an unsettled entry B;
+     - `Pending` or `Unknown{lag}` where V is `Invalid` or `Ambiguous`.
+   - L is never `Ok`, `Valid` or `ValidRecertified`.
+   - The `lag` list covers settled heads only, so it may be a subset of
+     V's.
 
 Rule 3 covers the case where V is negative only because of derived state
 on an unsettled node. Example:
@@ -729,6 +747,22 @@ both formats.
 **Upgrade.**
 
 - The first write after upgrade rolls over to a new format-7 segment.
+- **Version barrier.** Every format-7 change to persistent data first makes
+  sure the log's newest segment is format 7. If it is not, the store rolls
+  over to an empty format-7 segment, then syncs it and `sync_dir`s before
+  continuing. Format-7 changes are:
+  - a commit;
+  - GC `--apply` (§5.2);
+  - `ctx gc --compact` (§5.5);
+  - any first creation of `gc/` or `compact/`;
+  - the first version-2 key-log header (§5.2).
+- **Why the barrier is enough.** An older `ctxd` or `ctx` opens a store in
+  this order: it loads keys and packs read-only, removes temp files under
+  `blobs/`, then scans the log (store.rs:460–497). The log scan refuses a
+  format-7 segment with `FormatTooNew` before any key rewrite (store.rs:676)
+  or other durable change. Older code never reads `gc/` or `compact/`. So
+  an older binary on a store that GC or compaction has touched refuses to
+  open, and changes nothing that matters.
 - Every existing checksum is kept, so certificates (`LogMismatch`), mirror
   tips (`LogRewritten`), kernel snapshots and projections stay valid. This
   is the T77 precedent.
@@ -903,8 +937,22 @@ part of a commit group:
 | Crash after (a) | Open reads the ledger. For each entry whose `key_pos` is the hash's *current* loaded key position, it drops the hash from `blobs` (before the key rewrite at store.rs:676–681, as shred's purge) and redoes (c). An entry whose hash has a newer key (staged again) is ignored |
 | During (c) | The key-log generation protocol (tmp, sync, rename, `sync_dir`, unlink) leaves the old or the new generation |
 
-**Key-log generation header.** It gains `collect_generation` beside shred's
-`purged_through` (keys.rs:5–8; store.rs:1059–1101).
+**Key-log generation header.** Today's header is
+`"CXKH" | kind u8 | purged_through u64 | check 8` (21 bytes), with kind
+0 = Append and 1 = Generation (keys.rs:5–8, 59–80).
+
+- P11 adds kind **2 = Generation v2**, laid out as
+  `"CXKH" | 2 | purged_through u64 | collect_generation u64 | check 8`
+  (29 bytes). `check` is the truncated BLAKE3 of the bytes before it.
+- **New readers** accept kinds 0, 1 and 2. Kinds 0 and 1 read as
+  `collect_generation = 0`. Append segments stay kind 0 with the 21-byte
+  header.
+- **Writers.** A key rewrite writes kind 2 once the store has a ledger, and
+  kind 1 otherwise. The version barrier (§4) runs before the first kind-2
+  segment.
+- **Older readers.** `parse_header` returns `None` for kind 2, so they
+  never see it as a header. They never get that far anyway: the format-7
+  log segment the barrier wrote makes them refuse first.
 
 `keys_need_purge` is true when either holds:
 
@@ -1177,6 +1225,9 @@ are the only lazy caller.
   - the owner's case: A(base) → B, A's base retracted, B unsettled. A
     non-strict certificate validates `Pending{rules: []}` while B is
     unsettled, and `Invalid` after the drain, which is eager's verdict;
+  - the owner's multi-entry case: required B and C; B's support A is
+    retracted and a Conflict is opened on C. With B unsettled and C settled
+    it validates `Conflicted`; after the drain, `Invalid` (eager);
   - issue and validate across a frontier;
   - the N1 counterexample: a strict certificate whose base revision was
     retracted and settled in the first slice, which must be
@@ -1250,7 +1301,9 @@ are the only lazy caller.
   present, against the oracle at the same epoch:
   - rule 1 when every node of D is settled;
   - rule 2 for input-level verdicts;
-  - rule 3 otherwise.
+  - rule 3 otherwise: L equals the §6.4 aggregation of the oracle's
+    per-entry results, with each unsettled entry replaced by its
+    input-level result or `Pending`.
 
   Issue never returns a certificate the oracle would refuse.
 - **PROP10** runs on mixed format-6/7 logs.
@@ -1268,8 +1321,15 @@ are the only lazy caller.
   - a deferred commit;
   - an idle drain;
   - a settle-time projection apply;
-  - `--apply` steps (a) to (c);
-  - `--compact`.
+  - `--apply` steps (a) to (c), including a sync failure after a complete
+    ledger append (poison, then reopen);
+  - `--compact`;
+  - the version barrier.
+- **Downgrade golden.** A v0.4.1 binary on a store that has had only
+  `ctx gc --apply` (no commit since the upgrade), and on one that has had
+  only `--compact`, refuses with `FormatTooNew`. Its `keys/`, `gc/` and
+  `blobs/` pack files are byte-identical afterwards.
+- Fuzz the kind-2 key-log header.
 
 ### G5
 
@@ -1450,6 +1510,14 @@ stays eager.
 |---|---|
 | 1. GC ledger: an append that succeeds with a failed sync, followed by more writes, can lose a live body at reopen | Any error once the ledger append has started poisons the store until reopen (§5.2 failure table) |
 | 2. The validate rule "eager `Invalid` ⇒ lazy `Invalid`" contradicts the early return for derived `Invalid` (A(base) → B, B unsettled) | Validate contract restated (§3.6): settled ⇒ equal; input-level verdicts exact; otherwise a temporary `Pending`/`Unknown`, never positive. R2, T61, the G3 reading and the PROP11 companion property updated |
+
+### 12.7 Owner review of r0.5
+
+| Finding | Fix |
+|---|---|
+| P1. Multi-entry aggregation: lazy can return `Conflicted` (settled C) where eager returns `Invalid` (unsettled B), which rule 3 did not allow | The early return is the §6.4 aggregation of confirmed per-entry results, with unsettled entries contributing their input-level result or `Pending`. Rule 3 allows any such negative result and is checked exactly by the companion property. Multi-entry T61 case added (§3.6, §9) |
+| P2. Upgrade barrier when GC runs without a commit; key-log header encoding | A version barrier (empty format-7 segment, synced) precedes every format-7 change to persistent data, GC and compaction included. Open order shows older binaries refuse before writing. The key-log kind-2 header is defined, with reader rules (§4, §5.2) |
+| P3. Stale "not yet confirmed" text | Fixed |
 
 #### GC
 
