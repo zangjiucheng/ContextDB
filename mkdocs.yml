@@ -66,6 +66,7 @@ nav:
       - 0016 P8 retrieval, packing and mirror: adr/0016-p8-retrieval-packing-mirror.md
       - 0017 P9 principals, permissions and security: adr/0017-p9-principals-permissions-security.md
       - 0018 P10 team exchange: adr/0018-p10-team-exchange.md
+      - 0019 P11 lazy maintenance, GC and scale: adr/0019-p11-lazy-maintenance-gc-scale.md
   - Gates:
       - P0: gates/P0.md
       - P1: gates/P1.md
@@ -79,4 +80,5 @@ nav:
       - P8: gates/P8.md
       - P9: gates/P9.md
       - P10: gates/P10.md
+      - P11: gates/P11.md
   - Changelog: CHANGELOG.md

@@ -103,7 +103,7 @@ Every phase must pass its Verification Gate (G0 spec, G1 build, G2 goldens, G3 o
 | P8 | Retrieval, packing and git mirroring | ✅ passed |
 | P9 | Principals, permissions and security (hard isolation, crypto-shred) | ✅ passed (G6 two-user run skipped by owner decision) |
 | P10 | Git-root team exchange | ✅ [passed](docs/gates/P10.md) (G4 `team_doc` fuzz 17.4 h and G6 bare-remote trial only, by owner decision) |
-| P11 | Mixed eager / lazy maintenance and scale | planned |
+| P11 | Cascade-bounded lazy maintenance, payload GC and scale | G0 passed ([design](docs/gates/P11.md)); implementation pending |
 | P12 | Recursive support (research) | planned |
 
 Evidence for every layer is in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) and [`docs/gates/`](docs/gates/).

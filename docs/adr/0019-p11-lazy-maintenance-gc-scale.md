@@ -1,11 +1,11 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Proposed (r0.7), G0 pending owner review.** r0.5 answered the owner's review of r0.4 (§12.6), r0.6 answered the review of r0.5 (§12.7), and r0.7 answers the review of r0.6 (§12.8).
+Status: **Accepted (r0.7), G0 passed 2026-11-20.** SPEC v1.11.0 incorporates §11; [P11 gate](../gates/P11.md) records the design acceptance. Implementation and G1–G8 remain pending, and G6 is to be set by the owner (SPEC §4.1 requires one; §9 does not define it). r0.5 answered the owner's review of r0.4 (§12.6), r0.6 answered the review of r0.5 (§12.7), and r0.7 answers the review of r0.6 (§12.8).
 
 The independent final check of r0.4 found no blocker or major in either
 part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
-confirmed O1–O5 as recommended on 2026-11-20 (§0.1). The owner's review of
-the ADR remains.
+confirmed O1–O5 as recommended on 2026-11-20 (§0.1). The owner reviewed
+r0.4–r0.6 and accepted r0.7 the same day.
 
 r0.4 answers the second closure review of r0.3 (§12.5).
 

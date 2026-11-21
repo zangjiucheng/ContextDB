@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **P11 G0 passed (2026-11-20).** ADR 0019 r0.7 is accepted and its §11 amendments are in SPEC v1.11.0:
+  - cascade-bounded lazy maintenance: a commit defers propagation past a work budget `E` and reports `settling`; settled reads equal eager; unsettled STRICT reads fail closed with `PENDING(StructuralUnknown)`;
+  - op_log format 7, with format-6 and format-7 segments in one log and a version barrier, and protocol 9;
+  - explicit payload GC (`ctx gc`, dry run by default; `--apply`; offline `--compact`) with a K1–K5 keep set and a ledger; mirrors over collected bodies are verified by hash instead of `PayloadGone`;
+  - a measure-then-adopt layout ablation;
+  - Postgres moved out of P11.
+
+  Nothing is implemented yet. G6 is still to be set by the owner. See [the P11 gate](docs/gates/P11.md).
+
 ## 0.4.1 — 2026-11-20
 
 A faster `ctx ui` graph and fixes after 0.4.0. No format or protocol change: install the four binaries together and restart `ctxd` (`ctx service restart <dir>`, or `ctx shutdown <dir>` and start it again); no migration, and the hooks stay as installed.

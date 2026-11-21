@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.10.1 · Date: 2026-11-18 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.11.0 · Date: 2026-11-20 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -148,6 +148,7 @@ P10：mirror 作为普通本地 premise 参与这些计数；其 head/base 是 r
 4. 发布的 diff 是 final vs pre-txn 的派生状态，瞬态永不可见。diff 分两部分：
    - `l0_flips = {r | S_pre(r) ≠ S_final(r)}`：结构翻转，供内核正确性测试（PROP2）。
    - `status_diff = {r | NodeStatus_pre(r) ≠ NodeStatus_final(r)}`：比较派生快照中的全部维度（L0 / L1 / L2、sem、head currency、conflict、support_count、witness），不含读时才计算的 observation 与 visibility。hooks、`<context_update>`、`ctx_changes` 订阅消费的是 `status_diff`（PROP2b）。
+   - P11（v1.11.0）：ack 时仍有 frontier 的提交回复 `settling: true`、输入层字段与空的 `l0_flips` / `status_diff`；该 epoch 完整的 diff 在 settle 后进入 `diff_log` 与 `ctx_changes`，与 eager 相同。op_log 帧只保存已 ack 的结果。
 
 **SD9 per-revision 与 Rebind。** S、计数器、各层状态均按 RevisionId 维护；`CURRENT(l)` 报告 `head(l)` 的状态。新 revision 不继承旧 revision 的 justification。`Cur` 依赖失效后的修复：`Rebind(j, from, to)`——前置条件：`from` 是 j 的 premise；`to` 与 `from` 同 logical 且 `to ≠ from`；kind 保持；效果为原子地 `SetRuleEnabled(j,false)` + `AddRule(j 的 premise 中 from→to)`；若新规则与已有规则相同返回 `DuplicateRule`，整个事务拒绝。`Sem` 依赖的修复：提交 ValidationRecord。
 
@@ -218,7 +219,12 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 **SD13 补充（v1.9.0，ADR 0017 §4.5、§5.1）。** UNAVAILABLE（denied）在渲染响应时由唯一的 `redact()` 点计算；快照中 `Dimensions.authorized` 恒为 true，快照与 digest 不随读者变化。store owner 的响应不过滤。
 
 **SD14 UNKNOWN 的两种来源。**
-- (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P11 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。
+- (a) **structural UNKNOWN**：lazy 维护下 dirty 未重算（P11 才可达）。STRICT 读必须验证或返回 `PENDING(StructuralUnknown)`。P11（v1.11.0，ADR 0019 §3）的具体化：
+  - **frontier。** 一次提交的维护（counting 与 L1/L2 按 rank 交错的单一 pass）超过工作预算 `E` 个单位后，在 chunk 或节点边界停下；剩余的 heap、pending/dirty 标记、暂停节点与提交上下文作为该 branch `Db` 中的 frontier 保留，从不持久化。之后无输入变化地续做，按相同顺序 pop 相同节点，因此完成后的派生状态、`status_diff`、`l0_flips`、history、digest 与 eager 逐字节相同。seeding 不切分。
+  - **settled。** `settled(r)` ⇔ frontier 为空，或 `rank(r) < cursor`，或从 r 沿 PK 入边（含 `Logical(l)` 虚拟节点）、只在 rank ≥ cursor 的节点内的反向搜索在访问 `S = 4,096` 个节点之内未遇到 frontier 成员；达到上界即视为未 settled。settled 对祖先闭合。
+  - **未 settled 节点的读取。** 唯一覆盖点是派生读取入口：structural 为 `UNKNOWN`，L0/L1/L2、sem、witness 与 stale reason 不输出；head currency、conflict（始终从输入索引读取，Conflict 检测仍为 eager）、visibility 与 replication lag 精确；observation lag 不对其求值（闭包需要 witness）。汇总按 SD13 为 UNAVAILABLE、CONFLICTED、STALE(HeadSuperseded)（适用时）或 `PENDING(StructuralUnknown)`。
+  - **pull。** Certified/STRICT 读、证书签发与校验、WHY / WHY_NOT 遇到未 settled 节点时，请求 daemon 续做到所需 rank，最多等待 `read_settle_ms`（默认 50 ms），超时后按上一条读取；WHY / WHY_NOT 超时返回可重试的 `Settling{epoch}`。advisory 读不等待。镜像导出必须完全 settled，否则 `Settling{epoch}`。
+  - **I-L1。** 只有 store 续做 live kernel：每个写入（幂等检查与 prepare 之前）、WHAT_IF、IMPACT{Exact}、kernel snapshot 与 GC 步骤之前先完全 settle；内核在有 frontier 时拒绝执行任何 batch 或 dry run（`TxError::Unsettled`）。dry run、replay、rebuild、迁移、team replica 与 FullRecompute 一律 eager，不留 frontier。
 - (b) **observation lag**：派生快照只依赖已提交的 `ObserverWatermark`；读取或 `validate_certificate` 时，调用方（hook / MCP 层）提供实时位置 `live_pos`（工作树指纹、git HEAD）。P5a 起 daemon 从可信路由采样；缺少 live_pos、采样失败、采样期间出现的编辑通知也为 lag。若读取结果或 certificate 的 observation support 闭包中任一锚点所在 scope 的 `live_pos ≠ watermark`，读取结果为 `PENDING(ObservationLag)`，certificate 为 `Unknown{lag}`。oracle 与 rebuild 不涉及 freshness。observation/path support 闭包独立于 effective vector：canonical L2 witness 上 Pin/Cur 访问 p，Sem 同时访问 asserted p 与当前 head h，Ref 不访问，按 RevisionId 去重。watermark 只摘要 HEAD 与完整有序 manifest（P5b：symbol 锚点由其宿主文件的原始 OID 代表，`CTXPOS02` 头部记录生效（base 已断言）symbol 锚点所属各语言的 normaliser 版本（v1.6.10）；daemon 实时采样从不解析，宿主文件任何字节变化在 observer 下次扫描前为 lag，ADR 0012 §6）；outbox hint 单独保守否决：采样本身覆盖之前的编辑通知，因此只需证明采样期间没有新的编辑通知——hook 在追加 Action 事实前先更新全局 announce 记录（随机 epoch + 计数），daemon 在首次采样前与最后一次采样后各读一次，两次一致才发布实时证据；缺失、损坏或不一致即 lag（O(1)，与 stream 数无关）。丢弃的事实不再影响 freshness。所有 outbox 写入者必须是 P5a 及以后的 hook（数据目录标记 `announce-v1`）。具体编码与上限见 ADR 0011（§9，r0.4）。
 
 两者都**永不**映射为 CERTIFIED。certificate 中保存的 `watermarks` 用于审计与 strict 模式：`strict_no_aba=true` 时，闭包内任一代码观测 scope 的 watermark 自签发后推进即 `Invalid`。P10 团队 mirror 的 scope 从不可变 origin 导出为 `team:<team-id>`；其读时 freshness 为 `ReplicationLag`，与代码的 `ObservationLag` 分开。团队 watermark 的普通推进不使 strict 证书失效，`gap: true` 才保守视为该团队所有 mirror 的 strict change；具体历史与 announce fence 见 SD21。`left` sentinel 表示已退出且 base 已撤销，不视为 lag。
@@ -310,7 +316,7 @@ UNAVAILABLE（denied；不输出 payload/witness/WHY）
 
 Compact accepted 后旧代 terminal，后附 entry 全部 ignored：无 sequence/decision log/digest/lag，只显示诊断计数。首提交 F 无 parent，以 T 为 whole tree，`Ctx-Compacts=C_oid`，sequence=C.sequence+1，无 proposal id，由 Σc 的任意 admin 签名并 push 到新 ref。follower 校验 F 后将 Σc 的 sequence 再+1；checkpoint joiner 从带外 F OID 读取并校验 Σc 后同样应用 F，因此二者 digest 相同。C accepted 而 F 未成功时为 CompactPending（已同步内容不 lag，publish 等待）；任意 admin `compact --resume` 从 Σc 重建相同 T，两个并发 resume 由 ref CAS 决定；被占用的非法 successor ref 不信任，admin 可显式 force-ref 恢复。prune 只由 admin 在保留期后删除旧 generations，默认不自动 prune；过期离线 edge 无法找到过渡则停为 ReplicaDiverged，owner 必须以带外 OID rejoin。rejoin 不得改变已有 mirror key 的 kind/lane（TeamKeyMismatch）。rebuild 从可用的最早受信任 generation 重放，不改本地 op_log；缺失 branch 历史置 gap。leave 先持久记录 leaving，阻止恢复导入，再逐 open branch 撤全部 mirror base、写 left watermark，确认后移除 replica/queue/refspec，mirror 历史留在本地日志。
 
-14. **shred 与安全边界。** TeamShred 将 hash 永久加入 root shred set，不影响拓扑/派生支持，禁止后续 reintroduce。导入 mirror 前，只有不存在任何非 mirror 本地记录持有该 hash 时，daemon 才以 owner 在 main 独占提交本地 ShredContent；否则两侧 payload 仍可读并在 team status 声明。local shred 不向 root 发布且不拒绝后续 mirror 写。root Git objects 是明文，remote/各 clone/备份仍可能保存正文，需 compaction+admin prune+各方 git gc 才可能移除，不承诺远端或其他 clone erasure。签名保证 listed key 与 role，不保证语义真实；remote 可隐瞒/回放/改写历史，已知 rewrite 停止，未 fetch 不知道新 root；巨大 entry 的下载、垃圾 entry、持续竞争和被移除 member 抢先 CAS 的可用性/撤销窗口均不在保证内。每个本地 store 的 kernel 真相仍为自身 op_log，root chain 是团队域真相，replica 是其可重建视图；未发布 proposal/announce/信任锚属于交换协议状态，不构成两个 store 对同一 kernel batch 的容错双写。
+14. **shred 与安全边界。** TeamShred 将 hash 永久加入 root shred set，不影响拓扑/派生支持，禁止后续 reintroduce。导入 mirror 前，只有不存在任何非 mirror 本地记录持有该 hash 时，daemon 才以 owner 在 main 独占提交本地 ShredContent；否则两侧 payload 仍可读（被 P11 GC 回收的除外）并在 team status 声明。local shred 不向 root 发布且不拒绝后续 mirror 写。root Git objects 是明文，remote/各 clone/备份仍可能保存正文，需 compaction+admin prune+各方 git gc 才可能移除，不承诺远端或其他 clone erasure。签名保证 listed key 与 role，不保证语义真实；remote 可隐瞒/回放/改写历史，已知 rewrite 停止，未 fetch 不知道新 root；巨大 entry 的下载、垃圾 entry、持续竞争和被移除 member 抢先 CAS 的可用性/撤销窗口均不在保证内。每个本地 store 的 kernel 真相仍为自身 op_log，root chain 是团队域真相，replica 是其可重建视图；未发布 proposal/announce/信任锚属于交换协议状态，不构成两个 store 对同一 kernel batch 的容错双写。
 
 ### 2.4 已决策的取舍（2026-10-19 用户确认，见 `docs/adr/0001-semantic-decisions.md`）
 
@@ -438,14 +444,19 @@ commit(batch):
              L1/L2 翻转的 r 若是 head(l(r)) → sem_by_logical[l(r)] 的 Sem incidence（经 V_l 的 rank）
            同一 rank 序传播（rank 含 V_l 节点），L1/L2 各自维护 active/counted 位
   Phase 4  持久化（P2 起：op log append 并 durable 之后才 ack）→ 发布 snapshot 与 diff（l0_flips + status_diff，SD8.4）→ epoch += 1
+           P11 lazy：Phase 3/3b 在 E 个单位后停下时，ack 发布 snapshot、输入层结果（epoch、
+           allocations、net_delta，settling=true）、ChangeLog 与已 settle 部分的 history；
+           该 epoch 的 status_diff 在 settle 时进入 diff_log（SD14a）
 ```
+
+**P11 lazy 的交错与断言（v1.11.0，ADR 0019 §3.1）**：lazy 模式按 rank 交错两个 pass（取较小的堆顶，同 rank 先 counting pop）。P-1：处理节点 r 只读取 rank ≤ rank(r) 的节点状态，rank(r) 的状态只在 r 的 counting pop 之后读取。`lazy: None` 用同一代码运行到空。
 
 **必须存在的调试断言（DA1–DA6，`debug_assertions` 与 `paranoid` 下启用）**：
 - DA1 所有 seed 在首次 pop 之前入堆。
-- DA2 只向 ord 严格大于当前 pop 节点的节点入堆（pop 序列单调，每节点至多 pop 一次）。
+- DA2 只向 ord 严格大于当前 pop 节点的节点入堆（pop 序列单调，每节点至多 pop 一次）。P11 交错 pass 中每个堆各自按严格递增 rank pop；walk 可在推入它的 counting pop 的同一 rank 持有 r。
 - DA3 pop r 时其全部规则的 premise 满足 `ord(p) < ord(r)`（因此已是最终值）。
 - DA4 sat / counted 只通过“存储位 vs 重算真值”比较更新（S 翻转、head 翻转、enable 翻转命中同一 incidence 时不重复计数）。
-- DA5 从未被 pop 的节点派生值不变。
+- DA5 从未被 pop 的节点派生值不变。P11 起 DA5、rebuild 比对断言与 counting 未访问行检查在 frontier 完全 drain 时执行。
 - DA6 规则插入只有唯一入口，必经 `topo.insert_edge`；push 时断言 `ord(p) < ord(c)`。
 
 复杂度 O(E_visited + rules_reevaluated · avg_dirty + heap_pushes · log Q)。最坏情况（上游变化影响大部分图）接近全图扫描，不承诺 O(1)。
@@ -736,7 +747,7 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
   - **packing**：token 估计 `ceil(bytes/4)`（响应中写明）；先计头部，不截断标签；装不下的项只计数 `omitted`，不给 handle、证书条目或账本条目；withheld 以头部形式在预算外列出。无 `budget_tokens` 与 `level` 时响应与 P7 相同（只有头部）。
   - **派生 Summary**：`premises{moved,total}` 取自 SD13 witness 规则，相对最近一次 **Verified** 记录的向量计算。**digest 早停**即 revision 按 `(logical, content)` 去重：同内容重录或回退回到同一 revision，下游向量不变、不入队、不写 ValidationRecord；不新增任何 ValidationRecord 写入者。
   - **embedding**（E1、E2）：外部命令适配器，默认关闭；向量为 SQLite BLOB 加内存缓存的暴力余弦检索，不引入 sqlite-vec；嵌入进程用最小环境与空工作目录。embedding 候选进入 P7 的候选表（`source = embedding|both`），按 branch 可见性过滤。
-  - **git 镜像**（E4）：ref 为 `refs/contextdb/b<branch-id>`，创建也用零 OID 做 CAS；树是该 branch 已提交状态的纯函数（不含全局 epoch 与读取时观测维度），段编码单射；trailer 增加 `Ctx-Branch`、`Ctx-Log-Checksum`；`Code-Commit` 取目标仓库 scope 的 ObserverWatermark。tip 先按缓存的 commit id 快速接受，未命中时重放到 `b` 重新渲染校验；不符 → `MirrorModified`（拒绝，`ctx mirror proposals` 列出 supersede 提案，`--force` 先备份），日志被改写 → `MirrorStale{LogRewritten}`。P9 shred / P11 GC 须报告 `MirrorStale{PayloadGone}`。
+  - **git 镜像**（E4）：ref 为 `refs/contextdb/b<branch-id>`，创建也用零 OID 做 CAS；树是该 branch 已提交状态的纯函数（不含全局 epoch 与读取时观测维度），段编码单射；trailer 增加 `Ctx-Branch`、`Ctx-Log-Checksum`；`Code-Commit` 取目标仓库 scope 的 ObserverWatermark。tip 先按缓存的 commit id 快速接受，未命中时重放到 `b` 重新渲染校验；不符 → `MirrorModified`（拒绝，`ctx mirror proposals` 列出 supersede 提案，`--force` 先备份），日志被改写 → `MirrorStale{LogRewritten}`。P9 shred 须报告 `MirrorStale{PayloadGone}`。P11 GC 不报告 `PayloadGone`（v1.11.0，ADR 0019 §5.6）：重新渲染时，对内容已被回收的正文读取重渲染路径上的 git blob，当且仅当 `blake3(body_bytes) == content` 且其 front matter 与重渲染的 front matter 相同时接受，否则 `MirrorModified`；干净缓存标记包含 GC generation。
   - **E3**：G6 检索查询集由两个独立 agent 标注，不看任何系统输出。
 
 **Gate P8**
@@ -802,18 +813,30 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 
 ### P11 — Eager / lazy 混合维护与规模
 
+**G0 passed（2026-11-20）**：ADR 0019 r0.7 accepted；[gate 记录](docs/gates/P11.md)。这里只通过设计门，不表示实现已完成。
+
 **目标**：在严格读取仍 fail-closed 的前提下降低维护成本，支持更大规模。
 
-**范围**
-- 按 `read_heat、impact_size、risk、estimated_verification_cost` 选择 eager / lazy；STRICT 读遇 dirty 必须验证或返回 `PENDING(StructuralUnknown)`（SD14a）。Conflict 检测始终 eager。
-- layout 优化（CSR + delta posting、StampedVec staging、radix heap），以 ablation 方式引入（研究 track H1 的结论驱动）。
-- 可选 Postgres 后端（排序加锁、SKIP LOCKED）用于团队服务器部署。
-- payload GC：只回收不被任何规则（premise/conclusion）、head、base、活证书引用的 revision 的 **payload blob**；拓扑与 op_log 永不删除；snapshot compaction 必须满足 PROP10。
+**owner 决定（2026-11-20，ADR 0019 §0、§0.1）**
+- D1 cascade-bounded lazy：收窄原先按 `read_heat、impact_size、risk、estimated_verification_cost` 的逐节点选择。提交自身的工作量（impact_size）超过预算 `E` 才推迟剩余部分（SD14a）；read_heat 只决定 drain 先做什么；risk 只由既有规则覆盖（Conflict 检测始终 eager，STRICT 读 fail-closed）；不使用 estimated_verification_cost；没有逐节点 eager/lazy 标签，也没有持久化的热度统计。
+- D2：Postgres 后端移出 P11。P10 选择 Git remote 作团队传输，没有团队服务器；需要服务器部署时另立阶段。
+- D3：payload GC 为显式 `ctx gc`，默认 dry run，`--apply` 才回收。
+- D4：layout 先测量后采用，达到 ADR 0019 §6 的阈值才合入。
+- O1 lazy 默认开启，`E` 在里程碑 1 由本地基线机实测的单位速率确定（目标为级联提交 ack 约 50 ms），`[maintenance] lazy = false` 关闭；O2 `read_settle_ms = 50`，advisory 读不等待；O3 `keep_epochs = 10,000`，下限 100；O4 磁盘回收用离线 `ctx gc --compact`；O5 修改 E4：GC 不使镜像 `PayloadGone`，回收的正文按哈希与 front matter 校验。
 
-**Gate P11**
-- G2：T61、S13-rows-e2e（StructuralUnknown 行）、T67（GC 后 PROP10 仍成立且被引用 payload 未回收）。
-- G3：lazy 模式下每次 STRICT 读 == oracle；PROP1 在 lazy 配置下重跑。
-- G5：1M revisions 规模 bench（与 P1 同口径），预算在 ADR 中设定。
+**范围**
+- cascade-bounded lazy 维护：frontier、settled、pull 与 I-L1 见 SD14a；提交回复与 diff 见 SD8.4；证书校验见 §6.4 P11 补充。
+- layout ablation（ADR 0019 §6）：候选为 radix heap、按实体打包的行、按 rank 分桶的 pending 向量，逐个对比里程碑 1 之后的代码，在 1M revisions 的 multi_support、hub、chain 上测量。至少一项（live heap 或级联/settle 时间）好 ≥15% 且在噪声带外，没有任何指标在噪声带外差 >5%，P1 与 PROP1-lazy 保持通过，才采用；被拒候选的数字留在 gate 记录。CSR + delta 与 re-seal 已实现，StampedVec 放弃。
+- payload GC（§7 P11 补充）：只回收不在 keep set K1–K5 中的 **payload blob**；拓扑、kernel 输入与 op_log 永不删除，digest 与 PROP10 不受影响；`ctx gc --compact` 之后 PROP10 必须成立。
+
+**Gate P11**（全部为实施后义务，G0 除外）
+- G2：T61（含 owner 的 A(base)→B 与多条目 B/C 用例、跨 frontier 签发/校验、strict 证书、`expect_certificate`、`require_certified` merge、gate）；S13-rows-e2e（StructuralUnknown 行，经 ctxd、hub 级联与小 `E`）；T67（`--apply` 与 `--compact` 后）；ADR 0019 §9 列出的新 goldens。
+- G3：PROP1-lazy；STRICT 读 == oracle 按 §6.4 P11 补充的校验契约解读：全部 settled 时与 oracle 在类别、原因与全部字段上相等；未 settled 且 oracle 结果只由输入决定时类别与原因相同，字段可不完整；否则为已确认逐条目结果按 §6.4 聚合得到的暂时负面结果（可为 `Pending`、`Unknown{lag}` 或已确认的 `Conflicted`、`Denied`、`Invalid`）；永不给出 oracle 不给的正面结论。PROP2/PROP2b 在 settle 后的 diff 上、PROP11 在 settled 状态上运行；校验契约的配套性质；PROP10 在格式 6/7 混合日志上运行；PROP20；变异覆盖扩展到切片、settled、settle 与发布、settling 帧、keep set、ledger 与 §6.2 的 GC `MissingBlob`。
+- G4：fuzz 格式 7 帧结果解码器、GC ledger 与 kind-2 key-log 头；deferred commit、idle drain、settle 时投影写入、`--apply`（含完整 ledger 追加后 sync 失败 → poison → reopen）、`--compact` 与版本屏障的 kill points；降级 golden：v0.4.1 二进制在只做过 `ctx gc --apply` 或只做过 `--compact` 的存储上以 `FormatTooNew` 拒绝，且 `keys/`、`gc/`、`blobs/` 之后逐字节不变。
+- G5（本地基线机，1M revisions；初始预算，gate 时校准）：multi_support 与 hub 上的 P1 预算；默认 `E` 下 hub 与 chain 的级联提交 ack（store、文件投影）≤150 ms；完整 settle 总时间 ≤1.25 × eager；推迟级联的帧 ≤1 KiB；报告 base toggle 与被 10⁵ 条 Sem 规则引用的 SetHead 的 seeding 时间、级联后下一次提交的 ack（有无空闲间隔）、`clone_fallbacks`、hub/chain 上 Certified 读返回 StructuralUnknown 的比例、`ctx gc` 两阶段时间与 reopen 时间。
+- G6：§4.1 要求的端到端场景与真实 agent dogfood 尚未定义（ADR 0019 §9 未给出），由 owner 在里程碑 6 之前确定。
+- G7：此前阶段回归，含 P9 与 P10；团队 `accept` 保持 eager。
+- G8：README、setup、CHANGELOG 与威胁模型（回收的 payload 对无会话持有的旧证书读为 `Collected`；回滚越过 GC 需重新提供字节；回收历史上的镜像按哈希校验）与本 SPEC 同步；非实现者的独立实施复核。
 
 ---
 
@@ -896,6 +919,8 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 
 16. **P10 replica 与 portable proposal**：MirrorAttach 通过已提交的全局保留 key 索引解析不可见的已有 mirror，然后在当前 branch 原子引入所需可见性并设 head/base；非 replica origin 拒绝，不能作为普通跨 branch 引用豁免。格式6追加 Channel::Replica、origin、MirrorAttach 与 gap，格式5→6迁移只升级日志头/快照布局；Local absent 保持旧 canonical bytes/hash/digest。protocol8必需，新增 team 请求、proposed 回复、team_lanes 与 queue 状态；客户端与 daemon 协同升级。portable CXTB/checkpoint 的 frozen accept_version 与本地 op_log 格式是不同版本域。
 
+17. **P11 lazy 与 GC（v1.11.0，ADR 0019 §3、§5、§8）**：`Commit` 增加 `lazy: Option<Budget>`，默认 `None`（eager）；只有 ctxd 的 live 提交传入预算。有 frontier 时 `Kernel::run` 与 `Db::dry` 拒绝（debug 构建 panic，release 返回 `TxError::Unsettled`），覆盖全部 Op 种类、merge 与 branch 创建；整体状态读取（`derived()`、`digest()`）断言无 frontier；kernel snapshot 与导出只序列化输入。`current_l0` 变为 `Option<bool>`，未 settled 为 `None`，调用方视为非 CURRENT。`CommitStats.units` 计数 heap pop/push、pending 标记与 drain 的 pending incidence/规则。没有新 Op，也没有新的 kernel snapshot 字段。`BlobPresence` 增加 `collected(c)`（默认 false）；replay 用 `AllPresent`，dry run 的 `contains` 恒真而 `collected` 取自 store。GC 是 store 步骤，不是 kernel Op。
+
 ### 6.2 错误目录（`TxError`，稳定、版本化；MCP 层只做映射）
 
 | 错误 | 触发 | MCP 映射 |
@@ -910,7 +935,10 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ChannelRestricted{op, channel}` | §6.1 输入契约 7（SetPolicy 非 Admin、watermark 的 scope/channel 不匹配、受限通道执行 allowlist 外 Op） | 同名 |
 | `InvalidKey{key}` | §6.1 输入契约 6 | `InvalidArgument` |
 | `InvalidPolicy` | §6.1 输入契约 8 | 同名 |
-| `MissingBlob{content}` | P2 起 payload 未先写入 store | 同名 |
+| `MissingBlob{content}` | P2 起 payload 未先写入 store；P11 起，`SetHead{new}`、`AssertBase`、`AddRule`（结论及每个 premise 与 reference）、`Rebind{to}`、已有 revision 的 `MirrorAttach`，以及使此类 revision 在目标上成为 head 或规则成员的 merge，所指 revision 的内容已被 GC 回收且未重新写入（shred 的内容保持 P9 语义；`Channel::Replica` 的团队追平在 replica 也无字节时豁免） | 同名 |
+| `Unsettled` | P11：有 frontier 时进入 `Kernel::run` / `Db::dry`（I-L1 违约，debug 构建 panic） | 同名 |
+| `Settling{epoch}` | P11：WHY / WHY_NOT 或镜像导出在等待期限内未等到所需节点 settle（可重试，daemon 读错误） | 同名 |
+| `ProjectionsBehind` | P11：`ctx gc --compact` 的重放检查发现投影落后（store 错误） | 同名 |
 | `CurvecMoved{rule, seen, current}` | RecordValidation CAS（SD10） | 同名 |
 | `ValidationExists{rule, curvec, verdict}` | `if_absent` 的 RecordValidation 遇到已有记录（P7，SD10） | 同名 |
 | `HandoffTaken{by}` / `HandoffNotAddressed` / `BranchMismatch` | handoff 已被他人接受；`to_agent` 不符；接受方不在 handoff 的 branch（P7，daemon 错误，ADR 0015 §7） | 同名 |
@@ -973,14 +1001,14 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ctx_check` | `(cert_id?, action?{tool, paths, command})` → `{decision: allow\|warn\|deny, verdict, diffs, context_update}`；verdict 取 §6.4 判定或 `Empty`；未给 cert_id 时先校验 session 证书（读集中已被取代的条目跳过，作为取代 diff 报告一次），结果不是 Valid / ValidRecertified 就直接返回该结果、不重新签发；签发失败时，失败的 required 条目按 §6.4 逐条映射与聚合得到判定（ADR 0008 §8.5） | P3 / P4 / P5a（按路径）；P4 起 `context_update` 在 MCP 中只是不消费的 peek，由 UserPromptSubmit 确认（ADR 0010 A6） |
 | `ctx_validate` | `(rule\|rev, verdict, label?, evidence?, curvec_seen)` → `ok \| CurvecMoved` | P3：仅 admin 通道 CLI `ctx validate`（不作为 agent 工具）/ P7 worker | P7（ADR 0015）：增加 `from_review`，返回还可能是 `ValidationExists`；agent 通道携带 RecordValidation 的提交一律 `ChannelRestricted`。
 | `ctx_txn_status` | `(client_txn_id)` → `Committed{epoch, result} \| NotCommitted`；所有写工具都接受可选 `client_txn_id` | P3 |
-| `ctx_commit` | `(ops, expect_cert_valid?, client_txn_id?)`：多 head 原子；expect_cert_valid 见 §6.1 契约 12 | P6 |
+| `ctx_commit` | `(ops, expect_cert_valid?, client_txn_id?)`：多 head 原子；expect_cert_valid 见 §6.1 契约 12 | P6。P11（protocol 9）：写工具回复可带 `settling: true`（SD8.4），此时 diff 为空，提示“status changes settling (epoch e); see ctx_changes” |
 | `ctx_branch` | `(create\|list\|archive, name?)` | P6 |
 | `ctx_what_if` | `(ops)` → diff；在 standby replica 上以 undo journal 执行后回滚，不写 op_log、不分配持久 ID、不推进 epoch | P6 |
 | `ctx_merge` | `(source, require_certified = true, certify?)` → 类型化 merge 结果 | P6 |
 | `ctx_conflicts` | `list{scope?, state?: open\|review\|candidates\|all, limit}` → open Conflict（标注 `side superseded`）、open PendingReview（标注 `stale curvec`）、候选对；`open{a, b?, reason, from?: candidate\|review}` → 同一 batch 开启 Conflict 对（from=review 时同时 resolve 该 review）；均作用于调用方 branch | P7 |
 | `ctx_resolve` | `(artifacts, note)`：只接受 Conflict 与 PendingReview；note 作为 blob 随 batch 提交 | P7 |
 | `ctx_handoff_begin` / `ctx_handoff_accept` | begin：证书须为 Valid / ValidRecertified，写入 session log 后回复；accept：claim-once（durable 后回复，`HandoffTaken` / `HandoffNotAddressed` / `BranchMismatch`），返回证书校验结果与摘要，把读集复制进接受方 ledger（已读过的 logical 跳过） | P7 |
-| `ctx_changes` | `(since_epoch, scope?, branch?, max_items, wait_ms? ≤ 30 s)` → 持久化 `diff_log` 中逐 epoch 的 status_diff；`Truncated{earliest}` 仅在投影重建或无法追上时出现 | P7 |
+| `ctx_changes` | `(since_epoch, scope?, branch?, max_items, wait_ms? ≤ 30 s)` → 持久化 `diff_log` 中逐 epoch 的 status_diff；`Truncated{earliest}` 仅在投影重建或无法追上时出现 | P7。P11：只覆盖已 settle 的 epoch，回答到 `min(tail, 最后一个已 settle 的 epoch)`，`reached` 从不越过未 settle 的 epoch，这不是 `Truncated`；长轮询由 settle 唤醒 |
 
 所有工具返回逐维度状态，汇总遵守 SD13。
 
@@ -1030,6 +1058,13 @@ Certificate {
 4. **全部 Ok 时**：按当前状态重算 vector'。`vector' == vector` → `Valid`；否则 → `ValidRecertified{new_cert, diffs}`。后者覆盖两种情况：原 witness 失效但经替代支持仍 CERTIFIED；Sem 依赖的 head 移动后已重新验证。客户端应改用新证书。
 
 `required=false`（advisory）条目只报告各自当前状态，不参与聚合。
+
+**P11 lazy 校验（v1.11.0，ADR 0019 §3.6）**：本表不变。第 0–2 步照旧执行（ChangeLog 在 ack 时记录，settled 节点的 history 精确）。pull 之后若仍有 required head 未 settled，提前返回第 0–1 步结果、各 settled 条目的映射结果、各未 settled 条目的输入层结果（`Denied`、HeadSuperseded 的 `Invalid`、`Conflicted`），其余未 settled 条目取 `Pending`，以及只对 settled required head 的 observation support 计算的 `Unknown{lag}`，按上述优先级聚合；跳过 `Ambiguous` 重算与 vector'（需要全部 head settled）。`rules` 只列 settled 条目的语义 pending 规则。设 D 为 eager 判定 V 所依赖的节点（required head 及其闭包），lazy 判定 L 满足：
+1. D 全部 settled ⇒ L = V，含 `diffs`、`entries`、`lag`、`rules`。
+2. V 只由输入决定时——`Denied`、`Invalid{LogMismatch | BranchMismatch | StrictChange}`、HeadSuperseded 的 `Invalid`、`Conflicted`——即使 D 未 settled，L 也有相同类别与原因；`diffs`、`entries`、`lag`、`rules` 可暂不完整，D settled 后才要求相等。
+3. 否则 D 有未 settled 节点时，L 恰为上述聚合，总是负面，可能是与 V 不同的负面结果（如 settled 条目 C 的 `Conflicted`，而 V 因未 settled 条目 B 为 `Invalid`；或 V 为 `Invalid` / `Ambiguous` 时的 `Pending`、`Unknown{lag}`），永不为 `Ok`、`Valid`、`ValidRecertified`。
+
+签发遇到 pull 超时仍未 settled 的 required 条目时，其汇总为 `PENDING(StructuralUnknown)`，签发失败 `NotCertified`；签发从不返回 oracle 会拒绝的证书。
 
 **P5a proof 与兼容性（ADR 0011）**：effective vector 保持上述 Sem→h 语义；freshness 与 watermark 审计另用 SD14b 的 observation support 双分支闭包。持久化每个 required root 首次认证时的证书、原始 observation scopes/paths 与 watermark baseline；选择路径不得重置 since_epoch，合并所选向量时仍检查 Ambiguous，共享 scope 采用最早窗口。旧证书无 root proof 时，过滤检查及任何 strict/历史 observation 检查（含全量与显式 cert_id）返回 Unknown{MissingBaseline}，直至显式重读；不得由当前闭包伪造旧证明。非 strict 全量检查可使用完整当前闭包。Certificate 现有 canonical bytes 不变；新增 session root-proof event，协议版本 3。新 reader 接受 format-1，写新事件前强制 rollover 为 format-2（不按大小延后）；旧 reader 在截断前拒绝未来段头，不支持降级写回。
 
@@ -1101,6 +1136,8 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 - 内存内核是 op_log 的物化视图；除 op_log、blobs 与 session log 外的表都是可重建投影（`ctx doctor --rebuild`，PROP10 / I8）。`sessions`、`read_ledger`、`certificates` 是 session log（ADR 0008 §4）的投影；session log 不参与内核状态。
 - **P10 交换域**：root 是 Git 中受信任的签名链；`teams/<id>/` replica 的日志/索引只物化其 accepted/rejected prefix，可从 chain/checkpoint 重建。`teams/<id>/proposals` 为作者未发布内容与 queued/published/accepted/rejected/conflicted/dropped/listed 状态的独立 checksummed append-only 输入；join trust anchor、leaving 状态与 announce 文件必须持久，publish.lock 只做协议互斥，remote CAS 决定 root 顺序。本地 mirror 变化仍写本地 op_log，不以复制 replica 文件代替提交。
 - **格式6 / protocol8（P10 设计）**：Local origin absent 保持既有 ops/对象/digest；新增 Replica origin、MirrorAttach、team watermark gap；日志5→6与snapshot迁移须过T119。CXTB 是 portable ops，CXTK 是 checkpoint，均受 frozen accept_version 控制。checkpoint 生成不含 Compact commit OID，Σc→T/D→Compact→F 为单向承诺，F再推进sequence；限额与恢复规则见 SD21。
+- **格式 7 / protocol 9（P11，v1.11.0，ADR 0019 §4）**：只改变帧结果的编码——`settling` 标志，置位时 diff 向量为空；帧保存的恰是已 ack 的结果，幂等重试与 `txn_status` 原样返回，replay 对 settled 帧比较完整结果、对 settling 帧比较输入层字段。不重写旧段：日志可以是格式 6 段之后接格式 7 段，各段按自身格式解码，段格式必须非递减，其他顺序或高于 7 的格式拒绝；现有校验和全部保留（证书 `LogMismatch`、镜像 `LogRewritten`、kernel snapshot 与投影保持有效）。**版本屏障**：任何格式 7 的持久化变化（提交、`ctx gc --apply`、`--compact`、首次创建 `gc/` 或 `compact/`、首个 kind-2 key-log 头）之前，若最新日志段不是格式 7，先滚动到空的格式 7 段并 sync、`sync_dir`；旧二进制在 key 重写之前的日志扫描处以 `FormatTooNew` 拒绝打开，不改变任何持久数据。不支持降级。protocol 9 增加提交回复的 `settling`、`Settling` 读错误与 GC 请求。
+- **payload GC（P11，v1.11.0，ADR 0019 §5）**：GC 不改变 kernel 输入、op_log 或 digest。内容 hash c 若属于以下任一集合则保留（在所有 branch 上求值，含已归档）：**K1** 当前活跃——head、base、任一规则（enabled 与否）的结论/premise（任意 kind）/reference、保留的 sync point 上的 head；**K2** 非 revision 内容——artifact payload、当前与被替换的 validation `meta`、resolution `note`（被替换者来自日志扫描）、K1/K2 文档 payload 内引用的 hash（`ReviewDoc.meta`）；**K3** 窗口 `(cutoff, now]` 内任一帧的 op 或其结果 `net_delta` 的 head/base 移动所指 revision 的内容；**K4** ctxd 持有的证书（会话证书、root proof、session cert、待接受 handoff 的证书）的 `vector` 与 `entries` 中 revision 的内容；**K5** `cutoff ≤` 仍存活的已发布 snapshot 的最小 epoch。`cutoff = min(now − keep_epochs, K5 界)`，`keep_epochs ≥ 100`。`ctx gc` 为 dry run；`ctx gc --apply` 分两阶段：阶段 1 在 actor 外于 epoch E0 的 snapshot 上计算候选，阶段 2 为独占 actor 步骤，先 settle，再对 `(E0, now]` 重新检查 K3、K2、当前 K4/K5 与重新写入的内容，然后 (a) 追加 `gc/ledger` 记录 `(content, key_pos, gc_generation, cutoff, now)`（`key_pos` = key-log 段号与字节偏移）并 sync、`sync_dir`，(b) 在共享 pack 索引中标记 collected，(c) 重写 key log 丢弃位置匹配 ledger 的 key，再清理 vectors、jobs、candidates 投影（各自 `collected_through`）。ledger 追加开始后的任何错误使 store poison，直到重新打开；打开时对位置等于当前已加载 key 位置的 ledger 记录重做 (c)。key-log 头增加 kind 2：`"CXKH" | 2 | purged_through u64 | collect_generation u64 | check 8`（29 B），kind 0/1 读作 `collect_generation = 0`，有 ledger 后的重写写 kind 2。**live key** 是 `(hash, position)` 不匹配任何 ledger 记录的已加载 key；读取顺序为 Shredded → live key 下认证的 pack 记录 → `Unavailable(Collected)` → `Unavailable(Missing)`。被回收的内容可重新写入（新 key、新位置、新 pack 记录），也可再次回收。`ctx gc --compact` 离线持锁：只重写含“不在 live key 下认证、且 hash 已 shred 或有 ledger 记录”的 pack 段（`compact/pack-N.new` 校验、sync 后原子 rename），重写 ledger 新一代，删除无法加载的 kernel snapshot（保留最新两个有效的）；之后 PROP10 必须成立。`ctx doctor` 截断到低于 `max(ledger cutoff)` 的 epoch 需 `--force`。`ctx doctor` 与 `ctx team status` 把 `Collected` 的 head 报告为问题；`ctx_read` 返回 `unavailable: "collected"`。配置：`[maintenance] lazy`、`lazy_budget`、`read_settle_ms`，`[gc] keep_epochs`。
 - EventLog（JSONL / bincode，带 version）是 op_log 的可移植导出；研究 track 的所有 baseline 消费同一份 EventLog。
 - 格式变更必须版本化并提供迁移，迁移有测试（T68）。
 
@@ -1249,7 +1286,7 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 | T104 | P9 | 迁移 4 → 5：hash 与帧校验和不变、证书仍有效、无明文残留；每个步骤边界及步骤 3、4 内部的 kill 与断电，P8 / P9 二进制行为、重跑结果等于一次跑完；“标记已落盘、步骤 2 未开始”固定用例；有标记或有明文的格式 5 存储都被拒，从不凭日志版本报告成功 |
 | T105 | P9 | 非 egress lane 的正文从不到达非 local validator、judge、embedder 与镜像；egress 打开后 `Skipped{egress}` 重新排队 |
 | T106 | P9 | 无访问文档时 P8 测试全部通过；store owner 的响应与 P8 语义相同 |
-| T107 | P9 | 非 owner 用已知 hash 不带字节与用未知 hash 得到同样的 `MissingBlob`（所有 hash 字段、dry run 与提交）；被 shred 的字节 → `ContentShredded`；可读 logical 上的 hash 无需字节 |
+| T107 | P9 | 非 owner 用已知 hash 不带字节与用未知 hash 得到同样的 `MissingBlob`（所有 hash 字段、dry run 与提交）；被 shred 的字节 → `ContentShredded`；可读 logical 上的 hash 无需字节。P11 增加：§6.2 列出的 Op 指向已回收内容 → `MissingBlob`，重新写入字节后成功；WHAT_IF 与其提交判定一致；团队追平在 replica 无字节时豁免 |
 | T108 | P9 | branch 与 merge：SD19 P9 补充每一类各一例（合并进 main 时 Policy 变更、未 curate 的 base、隐藏目标的 artifact、隐藏 premise 的规则 → `MergeUnauthorized`；ValidationRecord 与锚点搬运并保留来源）；合并进自己的 branch 可追上 main；非创建者归档被拒；`BranchOfAnotherPrincipal` |
 | T109 | P10 | portable round trip，无 local id；保留命名空间、A8、MixedTeamBatch、TeamDepOutside；禁止 Summary/CodeAnchor |
 | T110 | P10 | 两 clone+bare remote 的真实 fetch hook；tracking ref 各情况；重导入幂等；partial clone 按 OID 补齐前 ReplicaIncomplete |
@@ -1264,13 +1301,13 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 | T119 | P10 | 格式5→6、Local absent兼容、protocol8、全部dispatcher hook与用户prepared veto |
 | T120 | P10 | fork前无mirror→MirrorAttach；merge不搬运镜像；非replica写/本地结论拒绝；A5全扫描豁免 |
 | T121 | P10 | merge缺镜像→MirrorLag并先追平；被拒proposal的blob须重传；terminal旧代不造成lag；root撤base、shred先于mirror创建、过大proposal/alias、leave中断 |
-| T61 | P11 | lazy 节点 STRICT 读不返回缓存 CERTIFIED |
+| T61 | P11 | lazy 节点 STRICT 读不返回缓存 CERTIFIED；STRICT 消费者从不得到 eager 不会给的正面判定，§6.4 P11 校验契约成立：A(base)→B 撤销 A 的 base、B 未 settled 时非 strict 证书为 `Pending{rules: []}`，drain 后为 `Invalid`；required B 与 C，撤销 B 的支持 A 并对 C 开启 Conflict，B 未 settled、C settled 时为 `Conflicted`，drain 后为 `Invalid`；跨 frontier 签发与校验；首个切片中 base 被撤销并 settled 的 strict 证书为 `Invalid{StrictChange}`；下一次写入的 `expect_certificate`；`require_certified` merge；gate（ADR 0019 §9） |
 | T62 | P0/P3 | P0（oracle 版）：两个独立 InputModel 共用一个 epoch 计数器；oracle 的纯函数 `cert_verdict(vector, inputs, live_pos)` 签名不含 epoch，对 epoch 不同但 vector 与输入相同的两个状态给出相同判定。P3（引擎版）：同 branch 的无关提交推进 epoch 后证书仍 Valid，且 `validate` 的签名不含 epoch 参数（只以 issued_epoch 作 strict 区间下界）；跨 branch 部分随多 branch 在 P6 补齐 |
 | T63 | P0 | WHY 返回全部 active 规则，witness 与 oracle 一致，Ref 单列为 non-supporting |
 | T64 | P0 | SetHead 后旧 revision 的 base 不变 |
 | T65 | P3 | certificate 判定（§6.4）：Invalid 与 Unknown 同时成立 → Invalid；Pending 与 Unknown → Unknown；required 条目 CONFLICTED → Conflicted；PENDING(StructuralUnknown) → Pending；Sem head 移动并重新验证后 → ValidRecertified；strict 下 head 移动后虽有替代支持 → Invalid{StrictChange}（不得为 ValidRecertified） |
 | T66 | P4 | subagent 证书继承与回传 |
-| T67 | P11 | payload GC 后 PROP10 成立，被引用 payload 未回收 |
+| T67 | P11 | payload GC（`--apply` 与 `--compact`）后 PROP10 成立（从 snapshot 与完整重放）；K1–K5 的每个内容可读，含 fork（branch 继承的 head 在窗口内被 supersede，加会话证书）与持有旧 snapshot 的镜像导出；回收的内容读为 `Collected`；§6.2 各 Op 的 `MissingBlob` 及重新写入后成功；重新写入 → 回收或 shred 另一 hash → 重开仍可读；GC 与 compact 的崩溃点；回收历史上的镜像仍能校验与导出，手改回收正文的 front matter 为 `MirrorModified`；回退的团队 head 内容已回收时的追平；`ctx reindex` 等于清理后的状态（ADR 0019 §9） |
 | T68 | P2 | 旧格式 op_log 迁移后重放状态一致 |
 | T69–T71 | P12 | 递归：`X; X→A; A→B; B→A` 撤销 X；Motik 2019 Ex.5 引擎版；Hu-Motik-Horrocks 2018 Ex.3 原版 |
 | S13-rows-fn | P0 | SD13 每一行对汇总函数的纯函数 golden（含 STALE reason 顺序、semantic 维度规则） |
@@ -1282,6 +1319,7 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 ### 8.2 Properties（PROP）
 
 - **PROP1** randomized oracle：ChaCha8，固定 seed；≤6 logicals、≤14 revisions、≤10 rules（1–3 incidence，只有 Ref 的规则也会生成）；边类型权重 Pin 40% / Cur 25% / Sem 20% / Ref 15%；kind 混合含 Evidence、Summary；每 case ≤12 tx，每 tx 1–5 Op（含故意错误的 CAS、成环尝试、重复规则、enable 翻转、Rebind、RecordValidation）。每次 commit / reject 后检查 I1、I2（s / support / unsat / active / sat / witness / sem / l1 / l2 精确）、I3、错误等价。
+- **PROP1-lazy**（P11，ADR 0019 §9）：PROP1 suite 10,000 seeds，与 eager `Counting`、`FullRecompute`、oracle 逐步同步；每步从 {1, 2, 3, 8, 64, ∞} 取 `E`、从 {1, 2, 4096} 取 `C`，随机 `Settle{through}` 与空闲切片。任一时刻每个节点：settled ⇒ `dimensions == jacobi` 且各 epoch 的 history 等于 eager；未 settled ⇒ 汇总为 `PENDING(StructuralUnknown)` 或 oracle 也给出的更高优先级状态；穷举检查 `settled(r)` 可靠（最终值等于当前值）。完全 drain 后 `derived`、digest、history、stats 及该 epoch 的 `status_diff`、`l0_flips` 等于 eager。spare 在第二个 `Db` 上重放 Commit/Drain 步骤。
 - **PROP2** `l0_flips == {r | s_prev[r] ≠ s_now[r]}`（作用域：仅 L0 结构翻转）。
 - **PROP2b** `status_diff ==` 由 oracle 前后两个快照逐维度比较得到的集合（SD8.4），包括 S 不变而 L2 / sem / currency 变化的节点（例：对新 head 的 Verified 记录使 D 从 PENDING 变 CERTIFIED）。
 - **PROP3** 每个被 pop 的节点可从某 seed 前向到达（locality soundness）。
@@ -1306,12 +1344,13 @@ mirror(branch, commit, tree, epoch)  -- <data>/mirror.sqlite（P8，只是缓存
 - **PROP17** team accept/support（P10）：多 member 的有效/无效链（拒绝后继续合法 entry）、随机本地历史下，各 edge 的 accepted proposal 与 keyed digest 等于独立 `contextdb-oracle` 中 accept_version1/team support v1，含 Ref-only 与 Pin 到旧 revision；10,000 seeds。
 - **PROP18** publish/import（P10）：scratch accept 通过时，发布后导入等于将相同 proposals 按顺序直接作用于 replica；包含 entry 拆分与 CAS 重建。
 - **PROP19** mirror/history（P10）：随机 import、catch-up、fork、merge、crash recovery、rebuild 后，watermark为s的open branch镜像等于replica@s；两追平点之间任一mirror `(head,base)` 有变化，本branch change log必须有对应变化，或有gap保守覆盖；10,000 seeds。
+- **PROP20** payload GC（P11，ADR 0019 §9）：随机历史中在随机位置执行 GC，含重新写入、§6.2 的回收 `MissingBlob` Op、fork、会话、持有的 snapshot 与重开；GC 时属于 K1–K5 的每个内容在当时可读，之后经这些 Op 重新变为活跃的每个内容可读。
 
 **Coverage 门槛**（PROP1 suite 结束时断言）：≥5% tx 在同一 revision 上混合 head 与 base 翻转；≥5% 含 alternative-support save；≥3% cycle 拒绝；≥3% CAS 冲突；≥3% 同 tx 插入规则及其 premise；≥2% 触发 PK 慢路径（P1 起）。
 
 **Bounded exhaustive**（nightly）：3 logicals、4 revisions、3 条 canonical 规则池；约 20 个 Op 的字母表；深度 6 为 gate，深度 8 只报告；canonical hash 去重 + 对称约简；报告状态与迁移数，0 违例。
 
-**Mutation**（cargo-mutants，按阶段生效）：P1 起 `counting.rs`、`txn.rs`；P3 起 `layers.rs`、`cert.rs`；P5a 起 `anchors` 分类器。存活 mutant 书面说明。
+**Mutation**（cargo-mutants，按阶段生效）：P1 起 `counting.rs`、`txn.rs`；P3 起 `layers.rs`、`cert.rs`；P5a 起 `anchors` 分类器；P11 起切片、settled 判定、settle 与发布、settling 帧路径、keep set、GC ledger 与回收内容的 `MissingBlob`。存活 mutant 书面说明。
 
 shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 
@@ -1332,7 +1371,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 | SD11 | T15b、T15c、T15d、T24、T42c、T43b |
 | SD12 | T16b-sem、T16b-cert、T09i |
 | SD13 | S13-rows-fn、S13-rows-e2e |
-| SD14 | T44、T61、T113、T116 |
+| SD14 | T44、T61、T113、T116、PROP1-lazy |
 | SD15 | T63、T17b、T06a |
 | SD16 | T62 |
 | SD17 | T11、T51 |
@@ -1515,6 +1554,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 1.11.0 | 2026-11-20 | P11 G0（ADR 0019 r0.7 accepted，owner 决定 D1–D4、O1–O5）：cascade-bounded lazy 维护收窄 §P11 的逐节点选择——提交工作量超过预算 `E` 才推迟剩余部分，frontier 不持久化，settled 由有界反向 PK 搜索判定，只有 store 续做（I-L1），dry run 与 rebuild 一律 eager（SD14a、§3.4、§6.1 契约 17）；推迟的提交回复 `settling: true`，diff 在 settle 后进入 `diff_log`，`ctx_changes` 只覆盖已 settle 的 epoch（SD8.4、§6.3）；证书校验的 lazy 契约：settled 时与 eager 全字段相等，只由输入决定的结果类别与原因相同，其余为已确认结果的暂时负面聚合，永不为正面（§6.4）；op_log 格式 7（`settling` 帧、格式 6/7 混合日志、版本屏障）与 protocol 9；payload GC：keep set K1–K5、两阶段 `ctx gc --apply`、`gc/ledger` 与 kind-2 key-log 头、ledger 追加后错误即 poison、`Unavailable(Collected)`、离线 `ctx gc --compact`（§7）；回收内容上的 §6.2 Op 返回 `MissingBlob`（团队追平豁免）；E4 修订：GC 不报告 `PayloadGone`，回收正文按哈希与 front matter 校验；新错误 `Unsettled`、`Settling{epoch}`、`ProjectionsBehind`；Postgres 移出 P11；Gate P11 的 G2–G8 按 ADR 0019 §9 改写（G3 按校验契约解读、G5 初始预算）；T61、T67、T107 扩展，新增 PROP1-lazy、PROP20。实现与 G1–G8 尚未开始；安装版仍为格式 6 / protocol 8 |
 | 1.10.1 | 2026-11-18 | Gate P10 通过（owner 验收，非语义变更）：格式 6 / protocol 8 已实现；G1–G8 证据见 `docs/gates/P10.md`。owner 声明的偏离：G4 中 `team_doc` 模糊测试只跑 17.4 h（libFuzzer 4 GB RSS 上限，源于 ASan 分配器保留内存，非目标代码），其余六个目标 24 h，均 0 崩溃；G5 的 `git commit` 预算以 trivial hook 为基线测量；G6 只做 bare-remote 试运行，跳过 ≥ 5 天真实 remote 部分。owner 复核的四项缺陷已修复：独占 op 单独成 entry、rejoin 时 `TeamKeyMismatch`、超过 65,536 个新 revision 的追平分批提交（前缀批不置 base、不推进 watermark）、O4 orphan-branch 回退（`--orphan-branch`）。 |
 | 1.10.0 | 2026-11-16 | P10 G0：ADR 0018 r0.6 accepted，O1–O7确认；r0.5的1 blocker/5 major/4补充与r0.6的1 P1/3 P2闭环，Compact只消费一次预留。新增SD21（root签名链、frozen accept、replica/mirrors、队列双层授权、egress发布时复核、announce fence、strict历史/gap、Σc单向checkpoint与格式容量）；SD3/6/7/11–15/18–20和A8、API、错误、存储、T109–T121/PROP17–19、威胁边界同步。团队交换为P10，旧规模/GC为P11、递归为P12；计划格式6/protocol8，尚未实现；仅G0通过。 |
 | 1.0 | 2026-10-19 | 初版：由 research spec v0.1、实现计划、项目方案合并为长期项目 spec，P0–P11 阶段与 Verification Gate |

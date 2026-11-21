@@ -134,7 +134,7 @@ Grouped names intentionally cover several T IDs, each with explicit expectations
 | SD11 | L0/L1/L2, Pin-strict and Sem-head | T06abc, T15bc/d, T24 |
 | SD12 | ABA permitted; Evidence immutable | T16b-sem, T09i |
 | SD13 | Summary precedence, recursive reasons, semantic witness | S13-rows-fn, T15bc/d, T24 |
-| SD14 | Future Unknown/freshness never Certified | S13-rows-fn; live read integration P5, lazy maintenance P11; team lag T113/T116 pending P10 |
+| SD14 | Future Unknown/freshness never Certified | S13-rows-fn; live read integration P5, lazy maintenance P11 (designed in SPEC v1.11.0 SD14a, pending implementation); team lag T113/T116 pending P10 |
 | SD15 | WHY active alternatives, Ref separate; WHY_NOT vectors | T63, T06a, T15bc/d |
 | SD16 | Global epoch, version-based verdict | T12, T62 oracle; strict certificate history P3 |
 | SD17 | Conflict=None P0; raw cyclic oracle lfp | T09u, T11 Motik; Conflict gate P7, recursive product P12 |
