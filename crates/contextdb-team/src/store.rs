@@ -197,6 +197,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// How [`TeamStore::open_with`] treats the files.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Open {
+    /// `ctxd`'s own open; `restore` puts back an interrupted rebuild.
+    Write { restore: bool },
+    /// [`TeamStore::read_replica`]: nothing on disk changes.
+    Read,
+}
+
 impl TeamStore {
     /// Joins at genesis: records the out-of-band anchor; import does the rest.
     pub fn create(
@@ -208,7 +217,7 @@ impl TeamStore {
     ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir)?;
         write_anchor_file(dir, team, format, remote, genesis)?;
-        Self::open_with(dir, false)
+        Self::open_with(dir, Open::Write { restore: false })
     }
 
     /// Joins from a checkpoint: `first` is a later generation's first entry,
@@ -237,17 +246,25 @@ impl TeamStore {
         };
         write_atomic(&dir.join("log"), &frame.encode())?;
         write_anchor_file(dir, team, repo.format(), remote, first)?;
-        Self::open_with(dir, false)
+        Self::open_with(dir, Open::Write { restore: false })
     }
 
     /// Opens a joined team and replays its log; a torn tail is truncated.
     /// A `log.rebuild` left by an interrupted [`Self::rebuild`] is put
     /// back first (review finding 12): the rebuild runs again on request.
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
-        Self::open_with(dir, true)
+        Self::open_with(dir, Open::Write { restore: true })
     }
 
-    fn open_with(dir: &Path, restore: bool) -> Result<Self, StoreError> {
+    /// The replica as the team's log holds it, read next to a live `ctxd`
+    /// (`ctx ui`): nothing is written, put back or truncated, and an
+    /// incomplete last frame (one being appended) is ignored.
+    pub fn read_replica(dir: &Path) -> Result<Replica, StoreError> {
+        Ok(Self::open_with(dir, Open::Read)?.replica)
+    }
+
+    fn open_with(dir: &Path, mode: Open) -> Result<Self, StoreError> {
+        let restore = mode == Open::Write { restore: true };
         let aside = dir.join("log.rebuild");
         let anchor_aside = dir.join("anchor.rebuild");
         if restore && aside.exists() {
@@ -291,11 +308,18 @@ impl TeamStore {
             frames.push(f);
             at += n;
         }
-        let log = OpenOptions::new().create(true).append(true).open(&path)?;
-        if at < buf.len() {
-            log.set_len(at as u64)?;
-            log.sync_all()?;
-        }
+        let log = if mode == Open::Read {
+            // Read-only: the handle is never written, and a torn tail may
+            // be a frame `ctxd` is still appending.
+            File::open(&path)?
+        } else {
+            let log = OpenOptions::new().create(true).append(true).open(&path)?;
+            if at < buf.len() {
+                log.set_len(at as u64)?;
+                log.sync_all()?;
+            }
+            log
+        };
         let mut s = Self {
             dir: dir.to_owned(),
             team,

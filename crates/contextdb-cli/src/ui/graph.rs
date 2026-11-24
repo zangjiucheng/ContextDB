@@ -8,6 +8,7 @@
 use contextdb_core::{BranchView, Kernel, Proof};
 use contextdb_model::*;
 use contextdb_store::{StdDisk, log};
+use contextdb_team::{replica::Replica, store::TeamStore};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -21,6 +22,9 @@ pub struct Snapshot {
     pub epoch: Epoch,
     /// Per epoch: who committed what, on which branch (for the timeline).
     pub rows: Vec<Commit>,
+    /// Each joined team's replica (by lowercase hex id), read from its own
+    /// log: mirrors carry no rules, the root's rules live there (ADR 0018).
+    pub teams: BTreeMap<String, Result<Replica, String>>,
 }
 pub struct Commit {
     pub epoch: Epoch,
@@ -45,6 +49,24 @@ pub fn fingerprint(dir: &Path) -> Fingerprint {
             let m = e.metadata().ok()?;
             Some((e.path(), m.len(), m.modified().ok()))
         })
+        .collect();
+    // A team's log too: its root rules can change without a local commit.
+    out.extend(team_dirs(dir).into_iter().filter_map(|(_, d)| {
+        let m = std::fs::metadata(d.join("log")).ok()?;
+        Some((d.join("log"), m.len(), m.modified().ok()))
+    }));
+    out.sort();
+    out
+}
+/// `(hex id, directory)` of every joined team (`<data>/teams/<hex>/anchor`).
+fn team_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<_> = std::fs::read_dir(dir.join(contextdb_daemon::team::TEAMS_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| d.join("anchor").is_file())
+        .filter_map(|d| Some((d.file_name()?.to_str()?.to_owned(), d)))
         .collect();
     out.sort();
     out
@@ -99,10 +121,17 @@ pub fn load(dir: &Path) -> Result<Snapshot, String> {
         });
     }
     let epoch = rows.last().map_or(Epoch(0), |c| c.epoch);
+    let teams = (team_dirs(dir).into_iter())
+        .map(|(id, d)| {
+            let r = TeamStore::read_replica(&d).map_err(|e| format!("{e:?}"));
+            (id, r)
+        })
+        .collect();
     Ok(Snapshot {
         kernel,
         epoch,
         rows,
+        teams,
     })
 }
 /// The summary as a short label and a class for colouring.
@@ -173,6 +202,20 @@ fn why_not(w: &WhyNot) -> Value {
     })
 }
 impl Snapshot {
+    /// The root's rules over the team records this branch mirrors (see
+    /// [`team_rules`]), with ids that never collide with local rule ids.
+    fn team_rules(&self, v: &BranchView<'_>) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (id, replica) in &self.teams {
+            if let Ok(replica) = replica {
+                out.extend(team_rules(v, id, |path| replica.why(path)));
+            }
+        }
+        for (n, rule) in out.iter_mut().enumerate() {
+            rule["id"] = json!(format!("root {n}"));
+        }
+        out
+    }
     pub fn view(&self, branch: BranchId) -> Result<BranchView<'_>, String> {
         self.kernel
             .branch(branch)
@@ -201,7 +244,8 @@ impl Snapshot {
         let v = self.view(branch)?;
         // Observation as of the last committed watermark of each anchor
         // scope: a replay has no live position, and lag is ctxd's to report.
-        let committed: BTreeMap<String, Vec<u8>> = v
+        let inputs = v.db().inputs();
+        let mut committed: BTreeMap<String, Vec<u8>> = v
             .logicals()
             .filter_map(|l| {
                 let (_, k, lane) = v.logical_info(l)?;
@@ -209,6 +253,14 @@ impl Snapshot {
                 (k == RecordKind::CodeAnchor).then(|| (lane, w.to_vec()))
             })
             .collect();
+        // Team mirrors likewise, as of the branch's last catch-up: without a
+        // `team:<id>` position every mirror read as PENDING(ReplicationLag)
+        // (cert.rs `lags`), although ctxd reads them CERTIFIED.
+        committed.extend(
+            (inputs.watermarks.iter())
+                .filter(|(scope, _)| scope.starts_with("team:"))
+                .map(|(scope, w)| (scope.clone(), w.clone())),
+        );
         let logicals: Vec<Value> = v
             .logicals()
             .filter_map(|l| {
@@ -219,9 +271,25 @@ impl Snapshot {
                 Some(json!({
                     "id": l.0, "key": key, "kind": format!("{k:?}"), "lane": lane,
                     "head": v.head(l).map(|r| r.0), "anchor": anchor,
+                    "team": mirror_path(&key).map(|(team, _)| team),
                 }))
             })
             .collect();
+        // A mirror revision's local twin: the revision of the local record
+        // whose key is the mirror's team path, with the same content (the
+        // store published its own record and imported it back). The page
+        // can show the pair once; nothing here changes the data.
+        let index = content_index(&v);
+        let twin = |r: RevisionId| -> Option<u32> {
+            let (key, ..) = v.logical_info(v.revision_logical(r)?)?;
+            let (_, path) = mirror_path(&key)?;
+            let local = v
+                .logical_by_key(path)
+                .filter(|_| mirror_path(path).is_none())?;
+            index
+                .get(&(local, v.revision_content(r).ok()?))
+                .map(|t| t.0)
+        };
         let mut rules = Vec::new();
         let revisions: Vec<Value> = Self::revisions(&v)
             .filter_map(|r| {
@@ -250,10 +318,11 @@ impl Snapshot {
                     "l0": node.l0, "l1": node.l1, "l2": node.l2,
                     "support": node.support,
                     "branch_only": node.dimensions.currency == Currency::BranchOnly,
+                    "twin": twin(r),
                 }))
             })
             .collect();
-        let inputs = v.db().inputs();
+        rules.extend(self.team_rules(&v));
         let conflicts: Vec<Value> = (inputs.artifacts.iter().enumerate())
             .filter(|(_, a)| a.ty == ArtifactType::Conflict)
             .map(|(n, a)| {
@@ -340,6 +409,70 @@ impl Snapshot {
             .collect();
         json!({ "epoch": self.epoch.0, "commits": items })
     }
+}
+/// `(team hex id, path)` of a mirror's key, `team/<id>/<path>`.
+fn mirror_path(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("team/")?.split_once('/')
+}
+/// Each revision visible on the branch by `(logical, content)`: a revision
+/// is identified by them (SPEC §2.1).
+fn content_index(v: &BranchView<'_>) -> BTreeMap<(LogicalId, ContentHash), RevisionId> {
+    let mut out = BTreeMap::new();
+    for r in Snapshot::revisions(v) {
+        if let (Some(l), Ok(c)) = (v.revision_logical(r), v.revision_content(r)) {
+            out.insert((l, c), r);
+        }
+    }
+    out
+}
+/// The rules `why` gives for team `id`'s records (the root's, kept in the
+/// replica: mirrors carry none, ADR 0018 §5.1), between the revisions `v`
+/// mirrors. Each incidence goes to the mirror revision holding the root's
+/// content; one the branch has not caught up to is left out, and a rule
+/// left with no incidence is dropped.
+fn team_rules(
+    v: &BranchView<'_>,
+    id: &str,
+    why: impl Fn(&str) -> Option<contextdb_team::replica::Why>,
+) -> Vec<Value> {
+    let by_content = content_index(v);
+    let rev = |path: &str, c: &ContentHash| {
+        let l = v.logical_by_key(&format!("team/{id}/{path}"))?;
+        by_content.get(&(l, *c)).copied()
+    };
+    let prefix = format!("team/{id}/");
+    let mut out = Vec::new();
+    for l in v.logicals() {
+        let Some((key, ..)) = v.logical_info(l) else {
+            continue;
+        };
+        let Some(path) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(why) = why(path) else { continue };
+        let Some(conclusion) = rev(path, &why.head) else {
+            continue;
+        };
+        for (enabled, incidences) in why.rules {
+            let (mut premises, mut references) = (Vec::new(), Vec::new());
+            for (p, k, c) in &incidences {
+                let Some(r) = rev(p, c) else { continue };
+                if *k == EdgeKind::Ref {
+                    references.push(json!(r.0));
+                } else {
+                    premises.push(json!({ "rev": r.0, "kind": kind(*k) }));
+                }
+            }
+            if premises.is_empty() && references.is_empty() {
+                continue;
+            }
+            out.push(json!({
+                "team": true, "conclusion": conclusion.0, "enabled": enabled,
+                "premises": premises, "references": references,
+            }));
+        }
+    }
+    out
 }
 /// A Summary revision's pending count (ADR 0016 §6), as `ctxd` reports it:
 /// of its witness rule's Sem premises (the first enabled rule concluding
@@ -446,6 +579,146 @@ mod tests {
         let t = snap.timeline(10);
         assert_eq!(t["commits"][0]["epoch"], 3);
         assert_eq!(t["commits"][2]["ops"], json!(["CreateLogical"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A team mirror reads as of its branch's last committed catch-up, as
+    /// an anchor does: CERTIFIED, not PENDING(ReplicationLag) for want of a
+    /// live position the replay cannot have. The root's rules, which the
+    /// replica holds and mirrors do not, become edges between the mirror
+    /// revisions holding the root's contents (v0.4.2).
+    #[test]
+    fn team_mirrors_read_as_of_the_catch_up_with_the_root_rules() {
+        use contextdb_model::{Channel, Origin};
+        use contextdb_team::replica::Why;
+        let dir = std::env::temp_dir().join(format!("ctx-ui-team-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let team = [0xab; 16];
+        let id = "ab".repeat(16);
+        let mut contents = Vec::new();
+        {
+            let (mut store, _) =
+                Store::open(StdDisk::default(), &dir, &OpenOptions::default()).unwrap();
+            let mut ops = Vec::new();
+            for path in ["a", "b", "c"] {
+                let content = store.put_blob(path.as_bytes()).unwrap();
+                contents.push(content);
+                ops.push(Op::CreateLogical {
+                    origin: Origin::Replica { team },
+                    key: format!("team/{id}/{path}"),
+                    kind: RecordKind::Decision,
+                    scope_lane: format!("team:{id}/main"),
+                    content,
+                    adopt_as_base: true,
+                });
+            }
+            ops.push(Op::ObserverWatermark {
+                scope: format!("team:{id}"),
+                expected: None,
+                position: b"g0:1".to_vec(),
+                gap: false,
+            });
+            let mut b = Batch::new(ops);
+            b.channel = Channel::Replica;
+            store.commit(&b).unwrap();
+        }
+        let snap = load(&dir).unwrap();
+        let g = snap.graph(MAIN).unwrap();
+        for r in g["revisions"].as_array().unwrap() {
+            assert_eq!(r["class"], "certified", "{r}");
+        }
+        // No team directory: no replica, no root rules.
+        assert!(snap.teams.is_empty());
+        assert_eq!(g["rules"], json!([]));
+        // The root: a from (b cur, c ref, an unknown record), a disabled
+        // rule over the unknown record only, and b's head at a content this
+        // branch has not caught up to.
+        let (ca, cb, cc) = (contents[0], contents[1], contents[2]);
+        let why = |path: &str| {
+            let rules = match path {
+                "a" => vec![
+                    (
+                        true,
+                        vec![
+                            ("b".to_owned(), EdgeKind::Cur, cb),
+                            ("c".to_owned(), EdgeKind::Ref, cc),
+                            ("gone".to_owned(), EdgeKind::Pin, [9; 32]),
+                        ],
+                    ),
+                    (false, vec![("gone".to_owned(), EdgeKind::Pin, [9; 32])]),
+                ],
+                "b" => vec![(true, vec![("c".to_owned(), EdgeKind::Pin, cc)])],
+                _ => return None,
+            };
+            let head = if path == "a" { ca } else { [7; 32] };
+            Some(Why {
+                head,
+                status: Summary::Certified,
+                base: true,
+                rules,
+            })
+        };
+        let v = snap.view(MAIN).unwrap();
+        assert_eq!(
+            team_rules(&v, &id, why),
+            vec![json!({
+                "team": true, "conclusion": 0, "enabled": true,
+                "premises": [{ "rev": 1, "kind": "cur" }], "references": [2],
+            })]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A mirror's revision names its local twin, the local record with the
+    /// mirror's team path as key and the same content (a store that
+    /// published its own record and imported it back), so the page can show
+    /// the pair once. A mirror whose content differs has none.
+    #[test]
+    fn mirrors_name_their_local_twin() {
+        use contextdb_model::{Channel, Origin};
+        let dir = std::env::temp_dir().join(format!("ctx-ui-twin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let team = [0xab; 16];
+        let id = "ab".repeat(16);
+        {
+            let (mut store, _) =
+                Store::open(StdDisk::default(), &dir, &OpenOptions::default()).unwrap();
+            let same = store.put_blob(b"same").unwrap();
+            let local_b = store.put_blob(b"local b").unwrap();
+            let team_b = store.put_blob(b"team b").unwrap();
+            let local = |key: &str, content| Op::CreateLogical {
+                origin: Origin::Local,
+                key: key.into(),
+                kind: RecordKind::Decision,
+                scope_lane: "project".into(),
+                content,
+                adopt_as_base: true,
+            };
+            store
+                .commit(&Batch::new(vec![local("p/a", same), local("p/b", local_b)]))
+                .unwrap();
+            let mirror = |path: &str, content| Op::CreateLogical {
+                origin: Origin::Replica { team },
+                key: format!("team/{id}/{path}"),
+                kind: RecordKind::Decision,
+                scope_lane: format!("team:{id}/main"),
+                content,
+                adopt_as_base: true,
+            };
+            let mut b = Batch::new(vec![mirror("p/a", same), mirror("p/b", team_b)]);
+            b.channel = Channel::Replica;
+            store.commit(&b).unwrap();
+        }
+        let g = load(&dir).unwrap().graph(MAIN).unwrap();
+        let team_of: Vec<Value> = (g["logicals"].as_array().unwrap().iter())
+            .map(|l| l["team"].clone())
+            .collect();
+        assert_eq!(
+            team_of,
+            vec![json!(null), json!(null), json!(id), json!(id)]
+        );
+        let twins: Vec<Value> = (g["revisions"].as_array().unwrap().iter())
+            .map(|r| r["twin"].clone())
+            .collect();
+        assert_eq!(twins, vec![json!(null), json!(null), json!(0), json!(null)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
     /// A Summary head carries its changed-premise count (ADR 0016 §6);

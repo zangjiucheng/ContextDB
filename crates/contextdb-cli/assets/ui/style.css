@@ -114,3 +114,4 @@ h3.levels { display: flex; align-items: center; gap: 4px; }
   #panel { position: absolute; inset: auto 0 0 0; height: 60%; border-left: 0; border-top: 1px solid var(--line); }
   #legend { display: none; }
 }
+.team-copies { padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg); }

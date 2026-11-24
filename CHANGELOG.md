@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-11-24
+
+Fixes to `ctx ui` for stores in a team. No format or protocol change: install the four binaries together and restart `ctxd`; no migration.
+
+- **`ctx ui` shows team records with their real status.** The ui replays the log and has no live team position, so every team mirror read as `PENDING(ReplicationLag)` while `ctxd`, `ctx_read` and agents read the same records as CERTIFIED. A mirror now reads as of its branch's last committed catch-up, as a code anchor already reads as of its last committed watermark. `ctxd`'s own reads are unchanged.
+- **`ctx ui` draws the team's dependencies.** Mirrors carry no rules: the root's rules live in the team replica (ADR 0018), so the graph showed team records without any edge. The ui now reads each joined team's replica from its log, read-only (an incomplete last frame that `ctxd` may be appending is skipped, never cut), and draws the root's rules between the mirror revisions holding the root's contents; the detail panel names them "team rule (at the root)". A rule over a record the branch has not caught up to is left out until it has. The graph also refreshes when a team's log changes.
+- **`ctx ui` shows a record and its own team copy once.** A store that publishes its records and imports them back held each one twice: the local record and its mirror `team/<id>/<same key>`. A "team copies" control (remembered per browser) now chooses: *merged* (default) folds a mirror whose content equals the local record with the same key into that record, which carries a `team` tag, and moves the mirror's edges onto it; a mirror whose content differs, or with no local record, stays. *shown* lists everything as stored; *hidden* lists local records only. Only the page changes; the data and `ctxd`'s answers are the same.
 - **P11 G0 passed (2026-11-20).** ADR 0019 r0.7 is accepted and its §11 amendments are in SPEC v1.11.0:
   - cascade-bounded lazy maintenance: a commit defers propagation past a work budget `E` and reports `settling`; settled reads equal eager; unsettled STRICT reads fail closed with `PENDING(StructuralUnknown)`;
   - op_log format 7, with format-6 and format-7 segments in one log and a version barrier, and protocol 9;

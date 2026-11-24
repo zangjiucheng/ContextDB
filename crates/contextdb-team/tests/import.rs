@@ -313,6 +313,11 @@ fn import_restart_and_torn_log() {
     let mut bytes = std::fs::read(&log).unwrap();
     bytes.extend_from_slice(b"CXTL\x00\x00\x10\x00partial");
     std::fs::write(&log, &bytes).unwrap();
+    // `ctx ui` reads next to `ctxd`: the same replica, and nothing is cut
+    // (the tail may be a frame still being appended).
+    let read = TeamStore::read_replica(&dir).unwrap();
+    assert_eq!(read.digest(), p.replica.digest());
+    assert_eq!(std::fs::read(&log).unwrap(), bytes);
     let s = TeamStore::open(&dir).unwrap();
     assert_eq!(s.replica().digest(), p.replica.digest());
     drop(s);
@@ -346,6 +351,10 @@ fn import_restart_and_torn_log() {
     .unwrap();
     std::fs::rename(dir.join("log"), dir.join("log.rebuild")).unwrap();
     std::fs::write(dir.join("log"), b"").unwrap();
+    // A read puts nothing back: that is `ctxd`'s open.
+    let _ = TeamStore::read_replica(&dir);
+    assert!(dir.join("log.rebuild").exists());
+    assert!(dir.join("anchor.rebuild").exists());
     let mut s = TeamStore::open(&dir).unwrap();
     assert!(!dir.join("log.rebuild").exists());
     assert!(!dir.join("anchor.rebuild").exists());

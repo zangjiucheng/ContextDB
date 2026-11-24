@@ -11,6 +11,14 @@ const NODE_W = 236, NODE_H = 60, GAP_X = 32, GAP_Y = 74;
 const NET_W = 172, NET_H = 28;
 const CLASSES = ["certified", "stale", "pending", "conflicted", "unavailable"];
 const KINDS = ["pin", "cur", "sem", "ref"];
+const TEAM_COPIES = ["merged", "shown", "hidden"];
+/// A per-viewer preference; storage may be absent (private window).
+function stored(key, fallback) {
+  try { return localStorage.getItem(`ctxui.${key}`) ?? fallback; } catch { return fallback; }
+}
+function store(key, value) {
+  try { localStorage.setItem(`ctxui.${key}`, value); } catch { /* not kept */ }
+}
 
 const state = {
   graph: null, timeline: null, fingerprint: null, byRev: new Map(), byLogical: new Map(),
@@ -18,6 +26,9 @@ const state = {
   view: { x: 40, y: 40, k: 1 }, highlight: null, tab: "records", laidOut: false,
   branch: 0, focus: 0, collapsed: new Set(), changedSummaries: false, level: "abstract",
   layout: "network",
+  // Team copies (P10 mirrors): "merged" | "shown" | "hidden" (see teamView).
+  // `raw`: the graph as served; `folded`: mirror revision -> local twin.
+  teamCopies: stored("teamCopies", "merged"), raw: null, folded: new Map(),
   // Network layout: the live simulation, kept across refreshes.
   // `sig`: the structure the network scene was built for (see structure()).
   sim: { pos: new Map(), alpha: 0, raf: 0, drag: null, tick: null, sig: null },
@@ -353,9 +364,72 @@ const kindLabel = (l) => (l.kind === "CodeAnchor" ? (l.anchor?.includes("#") ? "
 const revOf = (id) => state.byRev.get(id);
 const logicalOf = (id) => state.byLogical.get(id);
 function setGraph(graph) {
-  state.graph = graph;
-  state.byRev = new Map(graph.revisions.map((r) => [r.id, r]));
-  state.byLogical = new Map(graph.logicals.map((l) => [l.id, l]));
+  state.raw = graph;
+  if (!TEAM_COPIES.includes(state.teamCopies)) state.teamCopies = "merged";
+  const g = teamView(graph);
+  state.graph = g;
+  state.byRev = new Map(g.revisions.map((r) => [r.id, r]));
+  state.byLogical = new Map(g.logicals.map((l) => [l.id, l]));
+}
+/// The revision a link to `id` shows: itself, its local twin when its
+/// team copy is merged, or null when team copies are hidden.
+const shownRev = (id) => (state.byRev.has(id) ? id : state.folded.get(id) ?? null);
+/// Team copies, as the viewer chose; the data is not changed.
+/// - "shown": every mirror (`team/<id>/…`) as stored.
+/// - "hidden": local records only; incidences on mirrors are dropped and
+///   counted on their rule (`omitted`).
+/// - "merged": a mirror whose head has a local twin (the server's `twin`:
+///   the local record with the mirror's team path as key and the same
+///   content, i.e. this store's own record published and imported back) is
+///   folded into that record, and its edges go to it. A mirror whose head
+///   differs from the local record, or that has none, stays.
+function teamView(g) {
+  state.folded = new Map();
+  const mode = state.teamCopies;
+  if (mode === "shown" || !g.logicals.some((l) => l.team)) return g;
+  const revs = new Map(g.revisions.map((r) => [r.id, r]));
+  const drop = new Set(), copyOf = new Map();
+  for (const l of g.logicals) {
+    if (!l.team) continue;
+    if (mode === "hidden") { drop.add(l.id); continue; }
+    const twin = revs.get(revs.get(l.head)?.twin);
+    if (!twin || !twin.head) continue;
+    drop.add(l.id);
+    copyOf.set(twin.logical, l.key);
+  }
+  if (mode === "merged") {
+    const heads = new Map(g.logicals.map((l) => [l.id, l.head]));
+    for (const r of g.revisions) {
+      if (!drop.has(r.logical)) continue;
+      // An older mirror revision with no twin goes to the record itself.
+      state.folded.set(r.id, r.twin ?? revs.get(heads.get(r.logical))?.twin);
+    }
+  }
+  const gone = (id) => drop.has(revs.get(id)?.logical) && !state.folded.has(id);
+  const to = (id) => state.folded.get(id) ?? id;
+  const rules = [], seen = new Set();
+  for (const rule of g.rules) {
+    if (gone(rule.conclusion)) continue;
+    const conclusion = to(rule.conclusion);
+    const premises = rule.premises.filter((p) => !gone(p.rev)).map((p) => ({ ...p, rev: to(p.rev) }))
+      .filter((p) => p.rev !== conclusion);
+    const references = rule.references.filter((x) => !gone(x)).map(to).filter((x) => x !== conclusion);
+    const omitted = rule.premises.filter((p) => gone(p.rev)).length + rule.references.filter(gone).length;
+    if (rule.team && !premises.length && !references.length) continue;
+    // A root rule that is the local rule over the same records, once.
+    const sig = JSON.stringify([conclusion, rule.enabled, premises.map((p) => `${p.rev}${p.kind}`).sort(), [...references].sort()]);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    rules.push({ ...rule, conclusion, premises, references, omitted });
+  }
+  return {
+    ...g,
+    logicals: g.logicals.filter((l) => !drop.has(l.id)).map((l) => (copyOf.has(l.id) ? { ...l, teamCopy: copyOf.get(l.id) } : l)),
+    revisions: g.revisions.filter((r) => !drop.has(r.logical)),
+    rules,
+    conflicts: (g.conflicts || []).filter((c) => !gone(c.target)).map((c) => ({ ...c, target: to(c.target) })),
+    teamDropped: drop.size,
+  };
 }
 const query = (extra) => `${extra}${extra.includes("?") ? "&" : "?"}branch=${state.branch}`;
 
@@ -828,6 +902,11 @@ function applyView() {
 // ---- detail panel ------------------------------------------------------
 
 async function select(rev) {
+  // A team copy that is merged opens its local record; a hidden one shows
+  // the team copies again.
+  if (shownRev(rev) === null && state.teamCopies === "hidden") setTeamCopies("shown");
+  rev = shownRev(rev) ?? rev;
+  if (!revOf(rev)) return;
   const moved = state.selected !== rev;
   state.selected = rev;
   state.highlight = null;
@@ -847,6 +926,7 @@ async function select(rev) {
   row("kind", kindLabel(l));
   if (l.anchor) row("key", l.key);
   row("scope", l.lane);
+  if (l.teamCopy) row("team copy", `${l.teamCopy} (same content, merged here)`);
   row("revision", `r${r.id}${r.head ? " (head)" : ` (head is r${l.head})`}`);
   if (r.branch_only) row("branch", "only on another branch (BRANCH_ONLY on main)");
   row("base", r.base ? "yes" : "no");
@@ -917,8 +997,10 @@ async function select(rev) {
   if (!own.length) box.append(html("div", "muted", r.base ? "base (no rule needed)" : "no rules"));
   for (const rule of own) {
     const line = html("div", "list");
-    const note = rule.premises.length ? "" : " · references only, never supports";
-    line.append(html("span", "muted", `rule ${rule.id}${rule.enabled ? "" : " (disabled)"}${note}:`));
+    const hidden = rule.omitted ? ` · ${rule.omitted} on hidden team copies` : "";
+    const note = (rule.premises.length || rule.omitted ? "" : " · references only, never supports") + hidden;
+    const name = rule.team ? "team rule (at the root)" : `rule ${rule.id}`;
+    line.append(html("span", "muted", `${name}${rule.enabled ? "" : " (disabled)"}${note}:`));
     for (const p of rule.premises) line.append(revLink(p.rev, `${p.kind} → `));
     for (const x of rule.references) line.append(revLink(x, "ref → "));
     box.append(line);
@@ -995,17 +1077,18 @@ function whyNotTree(w, own) {
   return ul;
 }
 function revLink(rev, prefix) {
-  const r = revOf(rev);
-  const l = r && logicalOf(r.logical);
-  const s = html("span", "link", `${prefix}${l ? label(l) : "?"}@r${rev}`);
+  const r = revOf(shownRev(rev) ?? rev) ?? state.raw?.revisions.find((x) => x.id === rev);
+  const l = r && (logicalOf(r.logical) ?? state.raw?.logicals.find((x) => x.id === r.logical));
+  const s = html("span", "link", `${prefix}${l ? label(l) : "?"}@r${r?.id ?? rev}`);
   s.title = r ? r.summary : "";
   s.addEventListener("click", () => select(rev));
   return s;
 }
 function highlightRevs(revs) {
   const set = new Set();
-  for (const rev of revs) {
-    const r = revOf(rev);
+  for (const id of revs) {
+    const rev = shownRev(id);
+    const r = rev === null ? null : revOf(rev);
     if (!r) continue;
     set.add(state.allRevs ? `r${rev}` : `l${r.logical}`);
   }
@@ -1107,6 +1190,11 @@ function recordRow({ r, l, leaf }, depth) {
   const note = premiseNote(r, false);
   if (note) top.append(html("span", "badge pending small", note));
   if (r.branch_only) top.append(html("span", "tag", "branch only"));
+  if (l.teamCopy) {
+    const t = html("span", "tag", "team");
+    t.title = `published to the team as ${l.teamCopy} (same content; its copy is merged here)`;
+    top.append(t);
+  }
   row.append(top);
   if (r.abstract) row.append(html("div", "rec-abstract", r.abstract));
   row.title = l.key;
@@ -1206,6 +1294,19 @@ function renderChrome() {
     if (!counts[c] && !state.hidden.has(c)) continue;
     chip(c, `${c} ${counts[c]}`, !state.hidden.has(c), flip(c));
   }
+  if (state.raw.logicals.some((l) => l.team)) {
+    const s = html("select", "team-copies");
+    s.title = "Team copies: records imported from the team (team/<id>/…). Merged: a copy identical to a local record with the same key is shown once, as that record.";
+    for (const m of TEAM_COPIES) {
+      const o = html("option", "", `team copies: ${m}`);
+      o.value = m;
+      o.selected = m === state.teamCopies;
+      s.append(o);
+    }
+    s.addEventListener("change", () => setTeamCopies(s.value));
+    chips.append(s);
+    if (g.teamDropped) chips.append(html("span", "muted", `${g.teamDropped} ${state.teamCopies === "merged" ? "merged into local records" : "hidden"}`));
+  }
   if (heads && counts.certified === heads) chips.append(html("span", "ok", "all heads certified"));
   const superseded = g.revisions.length - heads;
   if (superseded) chips.append(html("span", "muted", `${superseded} superseded revision${superseded === 1 ? "" : "s"}`));
@@ -1227,6 +1328,16 @@ function renderChrome() {
   }
   legend.append(html("div", "muted", "thick border = base"), html("div", "muted", "dashed box = old revision"),
     html("div", "muted", "ref: never changes status"), html("div", "muted", "purple = open conflict"));
+}
+function setTeamCopies(mode) {
+  state.teamCopies = mode;
+  store("teamCopies", mode);
+  setGraph(state.raw);
+  if (state.selected !== null) state.selected = shownRev(state.selected);
+  state.laidOut = false;
+  state.sim.sig = null;
+  renderChrome();
+  renderView();
 }
 function setTab(tab) {
   if (tab !== "graph") stopSim();
