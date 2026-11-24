@@ -14,7 +14,8 @@ paths:
   agent having to ask.
 
 A trusted observer reports code changes. One `ctxd` per data directory is
-the only writer.
+the only writer. A team shares records through the git remote the code
+already goes to (§9).
 
 ```mermaid
 flowchart LR
@@ -35,6 +36,7 @@ flowchart LR
   CTX["ctx CLI<br/>admin, setup, ui"]
   CTXD[("ctxd<br/>one per data dir")]
   DATA[("data dir<br/>op_log · blobs · session log · projections")]
+  REMOTE[("git remote<br/>team chain refs/contextdb/team/*")]
 
   CC -- "MCP tools" --> MCP
   CX -- "MCP tools" --> MCP
@@ -51,6 +53,7 @@ flowchart LR
   CTX -- admin.sock --> CTXD
   CTX -. "ctx ui: read-only op_log replay" .-> DATA
   CTXD --> DATA
+  GH -- "fetch: import · push: publish (§9)" --> REMOTE
 ```
 
 ## 2. Processes, sockets and channels
@@ -107,6 +110,7 @@ flowchart BT
   proto["contextdb-proto<br/>IPC · lease · client · gate · outbox"]
   anchors["contextdb-anchors<br/>file observer: Git OID capture, classify"]
   symbols["contextdb-symbols<br/>tree-sitter extraction, normaliser"]
+  team["contextdb-team<br/>team doc · CXTB · signed chain · replica"]
   daemon["contextdb-daemon<br/>ctxd"]
   mcp["contextdb-mcp<br/>ctx-mcp"]
   hooks["contextdb-hooks<br/>ctx-hook"]
@@ -119,7 +123,9 @@ flowchart BT
   proto --> core
   anchors --> proto
   symbols --> anchors
+  team --> core
   daemon --> store
+  daemon --> team
   daemon --> proto
   daemon --> anchors
   mcp --> daemon
@@ -128,6 +134,7 @@ flowchart BT
   cli --> daemon
   cli --> store
   cli --> symbols
+  cli --> team
 ```
 
 Two splits are deliberate:
@@ -347,7 +354,64 @@ flowchart LR
   WM -- "Fresh → CERTIFIED / Lagging → PENDING" --> DEP["dependent decisions and plans"]
 ```
 
-## 9. Where to read more
+## 9. Team exchange
+
+A team shares records through a git remote its members already use
+(ADR 0018, SPEC SD21). The remote holds a signed, append-only chain of
+entries under `refs/contextdb/team/<team-id>/g<n>`; the ref's
+compare-and-swap decides their order ("the root decides"). Each clone keeps
+a **replica** of the chain in `<data>/teams/<team-id>/` and a read-only
+**mirror** (`team/<team-id>/<path>`) of every team record on each of its
+open branches. Mirrors can be premises of local records, so a team change
+invalidates local dependents like any other change.
+
+Syncing rides on ordinary git commands in the clone that joined; nothing
+syncs on its own:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Ag as agent (MCP)
+  participant D as ctxd
+  participant G as git (pre-push / reference-transaction)
+  participant R as team remote
+  Note over Ag,R: write and publish
+  Ag->>D: ctx_record / ctx_commit on a team/id/… key
+  D->>D: proposal queued (proposed: id), not committed locally
+  G->>R: git push to the team remote (by name)
+  G->>R: pre-push: fetch the team ref, import
+  G->>D: publish: take the queued proposals
+  G->>G: one entry on the tip, signed with the member's SSH key
+  G->>R: push the entry: CAS on the team ref
+  Note over Ag,R: fetch and import (also on every member)
+  G->>R: git pull / git fetch from the team remote
+  G->>D: reference-transaction (prepared): announce the new tip
+  D->>D: reads over mirrors: PENDING(ReplicationLag)
+  G->>D: (committed): import
+  D->>D: replica: accept each entry (frozen accept_version)
+  D->>D: catch-up: one replica-channel batch per open branch,<br/>mirrors' head/base + team watermark CAS
+  D->>D: mirrors CERTIFIED again, dependents updated
+```
+
+- **What syncs.** A fetch or pull from the team's remote imports; a push to
+  it, by its name, publishes. Another remote, a bare URL or a dry run does
+  neither. `ctx team publish` fetches, imports and publishes without a code
+  push. `ctx team sync` and `ctxd`'s 2 s `lag_check` only re-read refs
+  already fetched; `ctxd` never fetches (REFERENCE, Team exchange).
+- **Deterministic acceptance.** Every member runs the same frozen
+  `accept` on the same chain: signature, author role, decode, then each
+  proposal as a batch on the replica. Accepted or rejected, the decision is
+  the same everywhere, so equal sequences give equal digests.
+- **Root status locally.** A mirror's head is base exactly while the record
+  is certified at the root. The root's rules stay in the replica and are not
+  copied into the local kernel; `ctx team why` and `ctx ui` read them from
+  it (`ctx ui` replays the team log read-only).
+- **Files.** `teams/<team-id>/`: `anchor` (trust anchor, remote, format),
+  `config` (repo, member, signing key path, publish policy), `log` (accepted
+  entries, replayed into the replica), `proposals` and `proposal-blobs`
+  (the queue), `announce` (the fence), `publish.lock`.
+
+## 10. Where to read more
 
 | Topic | Document |
 |---|---|
@@ -357,4 +421,5 @@ flowchart LR
 | Hooks and gating | ADR 0010; OpenCode: ADR 0014 |
 | File and symbol anchors | ADR 0011, ADR 0012 |
 | Branches, transactions, WHAT_IF | ADR 0013 |
+| Team exchange | ADR 0018; day-to-day commands: [REFERENCE.md](REFERENCE.md), Team exchange |
 | Phase status | [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md), [gates/](gates/) |
