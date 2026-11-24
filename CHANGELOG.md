@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Docs: team exchange day to day.** The reference now says which git commands sync a team (a fetch or pull from the team's remote imports; a push to it, by name, publishes; other remotes, bare URLs and dry runs do neither) and that `ctx team sync` and `lag_check` only re-read refs already fetched.
+
 ## 0.4.2 — 2026-11-24
 
 Fixes to `ctx ui` for stores in a team. No format or protocol change: install the four binaries together and restart `ctxd`; no migration.
