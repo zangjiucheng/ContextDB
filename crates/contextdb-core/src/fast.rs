@@ -106,6 +106,8 @@ impl Undo {
         revisions: &RevisionArena,
         rules: &mut RuleArena,
         b: &Batch,
+        blobs: &dyn BlobPresence,
+        shredded: Option<&BTreeMap<ContentHash, Epoch>>,
     ) -> Result<Self, TxError> {
         let mut undo = Self::default();
         let result = (|| {
@@ -117,6 +119,9 @@ impl Undo {
                         let kind = logicals.kind(logical);
                         let mirror = logicals.origin_of(logical) != Origin::Local;
                         channel(b, op, kind == RecordKind::CodeAnchor, mirror)?;
+                        if matches!(op, Op::AssertBase { .. }) {
+                            crate::txn::live_again(b, blobs, shredded, revisions.content(r))?;
+                        }
                         undo.base.entry(r).or_insert(i.base[r.index()]);
                         i.base[r.index()] = matches!(op, Op::AssertBase { .. });
                     }
@@ -134,6 +139,7 @@ impl Undo {
                         if kind == RecordKind::Evidence {
                             return Err(TxError::ImmutableKind);
                         }
+                        crate::txn::live_again(b, blobs, shredded, revisions.content(new))?;
                         if revisions.logical(expected) != logical
                             || revisions.logical(new) != logical
                         {

@@ -205,6 +205,13 @@ impl<'a> Stage<'a> {
             .copied()
             .find(|r| self.revisions.content(*r) == *content)
     }
+    /// A published or staged revision's content.
+    pub fn revision_content(&self, r: RevisionId) -> ContentHash {
+        match r.index().checked_sub(self.published_revisions()) {
+            Some(n) => self.new_revisions[n].content,
+            None => self.revisions.content(r),
+        }
+    }
     /// Existing rule with this canonical key, staged or published.
     pub fn find_rule(&self, key: &RuleKey) -> Option<RuleId> {
         if let Some(j) = self.new_rule_keys.get(key) {

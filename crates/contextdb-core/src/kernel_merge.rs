@@ -451,6 +451,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     pub(super) fn merge(
         &mut self,
         b: &Batch,
+        blobs: &dyn BlobPresence,
         epoch: Epoch,
         publish: bool,
     ) -> Result<(CommitResult, MergeReport), TxError> {
@@ -828,6 +829,33 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             (validations.keys()).any(|(_, curvec)| curvec.iter().any(|(_, gr)| lagging(*gr)));
         if rule_lags || validation_lags {
             return Err(TxError::MirrorLag);
+        }
+        // ADR 0019 §5.4: a revision the merge makes a head or a rule member
+        // on the target needs its bytes.
+        let content = |gr: u32| {
+            (s.db
+                .revision_record(RevisionId(s.local(Kind::Revision, gr).expect("visible"))))
+            .content
+        };
+        let new_heads =
+            (new_ids[0].iter()).map(|gl| s.head(*gl).expect("visible logicals have heads"));
+        let members = new_ids[2].iter().flat_map(|&gj| {
+            let j =
+                s.db.rule_record(RuleId(s.local(Kind::Rule, gj).expect("visible")));
+            std::iter::once(j.conclusion)
+                .chain(j.premises.iter().map(|p| p.premise))
+                .chain(j.references.iter().copied())
+                .map(|r| s.global(Kind::Revision, r.0))
+                .collect::<Vec<_>>()
+        });
+        // A base bit taken as true makes its revision live, as `AssertBase`.
+        let new_bases = (base.iter()).filter(|(_, v)| **v).map(|(gr, _)| *gr);
+        for gr in (heads.values().copied())
+            .chain(new_heads)
+            .chain(members)
+            .chain(new_bases)
+        {
+            crate::txn::live_again(b, blobs, Some(&self.shredded), content(gr))?;
         }
         report.convergent = convergent;
         report.newly_visible = [0, 1, 2, 3].map(|k| new_ids[k].len());

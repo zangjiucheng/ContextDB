@@ -935,7 +935,7 @@ Read modes：`Historical(epoch)`、`Snapshot(epoch)`、`CertifiedCurrent`（不�
 | `ChannelRestricted{op, channel}` | §6.1 输入契约 7（SetPolicy 非 Admin、watermark 的 scope/channel 不匹配、受限通道执行 allowlist 外 Op） | 同名 |
 | `InvalidKey{key}` | §6.1 输入契约 6 | `InvalidArgument` |
 | `InvalidPolicy` | §6.1 输入契约 8 | 同名 |
-| `MissingBlob{content}` | P2 起 payload 未先写入 store；P11 起，`SetHead{new}`、`AssertBase`、`AddRule`（结论及每个 premise 与 reference）、`Rebind{to}`、已有 revision 的 `MirrorAttach`，以及使此类 revision 在目标上成为 head 或规则成员的 merge，所指 revision 的内容已被 GC 回收且未重新写入（shred 的内容保持 P9 语义；`Channel::Replica` 的团队追平在 replica 也无字节时豁免） | 同名 |
+| `MissingBlob{content}` | P2 起 payload 未先写入 store；P11 起，`SetHead{new}`、`AssertBase`、`AddRule`（结论及每个 premise 与 reference）、`Rebind{to}`、已有 revision 的 `MirrorAttach`，以及使此类 revision 在目标上成为 head、base 或规则成员的 merge；batch 自带该内容（同批 `CreateLogical`/`AddRevision`）时不拒绝，所指 revision 的内容已被 GC 回收且未重新写入（shred 的内容保持 P9 语义；`Channel::Replica` 的团队追平在 replica 也无字节时豁免） | 同名 |
 | `Unsettled` | P11：有 frontier 时进入 `Kernel::run` / `Db::dry`（I-L1 违约，debug 构建 panic） | 同名 |
 | `Settling{epoch}` | P11：WHY / WHY_NOT 或镜像导出在等待期限内未等到所需节点 settle（可重试，daemon 读错误） | 同名 |
 | `ProjectionsBehind` | P11：`ctx gc --compact` 的重放检查发现投影落后（store 错误） | 同名 |

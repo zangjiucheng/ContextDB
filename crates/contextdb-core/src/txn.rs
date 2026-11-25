@@ -784,6 +784,7 @@ pub(crate) fn apply<S: StatsSink>(
             if i.logical_kind(logical) == RecordKind::Evidence {
                 return Err(TxError::ImmutableKind);
             }
+            live_again(b, blobs, i.shredded, i.revision_content(new))?;
             if [new, expected]
                 .iter()
                 .any(|r| i.revision_logical(*r) != logical)
@@ -800,29 +801,38 @@ pub(crate) fn apply<S: StatsSink>(
             }
             i.set_head(logical, new);
         }
-        Op::AssertBase { rev } => i.set_base(r(rev), true),
+        Op::AssertBase { rev } => {
+            live_again(b, blobs, i.shredded, i.revision_content(r(rev)))?;
+            i.set_base(r(rev), true)
+        }
         Op::RetractBase { rev } => i.set_base(r(rev), false),
         Op::AddRule {
             conclusion,
             incidences,
             enabled,
-        } => add(
-            i,
-            ids,
-            b,
-            epoch,
-            r(conclusion),
-            &incidences,
-            enabled,
-            index,
-            topo,
-            stats,
-        )?,
+        } => {
+            for rev in std::iter::once(conclusion).chain(incidences.iter().map(|(p, _)| *p)) {
+                live_again(b, blobs, i.shredded, i.revision_content(r(rev)))?;
+            }
+            add(
+                i,
+                ids,
+                b,
+                epoch,
+                r(conclusion),
+                &incidences,
+                enabled,
+                index,
+                topo,
+                stats,
+            )?
+        }
         Op::SetRuleEnabled { rule, enabled } => i.set_enabled(j(rule), enabled),
         Op::Rebind { rule, from, to } => {
             let rule = j(rule);
             let from = r(from);
             let to = r(to);
+            live_again(b, blobs, i.shredded, i.revision_content(to))?;
             if i.revision_logical(from) != i.revision_logical(to) {
                 return Err(TxError::LogicalMismatch);
             }
@@ -1063,6 +1073,9 @@ pub(crate) fn apply<S: StatsSink>(
             if revision.is_none() && !blobs.contains(&head) && !replica_shredded(i, b, &head) {
                 return Err(TxError::MissingBlob { content: head });
             }
+            if revision.is_some() {
+                live_again(b, blobs, i.shredded, head)?;
+            }
             id(i.logical_count(), CapacityKind::Logical)?;
             let rev = RevisionId(id(i.revision_count(), CapacityKind::Revision)?);
             let logical = i.push_logical_as(record, rev, Some(global));
@@ -1083,6 +1096,31 @@ pub(crate) fn apply<S: StatsSink>(
         }
     }
 
+    Ok(())
+}
+/// `MissingBlob` for an op that makes a revision with `content` live again
+/// (a head, a base, a rule member) when GC collected the payload and it was
+/// not staged again (ADR 0019 §5.4). A batch whose `CreateLogical` or
+/// `AddRevision` names the content brings its bytes with the commit, so a
+/// WHAT_IF, which carries none, answers as the commit does. Team catch-up is
+/// exempt, as it is for shredded content; shredded contents keep P9
+/// semantics and are not checked here.
+pub(crate) fn live_again(
+    b: &Batch,
+    blobs: &dyn BlobPresence,
+    shredded: Option<&std::collections::BTreeMap<ContentHash, Epoch>>,
+    content: ContentHash,
+) -> Result<(), TxError> {
+    let carried = || {
+        b.ops.iter().any(|op| {
+            matches!(op, Op::CreateLogical { content: c, .. } | Op::AddRevision { content: c, .. }
+                if *c == content)
+        })
+    };
+    let shred = shredded.is_some_and(|s| s.contains_key(&content));
+    if b.channel != Channel::Replica && !shred && blobs.collected(&content) && !carried() {
+        return Err(TxError::MissingBlob { content });
+    }
     Ok(())
 }
 /// A replica write of shredded content needs no blob: the bytes are gone

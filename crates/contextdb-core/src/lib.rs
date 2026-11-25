@@ -700,7 +700,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             if let Some(staged) = ctx.staged {
                 *staged.borrow_mut() = Staged::default();
             }
-            return self.commit_mutable(b, next, ctx.lazy);
+            return self.commit_mutable(b, blobs, next, ctx);
         }
         self.commit_structural(b, blobs, next, ctx)
     }
@@ -973,8 +973,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     fn commit_mutable(
         &mut self,
         b: &Batch,
+        blobs: &dyn BlobPresence,
         epoch: Epoch,
-        lazy: Option<Budget>,
+        ctx: &CommitContext<'_>,
     ) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
             &mut self.tables,
@@ -982,6 +983,8 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             &self.revisions,
             &mut self.rules,
             b,
+            blobs,
+            ctx.shredded,
         )?;
         let delta = undo.delta(&self.tables, &self.rules);
         let old_revisions = self.revisions.len();
@@ -995,7 +998,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             old_revisions,
             epoch,
             S::default(),
-            lazy,
+            ctx.lazy,
         ))
     }
     /// I-L1 (ADR 0019 §3.5): no batch or dry run enters a kernel with a

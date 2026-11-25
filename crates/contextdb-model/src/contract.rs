@@ -763,6 +763,13 @@ pub struct CommitResult {
 /// Checked for `CreateLogical.content` and every `AddRevision.content`, dedup hits included.
 pub trait BlobPresence {
     fn contains(&self, content: &ContentHash) -> bool;
+    /// A hash whose payload GC collected and the store has not received
+    /// again (ADR 0019 §5.4). Ops that make a revision with this content
+    /// live again refuse with `MissingBlob`; once the bytes are back the
+    /// store answers false.
+    fn collected(&self, _content: &ContentHash) -> bool {
+        false
+    }
 }
 /// P0/P1 callers and log replay: payloads are never consulted.
 #[derive(Clone, Copy, Debug, Default)]

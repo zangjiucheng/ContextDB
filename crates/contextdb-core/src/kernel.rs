@@ -329,12 +329,30 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         &mut self,
         b: &Batch,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
-        self.run(b, &AllPresent, false, None)
+        self.what_if_detailed_with(b, &AllPresent)
+    }
+    /// A dry run with blob presence. A `WHAT_IF` carries no blobs, so the
+    /// caller's `contains` answers true and only `collected` comes from the
+    /// store: the dry run and its commit then agree on ADR 0019 §5.4.
+    pub fn what_if_detailed_with(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        self.run(b, blobs, false, None)
     }
     /// `WHAT_IF` on one branch (ADR 0013 §5): the result the batch would
     /// have, with the global ids it would allocate; nothing changes.
     pub fn what_if(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
-        self.run(b, &AllPresent, false, None).map(|(r, _)| r)
+        self.what_if_with(b, &AllPresent)
+    }
+    /// [`Self::what_if`] with blob presence, as [`Self::what_if_detailed_with`].
+    pub fn what_if_with(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+    ) -> Result<CommitResult, TxError> {
+        self.run(b, blobs, false, None).map(|(r, _)| r)
     }
     fn run(
         &mut self,
@@ -438,7 +456,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             }
             Some(Op::ShredContent { .. }) => self.shred(b, next, publish)?,
             _ if merges == 1 => {
-                let (result, r) = self.merge(b, next, publish)?;
+                let (result, r) = self.merge(b, blobs, next, publish)?;
                 report = Some(r);
                 result
             }
