@@ -144,9 +144,8 @@ impl Daemon {
         let disk = StdDisk {
             full_sync: options.full_sync,
         };
-        let maintenance = crate::config::Config::load(&dir)
-            .map_err(StartError::Config)?
-            .maintenance;
+        let config = crate::config::Config::load(&dir).map_err(StartError::Config)?;
+        let maintenance = config.maintenance;
         let open = OpenOptions {
             projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
             lazy: maintenance.budget(),
@@ -169,6 +168,7 @@ impl Daemon {
         );
         service.set_anchor_routes(dir.join("anchors.routes"));
         service.set_data_dir(dir.clone());
+        service.set_gc_keep_epochs(config.gc.keep_epochs);
         if let Some(timeout) = options.anchor_live_timeout {
             service.set_anchor_live_timeout(timeout);
         }
@@ -213,6 +213,11 @@ impl Daemon {
             Ok(s) if !s.complete() => eprintln!("ctxd: shred purge pending: {s:?}"),
             Ok(_) => {}
             Err(e) => eprintln!("ctxd: shred purge failed (retried at the next start): {e}"),
+        }
+        // Likewise payloads collected by GC whose projection purge did not
+        // complete (ADR 0019 §5.2 step 4).
+        if let Err(e) = service.gc_purge() {
+            eprintln!("ctxd: GC purge failed (retried at the next start): {e}");
         }
         let uid = nix::unistd::getuid().as_raw();
         let run = lease::socket_dir(&dir, uid);

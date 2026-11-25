@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **P11 milestone 4: payload GC.**
+  - `ctx gc <dir>` reports what could be collected. `--apply` collects payloads that nothing needs: not the current state, not the last `keep_epochs` epochs (10,000 by default, at least 100), not a certificate a session or handoff holds, not a snapshot a reader holds.
+  - `ctx gc <dir> --compact`, run with ctxd stopped, reclaims the disk space.
+  - A collected payload reads `unavailable: "collected"`. Rolling a head back to it needs the bytes again; `ctx_supersede` sends them.
+  - Git mirrors keep validating over collected history, checked by hash. Kernel state, the op_log and digests are never changed.
 - **P11 milestone 3: ctxd runs lazy maintenance** (on by default; `<data>/ctxd.toml` `[maintenance] lazy = false` turns it off).
   - A large cascade is acknowledged after the budget, with `settling: true`, and finishes while ctxd is idle or when a read needs it.
   - Reads that need an unsettled record wait up to `read_settle_ms` (50 ms by default) for it to settle. They then answer exactly as eager maintenance would, or fail closed: PENDING(StructuralUnknown) for certified reads, `Settling{epoch}` for WHY, DIFF and mirror export.

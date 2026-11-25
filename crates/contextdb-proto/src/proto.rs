@@ -717,6 +717,14 @@ pub enum Request {
         confirm: bool,
         client_txn_id: Option<[u8; 16]>,
     },
+    /// `ctx gc` (admin, ADR 0019 §5.2, §5.7): payload GC with the cutoff
+    /// `min(now − keep_epochs, oldest held snapshot)` (`None`: `[gc]
+    /// keep_epochs` of `ctxd.toml`; at least 100). Without `apply` it only
+    /// reports what would be collected.
+    Gc {
+        keep_epochs: Option<u64>,
+        apply: bool,
+    },
     /// P10 `ctx team sync` (ADR 0018 §8.1): import every joined team (or
     /// one), then catch every open branch up. Store owner only.
     TeamSync {
@@ -829,6 +837,72 @@ wire_struct!(ShredTarget {
     branch,
     key,
     rev
+});
+/// What set a GC cutoff (ADR 0019 §5.1): `now − keep_epochs`, or the oldest
+/// snapshot a reader still holds (K5), when that is lower.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GcCause {
+    #[default]
+    KeepEpochs,
+    HeldSnapshot,
+}
+impl Wire for GcCause {
+    fn encode(&self, o: &mut Vec<u8>) {
+        (*self as u8).encode(o);
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::KeepEpochs,
+            1 => Self::HeldSnapshot,
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
+/// `ctx gc` (ADR 0019 §5.7). A dry run plans at `e0` and changes nothing
+/// (`generation` 0); `--apply` collects at `now`. The kept counts are
+/// distinct contents per keep set (the sets overlap).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GcSummary {
+    pub applied: bool,
+    pub keep_epochs: u64,
+    pub e0: Epoch,
+    pub cutoff: Epoch,
+    pub cause: GcCause,
+    /// K5: the oldest epoch a published snapshot still alive holds.
+    pub held: Epoch,
+    /// Collectable (dry run) or collected (`--apply`) payloads and their
+    /// pack bytes.
+    pub payloads: u64,
+    pub bytes: u64,
+    pub kept_k1: u64,
+    pub kept_k2: u64,
+    pub kept_k3: u64,
+    pub kept_k4: u64,
+    /// `--apply`: candidates phase 2 kept (named, pinned or staged again
+    /// since phase 1).
+    pub rechecked_out: u64,
+    pub generation: u64,
+    pub now: Epoch,
+    /// `--apply`: every projection purged the collected payloads.
+    pub purged: bool,
+}
+wire_struct!(GcSummary {
+    applied,
+    keep_epochs,
+    e0,
+    cutoff,
+    cause,
+    held,
+    payloads,
+    bytes,
+    kept_k1,
+    kept_k2,
+    kept_k3,
+    kept_k4,
+    rechecked_out,
+    generation,
+    now,
+    purged
 });
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
 /// `epoch`, to `summary`.
@@ -1347,6 +1421,10 @@ pub enum Response {
         targets: Vec<ShredTarget>,
         epoch: Option<Epoch>,
         purged: bool,
+    },
+    /// `ctx gc`: the dry run's plan, or what `--apply` collected.
+    Gc {
+        report: GcSummary,
     },
     /// P10 (ADR 0018 §6.2): the write is a team proposal, now queued;
     /// it publishes on the next `git push`.
@@ -2260,6 +2338,11 @@ impl Wire for Request {
                 batch.encode(o);
                 blobs.encode(o);
             }
+            Self::Gc { keep_epochs, apply } => {
+                59u8.encode(o);
+                keep_epochs.encode(o);
+                apply.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2564,6 +2647,10 @@ impl Wire for Request {
                 batch: Wire::decode(i)?,
                 blobs: Wire::decode(i)?,
             },
+            59 => Self::Gc {
+                keep_epochs: Wire::decode(i)?,
+                apply: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -2861,6 +2948,10 @@ impl Wire for Response {
                 listed.encode(o);
                 conflicted.encode(o);
             }
+            Self::Gc { report } => {
+                42u8.encode(o);
+                report.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -3042,6 +3133,9 @@ impl Wire for Response {
                 entry: Wire::decode(i)?,
                 listed: Wire::decode(i)?,
                 conflicted: Wire::decode(i)?,
+            },
+            42 => Self::Gc {
+                report: Wire::decode(i)?,
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -3381,6 +3475,14 @@ mod tests {
                 client_txn_id: Some([3; 16]),
             },
             Request::AccessShow,
+            Request::Gc {
+                keep_epochs: Some(100),
+                apply: true,
+            },
+            Request::Gc {
+                keep_epochs: None,
+                apply: false,
+            },
             Request::AccessCheck {
                 principal: "bob".into(),
                 key: "db.engine".into(),
@@ -3708,6 +3810,26 @@ mod tests {
             },
             Response::Unavailable {
                 target: "billing/notes".into(),
+            },
+            Response::Gc {
+                report: GcSummary {
+                    applied: true,
+                    keep_epochs: 100,
+                    e0: Epoch(300),
+                    cutoff: Epoch(180),
+                    cause: GcCause::HeldSnapshot,
+                    held: Epoch(180),
+                    payloads: 2,
+                    bytes: 140,
+                    kept_k1: 9,
+                    kept_k2: 1,
+                    kept_k3: 4,
+                    kept_k4: 1,
+                    rechecked_out: 1,
+                    generation: 3,
+                    now: Epoch(302),
+                    purged: true,
+                },
             },
             Response::Shred {
                 targets: vec![ShredTarget {

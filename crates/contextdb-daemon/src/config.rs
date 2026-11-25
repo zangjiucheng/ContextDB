@@ -1,4 +1,4 @@
-//! `<data>/ctxd.toml` (ADR 0019 §3.7, owner decisions O1 and O2). Optional:
+//! `<data>/ctxd.toml` (ADR 0019 §3.7, §8, owner decisions O1–O3). Optional:
 //! a missing file is the defaults; an invalid one refuses to start.
 //!
 //! ```toml
@@ -6,11 +6,17 @@
 //! lazy = true            # acknowledge a cascade within the budget (O1)
 //! lazy_budget = 1000000  # E, work units per commit and per idle slice
 //! read_settle_ms = 50    # how long a certified read waits for a pull (O2)
+//!
+//! [gc]
+//! keep_epochs = 10000    # payload GC keeps what the last N epochs named (O3)
 //! ```
 use contextdb_core::{Budget, LAZY_BUDGET};
 use std::{path::Path, time::Duration};
 
 pub const FILE: &str = "ctxd.toml";
+/// `[gc] keep_epochs` by default, and its floor (O3).
+pub const KEEP_EPOCHS: u64 = 10_000;
+pub const KEEP_EPOCHS_FLOOR: u64 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Maintenance {
@@ -33,9 +39,21 @@ impl Maintenance {
         self.lazy.then(|| Budget::new(self.lazy_budget))
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gc {
+    pub keep_epochs: u64,
+}
+impl Default for Gc {
+    fn default() -> Self {
+        Self {
+            keep_epochs: KEEP_EPOCHS,
+        }
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub maintenance: Maintenance,
+    pub gc: Gc,
 }
 impl Config {
     /// Reads `<dir>/ctxd.toml`; a missing file is the default.
@@ -49,41 +67,48 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         let table: toml::Table = text.parse().map_err(|e| format!("{FILE}: {e}"))?;
         let mut config = Self::default();
-        for key in table.keys() {
-            if key != "maintenance" {
-                return Err(format!("{FILE}: unknown section `{key}`"));
+        let mut sections = Vec::new();
+        for (key, v) in &table {
+            let known: &[&str] = match key.as_str() {
+                "maintenance" => &["lazy", "lazy_budget", "read_settle_ms"],
+                "gc" => &["keep_epochs"],
+                _ => return Err(format!("{FILE}: unknown section `{key}`")),
+            };
+            let t = (v.as_table()).ok_or(format!("{FILE}: {key} must be a table"))?;
+            if let Some(k) = t.keys().find(|k| !known.contains(&k.as_str())) {
+                return Err(format!("{FILE}: unknown {key} setting `{k}`"));
             }
+            sections.push((key.as_str(), t));
         }
-        let Some(m) = table.get("maintenance") else {
-            return Ok(config);
-        };
-        let m = (m.as_table()).ok_or(format!("{FILE}: maintenance must be a table"))?;
-        let int = |k: &str, min: i64, max: i64| -> Result<Option<u64>, String> {
-            match m.get(k) {
-                None => Ok(None),
-                Some(v) => match v.as_integer() {
-                    Some(n) if (min..=max).contains(&n) => Ok(Some(n as u64)),
-                    _ => Err(format!(
-                        "{FILE}: maintenance.{k} must be an integer in {min}..={max}"
-                    )),
-                },
+        for (section, t) in sections {
+            let int = |k: &str, min: i64, max: i64| -> Result<Option<u64>, String> {
+                match t.get(k) {
+                    None => Ok(None),
+                    Some(v) => match v.as_integer() {
+                        Some(n) if (min..=max).contains(&n) => Ok(Some(n as u64)),
+                        _ => Err(format!(
+                            "{FILE}: {section}.{k} must be an integer in {min}..={max}"
+                        )),
+                    },
+                }
+            };
+            if section == "gc" {
+                if let Some(n) = int("keep_epochs", KEEP_EPOCHS_FLOOR as i64, i64::MAX)? {
+                    config.gc.keep_epochs = n;
+                }
+                continue;
             }
-        };
-        for k in m.keys() {
-            if !["lazy", "lazy_budget", "read_settle_ms"].contains(&k.as_str()) {
-                return Err(format!("{FILE}: unknown maintenance setting `{k}`"));
+            let c = &mut config.maintenance;
+            if let Some(v) = t.get("lazy") {
+                c.lazy = (v.as_bool())
+                    .ok_or(format!("{FILE}: maintenance.lazy must be true or false"))?;
             }
-        }
-        let c = &mut config.maintenance;
-        if let Some(v) = m.get("lazy") {
-            c.lazy =
-                (v.as_bool()).ok_or(format!("{FILE}: maintenance.lazy must be true or false"))?;
-        }
-        if let Some(n) = int("lazy_budget", 1, i64::MAX)? {
-            c.lazy_budget = n;
-        }
-        if let Some(n) = int("read_settle_ms", 0, 60_000)? {
-            c.read_settle = Duration::from_millis(n);
+            if let Some(n) = int("lazy_budget", 1, i64::MAX)? {
+                c.lazy_budget = n;
+            }
+            if let Some(n) = int("read_settle_ms", 0, 60_000)? {
+                c.read_settle = Duration::from_millis(n);
+            }
         }
         Ok(config)
     }
@@ -113,6 +138,10 @@ mod tests {
             }
         );
         assert_eq!(c.budget(), None);
+        assert_eq!(Config::default().gc.keep_epochs, KEEP_EPOCHS);
+        let g = Config::parse("[gc]\nkeep_epochs = 100\n").unwrap();
+        assert_eq!(g.gc.keep_epochs, KEEP_EPOCHS_FLOOR);
+        assert_eq!(g.maintenance, Maintenance::default());
     }
     #[test]
     fn invalid_files_are_refused() {
@@ -133,6 +162,9 @@ mod tests {
                 "[maintenance]\nbudget = 5\n",
                 "unknown maintenance setting `budget`",
             ),
+            ("[gc]\nkeep_epochs = 99\n", "gc.keep_epochs"),
+            ("[gc]\nkeep = 500\n", "unknown gc setting `keep`"),
+            ("gc = 1\n", "gc must be a table"),
         ] {
             let e = Config::parse(text).unwrap_err();
             assert!(e.contains(needle), "{text:?}: {e}");

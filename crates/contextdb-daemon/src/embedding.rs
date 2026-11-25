@@ -155,6 +155,24 @@ impl Vectors {
         }
         Ok(())
     }
+    /// The last GC generation purged from `vectors.sqlite` (ADR 0019 §5.2).
+    pub fn collected_through(&self) -> Result<u64, String> {
+        (self.store.lock().expect("vectors"))
+            .collected_through()
+            .map_err(|e| e.to_string())
+    }
+    /// Deletes the vectors of collected contents, from the file and the
+    /// cache, and records `generation`.
+    pub fn collect(&self, contents: &[ContentHash], generation: u64) -> Result<(), String> {
+        (self.store.lock().expect("vectors"))
+            .collect(contents, generation)
+            .map_err(|e| e.to_string())?;
+        let mut c = self.cache.lock().expect("vector cache");
+        for x in contents {
+            c.map.remove(x);
+        }
+        Ok(())
+    }
     /// Vectors stored for the model.
     pub fn stored(&self) -> u64 {
         self.store

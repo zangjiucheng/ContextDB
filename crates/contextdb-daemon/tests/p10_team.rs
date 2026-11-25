@@ -1909,3 +1909,92 @@ fn a_rejoin_that_changes_a_mirror_keys_kind_is_refused() {
     assert!(matches!(r, Response::TeamLines { .. }), "{r:?}");
     assert_eq!(summary(&s, sid, "k/a"), Summary::Certified);
 }
+
+/// P11 (ADR 0019 §5.4): a team entry that makes a mirror's older revision
+/// the head again, after local payload GC collected that revision's body:
+/// catch-up stages the body from the replica, so the mirror's head reads
+/// and `ctx team status` reports no `Collected` head.
+#[test]
+fn p11_catch_up_restages_a_collected_mirror_revision() {
+    let mut w = World::new("gc-restage");
+    let (h1, b1) = blob(b"x: first");
+    let (h2, b2) = blob(b"x: second");
+    w.entry(vec![new_op("x", h1, false)], vec![b1]);
+    w.entry(
+        vec![
+            TeamOp::Revise {
+                path: "x".into(),
+                content: h2,
+                adopt_as_base: false,
+            },
+            TeamOp::SetHead {
+                path: "x".into(),
+                expected: h1,
+                new: h2,
+            },
+        ],
+        vec![b2],
+    );
+    w.push();
+    w.fetch();
+    let s = daemon(&w);
+    sync(&s);
+    // Local epochs past the GC window.
+    for n in 0..105 {
+        let body = format!("local {n}").into_bytes();
+        let batch = Batch::new(vec![Op::CreateLogical {
+            origin: Default::default(),
+            key: format!("local/{n}"),
+            kind: RecordKind::Fact,
+            scope_lane: "repo".into(),
+            content: *blake3::hash(&body).as_bytes(),
+            adopt_as_base: false,
+        }]);
+        let r = s.handle(
+            ADMIN,
+            Request::Raw {
+                blobs: vec![body],
+                batch,
+            },
+        );
+        assert!(matches!(r.response, Response::Committed { .. }), "{r:?}");
+    }
+    let r = s.handle(
+        ADMIN,
+        Request::Gc {
+            keep_epochs: Some(100),
+            apply: true,
+        },
+    );
+    let Response::Gc { report } = r.response else {
+        panic!("{r:?}")
+    };
+    assert!(report.payloads >= 1, "{report:?}");
+    assert!(s.actor.snapshot().log.is_collected(&h1), "x's first body");
+    // The team moves x's head back to its first revision.
+    w.entry(
+        vec![TeamOp::SetHead {
+            path: "x".into(),
+            expected: h2,
+            new: h1,
+        }],
+        vec![],
+    );
+    w.push();
+    w.fetch();
+    sync(&s);
+    let snap = s.actor.snapshot();
+    let v = snap.view(MAIN);
+    let x = v.logical_by_key(&key("x")).unwrap();
+    assert_eq!(v.revision_content(v.head(x).unwrap()), Ok(h1));
+    assert_eq!(
+        snap.log.read_blob(&h1),
+        contextdb_store::Payload::Available(b"x: first".to_vec())
+    );
+    drop(snap);
+    let lines = status(&s);
+    assert!(
+        !lines.iter().any(|l| l.contains("reads Collected")),
+        "{lines:?}"
+    );
+}

@@ -2015,6 +2015,11 @@ impl<D: Durability> LogReader<D> {
     pub fn is_collected(&self, hash: &ContentHash) -> bool {
         self.packs.read().expect("pack index").is_collected(hash)
     }
+    /// The newest GC generation in `gc/ledger` (0 without one), read from
+    /// disk (ADR 0019 §5.6: the mirror's clean mark).
+    pub fn gc_generation(&self) -> Result<u64, StoreError> {
+        Ok(gc::load(&self.disk, &self.dir).map_err(io)?.generation())
+    }
     pub(crate) fn packs(&self) -> &RwLock<PackIndex> {
         &self.packs
     }

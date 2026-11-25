@@ -479,6 +479,26 @@ impl JobTable {
         tx.commit().map_err(sql)?;
         contextdb_store::purge::finish(&c, through).map_err(sql)
     }
+    /// The last GC generation purged from this table (ADR 0019 §5.2).
+    pub fn collected_through(&self) -> Result<u64, String> {
+        contextdb_store::purge::collected_through(&self.conn()).map_err(sql)
+    }
+    /// Payload GC's purge: the rows become `Skipped` as for a shred, and
+    /// `generation` is recorded in the same transaction.
+    pub fn collect(&self, keys: &[JobKey], generation: u64) -> Result<(), String> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(sql)?;
+        for k in keys {
+            tx.execute(
+                "UPDATE jobs SET state = 5, token = token + 1, outcome_meta = NULL, last_error = NULL
+                 WHERE claim_key = ?1",
+                params![&k[..]],
+            )
+            .map_err(sql)?;
+        }
+        contextdb_store::purge::set_collected_through(&tx, generation).map_err(sql)?;
+        tx.commit().map_err(sql)
+    }
     /// Row counts per state, in [`JobState::ALL`] order.
     pub fn counts(&self) -> Result<[u64; 6], String> {
         let conn = self.conn();

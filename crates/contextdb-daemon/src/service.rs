@@ -14,6 +14,7 @@ use contextdb_model::*;
 use contextdb_store::recall::RecallIndex;
 use contextdb_store::{
     Durability, Payload, StoreError,
+    gc::GcPlan,
     session::{Layer, RootProof, SessionEvent, SessionLog},
 };
 use std::{
@@ -361,6 +362,8 @@ pub struct Service<D: Durability> {
     principals: std::sync::RwLock<Arc<crate::principals::PrincipalMap>>,
     /// Set when multi-user mode may be entered (P9 milestone 2: tests only).
     multi_user: std::sync::OnceLock<crate::principals::MultiUser>,
+    /// `[gc] keep_epochs` (ADR 0019 O3).
+    gc_keep_epochs: AtomicU64,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -1220,6 +1223,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             validators: std::sync::OnceLock::new(),
             principals: std::sync::RwLock::new(Arc::default()),
             multi_user: std::sync::OnceLock::new(),
+            gc_keep_epochs: AtomicU64::new(crate::config::KEEP_EPOCHS),
         };
         // Persist every newly detected log cut before serving (closure N1).
         let broken = service.replay(events);
@@ -1771,6 +1775,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     other => other,
                 }
             }
+            Request::Gc { keep_epochs, apply } => {
+                drop(snap);
+                if id.channel != Channel::Admin {
+                    return err("ChannelRestricted", "ctx gc requires the admin socket");
+                }
+                self.gc(keep_epochs, apply)
+            }
             Request::TeamSync { team } => {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx team requires the admin socket");
@@ -1917,9 +1928,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 self.team_call(Some(team), crate::team::Call::Why { path })
             }
             Request::TeamStatus { team } => {
+                let problems = self.collected_mirror_heads(&snap, team);
                 drop(snap);
                 let call = crate::team::Call::Status { who: id.principal };
-                self.team_call(team, call)
+                match self.team_call(team, call) {
+                    Response::TeamLines { mut lines } => {
+                        lines.extend(problems);
+                        Response::TeamLines { lines }
+                    }
+                    other => other,
+                }
             }
             Request::TeamPublishPrepare { team, yes, confirm } => {
                 drop(snap);
@@ -5255,3 +5273,4 @@ const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
 
 include!("anchor_checks.rs");
 include!("handoff.rs");
+include!("gc.rs");

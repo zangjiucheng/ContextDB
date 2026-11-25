@@ -226,6 +226,16 @@ pub struct ResolutionDoc {
 }
 wire_struct!(ResolutionDoc { v, note, at });
 
+/// The store hashes inside a document payload, for payload GC's K2 (ADR
+/// 0019 §5.1): a `ReviewDoc` names its `ValidationMeta`. No other document
+/// holds a store hash (`ValidationMeta.prompt_sha256` is the SHA-256 of a
+/// prompt, never stored). Bytes that decode as no `ReviewDoc` name nothing.
+pub fn nested_hashes(bytes: &[u8]) -> Vec<ContentHash> {
+    ReviewDoc::from_bytes(bytes)
+        .map(|r| vec![r.meta])
+        .unwrap_or_default()
+}
+
 /// A document's canonical bytes and their hash, refusing oversize documents.
 pub fn blob<T: Wire>(doc: &T) -> Result<(ContentHash, Vec<u8>), String> {
     let bytes = doc.canonical_bytes();
@@ -305,5 +315,97 @@ mod tests {
         }
         assert_eq!(Label::Conflict.trusted_verdict(), Some(Verdict::Rejected));
         assert_eq!(Label::NewRule.trusted_verdict(), None);
+    }
+
+    /// ADR 0019 §5.1 K2: every document kind, with each hash-typed field set
+    /// to its own marker, gives exactly its store hashes to `nested_hashes`.
+    /// The destructuring names every field, so a new field fails to compile
+    /// here until it is classified.
+    #[test]
+    fn nested_hashes_cover_every_document_hash_field() {
+        let (meta_hash, prompt) = ([7u8; 32], [8u8; 32]);
+        let meta = ValidationMeta {
+            v: 1,
+            kind: ValidatorKind::Llm,
+            validator: "v".into(),
+            version: "1".into(),
+            model: None,
+            prompt_sha256: Some(prompt),
+            label: Label::Conflict,
+            rationale: "r".into(),
+            evidence: vec!["k@1".into()],
+            tokens_in: None,
+            tokens_out: None,
+            job: Some([1; 16]),
+            based_on: Some(ArtifactId(2)),
+            at: 3,
+        };
+        let ValidationMeta {
+            v: _,
+            kind: _,
+            validator: _,
+            version: _,
+            model: _,
+            prompt_sha256: _, // a prompt digest, not a store hash
+            label: _,
+            rationale: _,
+            evidence: _,
+            tokens_in: _,
+            tokens_out: _,
+            job: _,
+            based_on: _,
+            at: _,
+        } = &meta;
+        let review = ReviewDoc {
+            v: 1,
+            suggestion: Suggestion::Investigate,
+            branch: MAIN,
+            rule: Some(RuleId(1)),
+            curvec: vec![(LogicalId(0), RevisionId(1))],
+            sides: vec![RevisionId(1)],
+            meta: meta_hash,
+        };
+        let ReviewDoc {
+            v: _,
+            suggestion: _,
+            branch: _,
+            rule: _,
+            curvec: _,
+            sides: _,
+            meta: _, // the store hash
+        } = &review;
+        let conflict = ConflictDoc {
+            v: 1,
+            sides: vec![RevisionId(1)],
+            reason: "r".into(),
+            source: ConflictSource::Review(ArtifactId(4)),
+            evidence: vec![],
+        };
+        let ConflictDoc {
+            v: _,
+            sides: _,
+            reason: _,
+            source: _,
+            evidence: _,
+        } = &conflict;
+        let note = ResolutionDoc {
+            v: 1,
+            note: "n".into(),
+            at: 5,
+        };
+        let ResolutionDoc {
+            v: _,
+            note: _,
+            at: _,
+        } = &note;
+        assert_eq!(nested_hashes(&review.canonical_bytes()), vec![meta_hash]);
+        for bytes in [
+            meta.canonical_bytes(),
+            conflict.canonical_bytes(),
+            note.canonical_bytes(),
+            b"plain record text".to_vec(),
+        ] {
+            assert_eq!(nested_hashes(&bytes), Vec::<ContentHash>::new());
+        }
     }
 }

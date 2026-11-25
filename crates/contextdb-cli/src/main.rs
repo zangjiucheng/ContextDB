@@ -3,6 +3,7 @@
 mod access;
 mod anchors;
 mod daemon;
+mod gc;
 mod githooks;
 mod p4;
 mod setup;
@@ -22,12 +23,15 @@ Usage (offline; refused while ctxd runs):
                                        --rebuild discards and rebuilds projections
   ctx doctor <dir> --fix-modes          private modes, no ACLs in the data directory
                                        (multi-user mode; safe while ctxd runs)
-  ctx doctor <dir> --truncate-before <epoch> [--yes]
+  ctx doctor <dir> --truncate-before <epoch> [--yes] [--force]
                                        repair a broken chain: drop frames from <epoch>;
-                                       without --yes only prints what would be lost
+                                       without --yes only prints what would be lost;
+                                       below the payload GC cutoff it needs --force
   ctx snapshot <dir>                   write an input-layer snapshot
   ctx migrate <dir>                    migrate an older op_log format (keeps a backup)
   ctx export <dir>                     print the op_log as EventLog JSONL (v0 lines unless a batch needs v1)
+  ctx gc <dir> --compact               reclaim the disk space of collected and shredded
+                                       payloads (pack segments, GC ledger, stale snapshots)
 
 Usage (via a running ctxd, admin socket):
   ctx status <dir> [--branch B]        epoch, logicals, revisions, sessions
@@ -53,6 +57,10 @@ Usage (via a running ctxd, admin socket):
   ctx conflicts resolve <dir> <artifact>... [--note T] [--branch B]
                                        contradictions and validator reviews (SD20)
   ctx changes <dir> [--since E] [--branch B] [--scope S] [--max N] [--follow]
+  ctx gc <dir> [--apply] [--keep-epochs N]
+                                       payload GC: report what would be collected (dry
+                                       run), or collect it with --apply; keeps what the
+                                       last N epochs named (default [gc] keep_epochs)
   ctx reindex <dir> [--fts|--vectors|--all]
                                        rebuild a retrieval projection in the background
   ctx mirror export <dir> [--branch B] [--project <repo>] [--force] [--adopt]
@@ -201,19 +209,59 @@ fn doctor(dir: &Path, rebuild: bool) -> Result<(), String> {
         "oracle check: derived state == jacobi(inputs) on {} branches ({revisions} revisions)",
         kernel.branches().count()
     );
-    let mut problems = 0;
-    for content in &contents {
-        if let contextdb_store::Payload::Unavailable(why) =
-            store.get_blob(content).map_err(|e| format!("{e:?}"))?
-        {
-            println!("payload {why:?} ({})", hex(content));
-            problems += 1;
+    // A collected payload is harmless unless a head reads it (ADR 0019
+    // §5.4, §5.7).
+    let mut heads: std::collections::BTreeMap<ContentHash, Vec<String>> = Default::default();
+    for info in kernel.branches() {
+        let v = kernel.branch(info.id).expect("listed");
+        for l in v.logicals() {
+            if let (Some(h), Some((key, _, _))) = (v.head(l), v.logical_info(l))
+                && let Ok(c) = v.revision_content(h)
+            {
+                heads
+                    .entry(c)
+                    .or_default()
+                    .push(format!("{key}@{} on {}", h.0, info.name));
+            }
         }
     }
-    println!("payloads: {problems} unavailable");
+    use contextdb_store::{Payload, Unavailable};
+    let mut by_reason: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut problems = 0;
+    for content in &contents {
+        let Payload::Unavailable(why) = store.get_blob(content).map_err(|e| format!("{e:?}"))?
+        else {
+            continue;
+        };
+        *by_reason.entry(format!("{why:?}")).or_default() += 1;
+        match why {
+            Unavailable::Collected => {
+                for head in heads.get(content).into_iter().flatten() {
+                    println!("problem: head {head} reads Collected ({})", hex(content));
+                    problems += 1;
+                }
+            }
+            Unavailable::Shredded => println!("payload {why:?} ({})", hex(content)),
+            Unavailable::Missing | Unavailable::Corrupt => {
+                println!("payload {why:?} ({})", hex(content));
+                problems += 1;
+            }
+        }
+    }
+    let unavailable: usize = by_reason.values().sum();
+    let reasons: Vec<String> = (by_reason.iter())
+        .map(|(w, n)| format!("{w} {n}"))
+        .collect();
+    println!(
+        "payloads: {unavailable} unavailable{}; {problems} problem(s)",
+        match reasons.is_empty() {
+            true => String::new(),
+            false => format!(" ({})", reasons.join(", ")),
+        }
+    );
     Ok(())
 }
-fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
+fn truncate(dir: &Path, epoch: u64, yes: bool, force: bool) -> Result<(), String> {
     let disk = StdDisk::default();
     let plan = doctor::plan_truncate_before(&disk, dir, Epoch(epoch))
         .map_err(|e| store_err("plan", &e))?;
@@ -231,12 +279,26 @@ fn truncate(dir: &Path, epoch: u64, yes: bool) -> Result<(), String> {
     for id in &plan.dropped_txn_ids {
         println!("client_txn_id {} becomes NotCommitted", hex(id));
     }
+    if let Some(cutoff) = plan.collected_cutoff {
+        println!(
+            "BELOW THE GC CUTOFF: payload GC collected with cutoff epoch {}; at the new tail a \
+             collected payload may have been live (needs --force)",
+            cutoff.0
+        );
+    }
     if !yes {
         println!("dry run: re-run with --yes to truncate");
         return Ok(());
     }
     // Projections above the new tail no longer name the log; open clears them.
-    doctor::truncate_before(&disk, dir, &plan).map_err(|e| store_err("truncate", &e))?;
+    doctor::truncate_before_with(&disk, dir, &plan, force).map_err(|e| match e {
+        contextdb_store::StoreError::TruncationBelowCollected { cutoff } => format!(
+            "truncate: refused below the GC cutoff epoch {}: re-run with --force to truncate \
+             anyway",
+            cutoff.0
+        ),
+        e => store_err("truncate", &e),
+    })?;
     println!("truncated");
     Ok(())
 }
@@ -260,6 +322,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             access::run(dir(2)?, &rest)
         }
         Some("shred") => shred::run(dir(1)?, &args[2..]),
+        Some("gc") => gc::run(dir(1)?, &args[2..]),
         Some("git-hook") => githooks::run(&args[1..]),
         Some("team") => {
             let sub = args.get(1).cloned().unwrap_or_default();
@@ -395,7 +458,15 @@ fn run_p3(args: &[String]) -> Result<(), String> {
                         .get(3)
                         .and_then(|e| e.parse().ok())
                         .ok_or("missing <epoch>")?;
-                    truncate(d, epoch, args.get(4).map(String::as_str) == Some("--yes"))
+                    let opts = &args[4.min(args.len())..];
+                    if let Some(o) = opts
+                        .iter()
+                        .find(|o| !["--yes", "--force"].contains(&o.as_str()))
+                    {
+                        return Err(format!("unknown doctor option {o}"));
+                    }
+                    let has = |o: &str| opts.iter().any(|a| a == o);
+                    truncate(d, epoch, has("--yes"), has("--force"))
                 }
                 Some(other) => Err(format!("unknown doctor option {other}")),
             }

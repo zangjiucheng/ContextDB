@@ -265,6 +265,29 @@ impl Candidates {
         contextdb_store::purge::finish(&c, through)?;
         Ok(n)
     }
+    /// The last GC generation purged from this table (ADR 0019 §5.2).
+    pub fn collected_through(&self) -> Sql<u64> {
+        contextdb_store::purge::collected_through(&self.db())
+    }
+    /// Payload GC's purge: every pair with a side among `revisions` is
+    /// skipped as for a shred, and `generation` is recorded in the same
+    /// transaction.
+    pub fn collect(&self, revisions: &[(BranchId, RevisionId)], generation: u64) -> Sql<usize> {
+        let mut c = self.db();
+        let tx = c.transaction()?;
+        let mut n = 0;
+        for (b, r) in revisions {
+            n += tx.execute(
+                "UPDATE candidates SET judge = 4, judge_token = judge_token + 1,
+                     label = NULL, meta = NULL, error = NULL
+                 WHERE branch = ?1 AND (a_rev = ?2 OR b_rev = ?2)",
+                params![b.0, r.0],
+            )?;
+        }
+        contextdb_store::purge::set_collected_through(&tx, generation)?;
+        tx.commit()?;
+        Ok(n)
+    }
     /// The last epoch whose heads were queried; `None` before the first run.
     pub fn watermark(&self) -> Sql<Option<Epoch>> {
         Ok(self

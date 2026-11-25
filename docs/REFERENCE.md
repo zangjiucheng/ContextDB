@@ -399,3 +399,40 @@ A missing file means the defaults; an invalid one stops `ctxd` from starting, wi
 `Settling` (detail `epoch e: maintenance still settling; retry`) is retryable: the same request answers once epoch `e` has settled. Writes never see a settling epoch: `ctxd` settles it before the next write, so `expect_cert_valid` and `require_certified` merges judge the settled state.
 
 **Upgrade note**: P11 raises the IPC protocol to 9. Upgrade every binary together.
+
+### Payload GC
+
+Every revision keeps its body forever unless payload GC collects it (ADR 0019 §5). GC removes the bodies of old revisions nothing needs any more. The kernel, the op_log and every status stay as they were.
+
+| Command | Effect |
+|---|---|
+| `ctx gc <data dir> [--keep-epochs N]` | Dry run (the default). Prints how many payloads would be collected and their bytes, the cutoff epoch and what set it, and how many contents each keep set holds. Changes nothing. |
+| `ctx gc <data dir> --apply [--keep-epochs N]` | Collects them through the running `ctxd` (admin socket). Writers are not blocked while it plans. The collected payloads then leave `vectors.sqlite`, the validator jobs and the contradiction candidates. |
+| `ctx gc <data dir> --compact` | Offline, with `ctxd` stopped: rewrites the pack segments that hold collected or shredded payloads, so the disk space comes back. It also rewrites the GC ledger, removes kernel snapshots that no longer load, and checks that the reopened store equals a full replay. While `ctxd` holds the store lock it refuses and says so. |
+
+```toml
+# <data dir>/ctxd.toml
+[gc]
+keep_epochs = 10000    # keep every body the last N epochs named; at least 100
+```
+
+`ctxd` refuses to start with `keep_epochs` below 100, and `ctx gc --keep-epochs N` refuses a value below 100.
+
+**What GC keeps.** A body is kept if any of these needs it, on any branch, archived ones included:
+
+- **K1, live:** a head, a base revision, any member of a rule, or a head at a retained sync point.
+- **K2, documents:** artifact payloads, validation metadata and resolution notes (current and replaced), and the metadata a review document names.
+- **K3, recent:** any revision named by an epoch after the cutoff.
+- **K4, certificates:** any revision named by a certificate `ctxd` holds: a session's certificates, its agents' session certificates and proofs, and a pending handoff's.
+- **K5, held snapshots:** the cutoff is `min(now − keep_epochs, the oldest snapshot a reader still holds)`, for example a mirror export in progress.
+
+**What "collected" means to a reader.** A collected revision keeps its place in the history, its status and its hash; only its body is gone.
+
+- `ctx_read` of it answers `unavailable: "collected"` with no payload, for pinned and historical reads too.
+- `ctx_supersede` back to the old text works: it sends the bytes again, and the body is readable again.
+- An op that makes the old revision live again without sending its bytes fails with `MissingBlob`: `SetHead` to it, `AssertBase`, `AddRule` naming it, `Rebind` to it, attaching it as a mirror, or a merge that makes it a head. `ctx_what_if` answers the same as the commit would.
+- Team catch-up stages a collected body from the replica when it makes that revision a head again. If the replica no longer has the bytes (after a team compaction), the mirror's head reads `collected`.
+
+**Reporting.** `ctx doctor` counts unavailable payloads by reason. A collected payload is not a problem, but a head that reads `Collected` is. `ctx team status` reports a mirror head that reads `Collected` as a problem too.
+
+**Truncation.** `ctx doctor <data dir> --truncate-before <epoch>` below the highest GC cutoff needs `--force`: at that epoch a collected payload may have been live.

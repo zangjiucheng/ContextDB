@@ -277,11 +277,24 @@ pub fn live_positions(live: &LiveMap) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-/// The contents a catch-up batch names, whose bytes the store must hold.
-pub fn contents(b: &Batch) -> impl Iterator<Item = ContentHash> + '_ {
-    b.ops.iter().filter_map(|op| match op {
+/// The contents a catch-up batch names, whose bytes the store must hold:
+/// new revisions' contents, and the contents of existing revisions it makes
+/// a head or a base again, resolved on `k`, when `collected` (ADR 0019
+/// §5.4: the replica's bytes stage them again).
+pub fn contents<'a>(
+    k: &'a Kernel,
+    b: &'a Batch,
+    collected: &'a dyn Fn(&ContentHash) -> bool,
+) -> impl Iterator<Item = ContentHash> + 'a {
+    let existing = move |r: &RevRef| match r {
+        RevRef::Existing(r) => (k.branch(b.branch)?.revision_content(*r).ok()).filter(collected),
+        RevRef::New(_) => None,
+    };
+    b.ops.iter().filter_map(move |op| match op {
         Op::CreateLogical { content, .. } | Op::AddRevision { content, .. } => Some(*content),
         Op::MirrorAttach { head, .. } => Some(*head),
+        Op::SetHead { new, .. } => existing(new),
+        Op::AssertBase { rev } => existing(rev),
         _ => None,
     })
 }

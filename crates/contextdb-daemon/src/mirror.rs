@@ -18,7 +18,10 @@
 //!   accepted. Any other tip is validated by its trailers, the op_log
 //!   checksum at its last epoch, and its tree against a replayed render at
 //!   that epoch: valid tips are accepted and cached, a different log is
-//!   `MirrorStale`, anything else `MirrorModified`.
+//!   `MirrorStale`, anything else `MirrorModified`. A body whose content GC
+//!   collected is taken from the tip's own file at the re-rendered path,
+//!   iff its body hashes to the content and its front matter is the
+//!   re-rendered one (ADR 0019 §5.6).
 //! - **Egress (ADR 0017 §7).** With an access document, only lanes whose
 //!   egress is on are rendered; in multi-user mode (another principal
 //!   mapped) only those every principal may read (members `*members`, no
@@ -30,7 +33,8 @@
 //! - **Shreds (ADR 0017 §8.4 item 5).** A ref whose history holds a file
 //!   whose body (or whole text) hashes to a shredded content is
 //!   `MirrorStale{PayloadGone}`, even with `--force`. A history found clean
-//!   is cached with the last shred epoch it was checked against.
+//!   is cached with the last shred epoch and the GC generation it was
+//!   checked against. A collected content is not `PayloadGone`.
 //!   `--rebuild` replaces the ref with one fresh commit and deletes every
 //!   `refs/contextdb-backup/` ref; git keeps the objects until a
 //!   `reflog expire` and `gc --prune=now`, which ContextDB does not run.
@@ -39,7 +43,7 @@ use contextdb_anchors::capture;
 use contextdb_core::BranchView;
 use contextdb_model::*;
 use contextdb_proto::proto::{MirrorProposal, MirrorReport};
-use contextdb_store::{Durability, LogReader, Payload};
+use contextdb_store::{Durability, LogReader, Payload, Unavailable};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -250,6 +254,9 @@ pub struct Rendered {
     pub long: Vec<String>,
     /// Lanes with live heads that were not rendered (egress, ADR 0017 §7).
     pub withheld: BTreeSet<String>,
+    /// Files whose body GC collected (ADR 0019 §5.6), by path: their bytes
+    /// are the front matter alone.
+    pub collected: BTreeMap<String, ContentHash>,
 }
 /// What the front matter of a rendered file says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,6 +329,7 @@ pub fn render<D: Durability>(
     out.files.insert("README.md".into(), readme(view.info()));
     // (path segments, logical, bytes)
     let mut items: Vec<(Vec<String>, LogicalId, Vec<u8>)> = Vec::new();
+    let mut collected: BTreeMap<LogicalId, ContentHash> = BTreeMap::new();
     let access = view.access();
     for l in view.logicals() {
         let (Some(r), Some((key, kind, lane))) = (view.head(l), view.logical_info(l)) else {
@@ -393,8 +401,11 @@ pub fn render<D: Durability>(
         }
         text.push_str("---\n");
         let mut bytes = text.into_bytes();
-        match view.revision_content(r).map(|c| log.read_blob(&c)) {
-            Ok(Payload::Available(b)) => bytes.extend(b),
+        match view.revision_content(r).map(|c| (c, log.read_blob(&c))) {
+            Ok((_, Payload::Available(b))) => bytes.extend(b),
+            Ok((c, Payload::Unavailable(Unavailable::Collected))) => {
+                collected.insert(l, c);
+            }
             _ => bytes.extend(UNAVAILABLE.as_bytes()),
         }
         items.push((record_path(&lane, kind, &key), l, bytes));
@@ -415,12 +426,23 @@ pub fn render<D: Durability>(
         if segs.iter().any(|s| s.len() > NAME_MAX) {
             out.long.push(path.clone());
         }
+        if let Some(c) = collected.get(&l) {
+            out.collected.insert(path.clone(), *c);
+        }
         out.files.insert(path, bytes);
     }
     out
 }
 
 // ------------------------------------------------------------------- cache
+
+/// What a clean-history verdict was checked against: the last shred epoch
+/// and the GC generation (ADR 0019 §5.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CleanMark {
+    pub shred: Epoch,
+    pub gc: u64,
+}
 
 /// `mirror.sqlite`: the last commit export wrote per (repository, branch),
 /// and the epoch each revision was created at. A cache only.
@@ -442,9 +464,10 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS rev_epochs(rev INTEGER PRIMARY KEY, epoch INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS rev_watermark(
                  id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, checksum BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS clean(
+             DROP TABLE IF EXISTS clean;
+             CREATE TABLE IF NOT EXISTS clean_marks(
                  repo TEXT NOT NULL, branch INTEGER NOT NULL, commit_id TEXT NOT NULL,
-                 through INTEGER NOT NULL, PRIMARY KEY (repo, branch));",
+                 shred INTEGER NOT NULL, gc INTEGER NOT NULL, PRIMARY KEY (repo, branch));",
         )
         .map_err(failed)?;
         Ok(Self { conn })
@@ -470,13 +493,21 @@ impl Cache {
             .map_err(failed)
     }
     /// The commit whose history was last found free of shredded payloads,
-    /// and the last shred epoch it was checked against.
-    pub fn clean(&self, repo: &str, branch: BranchId) -> Result<Option<(String, Epoch)>> {
+    /// and the mark it was checked against.
+    pub fn clean(&self, repo: &str, branch: BranchId) -> Result<Option<(String, CleanMark)>> {
         self.conn
             .query_row(
-                "SELECT commit_id, through FROM clean WHERE repo = ?1 AND branch = ?2",
+                "SELECT commit_id, shred, gc FROM clean_marks WHERE repo = ?1 AND branch = ?2",
                 params![repo, branch.0],
-                |r| Ok((r.get::<_, String>(0)?, Epoch(r.get::<_, i64>(1)? as u64))),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        CleanMark {
+                            shred: Epoch(r.get::<_, i64>(1)? as u64),
+                            gc: r.get::<_, i64>(2)? as u64,
+                        },
+                    ))
+                },
             )
             .optional()
             .map_err(failed)
@@ -486,13 +517,14 @@ impl Cache {
         repo: &str,
         branch: BranchId,
         commit: &str,
-        through: Epoch,
+        mark: CleanMark,
     ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO clean(repo, branch, commit_id, through) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(repo, branch) DO UPDATE SET commit_id = excluded.commit_id, through = excluded.through",
-                params![repo, branch.0, commit, through.0 as i64],
+                "INSERT INTO clean_marks(repo, branch, commit_id, shred, gc) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(repo, branch) DO UPDATE SET commit_id = excluded.commit_id,
+                     shred = excluded.shred, gc = excluded.gc",
+                params![repo, branch.0, commit, mark.shred.0 as i64, mark.gc as i64],
             )
             .map(|_| ())
             .map_err(failed)
@@ -826,21 +858,25 @@ impl Repo {
         }
         Ok(v)
     }
-    /// Every blob reachable from `commit`, once each.
-    pub fn history_blobs(&self, commit: &str) -> Result<Vec<Vec<u8>>> {
-        let ids = self.run(&["rev-list", "--objects", "--no-object-names", commit], &[])?;
-        let (ok, out) = self.raw(&["cat-file", "--batch"], ids.as_bytes())?;
+    /// `git cat-file --batch` over one object name per line: each blob's
+    /// bytes, `None` for a name that is missing or not a blob.
+    fn cat_batch(&self, names: &str) -> Result<Vec<Option<Vec<u8>>>> {
+        let (ok, out) = self.raw(&["cat-file", "--batch"], names.as_bytes())?;
         if !ok {
             return Err(failed("git cat-file --batch failed"));
         }
-        // `<id> <type> <size>\n<bytes>\n` per object.
-        let mut blobs = Vec::new();
+        // `<id> <type> <size>\n<bytes>\n` per object, `<name> missing\n`.
+        let mut objects = Vec::new();
         let mut at = 0;
         while at < out.len() {
             let nl = (out[at..].iter().position(|b| *b == b'\n'))
                 .ok_or_else(|| failed("cat-file: truncated header"))?;
             let header = std::str::from_utf8(&out[at..at + nl]).map_err(failed)?;
             at += nl + 1;
+            if header.ends_with(" missing") {
+                objects.push(None);
+                continue;
+            }
             let mut parts = header.split(' ');
             let (_, ty, size) = (parts.next(), parts.next(), parts.next());
             let (Some(ty), Some(size)) = (ty, size) else {
@@ -849,12 +885,25 @@ impl Repo {
             let size: usize = size.parse().map_err(failed)?;
             let body =
                 (out.get(at..at + size)).ok_or_else(|| failed("cat-file: truncated object"))?;
-            if ty == "blob" {
-                blobs.push(body.to_vec());
-            }
+            objects.push((ty == "blob").then(|| body.to_vec()));
             at += size + 1;
         }
-        Ok(blobs)
+        Ok(objects)
+    }
+    /// Every blob reachable from `commit`, once each.
+    pub fn history_blobs(&self, commit: &str) -> Result<Vec<Vec<u8>>> {
+        let ids = self.run(&["rev-list", "--objects", "--no-object-names", commit], &[])?;
+        Ok(self.cat_batch(&ids)?.into_iter().flatten().collect())
+    }
+    /// The blob at each path of `tree` (paths [`record_path`] makes, so no
+    /// newline), `None` where there is none.
+    pub fn blobs_at(&self, tree: &str, paths: &[&String]) -> Result<Vec<Option<Vec<u8>>>> {
+        let names: String = paths.iter().map(|p| format!("{tree}:{p}\n")).collect();
+        let objects = self.cat_batch(&names)?;
+        if objects.len() != paths.len() {
+            return Err(failed("cat-file: wrong number of objects"));
+        }
+        Ok(objects)
     }
     /// A file of a tree-ish, as text.
     pub fn show(&self, treeish: &str, path: &str) -> Result<String> {
@@ -958,7 +1007,9 @@ impl<'a, D: Durability> Mirror<'a, D> {
         }
         Ok(self.rev_epochs.as_ref().expect("set"))
     }
-    /// The branch rendered at the snapshot.
+    /// The branch rendered at the snapshot. GC keeps every head of a held
+    /// snapshot (K1, and K3 for heads moved after the cutoff), so a
+    /// collected body here is refused rather than written unverifiable.
     pub fn render_now(&mut self, branch: BranchId) -> Result<Rendered> {
         let snap = self.snap;
         if let Some((_, e)) = snap.kernel.frontier() {
@@ -969,10 +1020,22 @@ impl<'a, D: Durability> Mirror<'a, D> {
             .kernel
             .branch(branch)
             .ok_or_else(|| failed("unknown branch"))?;
-        Ok(render(&view, &snap.log, &|r| epochs.get(&r).copied()))
+        let r = render(&view, &snap.log, &|r| epochs.get(&r).copied());
+        if let Some(path) = r.collected.keys().next() {
+            return Err(failed(format!(
+                "the body of {path}, a live head at epoch {}, was collected by GC; \
+                 nothing was exported",
+                snap.epoch.0
+            )));
+        }
+        Ok(r)
     }
-    /// The branch rendered at epoch `e`, by replaying the log (cache miss).
-    fn render_at(&mut self, branch: BranchId, e: Epoch) -> Result<Option<Rendered>> {
+    /// The branch rendered at epoch `e`, by replaying the log (cache miss),
+    /// to compare with `tree`. A collected body is taken from `tree`'s file
+    /// at the same path iff that file's body hashes to the content and its
+    /// front matter is the rendered one (ADR 0019 §5.6); `None` when the
+    /// branch did not exist or a collected body does not verify.
+    fn render_at(&mut self, branch: BranchId, e: Epoch, tree: &str) -> Result<Option<Rendered>> {
         let epochs = self.epochs()?.clone();
         let kernel = (self.snap.log)
             .replay_kernel_to(e)
@@ -980,9 +1043,24 @@ impl<'a, D: Durability> Mirror<'a, D> {
         let Some(view) = kernel.branch(branch) else {
             return Ok(None);
         };
-        Ok(Some(render(&view, &self.snap.log, &|r| {
-            epochs.get(&r).copied()
-        })))
+        let mut r = render(&view, &self.snap.log, &|r| epochs.get(&r).copied());
+        if r.collected.is_empty() {
+            return Ok(Some(r));
+        }
+        let paths: Vec<&String> = r.collected.keys().collect();
+        let found = self.repo.blobs_at(tree, &paths)?;
+        for ((path, content), blob) in r.collected.iter().zip(found) {
+            let Some(blob) = blob else {
+                return Ok(None);
+            };
+            let body = body_bytes(&blob);
+            let front = &blob[..blob.len() - body.len()];
+            if blake3::hash(body).as_bytes() != content || front != r.files[path] {
+                return Ok(None);
+            }
+            r.files.insert(path.clone(), blob);
+        }
+        Ok(Some(r))
     }
     /// Validates a tip by its trailers, the log checksum and a replayed
     /// render (ADR 0016 §8.4).
@@ -1004,7 +1082,7 @@ impl<'a, D: Durability> Mirror<'a, D> {
             Ok(sum) if hex(&sum) == t.checksum => {}
             _ => return Ok(Tip::Stale),
         }
-        let Some(r) = self.render_at(branch, b)? else {
+        let Some(r) = self.render_at(branch, b, &tree)? else {
             return Ok(Tip::Modified);
         };
         Ok(if self.repo.write_tree(&r.files)? == tree {
@@ -1059,20 +1137,27 @@ impl<'a, D: Durability> Mirror<'a, D> {
         }
         Err(failed("could not name a backup ref"))
     }
-    /// The last shred epoch, or `None` when nothing is shredded.
-    fn shred_mark(&self) -> Option<Epoch> {
-        self.snap.kernel.shredded().values().max().copied()
+    /// The last shred epoch (0 when nothing is shredded) and the GC
+    /// generation: a history found clean stays clean until either moves.
+    fn clean_mark(&self) -> Result<CleanMark> {
+        Ok(CleanMark {
+            shred: (self.snap.kernel.shredded().values().max().copied()).unwrap_or(Epoch(0)),
+            gc: (self.snap.log.gc_generation()).map_err(|e| failed(format!("gc ledger: {e:?}")))?,
+        })
     }
     /// Whether `commit`'s history holds a shredded payload (ADR 0017 §8.4
     /// item 5): a blob whose body, or whole text, hashes to a shredded
-    /// content. A history found clean is cached per branch.
+    /// content. A collected content is not one (ADR 0019 §5.6). A history
+    /// found clean is cached per branch.
     fn payload_gone(&self, branch: BranchId, commit: &str) -> Result<bool> {
-        let Some(mark) = self.shred_mark() else {
+        if self.snap.kernel.shredded().is_empty() {
             return Ok(false);
-        };
+        }
+        let mark = self.clean_mark()?;
         if let Some((c, through)) = self.cache.clean(&self.key(), branch)?
             && c == commit
-            && through >= mark
+            && through.shred >= mark.shred
+            && through.gc == mark.gc
         {
             return Ok(false);
         }
@@ -1137,12 +1222,8 @@ impl<'a, D: Durability> Mirror<'a, D> {
             )));
         }
         self.cache.set_tip(&self.key(), branch, &commit, b)?;
-        self.cache.set_clean(
-            &self.key(),
-            branch,
-            &commit,
-            self.shred_mark().unwrap_or(Epoch(0)),
-        )?;
+        self.cache
+            .set_clean(&self.key(), branch, &commit, self.clean_mark()?)?;
         report.lines.push(match &found {
             Some(old) => format!(
                 "{reference} -> {commit} (branch {}, epochs ..{}): a fresh history replacing {old}",
@@ -1342,12 +1423,8 @@ impl<'a, D: Durability> Mirror<'a, D> {
         self.cache.set_tip(&self.key(), branch, &commit, b)?;
         // The new tree is rendered after every shred in the snapshot, so a
         // clean parent (checked above) leaves a clean history.
-        self.cache.set_clean(
-            &self.key(),
-            branch,
-            &commit,
-            self.shred_mark().unwrap_or(Epoch(0)),
-        )?;
+        self.cache
+            .set_clean(&self.key(), branch, &commit, self.clean_mark()?)?;
         report.lines.push(format!(
             "{reference} -> {commit} (branch {}, epochs {}..{})",
             info.name, a.0, b.0

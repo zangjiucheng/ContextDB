@@ -18,6 +18,7 @@ use crate::publish::{self, Published};
 use crate::team;
 use contextdb_core::{BranchView, Budget, Db, Drain, Kernel, LAZY_BUDGET};
 use contextdb_model::*;
+use contextdb_store::gc::{GcPlan, GcReport, LedgerEntry};
 use contextdb_store::{Durability, LogReader, Step, Store, StoreError, TxnStatus, Write};
 use std::{
     sync::{
@@ -37,6 +38,48 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// (`read_settle_ms`, ADR 0019 O2).
 pub const READ_SETTLE: Duration = Duration::from_millis(50);
 
+/// K5 of payload GC (ADR 0019 §5.1): the epochs of every published
+/// snapshot still alive, as a multiset (the actor's own published and spare
+/// ones included). Its lock is a leaf: guards drop on reader threads, so
+/// nothing else is taken while it is held. No `Weak` is kept, so
+/// `publish::reclaim`'s `Arc::get_mut` still works.
+#[derive(Debug, Default)]
+pub struct HeldEpochs(Mutex<std::collections::BTreeMap<Epoch, usize>>);
+impl HeldEpochs {
+    fn hold(self: &Arc<Self>, epoch: Epoch) -> Hold {
+        *self.lock().entry(epoch).or_default() += 1;
+        Hold {
+            set: self.clone(),
+            epoch,
+        }
+    }
+    /// The lowest epoch a live snapshot holds.
+    pub fn held(&self) -> Option<Epoch> {
+        self.lock().keys().next().copied()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<Epoch, usize>> {
+        // A count is never left half-updated, so a poisoned lock is usable.
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+/// A snapshot's registration in [`HeldEpochs`], from its creation until it
+/// drops.
+#[derive(Debug)]
+pub struct Hold {
+    set: Arc<HeldEpochs>,
+    epoch: Epoch,
+}
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut held = self.set.lock();
+        if let Some(n) = held.get_mut(&self.epoch) {
+            *n -= 1;
+            if *n == 0 {
+                held.remove(&self.epoch);
+            }
+        }
+    }
+}
 /// What readers see: one epoch, its database and a log reader bounded by it.
 pub struct Snapshot<D: Durability> {
     pub epoch: Epoch,
@@ -49,6 +92,8 @@ pub struct Snapshot<D: Durability> {
     /// Bumped on every publication, settling ones included (ADR 0019
     /// §3.7): a pull waits for a newer one.
     pub generation: u64,
+    /// Registers `epoch` with K5 while the snapshot lives.
+    _hold: Hold,
 }
 impl<D: Durability> Snapshot<D> {
     /// `main`'s database. Protocol-3 readers use ids as global ids, which
@@ -165,6 +210,17 @@ pub enum Message {
         epoch: Epoch,
         through: Option<usize>,
     },
+    /// Payload GC phase 2 (ADR 0019 §5.2): one exclusive step, never in a
+    /// commit group, with the K5 bound taken now.
+    Gc {
+        plan: Box<GcPlan>,
+        pinned: std::collections::BTreeSet<ContentHash>,
+        reply: mpsc::Sender<Result<GcReport, StoreError>>,
+    },
+    /// The GC ledger's entries, for the projection purge.
+    GcLedger {
+        reply: mpsc::Sender<Vec<LedgerEntry>>,
+    },
     Shutdown {
         reply: mpsc::Sender<()>,
     },
@@ -198,6 +254,8 @@ pub struct ActorHandle<D: Durability> {
     pub read_settle: Duration,
     /// P10: per team, what reads decide `ReplicationLag` from.
     pub team_live: team::LiveMap,
+    /// K5: the epochs live snapshots hold.
+    pub held: Arc<HeldEpochs>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum SubmitError {
@@ -213,6 +271,10 @@ impl<D: Durability> ActorHandle<D> {
     /// The current snapshot; readers hold it for the whole request (I4).
     pub fn snapshot(&self) -> Arc<Snapshot<D>> {
         self.published.load()
+    }
+    /// K5 (ADR 0019 §5.1): the lowest epoch a live snapshot holds.
+    pub fn held(&self) -> Epoch {
+        (self.held.held()).unwrap_or_else(|| self.published.load().epoch)
     }
     /// Waits until an epoch after `after` is published, or `timeout`
     /// passes; returns the last published epoch.
@@ -333,6 +395,7 @@ struct Actor<D: Durability> {
     /// process, since what holds them (records, artifacts, validation
     /// metadata, notes) is never removed.
     shred_kept: std::collections::BTreeSet<ContentHash>,
+    held: Arc<HeldEpochs>,
 }
 /// A catch-up writer over the store's single writer: each batch carries
 /// the mirror payloads, read from the replica.
@@ -352,7 +415,9 @@ impl<D: Durability + Clone> contextdb_team::catchup::Writer for ActorWriter<'_, 
         // such a mirror revision unavailable instead (§5.1, §11).
         let blobs: Vec<Vec<u8>> = {
             let k = self.actor.store.kernel().expect("a readable store");
-            team::contents(b)
+            let presence = self.actor.store.presence();
+            let collected = |h: &ContentHash| presence.collected(h);
+            team::contents(k, b, &collected)
                 .filter(|h| !k.is_shredded(h))
                 .filter_map(|h| self.replica.blob(&h).map(<[u8]>::to_vec))
                 .collect()
@@ -415,12 +480,14 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
 ) -> Result<ActorHandle<D>, StoreError> {
     let kernel = store.kernel()?.clone();
     store.record_steps();
+    let held = Arc::new(HeldEpochs::default());
     let snapshot = Snapshot {
         epoch: store.epoch(),
         kernel,
         log: store.log_reader(),
         key_purged: store.key_log_purged_through(),
         generation: 0,
+        _hold: held.hold(store.epoch()),
     };
     let epochs = Arc::new((Mutex::new((snapshot.epoch, 0)), Condvar::new()));
     let published = Arc::new(Published::new(snapshot));
@@ -445,6 +512,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
         teams,
         team_live: team_live.clone(),
         shred_kept: Default::default(),
+        held: held.clone(),
     };
     std::thread::Builder::new()
         .name("ctxd-actor".into())
@@ -465,6 +533,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
         timeout: REQUEST_TIMEOUT,
         read_settle: READ_SETTLE,
         team_live,
+        held,
     })
 }
 impl<D: Durability + Clone> Actor<D> {
@@ -567,6 +636,29 @@ impl<D: Durability + Clone> Actor<D> {
             }
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
+            }
+            Message::Gc {
+                plan,
+                pinned,
+                reply,
+            } => {
+                let held = self.held.held().unwrap_or(self.published.load().epoch);
+                let r = (self.store).gc_apply(
+                    &plan,
+                    &pinned,
+                    held,
+                    &contextdb_proto::docs::nested_hashes,
+                );
+                // Readers see `Collected` through the shared pack index
+                // already; a publication tells waiters something changed.
+                if r.as_ref().is_ok_and(|r| r.generation > 0) {
+                    let steps = self.store.take_steps();
+                    self.publish(steps);
+                }
+                let _ = reply.send(r);
+            }
+            Message::GcLedger { reply } => {
+                let _ = reply.send(self.store.gc_ledger().to_vec());
             }
             Message::TeamLeave { team, reply } => {
                 let r = match self.teams.get_mut(&team) {
@@ -842,6 +934,7 @@ impl<D: Durability + Clone> Actor<D> {
         };
         let snapshot = Arc::new(Snapshot {
             epoch: newest.epoch(),
+            _hold: self.held.hold(newest.epoch()),
             kernel: newest,
             log: self.store.log_reader(),
             key_purged: self.store.key_log_purged_through(),
