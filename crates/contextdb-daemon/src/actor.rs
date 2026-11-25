@@ -7,11 +7,18 @@
 //! must match) and is swapped into the store; the store's database becomes the
 //! new published snapshot. A replica still held by a reader after a bounded
 //! wait is replaced by a clone (counted; the fallback trigger of §3.3).
+//!
+//! Lazy maintenance (ADR 0019 §3.5, §3.7): the store records every commit
+//! and drain as a step, in execution order, and the replica replays exactly
+//! those. A commit that leaves a frontier ends its group; the rest of the
+//! group goes back to the head of the queue. While a frontier exists and no
+//! message waits, the actor drains one slice and publishes; `Settle` drains
+//! on a reader's request.
 use crate::publish::{self, Published};
 use crate::team;
-use contextdb_core::{BranchView, Db, Kernel};
+use contextdb_core::{BranchView, Budget, Db, Drain, Kernel, LAZY_BUDGET};
 use contextdb_model::*;
-use contextdb_store::{Durability, LogReader, Store, StoreError, TxnStatus, Write};
+use contextdb_store::{Durability, LogReader, Step, Store, StoreError, TxnStatus, Write};
 use std::{
     sync::{
         Arc, Condvar, Mutex,
@@ -26,6 +33,9 @@ pub const MAX_GROUP: usize = 64;
 const RECLAIM_WAIT: Duration = Duration::from_millis(5);
 /// A request runs for at most this long (ADR 0008 §5).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a certified read waits for a pull by default
+/// (`read_settle_ms`, ADR 0019 O2).
+pub const READ_SETTLE: Duration = Duration::from_millis(50);
 
 /// What readers see: one epoch, its database and a log reader bounded by it.
 pub struct Snapshot<D: Durability> {
@@ -36,6 +46,9 @@ pub struct Snapshot<D: Durability> {
     /// The highest shred epoch whose key-log purge completed (ADR 0017
     /// §8.4), when this snapshot was published.
     pub key_purged: Epoch,
+    /// Bumped on every publication, settling ones included (ADR 0019
+    /// §3.7): a pull waits for a newer one.
+    pub generation: u64,
 }
 impl<D: Durability> Snapshot<D> {
     /// `main`'s database. Protocol-3 readers use ids as global ids, which
@@ -63,7 +76,16 @@ pub struct WriteRequest {
     pub client_hash: Option<ContentHash>,
     /// `expect_cert_valid` (ADR 0013 §4).
     pub expect: Option<Box<Expect>>,
-    pub reply: mpsc::Sender<Result<CommitResult, StoreError>>,
+    pub reply: mpsc::Sender<Result<Acked, StoreError>>,
+}
+/// A write's acknowledgement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Acked {
+    pub result: CommitResult,
+    /// The commit's maintenance was pending at ack (ADR 0019 §3.9), so the
+    /// result's diffs are empty; for an idempotent retry, as its frame
+    /// recorded.
+    pub settling: bool,
 }
 /// A certificate the batch's commit depends on: validated by the actor on
 /// the live state just before staging; a valid one's vector becomes an
@@ -135,6 +157,14 @@ pub enum Message {
         call: team::Call,
         reply: mpsc::Sender<team::Answer>,
     },
+    /// A reader's pull (ADR 0019 §3.7): drain the pending commit of `epoch`
+    /// until every node of rank ≤ `through` is settled (`None`: fully),
+    /// then publish. Nothing when `epoch` is no longer pending. No reply:
+    /// the reader waits for the publication generation.
+    Settle {
+        epoch: Epoch,
+        through: Option<usize>,
+    },
     Shutdown {
         reply: mpsc::Sender<()>,
     },
@@ -148,17 +178,24 @@ pub struct ActorStats {
     /// Replica replays that disagreed with the store (each poisons it).
     pub replay_mismatches: AtomicU64,
     pub reclaim_wait_micros: AtomicU64,
+    /// Writes a settling commit ended the group of, submitted again (ADR
+    /// 0019 §3.5 item 3).
+    pub requeued: AtomicU64,
 }
 #[derive(Clone)]
 pub struct ActorHandle<D: Durability> {
     tx: mpsc::SyncSender<Message>,
     published: Arc<Published<Snapshot<D>>>,
-    /// The last published epoch, signalled on every publication (the
-    /// `ctx_changes` long-poll, ADR 0015 §8).
-    epochs: Arc<(Mutex<Epoch>, Condvar)>,
+    /// The last published epoch and publication generation, signalled on
+    /// every publication (the `ctx_changes` long-poll, ADR 0015 §8; pulls,
+    /// ADR 0019 §3.7).
+    epochs: Arc<(Mutex<(Epoch, u64)>, Condvar)>,
     pub stats: Arc<ActorStats>,
     /// How long a caller waits for its reply ([`REQUEST_TIMEOUT`]).
     pub timeout: Duration,
+    /// How long a certified read waits for a pull ([`READ_SETTLE`];
+    /// `[maintenance] read_settle_ms` in `ctxd.toml`).
+    pub read_settle: Duration,
     /// P10: per team, what reads decide `ReplicationLag` from.
     pub team_live: team::LiveMap,
 }
@@ -180,17 +217,49 @@ impl<D: Durability> ActorHandle<D> {
     /// Waits until an epoch after `after` is published, or `timeout`
     /// passes; returns the last published epoch.
     pub fn wait_epoch(&self, after: Epoch, timeout: Duration) -> Epoch {
+        self.wait_published(|(e, _)| e > after, timeout).0
+    }
+    /// Waits until a publication generation after `after`, or `timeout`
+    /// passes; returns the last published generation.
+    pub fn wait_generation(&self, after: u64, timeout: Duration) -> u64 {
+        self.wait_published(|(_, g)| g > after, timeout).1
+    }
+    fn wait_published(
+        &self,
+        done: impl Fn((Epoch, u64)) -> bool,
+        timeout: Duration,
+    ) -> (Epoch, u64) {
         let (m, c) = &*self.epochs;
         let deadline = Instant::now() + timeout;
-        let mut e = m.lock().expect("epochs");
-        while *e <= after {
+        let mut p = m.lock().expect("epochs");
+        while !done(*p) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
-            e = c.wait_timeout(e, left).expect("epochs").0;
+            p = c.wait_timeout(p, left).expect("epochs").0;
         }
-        *e
+        *p
+    }
+    /// The pull (ADR 0019 §3.7): asks the actor to settle the pending
+    /// commit of `epoch` through rank `through` (`None`: fully), then waits
+    /// up to `wait` for a publication newer than `generation`. True when one
+    /// came. A full queue (`Busy`) or a stopped actor answers false at once.
+    ///
+    /// The caller drops its snapshot before calling (a held snapshot makes
+    /// the actor clone its replica) and afterwards restarts its whole
+    /// request on a fresh snapshot (I4).
+    pub fn pull(
+        &self,
+        epoch: Epoch,
+        through: Option<usize>,
+        generation: u64,
+        wait: Duration,
+    ) -> bool {
+        if self.submit(Message::Settle { epoch, through }).is_err() {
+            return false;
+        }
+        self.wait_generation(generation, wait) > generation
     }
     pub fn submit(&self, m: Message) -> Result<(), SubmitError> {
         self.tx.try_send(m).map_err(|e| match e {
@@ -203,7 +272,7 @@ impl<D: Durability> ActorHandle<D> {
         &self,
         blobs: Vec<Vec<u8>>,
         batch: Batch,
-    ) -> Result<Result<CommitResult, StoreError>, SubmitError> {
+    ) -> Result<Result<Acked, StoreError>, SubmitError> {
         let (reply, rx) = mpsc::channel();
         self.submit(Message::Write(WriteRequest {
             blobs,
@@ -222,7 +291,7 @@ impl<D: Durability> ActorHandle<D> {
         batch: Batch,
         client_hash: ContentHash,
         expect: Option<Expect>,
-    ) -> Result<Result<CommitResult, StoreError>, SubmitError> {
+    ) -> Result<Result<Acked, StoreError>, SubmitError> {
         let (reply, rx) = mpsc::channel();
         self.submit(Message::Write(WriteRequest {
             blobs,
@@ -252,11 +321,11 @@ struct Actor<D: Durability> {
     store: Store<D>,
     published: Arc<Published<Snapshot<D>>>,
     spare: Option<Arc<Snapshot<D>>>,
-    /// Newly applied batches of the previous group, with their results: the
-    /// spare is two groups behind the store and must replay them too.
-    previous: Vec<(Batch, CommitResult)>,
+    /// The store's steps of the previous publication: the spare is two
+    /// publications behind the store and must replay them too.
+    previous: Vec<Step>,
     stats: Arc<ActorStats>,
-    epochs: Arc<(Mutex<Epoch>, Condvar)>,
+    epochs: Arc<(Mutex<(Epoch, u64)>, Condvar)>,
     /// P10: joined teams; only the actor reads or writes them.
     teams: std::collections::BTreeMap<TeamId, team::Joined>,
     team_live: team::LiveMap,
@@ -289,14 +358,17 @@ impl<D: Durability + Clone> contextdb_team::catchup::Writer for ActorWriter<'_, 
                 .collect()
         };
         let (reply, rx) = mpsc::channel();
-        self.actor.commit(vec![WriteRequest {
+        let rest = self.actor.commit(vec![WriteRequest {
             blobs,
             batch: b.clone(),
             client_hash: None,
             expect: None,
             reply,
         }]);
-        rx.recv().unwrap_or(Err(StoreError::Poisoned))
+        // A group's first write always gets a result.
+        debug_assert!(rest.is_empty());
+        drop(rest);
+        (rx.recv().unwrap_or(Err(StoreError::Poisoned))).map(|a| a.result)
     }
 }
 impl<D: Durability + Clone> Actor<D> {
@@ -338,17 +410,19 @@ pub fn spawn<D: Durability + Clone + 'static>(
 }
 /// [`spawn`] with the joined teams (P10).
 pub fn spawn_with_teams<D: Durability + Clone + 'static>(
-    store: Store<D>,
+    mut store: Store<D>,
     teams: std::collections::BTreeMap<TeamId, team::Joined>,
 ) -> Result<ActorHandle<D>, StoreError> {
     let kernel = store.kernel()?.clone();
+    store.record_steps();
     let snapshot = Snapshot {
         epoch: store.epoch(),
         kernel,
         log: store.log_reader(),
         key_purged: store.key_log_purged_through(),
+        generation: 0,
     };
-    let epochs = Arc::new((Mutex::new(snapshot.epoch), Condvar::new()));
+    let epochs = Arc::new((Mutex::new((snapshot.epoch, 0)), Condvar::new()));
     let published = Arc::new(Published::new(snapshot));
     let stats = Arc::new(ActorStats::default());
     let (tx, rx) = mpsc::sync_channel(QUEUE);
@@ -389,6 +463,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
         epochs,
         stats,
         timeout: REQUEST_TIMEOUT,
+        read_settle: READ_SETTLE,
         team_live,
     })
 }
@@ -398,16 +473,21 @@ impl<D: Durability + Clone> Actor<D> {
         // Exact IMPACT clones the inputs (O(N)), so at most one runs per group
         // interval; the rest wait their turn (ADR 0008 §3.3, review finding 8).
         let mut impacts = std::collections::VecDeque::new();
+        // Writes a settling commit ended the group of: they commit next,
+        // ahead of newer messages (ADR 0019 §3.5 item 3).
+        let mut requeued: std::collections::VecDeque<WriteRequest> = Default::default();
         loop {
-            let first = if impacts.is_empty() {
+            let busy = !impacts.is_empty() || !requeued.is_empty() || self.pending();
+            let first = if busy {
+                rx.try_recv().ok()
+            } else {
                 match rx.recv() {
                     Ok(m) => Some(m),
                     Err(_) => return None,
                 }
-            } else {
-                rx.try_recv().ok()
             };
-            let mut writes = Vec::new();
+            let idle = first.is_none() && requeued.is_empty();
+            let mut writes: Vec<WriteRequest> = requeued.drain(..).collect();
             let mut others = Vec::new();
             let take =
                 |m: Message, writes: &mut Vec<WriteRequest>, others: &mut Vec<Message>| match m {
@@ -425,7 +505,7 @@ impl<D: Durability + Clone> Actor<D> {
                 }
             }
             if !writes.is_empty() {
-                self.commit(writes);
+                requeued.extend(self.commit(writes));
             }
             for m in others {
                 match m {
@@ -439,16 +519,51 @@ impl<D: Durability + Clone> Actor<D> {
             if let Some(m) = impacts.pop_front() {
                 self.handle(m);
             }
+            // Idle drain (ADR 0019 §3.7): no message waits, so one slice.
+            if idle && impacts.is_empty() && self.pending() {
+                let units = self.store.lazy().map_or(LAZY_BUDGET, |b: Budget| b.units);
+                let _ = self.store.drain(Drain::Units(units));
+                self.publish_changes();
+            }
         }
     }
+    /// Whether the store's kernel has a frontier to drain (never once
+    /// poisoned: nothing can drain it then).
+    fn pending(&self) -> bool {
+        (self.store.kernel()).is_ok_and(|k| k.frontier().is_some())
+    }
+    /// After any message or slice (ADR 0019 §3.5 item 6): publishes when the
+    /// store's epoch advanced or it took a step, so a settle a dry run, a
+    /// pull or an idempotent retry caused is published too.
+    fn publish_changes(&mut self) {
+        let steps = self.store.take_steps();
+        if steps.is_empty() && self.store.epoch() <= self.published.load().epoch {
+            return;
+        }
+        self.publish(steps);
+    }
     fn handle(&mut self, m: Message) {
+        self.answer(m);
+        self.publish_changes();
+    }
+    fn answer(&mut self, m: Message) {
         match m {
             Message::Write(_) | Message::Shutdown { .. } => unreachable!("handled by run"),
+            Message::Settle { epoch, through } => {
+                if self.store.frontier_epoch() == Some(epoch) {
+                    let _ = self.store.drain(through.map_or(Drain::Full, Drain::Rank));
+                }
+            }
+            // A dry run settles first; that is published before the reply.
             Message::ImpactExact { batch, reply } => {
-                let _ = reply.send(self.store.impact_exact(&batch));
+                let r = self.store.impact_exact(&batch);
+                self.publish_changes();
+                let _ = reply.send(r);
             }
             Message::WhatIf { batch, reply } => {
-                let _ = reply.send(self.store.what_if_detailed(&batch));
+                let r = self.store.what_if_detailed(&batch);
+                self.publish_changes();
+                let _ = reply.send(r);
             }
             Message::TxnStatus { id, reply } => {
                 let _ = reply.send(self.store.txn_status(&id));
@@ -611,7 +726,10 @@ impl<D: Durability + Clone> Actor<D> {
             }
         }
     }
-    fn commit(&mut self, writes: Vec<WriteRequest>) {
+    /// Commits one group and replies to each write it processed. Returns
+    /// the writes after a settling commit, which ended the group (ADR 0019
+    /// §3.5 item 3): the caller submits them again, first.
+    fn commit(&mut self, writes: Vec<WriteRequest>) -> Vec<WriteRequest> {
         // A client transaction id a team proposal holds is not committed
         // locally (SPEC §6.1): `TxnIdReuse`, which `team_route` resolves
         // to the proposal for a retry of the same request.
@@ -625,7 +743,7 @@ impl<D: Durability + Clone> Actor<D> {
                 .send(Err(StoreError::Tx(TxError::TxnIdReuse { id })));
         }
         if writes.is_empty() {
-            return;
+            return Vec::new();
         }
         // Payloads first: a blob failure poisons the store, which fails the group.
         // Ordered, not flushed: the group's op_log sync makes them durable
@@ -641,13 +759,12 @@ impl<D: Durability + Clone> Actor<D> {
                 client_hash: w.client_hash,
             })
             .collect();
-        // What each write actually committed: certificate-conditional batches
-        // gain their `ExpectHeads` here, and the replica replays those.
-        let mut batches: Vec<Batch> = writes.iter().map(|w| w.batch.clone()).collect();
         let before = self.store.epoch();
         let results = match blob_error {
-            Some(e) => batches.iter().map(|_| Err(e.clone())).collect(),
+            Some(e) => writes.iter().map(|_| Err(e.clone())).collect(),
             None => {
+                // Certificate-conditional batches gain their `ExpectHeads`
+                // here; the store's step log records what committed.
                 let expects: Vec<Option<&Expect>> =
                     writes.iter().map(|w| w.expect.as_deref()).collect();
                 let mut prepare = |n: usize,
@@ -655,12 +772,10 @@ impl<D: Durability + Clone> Actor<D> {
                                    checksum: &dyn Fn(Epoch) -> Option<ContentHash>,
                                    batch: &Batch|
                  -> Result<Batch, StoreError> {
-                    let Some(expect) = expects[n] else {
-                        return Ok(batch.clone());
-                    };
-                    let extended = expect_certificate(kernel, checksum, batch, expect)?;
-                    batches[n] = extended.clone();
-                    Ok(extended)
+                    match expects[n] {
+                        Some(expect) => expect_certificate(kernel, checksum, batch, expect),
+                        None => Ok(batch.clone()),
+                    }
                 };
                 self.store.commit_group_with(&group, &mut prepare)
             }
@@ -668,44 +783,39 @@ impl<D: Durability + Clone> Actor<D> {
         self.stats.groups.fetch_add(1, Ordering::Relaxed);
         self.stats
             .batches
-            .fetch_add(batches.len() as u64, Ordering::Relaxed);
-        if self.store.epoch() > before {
-            self.publish(&batches, &results, before);
-        }
+            .fetch_add(results.len() as u64, Ordering::Relaxed);
+        self.publish_changes();
+        // Settling at ack (ADR 0019 §3.9): a new epoch is while it is still
+        // the frontier's; a retry of an earlier one is as its frame says.
+        let frontier = self.store.frontier_epoch();
+        let settling = |r: &CommitResult| match r.epoch > before {
+            true => frontier == Some(r.epoch),
+            false => (self.store.read_row(r.epoch)).is_ok_and(|row| row.settling),
+        };
+        let mut writes = writes;
+        let rest = writes.split_off(results.len());
+        (self.stats.requeued).fetch_add(rest.len() as u64, Ordering::Relaxed);
         for (w, r) in writes.into_iter().zip(results) {
+            let r = r.map(|result| Acked {
+                settling: settling(&result),
+                result,
+            });
             let _ = w.reply.send(r);
         }
+        rest
     }
-    /// Publishes the store's database and keeps a caught-up replica in the store.
-    fn publish(
-        &mut self,
-        batches: &[Batch],
-        results: &[Result<CommitResult, StoreError>],
-        before: Epoch,
-    ) {
-        // Newly applied batches in epoch order (idempotent hits and staged
-        // duplicates repeat an epoch or predate the group).
-        let mut fresh: Vec<(Epoch, &Batch, &CommitResult)> = batches
-            .iter()
-            .zip(results)
-            .filter_map(|(b, r)| r.as_ref().ok().map(|r| (r.epoch, b, r)))
-            .filter(|(e, _, _)| *e > before)
-            .collect();
-        fresh.sort_by_key(|(e, _, _)| *e);
-        fresh.dedup_by_key(|(e, _, _)| *e);
-        let current: Vec<(Batch, CommitResult)> = fresh
-            .iter()
-            .map(|(_, b, r)| ((*b).clone(), (*r).clone()))
-            .collect();
-        // The spare was published one group ago, so it is at the state before
-        // the previous group: replay the previous group, then this one.
-        let previous = std::mem::take(&mut self.previous);
+    /// Publishes the store's database and keeps a caught-up replica in the
+    /// store: the replica replays the previous publication's steps and
+    /// `current`, the store's steps since then.
+    fn publish(&mut self, current: Vec<Step>) {
+        // The spare was published one publication ago, so it is at the state
+        // before the previous one: replay the previous steps, then these.
+        let previous = std::mem::replace(&mut self.previous, current);
+        let lazy = self.store.lazy();
         let replica = match self.reclaim() {
             Some(mut db) => {
-                let agrees = previous
-                    .iter()
-                    .chain(&current)
-                    .all(|(b, r)| db.commit_with(b, &AllPresent).as_ref() == Ok(r));
+                let agrees =
+                    (previous.iter().chain(&self.previous)).all(|step| replay(&mut db, step, lazy));
                 if !agrees {
                     // A replica that replays differently is a kernel bug:
                     // fail stop, never publish either state (§3.3).
@@ -717,7 +827,6 @@ impl<D: Durability + Clone> Actor<D> {
             }
             None => None,
         };
-        self.previous = current;
         let replica = match replica {
             Some(db) => db,
             None => {
@@ -736,11 +845,12 @@ impl<D: Durability + Clone> Actor<D> {
             kernel: newest,
             log: self.store.log_reader(),
             key_purged: self.store.key_log_purged_through(),
+            generation: self.published.load().generation + 1,
         });
-        let epoch = snapshot.epoch;
+        let published = (snapshot.epoch, snapshot.generation);
         self.spare = Some(self.published.swap(snapshot));
         let (m, c) = &*self.epochs;
-        *m.lock().expect("epochs") = epoch;
+        *m.lock().expect("epochs") = published;
         c.notify_all();
     }
     /// The replica published two groups ago, once no reader holds it.
@@ -753,6 +863,24 @@ impl<D: Durability + Clone> Actor<D> {
             .reclaim_wait_micros
             .fetch_add(waited, Ordering::Relaxed);
         Some(std::mem::take(&mut s.kernel))
+    }
+}
+/// Replays one of the store's steps on a replica, with the store's budget;
+/// false when a commit's result differs from the acknowledged one, or a
+/// drain finds no frontier (the store records one only when it has one).
+fn replay(db: &mut Kernel, step: &Step, lazy: Option<Budget>) -> bool {
+    match step {
+        Step::Commit { batch, result } => {
+            (db.commit_detailed_lazy(batch, &AllPresent, lazy))
+                .map(|(r, _)| r)
+                .as_ref()
+                == Ok(result)
+        }
+        Step::Drain(how) => {
+            let pending = db.frontier().is_some();
+            db.drain(*how);
+            pending
+        }
     }
 }
 /// Validates `expect`'s certificate on the live kernel (every earlier batch

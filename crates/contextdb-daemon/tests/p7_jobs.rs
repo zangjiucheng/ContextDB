@@ -47,7 +47,7 @@ fn write_on(a: &Actor, branch: BranchId, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> C
     let mut id = [0xEE; 16];
     id[..8].copy_from_slice(&TXN.fetch_add(1, Ordering::Relaxed).to_le_bytes());
     batch.client_txn_id = Some(id);
-    a.write(blobs, batch).unwrap().unwrap()
+    a.write(blobs, batch).unwrap().unwrap().result
 }
 fn write(a: &Actor, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
     write_on(a, MAIN, blobs, ops)

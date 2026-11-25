@@ -20,7 +20,7 @@ pub mod vectors;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
 pub use projection::{PROJECTIONS_FILE, ProjectionFile};
 pub use store::{
-    ChangePage, LogReader, OpenOptions, OpenReport, Payload, Prepare, Store, StoreError,
+    ChangePage, LogReader, OpenOptions, OpenReport, Payload, Prepare, Step, Store, StoreError,
     TruncatedTail, TxnStatus, Unavailable, Write,
 };
 

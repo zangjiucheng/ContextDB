@@ -46,7 +46,7 @@ fn raw(s: &Svc, branch: BranchId, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitRe
     let mut batch = Batch::new(ops);
     batch.branch = branch;
     match s.handle(ADMIN, Request::Raw { blobs, batch }).response {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

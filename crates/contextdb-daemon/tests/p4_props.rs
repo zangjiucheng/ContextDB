@@ -126,7 +126,7 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                     },
                 )
                 .response);
-            let Response::Committed { result } = r else {
+            let Response::Committed { result, .. } = r else {
                 panic!()
             };
             heads.push(result.allocations.new_revisions[0].0);
@@ -182,7 +182,7 @@ fn d_e_updates_and_agent_views_equal_the_oracle() {
                             },
                         )
                         .response);
-                    let Response::Committed { result } = r else {
+                    let Response::Committed { result, .. } = r else {
                         panic!()
                     };
                     heads[l as usize] = result.allocations.new_revisions[0].0;

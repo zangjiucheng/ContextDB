@@ -91,6 +91,7 @@ fn idempotent_retry_and_txn_status_t18b() {
             result: Box::new(first.clone()),
             principal: PrincipalId(0),
             branch: BranchId(0),
+            settling: false,
         }
     );
     assert_eq!(

@@ -8,8 +8,17 @@ use contextdb_model::*;
 use std::io::{self, Read, Write};
 
 /// 7 (P9, ADR 0017 §10): addressed handoffs, `dropped_unauthorized`.
-pub const PROTOCOL_VERSION: u16 = 8;
+/// 8 (P10): team sync, proposals and team lines. 9 (P11, ADR 0019 §4):
+/// `settling` on commit responses and `TxnStatus`.
+pub const PROTOCOL_VERSION: u16 = 9;
 pub const MAX_FRAME: u32 = 16 << 20;
+/// The line a commit tool shows for a `settling` ack (ADR 0019 §3.9).
+pub fn settling_note(epoch: Epoch) -> String {
+    format!(
+        "status changes settling (epoch {}); see ctx_changes",
+        epoch.0
+    )
+}
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
 
@@ -1166,6 +1175,10 @@ pub enum Response {
     },
     Committed {
         result: CommitResult,
+        /// The commit's maintenance was still pending at ack (ADR 0019
+        /// §3.9): `l0_flips` and `status_diff` are empty, and the epoch's
+        /// status changes arrive through `ctx_changes` once it settles.
+        settling: bool,
     },
     Why {
         proof: Proof,
@@ -1204,6 +1217,8 @@ pub enum Response {
     },
     TxnStatus {
         committed: Option<(Epoch, CommitResult)>,
+        /// The committed result was acknowledged `settling` (ADR 0019 §3.9).
+        settling: bool,
     },
     Attached {
         session: SessionId,
@@ -2594,9 +2609,10 @@ impl Wire for Response {
                 payload.encode(o);
                 unavailable.encode(o);
             }
-            Self::Committed { result } => {
+            Self::Committed { result, settling } => {
                 5u8.encode(o);
                 result.encode(o);
+                settling.encode(o);
             }
             Self::Why { proof } => {
                 6u8.encode(o);
@@ -2650,9 +2666,13 @@ impl Wire for Response {
                 index.encode(o);
                 purge_pending.encode(o);
             }
-            Self::TxnStatus { committed } => {
+            Self::TxnStatus {
+                committed,
+                settling,
+            } => {
                 13u8.encode(o);
                 committed.encode(o);
+                settling.encode(o);
             }
             Self::Attached { session, created } => {
                 14u8.encode(o);
@@ -2869,6 +2889,7 @@ impl Wire for Response {
             },
             5 => Self::Committed {
                 result: Wire::decode(i)?,
+                settling: Wire::decode(i)?,
             },
             6 => Self::Why {
                 proof: Wire::decode(i)?,
@@ -2903,6 +2924,7 @@ impl Wire for Response {
             },
             13 => Self::TxnStatus {
                 committed: Wire::decode(i)?,
+                settling: Wire::decode(i)?,
             },
             14 => Self::Attached {
                 session: Wire::decode(i)?,
@@ -3546,6 +3568,29 @@ mod tests {
                     archived: false,
                 }],
             },
+            Response::Committed {
+                result: CommitResult {
+                    epoch: Epoch(5),
+                    allocations: Allocations::default(),
+                    net_delta: NetDelta::default(),
+                    l0_flips: Vec::new(),
+                    status_diff: Vec::new(),
+                },
+                settling: true,
+            },
+            Response::TxnStatus {
+                committed: Some((
+                    Epoch(5),
+                    CommitResult {
+                        epoch: Epoch(5),
+                        allocations: Allocations::default(),
+                        net_delta: NetDelta::default(),
+                        l0_flips: Vec::new(),
+                        status_diff: Vec::new(),
+                    },
+                )),
+                settling: true,
+            },
             Response::Merged {
                 result: CommitResult {
                     epoch: Epoch(4),
@@ -3759,10 +3804,10 @@ mod tests {
         let mut buf = Vec::new();
         write_request(&mut buf, &Request::Status).unwrap();
         let mut bad = buf.clone();
-        bad[4] = 9;
+        bad[4] = 8;
         assert!(matches!(
             read_request(&mut bad.as_slice()),
-            Err(FrameError::Version(9))
+            Err(FrameError::Version(8))
         ));
         let mut bad = buf.clone();
         bad[6] = KIND_RESPONSE as u8;

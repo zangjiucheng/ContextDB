@@ -46,7 +46,7 @@ fn raw_on(s: &Svc, branch: BranchId, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> Commi
     let mut batch = Batch::new(ops);
     batch.branch = branch;
     match call(s, ADMIN, Request::Raw { blobs, batch }) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }
@@ -395,7 +395,7 @@ fn open_from_a_candidate() {
     assert_eq!(code(&unknown), "UnknownRef", "{unknown:?}");
     // From b's side, a filled in.
     let r = match call(&s, ADMIN, open(rev("queue-fact", b), None, id)) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     };
     assert_eq!(r.allocations.new_artifacts.len(), 2);

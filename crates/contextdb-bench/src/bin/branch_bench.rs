@@ -327,7 +327,7 @@ fn actor_part(reads: usize, samples: usize) {
                 client_txn_id: None,
             },
         ) {
-            Response::Committed { result } => result,
+            Response::Committed { result, .. } => result,
             other => panic!("{other:?}"),
         }
     };

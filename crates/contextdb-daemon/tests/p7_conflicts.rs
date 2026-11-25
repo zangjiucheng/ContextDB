@@ -58,7 +58,7 @@ fn raw_as(
     let mut batch = Batch::new(ops);
     batch.branch = branch;
     match call(s, id, Request::Raw { blobs, batch }) {
-        Response::Committed { result } => Ok(result),
+        Response::Committed { result, .. } => Ok(result),
         other => Err(other),
     }
 }
@@ -162,7 +162,7 @@ fn status(s: &Svc, branch: BranchId, r: RevisionId) -> Summary {
 }
 fn committed(r: Response) -> CommitResult {
     match r {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

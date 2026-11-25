@@ -248,6 +248,7 @@ dependencies = [
  "rand_chacha",
  "rand_core 0.9.5",
  "rusqlite",
+ "toml",
 ]
 
 [[package]]

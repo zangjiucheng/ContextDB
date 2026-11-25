@@ -1044,10 +1044,19 @@ impl<B: Backend> Server<B> {
                 let id = unhex(arg(args, "client_txn_id").ok_or("client_txn_id required")?)
                     .ok_or("client_txn_id must be 32 hex digits")?;
                 let env = self.call(Request::TxnStatus { id })?;
-                let Response::TxnStatus { committed } = env.response else {
+                let Response::TxnStatus {
+                    committed,
+                    settling,
+                } = env.response
+                else {
                     return Err("unexpected response".into());
                 };
                 Ok(match committed {
+                    Some((epoch, _)) if settling => json!({
+                        "status": "Committed",
+                        "epoch": epoch.0,
+                        "note": contextdb_proto::proto::settling_note(epoch),
+                    }),
                     Some((epoch, _)) => json!({ "status": "Committed", "epoch": epoch.0 }),
                     None => json!({ "status": "NotCommitted" }),
                 })
@@ -1309,7 +1318,7 @@ impl<B: Backend> Server<B> {
                     "artifacts": artifacts.iter().map(|a| a.0).collect::<Vec<_>>(),
                 }));
             }
-            let Response::Committed { result } = &env.response else {
+            let Response::Committed { result, .. } = &env.response else {
                 return Err("unexpected response".into());
             };
             return Ok(json!({
@@ -1392,14 +1401,19 @@ fn committed(env: Envelope) -> Result<Value, String> {
             "note": "queued team proposal; publishes on the next git push",
         }));
     }
-    let Response::Committed { result } = env.response else {
+    let Response::Committed { result, settling } = env.response else {
         return Err("unexpected response".into());
     };
-    Ok(json!({
+    let mut out = json!({
         "epoch": result.epoch.0,
         "revisions": result.allocations.new_revisions.iter().map(|r| r.0).collect::<Vec<_>>(),
         "status_diff": result.status_diff.iter().map(|r| r.0).collect::<Vec<_>>(),
-    }))
+    });
+    // ADR 0019 §3.9: the status changes arrive once the epoch settles.
+    if settling {
+        out["note"] = json!(contextdb_proto::proto::settling_note(result.epoch));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

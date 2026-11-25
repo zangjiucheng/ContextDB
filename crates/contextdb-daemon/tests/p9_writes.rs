@@ -148,7 +148,7 @@ fn fixture() -> Fixture {
         )
         .response
     {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     };
     let names = recs.map(|(k, ..)| k);
@@ -876,7 +876,7 @@ fn t108_branches_and_merges() {
         }],
         vec![],
     );
-    let Response::Committed { result } = rr else {
+    let Response::Committed { result, .. } = rr else {
         panic!("{rr:?}")
     };
     let rule = result.allocations.new_rules[0];
@@ -1105,7 +1105,7 @@ fn txn_status_of_a_branch_commit_keeps_its_own_entries() {
             },
         )
         .response;
-    let Response::Committed { result } = committed else {
+    let Response::Committed { result, .. } = committed else {
         panic!("{committed:?}")
     };
     assert!(!result.status_diff.is_empty(), "{result:?}");
@@ -1113,7 +1113,8 @@ fn txn_status_of_a_branch_commit_keeps_its_own_entries() {
     assert_eq!(
         status.response,
         Response::TxnStatus {
-            committed: Some((result.epoch, result.clone()))
+            committed: Some((result.epoch, result.clone())),
+            settling: false,
         }
     );
 }

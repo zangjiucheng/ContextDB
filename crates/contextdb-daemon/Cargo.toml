@@ -22,6 +22,7 @@ nix = { version = "=0.30.1", default-features = false, features = ["fs", "socket
 arc-swap = "=1.9.3"
 blake3 = "=1.8.7"
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
+toml = { version = "=1.1.2", default-features = false, features = ["parse", "std", "serde"] }
 
 [dev-dependencies]
 contextdb-oracle.workspace = true

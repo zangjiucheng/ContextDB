@@ -370,7 +370,7 @@ impl<D: Durability + Clone + 'static> Scheduler<D> {
         }
         let label = Some(Label::Conflict.name());
         match self.actor.write(vec![meta_bytes, review_bytes], batch) {
-            Ok(Ok(result)) => {
+            Ok(Ok(crate::actor::Acked { result, .. })) => {
                 self.stats.reviews.fetch_add(1, Ordering::Relaxed);
                 self.stats.pair_reviews.fetch_add(1, Ordering::Relaxed);
                 self.pair_end(

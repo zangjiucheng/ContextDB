@@ -365,7 +365,7 @@ fn t19_expect_cert_valid_first_committer_wins() {
         vec![b"a2".to_vec()],
         txn,
     );
-    let Response::Committed { result } = first else {
+    let Response::Committed { result, settling } = first else {
         panic!("{first:?}")
     };
     // Plan 2 read the same A: refused with the verdict, nothing committed.
@@ -387,7 +387,7 @@ fn t19_expect_cert_valid_first_committer_wins() {
         vec![b"a2".to_vec()],
         txn,
     );
-    assert_eq!(retry, Response::Committed { result });
+    assert_eq!(retry, Response::Committed { result, settling });
     let reuse = commit(&s, p1, supersede_ops(&c, b"c3"), vec![b"c3".to_vec()], txn);
     assert_eq!(code(&reuse), "TxnIdReuse");
     // Clients never send certificate read sets themselves.

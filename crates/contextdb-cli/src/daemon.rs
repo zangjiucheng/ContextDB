@@ -248,8 +248,11 @@ fn validate(c: &mut Client, args: &[String], branch: &Option<String>) -> Result<
                 },
             ),
         )?;
-        if let Response::Committed { result } = env.response {
+        if let Response::Committed { result, settling } = env.response {
             println!("rule {}: recorded at epoch {}", r.rule.0, result.epoch.0);
+            if settling {
+                println!("{}", settling_note(result.epoch));
+            }
         }
     }
     Ok(())
@@ -421,7 +424,7 @@ pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 println!("(more; raise --limit)");
             }
         }
-        R::Committed { result } => {
+        R::Committed { result, settling } => {
             let ids: Vec<String> = (result.allocations.new_artifacts.iter())
                 .map(|a| a.0.to_string())
                 .collect();
@@ -434,6 +437,9 @@ pub fn conflicts(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                     format!("; artifacts {}", ids.join(","))
                 }
             );
+            if settling {
+                println!("{}", settling_note(result.epoch));
+            }
         }
         R::AlreadyOpen { artifacts } => {
             let ids: Vec<String> = artifacts.iter().map(|a| a.0.to_string()).collect();
@@ -566,7 +572,7 @@ pub fn branch(sub: &str, dir: &Path, args: &[String]) -> Result<(), String> {
                 );
             }
         }
-        Response::Committed { result } => println!("{sub}d at epoch {}", result.epoch.0),
+        Response::Committed { result, .. } => println!("{sub}d at epoch {}", result.epoch.0),
         other => println!("{other:?}"),
     }
     Ok(())

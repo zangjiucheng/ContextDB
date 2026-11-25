@@ -4,7 +4,7 @@
 // is returned immediately, never stored, so its size does not matter.
 #![allow(clippy::result_large_err)]
 use crate::{
-    actor::{ActorHandle, Message, Snapshot, SubmitError},
+    actor::{Acked, ActorHandle, Message, Snapshot, SubmitError},
     packing,
     proto::*,
     ranking,
@@ -1653,7 +1653,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     .map(|content| Op::ShredContent { content })
                     .collect();
                 match self.commit(id, Vec::new(), Batch::new(ops), client_txn_id) {
-                    Response::Committed { result } => Response::Shred {
+                    Response::Committed { result, .. } => Response::Shred {
                         targets,
                         epoch: Some(result.epoch),
                         // `purged` only once the key log and every
@@ -2207,7 +2207,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }]);
                 batch.branch = target;
                 match self.commit(id, Vec::new(), batch, client_txn_id) {
-                    Response::Committed { result } => {
+                    Response::Committed { result, .. } => {
                         let report = (self.actor.snapshot().log.read_row(result.epoch).ok())
                             .and_then(|row| row.trailer().ok().flatten())
                             .and_then(|t| t.merge)
@@ -2235,6 +2235,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     result,
                     principal,
                     branch,
+                    settling,
                 })) if crate::principals::class(principal)
                     == crate::principals::class(id.principal) =>
                 {
@@ -2243,14 +2244,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     crate::redact::note_branch(branch);
                     Response::TxnStatus {
                         committed: Some((epoch, *result)),
+                        settling,
                     }
                 }
-                Ok(Ok(contextdb_store::TxnStatus::Committed { .. })) => {
-                    Response::TxnStatus { committed: None }
-                }
-                Ok(Ok(contextdb_store::TxnStatus::NotCommitted)) => {
-                    Response::TxnStatus { committed: None }
-                }
+                Ok(Ok(
+                    contextdb_store::TxnStatus::Committed { .. }
+                    | contextdb_store::TxnStatus::NotCommitted,
+                )) => Response::TxnStatus {
+                    committed: None,
+                    settling: false,
+                },
                 Ok(Err(e)) => {
                     let (c, d) = store_code(&e);
                     err(&c, d)
@@ -2865,11 +2868,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .may_touch_team(&batch)
             .then(|| (batch.clone(), blobs.clone()));
         match self.actor.write(blobs, batch) {
-            Ok(Ok(result)) => {
+            Ok(Ok(Acked { result, settling })) => {
                 if sets_access && let Err(v) = self.apply_access() {
                     eprintln!("ctxd: access document committed but not applied: {v:?}");
                 }
-                Response::Committed { result }
+                Response::Committed { result, settling }
             }
             Ok(Err(e)) => self.team_route(team, e),
             Err(e) => submit_err(e),
@@ -3060,11 +3063,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .actor
             .write_expecting(blobs, batch, client_hash, expect)
         {
-            Ok(Ok(result)) => {
+            Ok(Ok(Acked { result, settling })) => {
                 // Session writes count ctx_commit like record and supersede.
                 let reason = "commit".into();
                 self.wrote(session, &s, &agent, txn, result.epoch, reason, with_deps);
-                Response::Committed { result }
+                Response::Committed { result, settling }
             }
             Ok(Err(StoreError::CertificateNotValid(validation))) => Response::Refused {
                 validation: *validation,
@@ -3816,7 +3819,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut batch = Batch::new(ops);
         batch.branch = branch;
         let response = explain_rule_error(self.commit(id, vec![body], batch, Some(txn)), &named);
-        if let Response::Committed { result } = &response {
+        if let Response::Committed { result, .. } = &response {
             self.wrote(
                 session,
                 &s,
@@ -3946,7 +3949,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let mut batch = Batch::new(ops);
         batch.branch = branch;
         let response = self.commit(id, vec![body], batch, Some(txn));
-        if let Response::Committed { result } = &response {
+        if let Response::Committed { result, .. } = &response {
             self.wrote(session, &s, &agent, txn, result.epoch, reason, with_deps);
         }
         response

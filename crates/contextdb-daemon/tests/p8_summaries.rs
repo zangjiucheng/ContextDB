@@ -45,7 +45,7 @@ fn attach(s: &Service<SimDisk>, key: &str) -> Binding {
 }
 fn committed(r: Response) -> CommitResult {
     match r {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

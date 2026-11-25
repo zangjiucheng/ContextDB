@@ -114,6 +114,19 @@ enum Step {
         pos: usize,
     },
 }
+impl Step {
+    /// The step's kind (a `WalkOut` stage counts as its own) and position.
+    fn position(&self) -> (u8, usize) {
+        match self {
+            Step::CountInc(_, pos) => (0, *pos),
+            Step::CountRule(_, pos) => (1, *pos),
+            Step::CountOut(pos) => (2, *pos),
+            Step::WalkInc(_, _, pos) => (3, *pos),
+            Step::WalkRule(_, _, pos) => (4, *pos),
+            Step::WalkOut { stage, pos, .. } => (5 + stage, *pos),
+        }
+    }
+}
 impl<S> Frontier<S> {
     /// `min(rank of both heap tops, rank of the paused node)`.
     fn cursor(&self) -> Option<usize> {
@@ -217,6 +230,36 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     /// Work units the pending commit has run so far.
     pub fn frontier_units(&self) -> Option<u64> {
         self.frontier.as_ref().map(|f| f.units)
+    }
+    /// A hash of the pending maintenance, for comparing two replicas (ADR
+    /// 0019 §3.5 item 5): epoch, cursor, both heaps' entries sorted by
+    /// `(rank, r)` (a `BinaryHeap`'s layout depends on its push history),
+    /// the paused node's revision, step and position, and the units run.
+    pub fn frontier_signature(&self) -> Option<ContentHash> {
+        let f = self.frontier.as_ref()?;
+        let mut h = blake3::Hasher::new();
+        h.update(&f.epoch.0.to_le_bytes());
+        h.update(&f.cursor().map_or(u64::MAX, |c| c as u64).to_le_bytes());
+        for heap in [&f.pass.heap, &f.walk] {
+            let mut entries: Vec<(usize, RevisionId)> = heap.iter().map(|e| e.0).collect();
+            entries.sort_unstable();
+            h.update(&(entries.len() as u64).to_le_bytes());
+            for (rank, r) in entries {
+                h.update(&(rank as u64).to_le_bytes());
+                h.update(&r.0.to_le_bytes());
+            }
+        }
+        match &f.paused {
+            None => h.update(&[0]),
+            Some(p) => {
+                let (kind, pos) = p.step.position();
+                h.update(&[1, kind]);
+                h.update(&p.r.0.to_le_bytes());
+                h.update(&(pos as u64).to_le_bytes())
+            }
+        };
+        h.update(&f.units.to_le_bytes());
+        Some(*h.finalize().as_bytes())
     }
     /// Runs the pending maintenance (ADR 0019 §3.7). Returns the deferred
     /// epoch's diffs when this drain empties the frontier.

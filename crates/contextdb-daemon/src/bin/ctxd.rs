@@ -45,6 +45,10 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+        Err(StartError::Config(reason)) => {
+            eprintln!("ctxd: {reason}");
+            ExitCode::from(2)
+        }
         Err(StartError::Locked) => {
             eprintln!("ctxd: another ctxd already serves {}", dir.display());
             ExitCode::from(3)

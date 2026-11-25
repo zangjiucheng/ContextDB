@@ -200,7 +200,7 @@ fn t103_a_shred_left_unpurged_is_purged_at_the_next_start() {
     let mut b = Batch::new(vec![Op::ShredContent { content }]);
     b.channel = Channel::Admin;
     let r = raw(&mut c, vec![], b);
-    let Response::Committed { result } = r else {
+    let Response::Committed { result, .. } = r else {
         panic!("{r:?}")
     };
     // The key log is purged by the store with the commit; the projections
@@ -299,7 +299,7 @@ mod jobs {
             )
             .response
         {
-            Response::Committed { result } => result,
+            Response::Committed { result, .. } => result,
             other => panic!("{other:?}"),
         }
     }
@@ -531,7 +531,7 @@ fn a_failed_key_log_rewrite_is_retried_by_the_purge() {
             batch: b,
         },
     );
-    let Response::Committed { result } = r.response else {
+    let Response::Committed { result, .. } = r.response else {
         panic!("{r:?}")
     };
     let pending = |s: &Service<SimDisk>| match s.handle(admin, Request::Status).response {

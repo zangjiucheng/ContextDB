@@ -29,7 +29,7 @@ fn writes_publish_epochs_and_old_snapshots_never_change() {
     let h = actor::spawn(store()).unwrap();
     assert_eq!(h.snapshot().epoch, Epoch(0));
     let (blobs, b) = create("a", b"a");
-    let r = h.write(blobs, b).unwrap().unwrap();
+    let r = h.write(blobs, b).unwrap().unwrap().result;
     assert_eq!(r.epoch, Epoch(1));
     let held = h.snapshot();
     let held_digest = held.db().digest();
@@ -62,7 +62,7 @@ fn concurrent_writers_group_and_lose_nothing() {
                     .map(|n| {
                         let (blobs, b) =
                             create(&format!("t{t}-{n}"), format!("{t}/{n}").as_bytes());
-                        h.write(blobs, b).unwrap().unwrap().epoch
+                        h.write(blobs, b).unwrap().unwrap().result.epoch
                     })
                     .collect::<Vec<_>>()
             })

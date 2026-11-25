@@ -133,7 +133,7 @@ fn record(
 }
 fn create(s: &Service<SimDisk>, b: Binding, key: &str, body: &str) -> CommitResult {
     match record(s, b, key, body, true, Vec::new()) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }
@@ -1148,7 +1148,7 @@ fn briefing_counts_pending_heads_and_stop_writer_syncs_lazy_events() {
         )
         .response
     {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     };
     let x = rec("x", Vec::new());

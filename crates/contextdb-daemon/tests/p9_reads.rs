@@ -130,7 +130,7 @@ fn raw(s: &Svc, blobs: Vec<Vec<u8>>, ops: Vec<Op>, txn: [u8; 16]) -> CommitResul
     let mut batch = Batch::new(ops);
     batch.client_txn_id = Some(txn);
     match s.handle(ADMIN, Request::Raw { blobs, batch }).response {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }
@@ -611,7 +611,7 @@ fn t100_no_hidden_names_in_diffs_transactions_and_errors() {
     record(CAROL, carol, "pub/by-carol", [10; 16]);
     let status =
         |id: Identity, txn: [u8; 16]| match s.handle(id, Request::TxnStatus { id: txn }).response {
-            Response::TxnStatus { committed } => committed.is_some(),
+            Response::TxnStatus { committed, .. } => committed.is_some(),
             other => panic!("{other:?}"),
         };
     assert!(status(OWNER_AGENT, [9; 16]));
@@ -969,12 +969,14 @@ fn t100_every_response_type_names_only_visible_ids() {
     for r in [
         Response::Committed {
             result: result.clone(),
+            settling: false,
         },
         Response::ImpactExact {
             result: result.clone(),
         },
         Response::TxnStatus {
             committed: Some((Epoch(9), result.clone())),
+            settling: false,
         },
     ] {
         assert_eq!(run(r).1.redacted, 6);
@@ -1569,8 +1571,9 @@ fn prop15_redaction_matches_the_reference() {
             for result in &results {
                 let (resp, red) = redact(Response::Committed {
                     result: result.clone(),
+                    settling: false,
                 });
-                let Response::Committed { result: r } = resp else {
+                let Response::Committed { result: r, .. } = resp else {
                     panic!()
                 };
                 let d = &result.net_delta;
@@ -1909,7 +1912,7 @@ fn merge_allocations_never_name_hidden_objects() {
             )
             .response
         {
-            Response::Committed { result } => result.allocations.new_revisions[0],
+            Response::Committed { result, .. } => result.allocations.new_revisions[0],
             other => panic!("{other:?}"),
         }
     };
@@ -1978,7 +1981,7 @@ fn resolving_needs_read_on_every_side() {
             },
         )
         .response;
-    let Response::Committed { result } = &r else {
+    let Response::Committed { result, .. } = &r else {
         panic!("{r:?}")
     };
     let snap = s.actor.snapshot();
@@ -2052,7 +2055,7 @@ fn impact_batch_is_redacted_with_its_branch() {
             },
         )
         .response;
-    let Response::Committed { result } = r else {
+    let Response::Committed { result, .. } = r else {
         panic!("{r:?}")
     };
     let (l, old) = (

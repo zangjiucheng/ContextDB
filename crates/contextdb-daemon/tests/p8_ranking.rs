@@ -74,7 +74,7 @@ fn create(
     ))
     .response
     {
-        Response::Committed { result } => result.allocations.new_logicals[0],
+        Response::Committed { result, .. } => result.allocations.new_logicals[0],
         other => panic!("{key}: {other:?}"),
     }
 }

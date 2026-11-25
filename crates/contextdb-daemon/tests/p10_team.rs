@@ -1521,7 +1521,7 @@ fn a_team_shred_keeps_bytes_a_local_artifact_or_note_holds() {
         )
         .response
     {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     };
     let x = b"local record".to_vec();

@@ -78,7 +78,7 @@ fn create(s: &Service<SimDisk>, b: Binding, key: &str, body: &str) -> CommitResu
             client_txn_id: None,
         },
     ) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

@@ -251,7 +251,7 @@ fn main() -> ExitCode {
                                 client_txn_id: None,
                             });
                             match r.map(|e| e.response) {
-                                Ok(Response::Committed { result }) => {
+                                Ok(Response::Committed { result, .. }) => {
                                     counts.successes.fetch_add(1, Ordering::Relaxed);
                                     chain.lock().unwrap().push((
                                         bi,

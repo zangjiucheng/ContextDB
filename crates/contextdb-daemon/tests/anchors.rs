@@ -1319,7 +1319,7 @@ fn t19_expect_cert_valid_with_only_a_watermark_change_in_the_window() {
     };
     let (strict, plain) = (plan(true), plan(false));
     let commit = |session, key: &str| {
-        let Response::Committed { result } = s
+        let Response::Committed { result, .. } = s
             .handle(
                 AGENT,
                 Request::Record {

@@ -181,7 +181,7 @@ pub fn submit_on(
         })
         .map_err(|e| Unavailable(format!("{e:?}")))?;
     match reply.response {
-        Response::Committed { result } => Ok(Some(result)),
+        Response::Committed { result, .. } => Ok(Some(result)),
         other => Err(Unavailable(format!("{other:?}"))),
     }
 }

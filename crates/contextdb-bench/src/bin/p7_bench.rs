@@ -71,7 +71,7 @@ fn raw(c: &mut Client, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> Response {
 }
 fn committed(r: Response) -> CommitResult {
     match r {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

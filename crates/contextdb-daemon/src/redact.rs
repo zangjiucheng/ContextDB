@@ -381,10 +381,10 @@ impl<'a, 'v> Viewer<'a, 'v> {
                 }
                 0
             }
-            Response::Committed { result } | Response::ImpactExact { result } => {
+            Response::Committed { result, .. } | Response::ImpactExact { result } => {
                 self.result(result)
             }
-            Response::TxnStatus { committed } => {
+            Response::TxnStatus { committed, .. } => {
                 committed.as_mut().map_or(0, |(_, r)| self.result(r))
             }
             Response::WhatIf { result, merge } => {

@@ -77,7 +77,7 @@ fn record(
             client_txn_id: None,
         },
     ) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{key}: {other:?}"),
     }
 }
@@ -242,7 +242,7 @@ fn t19_window_changes_other_than_head_moves() {
     );
     let sem_rule = e.allocations.new_rules[0];
     let q = read(&s, seed, "q", Mode::Advisory);
-    let Response::Committed { result } = supersede(&s, seed, &q, b"q2") else {
+    let Response::Committed { result, .. } = supersede(&s, seed, &q, b"q2") else {
         panic!()
     };
     let q2 = result.allocations.new_revisions[0];

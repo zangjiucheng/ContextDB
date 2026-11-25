@@ -178,7 +178,7 @@ fn g6_two_agents_two_harnesses_one_decision() {
         adopt_as_base: true,
         client_txn_id: None,
     }) {
-        Response::Committed { result } => result.allocations.new_revisions[0],
+        Response::Committed { result, .. } => result.allocations.new_revisions[0],
         other => panic!("{other:?}"),
     };
     let db = rec(&mut w, "db", "postgres");

@@ -72,7 +72,7 @@ fn record(
             client_txn_id: None,
         },
     ) {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }
@@ -319,7 +319,7 @@ fn t32_retry_after_conflict_references_exactly_what_was_read() {
         logical: LogicalId(1),
         rev: RevisionId(1),
     };
-    let Response::Committed { result } = call(
+    let Response::Committed { result, .. } = call(
         &s,
         AGENT,
         revise(
@@ -396,7 +396,7 @@ fn carry_rules_copies_the_old_heads_own_rules_only_and_validate_needs_admin() {
         reason: "refine".into(),
         client_txn_id: None,
     };
-    let Response::Committed { result } = call(&s, AGENT, sup) else {
+    let Response::Committed { result, .. } = call(&s, AGENT, sup) else {
         panic!()
     };
     let snap = s.actor.snapshot();

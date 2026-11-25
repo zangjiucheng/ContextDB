@@ -274,6 +274,15 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
     pub fn frontier(&self) -> Option<(BranchId, Epoch)> {
         (self.branches.iter()).find_map(|b| b.db.frontier_epoch().map(|e| (b.info.id, e)))
     }
+    /// The pending branch's id and [`Db::frontier_signature`], hashed;
+    /// `None` without a frontier.
+    pub fn frontier_signature(&self) -> Option<ContentHash> {
+        let b = (self.branches.iter()).find(|b| b.db.has_frontier())?;
+        let mut h = blake3::Hasher::new();
+        h.update(&b.info.id.0.to_le_bytes());
+        h.update(&b.db.frontier_signature()?);
+        Some(*h.finalize().as_bytes())
+    }
     /// Runs the pending maintenance ([`Db::drain`]). Returns the branch and
     /// the deferred epoch's diffs, with global ids, when the frontier empties.
     pub fn drain(&mut self, how: Drain) -> Option<(BranchId, Settled)> {

@@ -124,7 +124,7 @@ pub fn policy(dir: &Path, args: &[String]) -> Result<u8, String> {
                     batch: Batch::new(vec![Op::SetPolicy { policy: doc }]),
                 },
             )?;
-            if let Response::Committed { result } = env.response {
+            if let Response::Committed { result, .. } = env.response {
                 println!("policy committed at epoch {} (hash {hash})", result.epoch.0);
             }
         }

@@ -65,7 +65,7 @@ fn create(s: &Service<SimDisk>, b: &Binding, key: &str, body: &str, certified: b
     ))
     .response
     {
-        Response::Committed { result } => result.allocations.new_logicals[0],
+        Response::Committed { result, .. } => result.allocations.new_logicals[0],
         other => panic!("{key}: {other:?}"),
     }
 }

@@ -40,7 +40,7 @@ pub fn run(dir: &Path, args: &[String]) -> Result<u8, String> {
                     client_txn_id: None,
                 },
             )?;
-            if let Response::Committed { result } = env.response {
+            if let Response::Committed { result, .. } = env.response {
                 println!("access document committed at epoch {}", result.epoch.0);
             }
             Ok(0)

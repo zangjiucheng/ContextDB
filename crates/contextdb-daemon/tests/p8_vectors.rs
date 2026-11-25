@@ -73,7 +73,7 @@ fn create_on(
             batch,
         },
     ) {
-        Response::Committed { result } => result.allocations.new_revisions[0],
+        Response::Committed { result, .. } => result.allocations.new_revisions[0],
         other => panic!("{other:?}"),
     }
 }

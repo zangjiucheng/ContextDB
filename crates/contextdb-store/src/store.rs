@@ -278,8 +278,24 @@ pub enum TxnStatus {
         /// The branch the batch committed on (its result is redacted with
         /// that branch's view).
         branch: BranchId,
+        /// The commit was acknowledged with its maintenance pending: the
+        /// result's `l0_flips` and `status_diff` are empty (ADR 0019 §3.9).
+        settling: bool,
     },
     NotCommitted,
+}
+/// One change the store made to its kernel, in execution order (ADR 0019
+/// §3.7). Replaying the steps on a replica reaches the same state and the
+/// same frontier.
+/// Most steps are commits, so boxing them would only add allocations.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug)]
+pub enum Step {
+    /// A newly applied commit: the batch actually committed (after
+    /// `prepare`) and its acknowledged result.
+    Commit { batch: Batch, result: CommitResult },
+    /// A drain run while the kernel had a frontier, settled or not.
+    Drain(Drain),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
@@ -353,6 +369,9 @@ pub struct Store<D: Durability> {
     lazy: Option<Budget>,
     /// A drain settled an epoch since [`Self::take_settled`] last ran.
     settled_since_publish: bool,
+    /// The steps since [`Self::take_steps`] last ran; `None` until
+    /// [`Self::record_steps`] turns the log on.
+    steps: Option<Vec<Step>>,
     _lock: Box<dyn LockGuard>,
 }
 /// Poison registry key: one disk instance and one store directory, so a failure
@@ -580,6 +599,7 @@ impl<D: Durability> Store<D> {
             group_seq: 0,
             lazy: options.lazy,
             settled_since_publish: false,
+            steps: None,
             _lock: lock,
             disk,
         };
@@ -788,6 +808,7 @@ impl<D: Durability> Store<D> {
                     result: Box::new(row.acked().map_err(|e| StoreError::Io(e.to_string()))?),
                     principal: row.principal,
                     branch: row.branch,
+                    settling: row.settling,
                 })
             }
             None => Ok(TxnStatus::NotCommitted),
@@ -868,8 +889,9 @@ impl<D: Durability> Store<D> {
         let mut slots = Vec::with_capacity(writes.len());
         let mut staged_ids: BTreeMap<[u8; 16], (usize, ContentHash)> = BTreeMap::new();
         let mut applied: Vec<(LogRow, CommitResult)> = Vec::new();
-        // A settling write's rows are captured when it settles.
-        let mut applied_rows: Vec<(BranchId, Option<Captured>)> = Vec::new();
+        // The batch committed, and its rows (a settling write's rows are
+        // captured when it settles).
+        let mut applied_rows: Vec<(Batch, Option<Captured>)> = Vec::new();
         let prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
         self.in_flight = true;
         for (index, write) in writes.iter().enumerate() {
@@ -959,7 +981,7 @@ impl<D: Durability> Store<D> {
                     }
                     slots.push(Slot::Applied(applied.len()));
                     let captured = (!settling).then(|| capture(&self.db, &batch, &result));
-                    applied_rows.push((batch.branch, captured));
+                    applied_rows.push((batch, captured));
                     applied.push((row, result));
                     if settling {
                         break;
@@ -1018,7 +1040,9 @@ impl<D: Durability> Store<D> {
                 let _ = self.rewrite_keys();
             }
             let mut from = start;
-            for (k, (row, result)) in applied.iter().enumerate() {
+            for (k, ((row, result), (batch, captured))) in
+                applied.iter().zip(applied_rows).enumerate()
+            {
                 let end = start + ends[k];
                 self.index
                     .write()
@@ -1035,13 +1059,19 @@ impl<D: Durability> Store<D> {
                     self.ids.insert(id, (result.epoch, row.idempotency_hash()));
                 }
                 // Projections after durability; a failure only makes them stale.
-                if let (branch, Some(captured)) = &applied_rows[k]
+                if let Some(captured) = captured
                     && self
                         .proj
-                        .apply(&captured.rows(*branch, result, sums[k]))
+                        .apply(&captured.rows(batch.branch, result, sums[k]))
                         .is_err()
                 {
                     self.proj.mark_stale();
+                }
+                if let Some(steps) = &mut self.steps {
+                    steps.push(Step::Commit {
+                        batch,
+                        result: result.clone(),
+                    });
                 }
             }
             self.tail = Some(Tail {
@@ -1563,8 +1593,10 @@ impl<D: Durability> Store<D> {
     }
     /// Replaces the live kernel with `replica`, which must be at the same
     /// epoch and state (ADR 0008 §3.3 two-replica publication); returns the
-    /// previous kernel. Debug builds compare every branch's digest. It never
-    /// settles: the caller acknowledges only after it publishes.
+    /// previous kernel. Debug builds compare every branch's digest, or with
+    /// a frontier every branch's inputs and the frontier signatures (ADR
+    /// 0019 §3.5 item 5). It never settles: the caller acknowledges only
+    /// after it publishes.
     pub fn replace_kernel(&mut self, replica: Kernel) -> Result<Kernel, StoreError> {
         self.readable()?;
         if replica.epoch() != self.db.epoch() {
@@ -1575,12 +1607,26 @@ impl<D: Durability> Store<D> {
             )));
         }
         if cfg!(debug_assertions) {
-            let digests = |k: &Kernel| -> Vec<ContentHash> {
-                k.branches()
-                    .map(|b| k.branch(b.id).unwrap().digest())
-                    .collect()
-            };
-            assert_eq!(digests(&replica), digests(&self.db), "replica diverged");
+            if replica.frontier().is_none() && self.db.frontier().is_none() {
+                let digests = |k: &Kernel| -> Vec<ContentHash> {
+                    k.branches()
+                        .map(|b| k.branch(b.id).unwrap().digest())
+                        .collect()
+                };
+                assert_eq!(digests(&replica), digests(&self.db), "replica diverged");
+            } else {
+                let inputs = |k: &Kernel| -> Vec<Vec<u8>> {
+                    k.branches()
+                        .map(|b| k.branch(b.id).unwrap().db().inputs().canonical_bytes())
+                        .collect()
+                };
+                assert!(inputs(&replica) == inputs(&self.db), "replica diverged");
+                assert_eq!(
+                    replica.frontier_signature(),
+                    self.db.frontier_signature(),
+                    "replica frontier diverged"
+                );
+            }
         }
         Ok(std::mem::replace(&mut self.db, replica))
     }
@@ -1605,6 +1651,12 @@ impl<D: Durability> Store<D> {
     /// acked result completed with the settled diffs, and returns `e`.
     pub fn drain(&mut self, how: Drain) -> Result<Option<Epoch>, StoreError> {
         self.usable()?;
+        if self.db.frontier().is_none() {
+            return Ok(None);
+        }
+        if let Some(steps) = &mut self.steps {
+            steps.push(Step::Drain(how));
+        }
         let Some((branch, settled)) = self.db.drain(how) else {
             return Ok(None);
         };
@@ -1643,6 +1695,22 @@ impl<D: Durability> Store<D> {
     /// The epoch whose maintenance is pending.
     pub fn frontier_epoch(&self) -> Option<Epoch> {
         self.db.frontier().map(|(_, e)| e)
+    }
+    /// Commits' maintenance budget (`OpenOptions::lazy`).
+    pub fn lazy(&self) -> Option<Budget> {
+        self.lazy
+    }
+    /// Turns the step log on (ADR 0019 §3.7): from now on every commit
+    /// that becomes durable and every drain of a frontier is recorded for
+    /// [`Self::take_steps`]. The daemon's actor, which keeps a replica in
+    /// step, turns it on; other users leave it off so it never grows.
+    pub fn record_steps(&mut self) {
+        self.steps.get_or_insert_with(Vec::new);
+    }
+    /// The steps since the last call, in execution order: a settle at the
+    /// top of a group precedes that group's commits.
+    pub fn take_steps(&mut self) -> Vec<Step> {
+        self.steps.as_mut().map(std::mem::take).unwrap_or_default()
     }
     /// The op_log frame checksum at `epoch` (genesis at 0): certificate log
     /// linkage (ADR 0008 §4).

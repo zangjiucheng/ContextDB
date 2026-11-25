@@ -2,7 +2,7 @@
 //! a commit whose maintenance is pending, persists exactly what it
 //! acknowledged (a format-7 `settling` frame), and settles before every
 //! kernel entry. Format-6 logs stay readable with their checksums.
-use contextdb_core::Budget;
+use contextdb_core::{Budget, Drain};
 use contextdb_model::*;
 use contextdb_store::*;
 use contextdb_testkit::{Shape, shape};
@@ -376,4 +376,42 @@ fn an_empty_format_6_tail_segment_is_rewritten_in_place() {
     let s = open(&dir, None);
     assert_eq!(s.epoch(), e2);
     assert_eq!(s.checksum_at(e2).unwrap(), sum);
+}
+
+/// The step log (ADR 0019 §3.7) is off until asked for, then records each
+/// durable commit and each drain of a frontier in execution order: the
+/// settle at the top of a group precedes that group's commits, and a
+/// settle with no commit after it (a dry run) is recorded too.
+#[test]
+fn steps_record_commits_and_drains_in_order() {
+    let dir = tmp("steps");
+    let mut s = open(&dir, Some(small()));
+    hub(&mut s);
+    s.settle().unwrap();
+    assert!(s.take_steps().is_empty(), "off by default");
+    s.record_steps();
+    let w2 = create(&mut s, "w2");
+    let first = s.commit(&toggle(false)).unwrap();
+    let second = s.commit(&w2).unwrap();
+    let third = s.commit(&toggle(true)).unwrap();
+    assert_eq!(s.frontier_epoch(), Some(third.epoch));
+    s.what_if_detailed(&toggle(false)).unwrap();
+    assert_eq!(s.drain(Drain::Full).unwrap(), None, "nothing pending");
+    let steps: Vec<String> = (s.take_steps().iter())
+        .map(|step| match step {
+            Step::Commit { result, .. } => format!("commit {}", result.epoch.0),
+            Step::Drain(how) => format!("drain {how:?}"),
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            format!("commit {}", first.epoch.0),
+            "drain Full".into(),
+            format!("commit {}", second.epoch.0),
+            format!("commit {}", third.epoch.0),
+            "drain Full".into(),
+        ]
+    );
+    assert!(s.take_steps().is_empty());
 }

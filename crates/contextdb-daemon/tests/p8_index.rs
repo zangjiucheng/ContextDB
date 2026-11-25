@@ -72,7 +72,7 @@ fn create(s: &Service<SimDisk>, b: &Binding, key: &str, body: &str) -> CommitRes
     )
     .response
     {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }

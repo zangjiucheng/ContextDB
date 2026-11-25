@@ -78,7 +78,7 @@ fn raw(c: &mut Client, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
         })
         .unwrap();
     match r.response {
-        Response::Committed { result } => result,
+        Response::Committed { result, .. } => result,
         other => panic!("{other:?}"),
     }
 }
@@ -230,7 +230,7 @@ type Actor = ActorHandle<SimDisk>;
 fn write(a: &Actor, blobs: Vec<Vec<u8>>, ops: Vec<Op>) -> CommitResult {
     let mut batch = Batch::new(ops);
     batch.channel = Channel::Admin;
-    a.write(blobs, batch).unwrap().unwrap()
+    a.write(blobs, batch).unwrap().unwrap().result
 }
 /// `n` Decisions, each ← Sem a single moved Fact: `n` Pending rules.
 fn many_pending(a: &Actor, n: u32) {

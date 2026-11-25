@@ -91,7 +91,9 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let deadline = Instant::now() + wait;
         let mut slot = None;
         loop {
-            let seen = self.actor.snapshot().epoch;
+            // A settling epoch's rows appear when it settles, without a
+            // new epoch: wait on the publication generation (ADR 0019 §3.8).
+            let seen = self.actor.snapshot().generation;
             let page = match self.actor.request(|reply| Message::Changes {
                 branch: b,
                 since,
@@ -137,7 +139,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     more,
                 };
             }
-            // Nothing yet: wait for the next published epoch.
+            // Nothing yet: wait for the next publication.
             if slot.is_none() {
                 if self.change_waiters.fetch_add(1, Ordering::AcqRel) >= MAX_WAITERS {
                     self.change_waiters.fetch_sub(1, Ordering::AcqRel);
@@ -145,7 +147,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 }
                 slot = Some(Slot(&self.change_waiters));
             }
-            self.actor.wait_epoch(seen, deadline - now);
+            self.actor.wait_generation(seen, deadline - now);
         }
     }
 }

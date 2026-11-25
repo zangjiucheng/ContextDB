@@ -371,3 +371,19 @@ Only writes to `team/<team-id>/…` keys in `team:<team-id>/<lane>` lanes are sh
 - **Leaving and recovery.** `ctx team leave <dir> --yes` retracts every mirror (they stay as history) and deletes the replica and queue; `ctx team rejoin <dir> --genesis <oid>` follows a rewritten team (refused with `TeamKeyMismatch` when the new chain gives a team record this store has mirrored another kind or lane: local keys are permanent, so such a team needs a new team id); `ctx team rebuild <dir>` replays the replica from its trust anchor; `ctx team hooks <dir> off|on` disables or restores the team hooks (and the announce fence with them).
 - **Access.** Who may read or propose team lanes locally is set by your own access document: `[team_lanes]` is the entry for every `team:` lane it does not list (without it, `default_lane`).
 - **Declared limits.** Team payloads are plaintext git objects: a team shred removes bytes from replicas and stores, but the remote and every clone keep them until a compaction, a prune and `git gc` everywhere. A fetch with hooks disabled (or from a client without hooks) can read CERTIFIED on the older root until the next `lag_check`. Custom refs cannot be branch-protected; use `--orphan-branch` where that matters.
+
+## Lazy maintenance (P11)
+
+A commit whose cascade reaches many records is acknowledged once its budget of work is spent, and the rest of its maintenance runs afterwards (ADR 0019 §3). Its response carries `settling: true` with empty `l0_flips` and `status_diff`, and the MCP commit tools add `status changes settling (epoch e); see ctx_changes`. `ctxd` settles the epoch when no request is waiting, before the next write, or when a reader asks for it; `ctx_changes` then lists the epoch's status changes. `ctx_txn_status` and a retry with the same `client_txn_id` report the `settling` the commit was acknowledged with.
+
+```toml
+# <data dir>/ctxd.toml (optional; these are the defaults)
+[maintenance]
+lazy = true            # false: every commit runs its maintenance before the ack
+lazy_budget = 1000000  # work units per commit and per idle slice
+read_settle_ms = 50    # how long a certified read waits for the epoch to settle
+```
+
+A missing file means the defaults; an invalid one stops `ctxd` from starting, with the reason. The file is read at start.
+
+**Upgrade note**: P11 raises the IPC protocol to 9. Upgrade every binary together.

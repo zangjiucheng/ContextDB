@@ -9,6 +9,9 @@ pub mod publish;
 pub mod actor;
 #[cfg(not(loom))]
 pub mod candidates;
+/// `<data>/ctxd.toml`: the daemon's own settings (ADR 0019 §3.7, O1, O2).
+#[cfg(not(loom))]
+pub mod config;
 /// Embeddings: vectors, the vector ranker and embedding candidates (P8, ADR 0016 §7).
 #[cfg(not(loom))]
 pub mod embedding;

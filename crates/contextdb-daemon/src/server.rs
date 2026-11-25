@@ -81,6 +81,8 @@ pub enum StartError {
     /// Multi-user mode was asked for and the file-system rules do not hold
     /// (ADR 0017 §3.2).
     MultiUser(Vec<contextdb_proto::fsguard::Violation>),
+    /// `ctxd.toml` is invalid: the reason.
+    Config(String),
 }
 impl From<io::Error> for StartError {
     fn from(e: io::Error) -> Self {
@@ -142,8 +144,12 @@ impl Daemon {
         let disk = StdDisk {
             full_sync: options.full_sync,
         };
+        let maintenance = crate::config::Config::load(&dir)
+            .map_err(StartError::Config)?
+            .maintenance;
         let open = OpenOptions {
             projections: ProjectionFile::Path(dir.join(contextdb_store::PROJECTIONS_FILE)),
+            lazy: maintenance.budget(),
             ..OpenOptions::default()
         };
         let (store, _) = Store::open(disk.clone(), &dir, &open)?;
@@ -154,7 +160,8 @@ impl Daemon {
         for e in team_errors {
             eprintln!("ctxd: team not opened (its reads lag): {e}");
         }
-        let actor = actor::spawn_with_teams(store, teams)?;
+        let mut actor = actor::spawn_with_teams(store, teams)?;
+        actor.read_settle = maintenance.read_settle;
         let recall = dir.join("recall.sqlite");
         let service = Arc::new(
             Service::with_recall(actor, log, events, Some(&recall))
