@@ -97,7 +97,9 @@ pub fn migrate_with(
     if !marked && !crate::store::migration_incomplete(disk, dir).map_err(io)? {
         match log_format(disk, dir)? {
             // A store with no commit has a current (empty) log.
-            f @ (None | Some(log::FORMAT_VERSION)) if disk.exists(&dir.join("log")) => {
+            f @ (None | Some(log::MIN_FORMAT..=log::FORMAT_VERSION))
+                if disk.exists(&dir.join("log")) =>
+            {
                 // "Already at format 5" only when every step's check
                 // passes on disk, never from the log version alone.
                 if crate::migrate5::verify(disk, dir, modes)?.0.is_none() {
@@ -151,7 +153,7 @@ fn log_step(
         return resume(disk, dir);
     }
     match log_format(disk, dir)? {
-        Some(f) if f == log::FORMAT_VERSION => current(disk, dir, f),
+        Some(f @ log::MIN_FORMAT..=log::FORMAT_VERSION) => current(disk, dir, f),
         None if disk.exists(&dir.join("log")) => current(disk, dir, log::FORMAT_VERSION),
         Some(f @ (0..=5)) if faults.skip_log => Ok(MigrationReport {
             from: f,
@@ -167,7 +169,9 @@ fn log_step(
         None => Err(StoreError::Io("no log to migrate".into())),
     }
 }
-/// Rewrites an older log as the current format. Frames are verified with
+/// Rewrites an older log as format `MIN_FORMAT`, whose frame layout formats
+/// 3 to 5 share, so their frame checksums survive (T77); the store's first
+/// commit rolls over to a current-format segment. Frames are verified with
 /// their own format's rules first; any inconsistency aborts with the old log
 /// untouched. Format 0 results are re-derived (they lack `status_diff`);
 /// every migrated frame becomes its own group (format 2).
@@ -184,13 +188,13 @@ fn migrate_log(
         }
     }
     disk.create_dir_all(&new_dir).map_err(io)?;
-    let rows = legacy_rows(disk, &old_dir, from)?;
+    let rows = legacy_rows(disk, &old_dir, from..=from)?;
     let mut kernel = Kernel::default();
     let mut prev = log::GENESIS;
     let mut changed = Vec::new();
     let seg = new_dir.join(log::segment_name(Epoch(1)));
-    disk.write_new(&seg, &log::segment_header(Epoch(1), prev))
-        .map_err(io)?;
+    let header = log::segment_header_with(&log::OP_LOG, 1, prev, log::MIN_FORMAT);
+    disk.write_new(&seg, &header).map_err(io)?;
     for old in &rows {
         let batch = old.batch().map_err(|e| StoreError::Io(e.to_string()))?;
         let (derived, merge) = kernel
@@ -237,7 +241,7 @@ fn migrate_log(
             client_hash: if from >= 3 { old.client_hash } else { None },
             ..old.clone()
         };
-        let (bytes, sum) = log::frame(&row);
+        let (bytes, sum) = log::frame_format(&row, log::MIN_FORMAT);
         disk.append(&seg, &bytes).map_err(io)?;
         prev = sum;
     }
@@ -256,7 +260,7 @@ fn migrate_log(
     disk.sync_dir(dir).map_err(io)?;
     Ok(MigrationReport {
         from,
-        to: log::FORMAT_VERSION,
+        to: log::MIN_FORMAT,
         frames: rows.len() as u64,
         backup: backup.display().to_string(),
         changed,
@@ -288,7 +292,7 @@ fn resume(disk: &dyn Durability, dir: &Path) -> Result<MigrationReport, StoreErr
     let changed = changed_since(disk, dir, &dir.join(&backup), from)?;
     Ok(MigrationReport {
         from,
-        to: log::FORMAT_VERSION,
+        to: log::MIN_FORMAT,
         frames: scan.frames.len() as u64,
         backup: dir.join(backup).display().to_string(),
         changed,
@@ -349,8 +353,12 @@ fn changed_since(
     backup: &Path,
     from: u32,
 ) -> Result<Vec<Epoch>, StoreError> {
-    let old = legacy_rows(disk, backup, from)?;
-    let new = legacy_rows(disk, &dir.join("log"), log::FORMAT_VERSION)?;
+    let old = legacy_rows(disk, backup, from..=from)?;
+    let new = legacy_rows(
+        disk,
+        &dir.join("log"),
+        log::MIN_FORMAT..=log::FORMAT_VERSION,
+    )?;
     let mut changed = Vec::new();
     for (o, n) in old.iter().zip(&new) {
         let derived = n
@@ -362,8 +370,13 @@ fn changed_since(
     }
     Ok(changed)
 }
-/// Verified rows of a legacy format (formats 0 and 1 share framing and chain rules).
-fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<LogRow>, StoreError> {
+/// Verified rows of segments whose formats are in `formats`, each frame
+/// decoded with its segment's (formats 0 and 1 share framing and chain rules).
+pub(crate) fn legacy_rows(
+    disk: &dyn Durability,
+    dir: &Path,
+    formats: std::ops::RangeInclusive<u32>,
+) -> Result<Vec<LogRow>, StoreError> {
     let mut rows = Vec::new();
     let mut prev = log::GENESIS;
     for seg in log::segments(disk, dir).map_err(io)? {
@@ -372,7 +385,7 @@ fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<Log
             epoch: Epoch(rows.len() as u64 + 1),
             fault: FrameFault::SegmentHeader,
         })?;
-        if header.format != format || header.prev != prev {
+        if !formats.contains(&header.format) || header.prev != prev {
             return Err(StoreError::ChainBroken {
                 epoch: Epoch(rows.len() as u64 + 1),
                 fault: FrameFault::SegmentHeader,
@@ -382,7 +395,7 @@ fn legacy_rows(disk: &dyn Durability, dir: &Path, format: u32) -> Result<Vec<Log
         while pos < bytes.len() {
             let epoch = Epoch(rows.len() as u64 + 1);
             let (row, sum, end) =
-                log::parse_frame_with::<LogRow>(&log::OP_LOG, &bytes, pos, format)
+                log::parse_frame_with::<LogRow>(&log::OP_LOG, &bytes, pos, header.format)
                     .map_err(|fault| StoreError::ChainBroken { epoch, fault })?;
             if row.prev_checksum != prev || row.epoch != epoch {
                 return Err(StoreError::ChainBroken {
@@ -403,7 +416,7 @@ pub fn rows_for_test(
     dir: &Path,
     format: u32,
 ) -> Result<Vec<LogRow>, StoreError> {
-    legacy_rows(disk, &dir.join("log"), format)
+    legacy_rows(disk, &dir.join("log"), format..=format)
 }
 /// Test and tooling support: writes a format-0 log for `batches` (frozen layout).
 pub fn write_legacy(
@@ -456,6 +469,15 @@ pub fn write_format5(
     batches: &[Batch],
 ) -> Result<u64, StoreError> {
     write_format(disk, dir, batches, 5)
+}
+/// Test and tooling support: writes a format-6 log (P10 layout, before
+/// the `settling` flag), which opens without migration.
+pub fn write_format6(
+    disk: &dyn Durability,
+    dir: &Path,
+    batches: &[Batch],
+) -> Result<u64, StoreError> {
+    write_format(disk, dir, batches, 6)
 }
 /// Test and tooling support: writes a format-1 log (P2 layout, no group header).
 pub fn write_format1(
@@ -516,6 +538,7 @@ fn write_format_with(
             },
             acked_result: None,
             client_hash: None,
+            settling: false,
             prev_checksum: prev,
             group: if format >= 2 {
                 log::GroupPos {

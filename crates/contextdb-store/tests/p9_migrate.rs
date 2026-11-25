@@ -117,7 +117,7 @@ fn t104_a_format4_store_migrates_encrypted_with_every_payload() {
     ));
     let report = migrate::migrate(&disk, dir).unwrap();
     // P10: the log goes straight to the current format (6).
-    assert_eq!((report.from, report.to), (4, log::FORMAT_VERSION));
+    assert_eq!((report.from, report.to), (4, log::MIN_FORMAT));
     let enc = report.encryption.expect("steps 3 and 4 ran");
     assert_eq!((enc.segments, enc.loose, enc.records), (2, 1, 4));
     assert_eq!(enc.missing, 0);
@@ -229,7 +229,7 @@ fn t104_every_intermediate_state_is_refused_and_a_rerun_completes() {
                 // (format 6 since P10).
                 assert_eq!(
                     migrate::log_format(&disk, dir).unwrap(),
-                    Some(log::FORMAT_VERSION)
+                    Some(log::MIN_FORMAT)
                 );
             }
             let r = migrate::migrate(&disk, dir).unwrap();

@@ -8,6 +8,9 @@ use contextdb_model::*;
 use std::{io, path::Path};
 
 const MAGIC: &[u8; 8] = b"CDBSNAP\x01";
+/// The snapshot layout's version: format 6's, unchanged by op_log format 7
+/// (it was the op_log format until then, so existing snapshots keep loading).
+const SNAPSHOT_FORMAT: u32 = 6;
 /// magic 8 + format 4 + epoch 8 + log checksum 32 + body length 8.
 const HEADER: usize = 60;
 
@@ -26,7 +29,7 @@ pub fn write(
     let body = encode(kernel);
     let mut out = Vec::with_capacity(HEADER + body.len() + 32);
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&crate::log::FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&SNAPSHOT_FORMAT.to_le_bytes());
     out.extend_from_slice(&epoch.0.to_le_bytes());
     out.extend_from_slice(checksum);
     out.extend_from_slice(&(body.len() as u64).to_le_bytes());
@@ -47,7 +50,7 @@ fn parse(bytes: &[u8], checksums: &[ContentHash]) -> Option<(Epoch, KernelSnapsh
     let epoch = Epoch(u64::from_le_bytes(bytes[12..20].try_into().ok()?));
     let checksum: ContentHash = bytes[20..52].try_into().ok()?;
     let len = usize::try_from(u64::from_le_bytes(bytes[52..60].try_into().ok()?)).ok()?;
-    if format != crate::log::FORMAT_VERSION || bytes.len() != HEADER + len + 32 {
+    if format != SNAPSHOT_FORMAT || bytes.len() != HEADER + len + 32 {
         return None;
     }
     // The snapshot must name a verified frame's checksum (epoch 0: genesis).

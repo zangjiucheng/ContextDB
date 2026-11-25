@@ -1002,7 +1002,7 @@ fn review3_interrupted_migration_is_refused_then_resumed() {
         Err(StoreError::MigrationIncomplete { step: 2 })
     ));
     let report = migrate::migrate(&probe, root).unwrap();
-    assert_eq!(report.to, log::FORMAT_VERSION);
+    assert_eq!(report.to, log::MIN_FORMAT);
     let (store, _) = open(&probe).unwrap();
     assert_eq!(store.db().unwrap().digest(), expected.digest());
 }

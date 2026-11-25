@@ -207,6 +207,7 @@ fn format0_descended_stores_list_only_real_changes() {
             result_blob: result.canonical_bytes(),
             acked_result: Some(told.canonical_bytes()),
             client_hash: None,
+            settling: false,
             prev_checksum: prev,
             group: log::GroupPos {
                 seq: result.epoch.0,

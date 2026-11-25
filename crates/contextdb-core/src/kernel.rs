@@ -12,7 +12,8 @@
 //! §11a): a branch that stages a revision or rule identical to one created
 //! on another branch imports that object instead of allocating a new id.
 use crate::{
-    CommitContext, Counting, Db, Maintainer, NoStats, Staged, StatsSink, access::AccessState,
+    Budget, CommitContext, Counting, Db, Drain, Maintainer, NoStats, Settled, Staged, StatsSink,
+    access::AccessState,
 };
 #[path = "kernel_merge.rs"]
 mod merge;
@@ -254,7 +255,39 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
-        self.run(b, blobs, true)
+        self.commit_detailed_lazy(b, blobs, None)
+    }
+    /// As [`Self::commit_detailed_with`] with a maintenance budget (ADR 0019
+    /// §3.5): a commit may leave its branch a frontier, and then its result's
+    /// `l0_flips` and `status_diff` are empty until [`Self::drain`] reports
+    /// them. Merges, forks and the other sole ops are always eager.
+    pub fn commit_detailed_lazy(
+        &mut self,
+        b: &Batch,
+        blobs: &dyn BlobPresence,
+        lazy: Option<Budget>,
+    ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        self.run(b, blobs, true, lazy)
+    }
+    /// The branch whose commit's maintenance is pending, and its epoch.
+    /// Every kernel entry refuses one (I-L1), so at most one branch has it.
+    pub fn frontier(&self) -> Option<(BranchId, Epoch)> {
+        (self.branches.iter()).find_map(|b| b.db.frontier_epoch().map(|e| (b.info.id, e)))
+    }
+    /// Runs the pending maintenance ([`Db::drain`]). Returns the branch and
+    /// the deferred epoch's diffs, with global ids, when the frontier empties.
+    pub fn drain(&mut self, how: Drain) -> Option<(BranchId, Settled)> {
+        let branch = (self.branches.iter_mut()).find(|b| b.db.has_frontier())?;
+        let settled = Arc::make_mut(&mut branch.db).drain(how)?;
+        let global = |r: &RevisionId| RevisionId(branch.ids.global(Kind::Revision, r.0));
+        Some((
+            branch.info.id,
+            Settled {
+                epoch: settled.epoch,
+                l0_flips: settled.l0_flips.iter().map(global).collect(),
+                status_diff: settled.status_diff.iter().map(global).collect(),
+            },
+        ))
     }
     pub fn branch_by_name(&self, name: &str) -> Option<BranchId> {
         self.names.get(name).copied()
@@ -273,7 +306,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         b: &Batch,
         blobs: &dyn BlobPresence,
     ) -> Result<CommitResult, TxError> {
-        self.run(b, blobs, true).map(|(r, _)| r)
+        self.run(b, blobs, true, None).map(|(r, _)| r)
     }
     /// Commits and also returns a merge's report (the format-3 merge
     /// trailer; ADR 0013 §8).
@@ -281,24 +314,25 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         &mut self,
         b: &Batch,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
-        self.run(b, &AllPresent, true)
+        self.run(b, &AllPresent, true, None)
     }
     pub fn what_if_detailed(
         &mut self,
         b: &Batch,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
-        self.run(b, &AllPresent, false)
+        self.run(b, &AllPresent, false, None)
     }
     /// `WHAT_IF` on one branch (ADR 0013 §5): the result the batch would
     /// have, with the global ids it would allocate; nothing changes.
     pub fn what_if(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
-        self.run(b, &AllPresent, false).map(|(r, _)| r)
+        self.run(b, &AllPresent, false, None).map(|(r, _)| r)
     }
     fn run(
         &mut self,
         b: &Batch,
         blobs: &dyn BlobPresence,
         publish: bool,
+        lazy: Option<Budget>,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
         // I-L1 (ADR 0019 §3.5): every op kind, merges and forks included, so
         // no branch ever shares a frontier and ranks never move under one.
@@ -399,7 +433,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
                 report = Some(r);
                 result
             }
-            _ => self.commit_ops(b, blobs, next, publish)?,
+            _ => self.commit_ops(b, blobs, next, publish, lazy)?,
         };
         if publish {
             self.epoch = next;
@@ -539,6 +573,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         blobs: &dyn BlobPresence,
         epoch: Epoch,
         publish: bool,
+        lazy: Option<Budget>,
     ) -> Result<CommitResult, TxError> {
         let Self {
             branches,
@@ -575,7 +610,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             shredded: Some(shredded),
             reserved: true,
             mirror: Some(&lookup),
-            lazy: None,
+            lazy,
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch

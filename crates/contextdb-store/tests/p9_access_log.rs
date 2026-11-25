@@ -136,7 +136,7 @@ fn format4_log_migrates_to_format5_byte_identical() {
     // P10: the log goes straight to the current format (6).
     assert_eq!(
         (report.from, report.to, report.frames),
-        (4, contextdb_store::log::FORMAT_VERSION, 3)
+        (4, contextdb_store::log::MIN_FORMAT, 3)
     );
     assert!(report.changed.is_empty(), "{:?}", report.changed);
     assert!(disk.exists(&Path::new(DIR).join("log.v4.bak")));
@@ -146,7 +146,7 @@ fn format4_log_migrates_to_format5_byte_identical() {
         .map(|e| store.checksum_at(Epoch(e)).unwrap())
         .collect();
     let new_blobs: Vec<_> =
-        migrate::rows_for_test(&disk, Path::new(DIR), contextdb_store::log::FORMAT_VERSION)
+        migrate::rows_for_test(&disk, Path::new(DIR), contextdb_store::log::MIN_FORMAT)
             .unwrap()
             .into_iter()
             .map(|r| r.batch_blob)

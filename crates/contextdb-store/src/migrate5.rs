@@ -118,7 +118,12 @@ fn batches(disk: &dyn Durability, dir: &Path) -> Result<Vec<Batch>, StoreError> 
     let Some(format) = crate::migrate::log_format(disk, dir)? else {
         return Ok(Vec::new());
     };
-    crate::migrate::rows_for_test(disk, dir, format)?
+    // A current log may hold format-6 segments followed by format-7 ones.
+    let formats = match format {
+        log::MIN_FORMAT.. => log::MIN_FORMAT..=log::FORMAT_VERSION,
+        _ => format..=format,
+    };
+    crate::migrate::legacy_rows(disk, &dir.join("log"), formats)?
         .iter()
         .map(|r| r.batch().map_err(|e| StoreError::Io(e.to_string())))
         .collect()
@@ -225,7 +230,7 @@ fn log_current(disk: &dyn Durability, dir: &Path) -> Result<bool, StoreError> {
     }
     Ok(matches!(
         crate::migrate::log_format(disk, dir)?,
-        None | Some(log::FORMAT_VERSION)
+        None | Some(log::MIN_FORMAT..=log::FORMAT_VERSION)
     ))
 }
 /// The first step of §10 whose check fails on disk (2 to 5), or `None`;

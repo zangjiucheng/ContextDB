@@ -14,8 +14,14 @@ use std::path::{Path, PathBuf};
 /// ADR 0018, SPEC §6.1 contract 16) adds the replica channel, replica-origin
 /// creates, `MirrorAttach` and gap watermarks (tags 22–24, channel 3, a
 /// Logical's origin), again with an unchanged frame layout and Local
-/// encodings unchanged. Older formats migrate explicitly (`migrate`).
-pub const FORMAT_VERSION: u32 = 6;
+/// encodings unchanged; format 7 (P11, ADR 0019 §3.8) adds a frame's
+/// `settling` flag. Formats 6 and 7 are both current: a log holds format-6
+/// segments followed by format-7 ones, each frame decoded with its
+/// segment's format and its stored checksum kept, so nothing is rewritten.
+/// Older formats migrate explicitly (`migrate`).
+pub const FORMAT_VERSION: u32 = 7;
+/// The oldest op_log format a store opens without migration.
+pub const MIN_FORMAT: u32 = 6;
 pub const SEGMENT_TARGET: usize = 64 * 1024 * 1024;
 /// magic 8 + format 4 + first record number 8 + prev_checksum 32 + header_check 8.
 pub const HEADER_LEN: usize = 60;
@@ -104,6 +110,10 @@ pub struct LogRow {
     /// `expect_cert_valid` and the certificate, not the appended
     /// `ExpectHeads`. `None` means the batch hash serves.
     pub client_hash: Option<ContentHash>,
+    /// Format 7: the commit was acknowledged with its maintenance pending
+    /// (ADR 0019 §3.8), so `result_blob` holds the acked result, whose
+    /// `l0_flips` and `status_diff` are empty. Older formats decode false.
+    pub settling: bool,
 }
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     (bytes.len() as u64).encode(out);
@@ -140,6 +150,9 @@ impl LogRow {
         if format >= 3 {
             self.client_hash.encode(&mut o);
         }
+        if format >= 7 {
+            self.settling.encode(&mut o);
+        }
         o
     }
     /// What a retry with the same `client_txn_id` must match.
@@ -170,12 +183,16 @@ impl LogRow {
             prev_checksum: Wire::decode(&mut i)?,
             group: GroupPos::default(),
             client_hash: None,
+            settling: false,
         };
         if format >= 2 {
             row.group = Wire::decode(&mut i)?;
         }
         if format >= 3 {
             row.client_hash = Wire::decode(&mut i)?;
+        }
+        if format >= 7 {
+            row.settling = Wire::decode(&mut i)?;
         }
         if i.remaining() != 0 {
             return Err(WireError::TrailingBytes);
@@ -373,6 +390,8 @@ pub struct Located<R = LogRow> {
     pub row: R,
     pub checksum: ContentHash,
     pub segment: PathBuf,
+    /// The segment's header format, which the frame was decoded with.
+    pub format: u32,
     pub start: u64,
     pub end: u64,
 }
@@ -449,9 +468,9 @@ pub fn segments(disk: &dyn Durability, dir: &Path) -> std::io::Result<Vec<PathBu
         .map(|n| dir.join(n))
         .collect())
 }
-/// op_log scan in the current format.
+/// op_log scan of the formats a store opens (`MIN_FORMAT` to the current).
 pub fn scan(disk: &dyn Durability, dir: &Path) -> std::io::Result<Scan> {
-    scan_with::<LogRow>(&OP_LOG, disk, dir, FORMAT_VERSION)
+    scan_with_formats::<LogRow>(&OP_LOG, disk, dir, MIN_FORMAT, FORMAT_VERSION)
 }
 /// The group currently being read.
 struct Open {
@@ -477,7 +496,9 @@ pub fn scan_with<R: Record>(
     scan_with_formats(spec, disk, dir, format, format)
 }
 /// Explicit reader compatibility range; record decoding uses each segment's
-/// actual version. The op_log keeps its existing exact-version migration path.
+/// actual version. Formats never decrease along the log: a writer opens a
+/// segment of the current format, so an older segment after a newer one is
+/// refused as a broken segment header.
 pub fn scan_with_formats<R: Record>(
     spec: &Spec,
     disk: &dyn Durability,
@@ -491,6 +512,7 @@ pub fn scan_with_formats<R: Record>(
     let mut next: u64 = 1;
     let mut last_seq: u64 = 0;
     let mut open: Option<Open> = None;
+    let mut last_format = 0;
     for (k, seg) in segs.iter().enumerate() {
         let last_segment = k + 1 == segs.len();
         let bytes = disk.read(seg)?;
@@ -520,10 +542,11 @@ pub fn scan_with_formats<R: Record>(
             out.older_format = Some(header.format);
             return Ok(out);
         }
-        if header.first_epoch != Epoch(next) || header.prev != prev {
+        if header.first_epoch != Epoch(next) || header.prev != prev || header.format < last_format {
             out.broken = Some((Epoch(next), FrameFault::SegmentHeader));
             return Ok(out);
         }
+        last_format = header.format;
         let mut pos = HEADER_LEN;
         while pos < bytes.len() {
             let parsed = parse_frame_with::<R>(spec, &bytes, pos, header.format).and_then(
@@ -567,6 +590,7 @@ pub fn scan_with_formats<R: Record>(
                         row,
                         checksum: sum,
                         segment: seg.clone(),
+                        format: header.format,
                         start: pos as u64,
                         end: end as u64,
                     });
@@ -630,20 +654,21 @@ fn next_frame<R: Record>(spec: &Spec, bytes: &[u8], from: usize, format: u32) ->
     (from..bytes.len().saturating_sub(FRAME_OVERHEAD - 1))
         .find(|p| parse_frame_with::<R>(spec, bytes, *p, format).is_ok())
 }
-/// Every structurally valid op_log frame in `bytes` from `pos` on,
-/// resynchronizing past unreadable regions. Returns the rows and whether any
-/// bytes were unreadable. Used to list what a repair would drop.
-pub fn readable_frames(bytes: &[u8], mut pos: usize) -> (Vec<LogRow>, bool) {
+/// Every structurally valid op_log frame of a `format` segment in `bytes`
+/// from `pos` on, resynchronizing past unreadable regions. Returns the rows
+/// and whether any bytes were unreadable. Used to list what a repair would
+/// drop.
+pub fn readable_frames(bytes: &[u8], mut pos: usize, format: u32) -> (Vec<LogRow>, bool) {
     let (mut rows, mut unreadable) = (Vec::new(), false);
     while pos < bytes.len() {
-        match parse_frame(bytes, pos) {
+        match parse_frame_with(&OP_LOG, bytes, pos, format) {
             Ok((row, _, end)) => {
                 rows.push(row);
                 pos = end;
             }
             Err(_) => {
                 unreadable = true;
-                match next_frame::<LogRow>(&OP_LOG, bytes, pos + 1, FORMAT_VERSION) {
+                match next_frame::<LogRow>(&OP_LOG, bytes, pos + 1, format) {
                     Some(p) => pos = p,
                     None => break,
                 }

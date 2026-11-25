@@ -52,22 +52,25 @@ pub fn plan_truncate_before(
             if plan.cut.is_none() {
                 plan.cut = Some((seg.clone(), 0));
             }
-            let start = if log::parse_header(&bytes).is_some() {
-                log::HEADER_LEN
-            } else {
-                plan.unreadable_tail |= !bytes.is_empty();
-                0
+            let (start, format) = match log::parse_header(&bytes) {
+                Some(h) => (log::HEADER_LEN, h.format),
+                None => {
+                    plan.unreadable_tail |= !bytes.is_empty();
+                    (0, log::FORMAT_VERSION)
+                }
             };
-            dropped(&mut plan, &bytes, start);
+            dropped(&mut plan, &bytes, start, format);
             plan.later_segments.push(seg);
             continue;
         }
-        if log::parse_header(&bytes).is_none_or(|h| h.first_epoch != next || h.prev != prev) {
+        let Some(header) =
+            log::parse_header(&bytes).filter(|h| h.first_epoch == next && h.prev == prev)
+        else {
             return Err(StoreError::ChainBroken {
                 epoch: next,
                 fault: log::FrameFault::SegmentHeader,
             });
-        }
+        };
         let mut pos = log::HEADER_LEN;
         // Start of the group being read, if it is not complete yet.
         let mut group: Option<(usize, Epoch)> = None;
@@ -79,10 +82,10 @@ pub fn plan_truncate_before(
                 let (cut, first) = group.unwrap_or((pos, epoch));
                 plan.keep_through = Epoch(first.0 - 1);
                 plan.cut = Some((seg.clone(), cut as u64));
-                dropped(&mut plan, &bytes, cut);
+                dropped(&mut plan, &bytes, cut, header.format);
                 break;
             }
-            match log::parse_frame(&bytes, pos) {
+            match log::parse_frame_with::<log::LogRow>(&log::OP_LOG, &bytes, pos, header.format) {
                 Ok((row, sum, end)) if row.epoch == next && row.prev_checksum == prev => {
                     if row.group.idx == 0 {
                         group = Some((pos, row.epoch));
@@ -110,8 +113,8 @@ pub fn plan_truncate_before(
     Ok(plan)
 }
 /// Records every readable frame from `pos` on as dropped.
-fn dropped(plan: &mut TruncationPlan, bytes: &[u8], pos: usize) {
-    let (rows, unreadable) = log::readable_frames(bytes, pos);
+fn dropped(plan: &mut TruncationPlan, bytes: &[u8], pos: usize, format: u32) {
+    let (rows, unreadable) = log::readable_frames(bytes, pos, format);
     plan.unreadable_tail |= unreadable;
     for row in rows {
         plan.dropped_epochs.push(row.epoch);

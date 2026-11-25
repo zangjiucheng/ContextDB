@@ -8,7 +8,7 @@ use crate::{
     pack::{self, PackIndex},
     projection::{EpochRows, ProjectionFile, Projections},
 };
-use contextdb_core::{BranchView, Db, Import, Kernel};
+use contextdb_core::{BranchView, Budget, Db, Drain, Import, Kernel};
 use contextdb_model::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -232,6 +232,8 @@ pub struct OpenOptions {
     pub rebuild_projections: bool,
     /// Segment rollover size; tests use small segments to exercise rollover.
     pub segment_target: usize,
+    /// Commits' maintenance budget (ADR 0019 §3.5); `None` is eager.
+    pub lazy: Option<Budget>,
 }
 impl Default for OpenOptions {
     fn default() -> Self {
@@ -241,6 +243,7 @@ impl Default for OpenOptions {
             create: true,
             rebuild_projections: false,
             segment_target: log::SEGMENT_TARGET,
+            lazy: None,
         }
     }
 }
@@ -299,11 +302,15 @@ pub(crate) struct LogIndex {
 #[derive(Clone, Debug)]
 struct FrameLoc {
     segment: usize,
+    /// The segment's format, which the frame decodes with.
+    format: u32,
     start: u64,
     end: u64,
 }
 struct Tail {
     segment: usize,
+    /// The tail segment's format: a commit rolls over from an older one.
+    format: u32,
     size: u64,
     checksum: ContentHash,
 }
@@ -342,6 +349,10 @@ pub struct Store<D: Durability> {
     segment_target: usize,
     /// Sequence number of the last group written (ADR 0008 §3.2).
     group_seq: u64,
+    /// Commits' maintenance budget (`OpenOptions::lazy`).
+    lazy: Option<Budget>,
+    /// A drain settled an epoch since [`Self::take_settled`] last ran.
+    settled_since_publish: bool,
     _lock: Box<dyn LockGuard>,
 }
 /// Poison registry key: one disk instance and one store directory, so a failure
@@ -567,6 +578,8 @@ impl<D: Durability> Store<D> {
             crash_after_sync: false,
             segment_target: options.segment_target,
             group_seq: 0,
+            lazy: options.lazy,
+            settled_since_publish: false,
             _lock: lock,
             disk,
         };
@@ -607,9 +620,16 @@ impl<D: Durability> Store<D> {
                     branch: batch.branch,
                     merge,
                 };
-                if result != f.row.result().expect("verified frame")
-                    || Some(trailer) != f.row.trailer().expect("verified frame")
-                {
+                let recorded = f.row.result().expect("verified frame");
+                // Replay is eager: a settling frame recorded the acked
+                // result, whose diffs were empty (ADR 0019 §3.8).
+                let same = if f.row.settling {
+                    (result.epoch, &result.allocations, &result.net_delta)
+                        == (recorded.epoch, &recorded.allocations, &recorded.net_delta)
+                } else {
+                    result == recorded
+                };
+                if !same || Some(trailer) != f.row.trailer().expect("verified frame") {
                     return Err(StoreError::ReplayDivergence { epoch: f.row.epoch });
                 }
                 if f.row.epoch > store.proj.watermark() {
@@ -633,12 +653,14 @@ impl<D: Durability> Store<D> {
                 .frames
                 .push(FrameLoc {
                     segment,
+                    format: f.format,
                     start: f.start,
                     end: f.end,
                 });
             store.group_seq = f.row.group.seq;
             store.tail = Some(Tail {
                 segment,
+                format: f.format,
                 size: f.end,
                 checksum: f.checksum,
             });
@@ -696,6 +718,7 @@ impl<D: Durability> Store<D> {
             let header = log::parse_header(&bytes).expect("scanned header");
             store.tail = Some(Tail {
                 segment: n,
+                format: header.format,
                 size: bytes.len() as u64,
                 checksum: header.prev,
             });
@@ -773,11 +796,12 @@ impl<D: Durability> Store<D> {
     /// Reads and re-verifies one durable frame.
     pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
         self.readable()?;
-        self.read_frame(epoch)
+        Ok(self.read_frame(epoch)?.0)
     }
-    /// A durable frame, without the poison check (used inside a group commit,
-    /// which only reads frames that were durable before the group began).
-    fn read_frame(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
+    /// A durable frame and its stored checksum, without the poison check
+    /// (used inside a group commit, which only reads frames that were
+    /// durable before the group began).
+    fn read_frame(&self, epoch: Epoch) -> Result<(LogRow, ContentHash), StoreError> {
         read_frame(&self.disk, &self.index, epoch)
     }
     /// A read-only view of the log up to the current durable tail, for reader
@@ -819,12 +843,21 @@ impl<D: Durability> Store<D> {
     /// before staging, each write passes through `prepare` with the live
     /// kernel (every earlier batch of the group applied) and the op_log
     /// checksum at an epoch; it returns the batch to commit, or refuses it.
+    ///
+    /// A pending commit is settled first ([`Self::settle`]). With a lazy
+    /// budget (`OpenOptions::lazy`), a commit whose maintenance is still
+    /// pending is acknowledged with empty `l0_flips` and `status_diff`, its
+    /// frame marked `settling`, and its projection rows wait for the drain
+    /// that settles it (ADR 0019 §3.8). Such a commit **ends the group**:
+    /// no later write is processed, so the returned Vec holds results only
+    /// for the writes up to it and may be shorter than `writes`. The caller
+    /// submits the rest again.
     pub fn commit_group_with(
         &mut self,
         writes: &[Write],
         prepare: &mut Prepare<'_>,
     ) -> Vec<Result<CommitResult, StoreError>> {
-        if let Err(e) = self.usable() {
+        if let Err(e) = self.usable().and_then(|()| self.settle()) {
             return writes.iter().map(|_| Err(e.clone())).collect();
         }
         enum Slot {
@@ -835,7 +868,8 @@ impl<D: Durability> Store<D> {
         let mut slots = Vec::with_capacity(writes.len());
         let mut staged_ids: BTreeMap<[u8; 16], (usize, ContentHash)> = BTreeMap::new();
         let mut applied: Vec<(LogRow, CommitResult)> = Vec::new();
-        let mut applied_rows: Vec<(BranchId, Captured)> = Vec::new();
+        // A settling write's rows are captured when it settles.
+        let mut applied_rows: Vec<(BranchId, Option<Captured>)> = Vec::new();
         let prev = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
         self.in_flight = true;
         for (index, write) in writes.iter().enumerate() {
@@ -858,7 +892,7 @@ impl<D: Durability> Store<D> {
                         Err(StoreError::Tx(TxError::TxnIdReuse { id }))
                     } else {
                         self.read_frame(epoch)
-                            .and_then(|r| r.acked().map_err(|e| StoreError::Io(e.to_string())))
+                            .and_then(|(r, _)| r.acked().map_err(|e| StoreError::Io(e.to_string())))
                     })));
                     continue;
                 }
@@ -876,9 +910,7 @@ impl<D: Durability> Store<D> {
             let checksum = |e: Epoch| -> Option<ContentHash> {
                 match e.0 {
                     0 => Some(log::GENESIS),
-                    _ => read_frame(disk, frames, e)
-                        .ok()
-                        .map(|r| log::checksum(&r.encode_body())),
+                    _ => read_frame(disk, frames, e).ok().map(|(_, sum)| sum),
                 }
             };
             let batch = match prepare(index, &self.db, &checksum, batch) {
@@ -899,9 +931,10 @@ impl<D: Durability> Store<D> {
             let batch_blob = batch.canonical_bytes();
             let batch_hash = *blake3::hash(&batch_blob).as_bytes();
             // Step 2: apply with blob presence; a rejection leaves no trace.
-            match self.db.commit_detailed_with(&batch, &self.blobs) {
+            match self.db.commit_detailed_lazy(&batch, &self.blobs, self.lazy) {
                 Err(e) => slots.push(Slot::Done(Box::new(Err(StoreError::Tx(e))))),
                 Ok((result, merge)) => {
+                    let settling = self.db.frontier().is_some();
                     let trailer = ResultTrailer {
                         branch: batch.branch,
                         merge,
@@ -919,13 +952,18 @@ impl<D: Durability> Store<D> {
                         prev_checksum: prev,
                         group: log::GroupPos::default(),
                         client_hash: write.client_hash,
+                        settling,
                     };
                     if let Some(id) = batch.client_txn_id {
                         staged_ids.insert(id, (applied.len(), idempotency));
                     }
                     slots.push(Slot::Applied(applied.len()));
-                    applied_rows.push((batch.branch, capture(&self.db, &batch, &result)));
+                    let captured = (!settling).then(|| capture(&self.db, &batch, &result));
+                    applied_rows.push((batch.branch, captured));
                     applied.push((row, result));
+                    if settling {
+                        break;
+                    }
                 }
             }
         }
@@ -988,6 +1026,7 @@ impl<D: Durability> Store<D> {
                     .frames
                     .push(FrameLoc {
                         segment,
+                        format: log::FORMAT_VERSION,
                         start: from,
                         end,
                     });
@@ -996,17 +1035,18 @@ impl<D: Durability> Store<D> {
                     self.ids.insert(id, (result.epoch, row.idempotency_hash()));
                 }
                 // Projections after durability; a failure only makes them stale.
-                let (branch, captured) = &applied_rows[k];
-                if self
-                    .proj
-                    .apply(&captured.rows(*branch, result, sums[k]))
-                    .is_err()
+                if let (branch, Some(captured)) = &applied_rows[k]
+                    && self
+                        .proj
+                        .apply(&captured.rows(*branch, result, sums[k]))
+                        .is_err()
                 {
                     self.proj.mark_stale();
                 }
             }
             self.tail = Some(Tail {
                 segment,
+                format: log::FORMAT_VERSION,
                 size: start + bytes.len() as u64,
                 checksum: *sums.last().expect("non-empty group"),
             });
@@ -1020,8 +1060,10 @@ impl<D: Durability> Store<D> {
             })
             .collect()
     }
-    /// Appends a synced group, opening a synced segment first when needed.
-    /// Rollover happens only at group boundaries.
+    /// Appends a synced group, opening a synced segment first when needed:
+    /// the tail segment is full or of an older format, so the first commit
+    /// after an upgrade lands in a current-format segment. Rollover happens
+    /// only at group boundaries.
     fn append(
         &mut self,
         epoch: Epoch,
@@ -1029,10 +1071,9 @@ impl<D: Durability> Store<D> {
         bytes: &[u8],
     ) -> std::io::Result<(usize, u64)> {
         let log_dir = self.log_dir();
-        let rollover = self
-            .tail
-            .as_ref()
-            .is_none_or(|t| t.size as usize >= self.segment_target);
+        let rollover = self.tail.as_ref().is_none_or(|t| {
+            t.size as usize >= self.segment_target || t.format < log::FORMAT_VERSION
+        });
         let (segment, start) = if rollover {
             let path = log_dir.join(log::segment_name(epoch));
             self.disk
@@ -1040,7 +1081,11 @@ impl<D: Durability> Store<D> {
             self.disk.sync(&path)?;
             self.disk.sync_dir(&log_dir)?;
             let mut index = self.index.write().expect("log index");
-            index.segments.push(path);
+            // An empty older-format tail segment has this name (same first
+            // epoch): it was just rewritten in the current format.
+            if index.segments.last() != Some(&path) {
+                index.segments.push(path);
+            }
             (index.segments.len() - 1, log::HEADER_LEN as u64)
         } else {
             let t = self.tail.as_ref().expect("tail");
@@ -1421,13 +1466,12 @@ impl<D: Durability> Store<D> {
         let filled = (|| {
             let mut db = Kernel::default();
             for n in 1..=self.epoch().0 {
-                let row = self.read_row(Epoch(n))?;
+                let (row, checksum) = self.read_frame(Epoch(n))?;
                 let batch = row.batch().map_err(|e| StoreError::Io(e.to_string()))?;
                 let result = db
                     .commit(&batch)
                     .map_err(|_| StoreError::ReplayDivergence { epoch: Epoch(n) })?;
                 if Epoch(n) > mark {
-                    let checksum = log::checksum(&row.encode_body());
                     let captured = capture(&db, &batch, &result);
                     self.proj
                         .apply(&captured.rows(batch.branch, &result, checksum))
@@ -1475,21 +1519,27 @@ impl<D: Durability> Store<D> {
     ) -> Result<ChangePage, StoreError> {
         self.readable()?;
         let tail = self.epoch();
+        // The rows of a pending commit's epoch are written when it settles
+        // (ADR 0019 §3.8): serve up to the last settled epoch.
+        let limit = match self.frontier_epoch() {
+            Some(_) => Epoch(tail.0 - 1),
+            None => tail,
+        };
         // A reader ahead of the log saw a history that was cut since; a
-        // projection that does not cover the tail cannot serve it. Both
-        // re-read (`ctx_check`) and follow from the tail.
-        if since > tail || !self.proj.covers(tail) {
-            return Ok(ChangePage::Truncated { earliest: tail });
+        // projection that does not cover the limit cannot serve it. Both
+        // re-read (`ctx_check`) and follow from the limit.
+        if since > tail || !self.proj.covers(limit) {
+            return Ok(ChangePage::Truncated { earliest: limit });
         }
         let max = max.max(1);
         let mut rows = self
             .proj
-            .changes(branch, since, tail, max + 1)
+            .changes(branch, since, limit, max + 1)
             .map_err(sql)?;
         if rows.len() <= max {
             return Ok(ChangePage::Rows {
                 rows,
-                reached: tail,
+                reached: limit,
                 more: false,
             });
         }
@@ -1508,12 +1558,13 @@ impl<D: Durability> Store<D> {
         Ok(ChangePage::Rows {
             rows,
             reached,
-            more: reached < tail,
+            more: reached < limit,
         })
     }
     /// Replaces the live kernel with `replica`, which must be at the same
     /// epoch and state (ADR 0008 §3.3 two-replica publication); returns the
-    /// previous kernel. Debug builds compare every branch's digest.
+    /// previous kernel. Debug builds compare every branch's digest. It never
+    /// settles: the caller acknowledges only after it publishes.
     pub fn replace_kernel(&mut self, replica: Kernel) -> Result<Kernel, StoreError> {
         self.readable()?;
         if replica.epoch() != self.db.epoch() {
@@ -1537,6 +1588,7 @@ impl<D: Durability> Store<D> {
     /// changing nothing (ADR 0013 §5; the actor runs it, ADR 0008 §3.3).
     pub fn impact_exact(&mut self, batch: &Batch) -> Result<CommitResult, StoreError> {
         self.readable()?;
+        self.settle()?;
         self.db.what_if(batch).map_err(StoreError::Tx)
     }
     /// `WHAT_IF` with a merge's report (ADR 0013 §5).
@@ -1545,7 +1597,52 @@ impl<D: Durability> Store<D> {
         batch: &Batch,
     ) -> Result<(CommitResult, Option<MergeReport>), StoreError> {
         self.readable()?;
+        self.settle()?;
         self.db.what_if_detailed(batch).map_err(StoreError::Tx)
+    }
+    /// Runs the pending commit's maintenance (ADR 0019 §3.7). When this
+    /// settles its epoch `e`, writes `e`'s projection rows from the frame's
+    /// acked result completed with the settled diffs, and returns `e`.
+    pub fn drain(&mut self, how: Drain) -> Result<Option<Epoch>, StoreError> {
+        self.usable()?;
+        let Some((branch, settled)) = self.db.drain(how) else {
+            return Ok(None);
+        };
+        self.settled_since_publish = true;
+        let e = settled.epoch;
+        let projected = (|| {
+            let (row, checksum) = self.read_frame(e)?;
+            let decoded = |e: WireError| StoreError::Io(e.to_string());
+            let batch = row.batch().map_err(decoded)?;
+            let result = CommitResult {
+                l0_flips: settled.l0_flips,
+                status_diff: settled.status_diff,
+                ..row.result().map_err(decoded)?
+            };
+            let captured = capture(&self.db, &batch, &result);
+            self.proj
+                .apply(&captured.rows(branch, &result, checksum))
+                .map_err(sql)
+        })();
+        // As at commit: a projection failure only makes them stale.
+        if let Err(err) = projected {
+            self.proj.mark_stale();
+            return Err(err);
+        }
+        Ok(Some(e))
+    }
+    /// Settles the pending commit, if any ([`Self::drain`] to the end).
+    pub fn settle(&mut self) -> Result<(), StoreError> {
+        self.drain(Drain::Full).map(|_| ())
+    }
+    /// Whether a drain settled an epoch since the last call (the caller
+    /// republishes what it serves).
+    pub fn take_settled(&mut self) -> bool {
+        std::mem::take(&mut self.settled_since_publish)
+    }
+    /// The epoch whose maintenance is pending.
+    pub fn frontier_epoch(&self) -> Option<Epoch> {
+        self.db.frontier().map(|(_, e)| e)
     }
     /// The op_log frame checksum at `epoch` (genesis at 0): certificate log
     /// linkage (ADR 0008 §4).
@@ -1553,7 +1650,8 @@ impl<D: Durability> Store<D> {
         if epoch.0 == 0 {
             return Ok(log::GENESIS);
         }
-        Ok(log::checksum(&self.read_row(epoch)?.encode_body()))
+        self.readable()?;
+        Ok(self.read_frame(epoch)?.1)
     }
     /// G4 fault injection: the next commit syncs its frame, then fails before
     /// publishing or acking (post-sync-pre-publish), poisoning the store.
@@ -1570,6 +1668,7 @@ impl<D: Durability> Store<D> {
     /// the log untouched; snapshots are only an accelerator, so it does not poison.
     pub fn snapshot(&mut self) -> Result<Epoch, StoreError> {
         self.usable()?;
+        self.settle()?;
         let epoch = self.epoch();
         let checksum = self.tail.as_ref().map_or(log::GENESIS, |t| t.checksum);
         crate::snapshot::write(&self.disk, &self.dir, epoch, &checksum, &self.db.export())
@@ -1624,12 +1723,14 @@ fn read_payload(
         Err(_) => Payload::Unavailable(Unavailable::Missing),
     }
 }
-/// Reads and re-verifies one durable frame through the shared index.
+/// Reads and re-verifies one durable frame through the shared index; returns
+/// it with its stored checksum (re-encoding an older format's row in the
+/// current one would change its bytes).
 fn read_frame(
     disk: &dyn Durability,
     index: &RwLock<LogIndex>,
     epoch: Epoch,
-) -> Result<LogRow, StoreError> {
+) -> Result<(LogRow, ContentHash), StoreError> {
     let (path, loc) = {
         let index = index.read().expect("log index");
         let loc = epoch
@@ -1645,13 +1746,16 @@ fn read_frame(
         usize::try_from(loc.end - loc.start).map_err(|_| StoreError::Io("frame size".into()))?;
     let bytes = disk.read_range(&path, loc.start, len).map_err(io)?;
     let frame = &bytes[16..len - 32];
-    if log::checksum(frame) != bytes[len - 32..] {
+    let checksum = log::checksum(frame);
+    if checksum != bytes[len - 32..] {
         return Err(StoreError::ChainBroken {
             epoch,
             fault: FrameFault::Checksum,
         });
     }
-    LogRow::decode_body(frame).map_err(|e| StoreError::Io(e.to_string()))
+    let row =
+        LogRow::decode_format(frame, loc.format).map_err(|e| StoreError::Io(e.to_string()))?;
+    Ok((row, checksum))
 }
 /// Read-only log access bounded by the tail it was created at (ADR 0008 §3.3).
 #[derive(Clone)]
@@ -1685,9 +1789,12 @@ impl<D: Durability> LogReader<D> {
         if epoch.0 == 0 {
             return Ok(log::GENESIS);
         }
-        Ok(log::checksum(&self.read_row(epoch)?.encode_body()))
+        Ok(self.read_frame(epoch)?.1)
     }
     pub fn read_row(&self, epoch: Epoch) -> Result<LogRow, StoreError> {
+        Ok(self.read_frame(epoch)?.0)
+    }
+    fn read_frame(&self, epoch: Epoch) -> Result<(LogRow, ContentHash), StoreError> {
         if epoch > self.tail {
             return Err(StoreError::Tx(TxError::UnknownRef));
         }

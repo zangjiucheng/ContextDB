@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **P11 milestone 2: the store side of lazy maintenance.** Off by default; ctxd does not enable it yet.
+  - op_log format 7 marks a commit acknowledged before its maintenance finished (`settling`) and stores exactly that acknowledgement. Existing format-6 segments are kept as they are, with their checksums.
+  - The first commit after the upgrade starts a format-7 segment, so an older binary refuses the store instead of misreading it.
+  - The store settles pending maintenance before every kernel entry, then writes that epoch's projections.
 - **P11 milestone 1: lazy maintenance in the core.** Not yet used by `ctxd`.
   - Counting and the status walk now run as one pass, interleaved by rank. The pass can stop after a work budget, leaving a frontier for `Db::drain`. Once drained, results match eager maintenance exactly.
   - While a frontier exists, an unsettled node reads `PENDING(StructuralUnknown)`.

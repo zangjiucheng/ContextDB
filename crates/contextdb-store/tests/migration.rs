@@ -34,7 +34,7 @@ fn format0_log_migrates_with_identical_state_t68() {
     let report = migrate::migrate(&disk, Path::new(DIR)).unwrap();
     assert_eq!(
         (report.from, report.to, report.frames),
-        (0, log::FORMAT_VERSION, written)
+        (0, log::MIN_FORMAT, written)
     );
     assert!(disk.exists(&Path::new(DIR).join("log.v0.bak")));
     let (mut store, open) =
@@ -182,7 +182,7 @@ fn format2_log_migrates_to_the_current_format_and_reports_changed_results() {
     let report = migrate::migrate(&disk, Path::new(DIR)).unwrap();
     assert_eq!(
         (report.from, report.to, report.frames),
-        (2, log::FORMAT_VERSION, 3)
+        (2, log::MIN_FORMAT, 3)
     );
     assert_eq!(report.changed, vec![Epoch(2)]);
     assert!(disk.exists(&Path::new(DIR).join("log.v2.bak")));
@@ -429,11 +429,11 @@ fn t77_format3_log_migrates_to_format4_byte_identical() {
     let report = migrate::migrate(&disk, Path::new(DIR)).unwrap();
     assert_eq!(
         (report.from, report.to, report.frames),
-        (3, log::FORMAT_VERSION, 6)
+        (3, log::MIN_FORMAT, 6)
     );
     assert!(report.changed.is_empty(), "{:?}", report.changed);
     assert!(disk.exists(&Path::new(DIR).join("log.v3.bak")));
-    let new: Vec<_> = migrate::rows_for_test(&disk, Path::new(DIR), log::FORMAT_VERSION)
+    let new: Vec<_> = migrate::rows_for_test(&disk, Path::new(DIR), log::MIN_FORMAT)
         .unwrap()
         .into_iter()
         .map(|r| (r.batch_blob, r.batch_hash, r.client_hash))

@@ -288,16 +288,16 @@ fn g4_migrate_2_to_3_interrupted_and_resumed() {
                     // refuses to open: the rerun skips step 2.
                     let log_done = !swap
                         && migrate::log_format(&crashed, Path::new(DIR)).unwrap()
-                            == Some(contextdb_store::log::FORMAT_VERSION);
+                            == Some(contextdb_store::log::MIN_FORMAT);
                     let again = migrate::migrate(&crashed, Path::new(DIR))
                         .unwrap_or_else(|e| panic!("seed {seed} {op}#{n} {fate:?}: {e:?}"));
                     if done || log_done {
-                        let v = contextdb_store::log::FORMAT_VERSION;
+                        let v = contextdb_store::log::MIN_FORMAT;
                         assert_eq!((again.from, again.to, again.frames), (v, v, 0));
                     } else {
                         assert_eq!(
                             (again.from, again.to),
-                            (2, contextdb_store::log::FORMAT_VERSION)
+                            (2, contextdb_store::log::MIN_FORMAT)
                         );
                         assert_eq!(again.frames, report.frames);
                     }

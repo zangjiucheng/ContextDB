@@ -91,7 +91,7 @@ fn t119_format5_log_migrates_to_format6_and_takes_p10_batches() {
     assert_eq!((report.from, report.to, report.frames), (5, 6, n));
     assert!(report.changed.is_empty(), "{:?}", report.changed);
     assert!(disk.exists(&Path::new(DIR).join("log.v5.bak")));
-    let new: Vec<_> = migrate::rows_for_test(&disk, Path::new(DIR), log::FORMAT_VERSION)
+    let new: Vec<_> = migrate::rows_for_test(&disk, Path::new(DIR), log::MIN_FORMAT)
         .unwrap()
         .into_iter()
         .map(|r| (r.batch_blob, r.batch_hash, r.client_hash))

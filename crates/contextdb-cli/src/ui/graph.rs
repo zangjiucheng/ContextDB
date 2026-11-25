@@ -92,10 +92,20 @@ pub fn load(dir: &Path) -> Result<Snapshot, String> {
         let batch = row
             .batch()
             .map_err(|e| format!("epoch {}: {e}", row.epoch.0))?;
-        kernel
+        let replayed = kernel
             .commit(&batch)
             .map_err(|e| format!("replay diverged at epoch {}: {e:?}", row.epoch.0))?;
         let result = row.result().ok();
+        // A settling frame recorded the acked result, whose diffs were
+        // empty; the eager replay has them (ADR 0019 §3.8).
+        let status_diff = if row.settling {
+            replayed.status_diff
+        } else {
+            result
+                .as_ref()
+                .map(|r| r.status_diff.clone())
+                .unwrap_or_default()
+        };
         rows.push(Commit {
             epoch: row.epoch,
             branch: batch.branch,
@@ -117,7 +127,7 @@ pub fn load(dir: &Path) -> Result<Snapshot, String> {
                 .as_ref()
                 .map(|r| r.net_delta.head_moves.clone())
                 .unwrap_or_default(),
-            status_diff: result.map(|r| r.status_diff).unwrap_or_default(),
+            status_diff,
         });
     }
     let epoch = rows.last().map_or(Epoch(0), |c| c.epoch);
