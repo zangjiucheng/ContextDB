@@ -263,7 +263,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let mut dim = self.node(r)?.dimensions;
         let support = self.observation_support(&[r])?;
         let (scopes, teams) = self.scopes_of(&support);
-        if !scopes.is_empty() {
+        // An unsettled node's observation lag is not evaluated: its closure
+        // needs witnesses (ADR 0019 §3.6). Replication lag stays exact.
+        if !scopes.is_empty() && self.settled(r) {
             // A merged anchor not yet observed here lags whatever the
             // watermark says (SD14b as extended by ADR 0013 §6.2).
             let unobserved = !self.anchor_unobserved.is_empty()
@@ -499,17 +501,27 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             }
             strict_diffs = diffs;
         }
-        // Step 2: per required entry, the current head's summary.
+        // Step 2: per required entry, the current head's summary. An
+        // unsettled head gives only its input-level result (ADR 0019 §3.6):
+        // Denied, Invalid for a superseded revision, Conflicted, or Pending.
         let required: Vec<&CertItem> = cert.entries.iter().filter(|e| e.required).collect();
         if required.is_empty() {
             return Ok(Validation::Empty);
         }
+        let heads: Vec<(RevisionId, bool)> = (required.iter())
+            .map(|e| view.head(e.logical))
+            .map(|head| (head, self.settled(head)))
+            .collect();
+        let frontier = heads.iter().any(|(_, settled)| !settled);
         let (mut denied, mut invalid, mut conflicted, mut lag) =
             (false, Vec::new(), Vec::new(), BTreeSet::new());
         let (mut pending, mut pending_rules) = (false, BTreeSet::new());
-        for e in &required {
-            let head = view.head(e.logical);
-            let summary = self.summary_at(head, live_pos).expect("head exists");
+        for (e, &(head, settled)) in required.iter().zip(&heads) {
+            let summary = if settled {
+                self.summary_at(head, live_pos).expect("head exists")
+            } else {
+                contextdb_oracle::summarize(&self.withheld(head).dimensions)
+            };
             let diff = || CertDiff {
                 logical: e.logical,
                 cert_rev: Some(e.rev),
@@ -523,20 +535,25 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 EntryOutcome::Unknown => {}
                 EntryOutcome::Pending => {
                     pending = true;
-                    pending_rules.extend(self.pending_rules(head));
+                    if settled {
+                        pending_rules.extend(self.pending_rules(head));
+                    }
                 }
                 EntryOutcome::Ok => {}
             }
         }
-        // Step 3: the vector recomputed on the current state.
-        let roots: Vec<_> = required
-            .iter()
-            .map(|e| (view.head(e.logical), e.since_epoch))
+        // Step 3: lag over the settled heads' observation support, and the
+        // vector recomputed on the current state. With a head unsettled the
+        // recompute (Ambiguous, vector′) is skipped: it needs every head
+        // settled, and that entry already made the verdict at least Pending.
+        let roots: Vec<_> = (heads.iter().zip(&required))
+            .map(|((head, _), e)| (*head, e.since_epoch))
             .collect();
-        let recomputed = self.closure(&roots);
-        let support = self
-            .observation_support(&roots.iter().map(|(r, _)| *r).collect::<Vec<_>>())
-            .expect("roots exist");
+        let settled: Vec<_> = (heads.iter())
+            .filter(|(_, settled)| *settled)
+            .map(|(head, _)| *head)
+            .collect();
+        let support = self.observation_support(&settled).expect("roots exist");
         let (scopes, teams) = self.scopes_of(&support);
         for scope in scopes.into_iter().chain(teams) {
             if self.lags(&scope, live_pos) {
@@ -566,9 +583,13 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 entries: conflicted,
             });
         }
-        let vector = match recomputed {
-            Err(logical) => return Ok(Validation::Ambiguous { logical }),
-            Ok(v) => v,
+        let vector = if frontier {
+            None
+        } else {
+            match self.closure(&roots) {
+                Err(logical) => return Ok(Validation::Ambiguous { logical }),
+                Ok(v) => Some(v),
+            }
         };
         if !lag.is_empty() {
             return Ok(Validation::Unknown {
@@ -580,6 +601,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 rules: pending_rules.into_iter().collect(),
             });
         }
+        let vector = vector.expect("an unsettled entry is at least Pending");
         // Step 4: all Ok.
         let same = vector.len() == cert.vector.len()
             && vector
