@@ -116,6 +116,21 @@ impl VectorStore {
         tx.commit()?;
         crate::purge::finish(&self.conn, through)
     }
+    /// The last GC generation purged from this projection (ADR 0019 §5.2).
+    pub fn collected_through(&self) -> Sql<u64> {
+        crate::purge::collected_through(&self.conn)
+    }
+    /// Deletes every model's vector of each collected content and records
+    /// `generation`, in one transaction. A content staged again is embedded
+    /// again on demand.
+    pub fn collect(&mut self, contents: &[ContentHash], generation: u64) -> Sql<()> {
+        let tx = self.conn.transaction()?;
+        for c in contents {
+            tx.execute("DELETE FROM vectors WHERE content = ?1", params![&c[..]])?;
+        }
+        crate::purge::set_collected_through(&tx, generation)?;
+        tx.commit()
+    }
     pub fn count(&self, model: &str) -> Sql<u64> {
         self.conn
             .query_row(
@@ -145,5 +160,12 @@ mod tests {
         assert_eq!(s.prune_except("m", 2).unwrap(), 1);
         assert_eq!(s.count("m").unwrap(), 2);
         assert_eq!(s.count("other").unwrap(), 0);
+        // Payload GC (ADR 0019 §5.2): rows of collected contents go, the
+        // mark moves, `purged_through` stays.
+        assert_eq!(s.collected_through().unwrap(), 0);
+        s.collect(&[a], 4).unwrap();
+        assert!(!s.has("m", 2, &a).unwrap() && s.has("m", 2, &b).unwrap());
+        assert_eq!(s.collected_through().unwrap(), 4);
+        assert_eq!(s.purged_through().unwrap(), Epoch(0));
     }
 }

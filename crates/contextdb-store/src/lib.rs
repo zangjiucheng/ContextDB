@@ -4,6 +4,7 @@
 //! All durable I/O goes through [`Durability`]; [`SimDisk`] drives crash tests.
 pub mod doctor;
 pub mod durability;
+pub mod gc;
 mod keys;
 pub mod log;
 pub mod migrate;
@@ -18,10 +19,11 @@ pub mod snapshot;
 mod store;
 pub mod vectors;
 pub use durability::{Durability, SimDisk, StdDisk, TailFate};
+pub use keys::KeyPos;
 pub use projection::{PROJECTIONS_FILE, ProjectionFile};
 pub use store::{
     ChangePage, LogReader, OpenOptions, OpenReport, Payload, Prepare, Step, Store, StoreError,
-    TruncatedTail, TxnStatus, Unavailable, Write,
+    StorePresence, TruncatedTail, TxnStatus, Unavailable, Write,
 };
 
 /// Test support (G4, T104): the bytes one payload leaves in a key-log
@@ -30,7 +32,7 @@ pub use store::{
 #[doc(hidden)]
 pub fn encrypted_payload_files(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let key = keys::fresh().expect("getrandom");
-    let mut k = keys::header(keys::Kind::Append, contextdb_model::Epoch(0));
+    let mut k = keys::header(keys::Kind::Append, contextdb_model::Epoch(0), 0);
     let (hash, rec) = pack::sealed(bytes, &key).expect("seal");
     k.extend(keys::record(&hash, &key));
     let mut p = pack::SEGMENT_HEADER.to_vec();
@@ -47,14 +49,18 @@ pub fn plaintext_pack_record(bytes: &[u8]) -> Vec<u8> {
     r.extend_from_slice(bytes);
     r
 }
-/// Fuzz support (ADR 0017 §11 G4): runs the pack (`CXBP`/`CXBE`) and key-log
-/// (`CXKH`/`CXKY`) parsers over arbitrary bytes, with keys taken from the
-/// key records found, and checks what they accept.
+/// Fuzz support (ADR 0017 §11 G4): runs the pack (`CXBP`/`CXBE`), key-log
+/// (`CXKH`/`CXKY`) and GC ledger (`CXGL`, ADR 0019 §5.2) parsers over
+/// arbitrary bytes, with keys taken from the key records found, and checks
+/// what they accept.
 #[doc(hidden)]
 pub fn fuzz_record_parsers(data: &[u8]) {
     let _ = keys::parse_header(data);
+    for e in gc::parse(data) {
+        assert_eq!(gc::parse(&gc::record(&e)), vec![e]);
+    }
     let found = keys::parse(data);
-    let map: std::collections::HashMap<_, _> = found.iter().copied().collect();
+    let map: std::collections::HashMap<_, _> = found.iter().map(|(h, k, _)| (*h, *k)).collect();
     for (hash, offset, len, nonce) in pack::parse_all(data, &|h| map.get(h).copied()) {
         let body = &data[offset as usize..offset as usize + len as usize];
         match nonce {

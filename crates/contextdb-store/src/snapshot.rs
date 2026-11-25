@@ -239,3 +239,36 @@ pub fn load_newest<T>(
     }
     Ok((None, rejected))
 }
+/// Removes the snapshot files that do not load (wrong format, no checksum
+/// match, or `build` rejects them) and every valid one but the newest
+/// `keep` (ADR 0019 §5.5); returns the removed names.
+pub fn prune(
+    disk: &dyn Durability,
+    dir: &Path,
+    checksums: &[ContentHash],
+    keep: usize,
+    mut build: impl FnMut(Loaded) -> bool,
+) -> io::Result<Vec<String>> {
+    let snap = dir.join("snap");
+    if !disk.exists(&snap) {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = (disk.list(&snap)?.into_iter())
+        .filter(|n| n.ends_with(".bin"))
+        .collect();
+    names.sort();
+    let (mut valid, mut removed) = (0, Vec::new());
+    for n in names.iter().rev() {
+        let loads = parse(&disk.read(&snap.join(n))?, checksums).is_some_and(&mut build);
+        if loads && valid < keep {
+            valid += 1;
+            continue;
+        }
+        disk.remove(&snap.join(n))?;
+        removed.push(n.clone());
+    }
+    if !removed.is_empty() {
+        disk.sync_dir(&snap)?;
+    }
+    Ok(removed)
+}

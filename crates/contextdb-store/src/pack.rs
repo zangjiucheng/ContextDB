@@ -15,7 +15,7 @@
 //! (shredded) is unreadable ciphertext. Plaintext `CXBP` records are still
 //! read until `ctx migrate` re-encrypts them.
 use crate::durability::Durability;
-use crate::keys::Key;
+use crate::keys::{Key, KeyPos};
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
@@ -49,10 +49,16 @@ pub(crate) struct Loc {
 pub(crate) struct PackIndex {
     pub(crate) segments: Vec<PathBuf>,
     pub(crate) map: HashMap<ContentHash, Loc>,
-    /// The key of every content hash (ADR 0017 §8.2).
+    /// The live key of every content hash (ADR 0017 §8.2): a key the GC
+    /// ledger names by its position is not live (ADR 0019 §5.3).
     pub(crate) keys: HashMap<ContentHash, Key>,
+    /// The position of each live key.
+    pub(crate) positions: HashMap<ContentHash, KeyPos>,
     /// Shredded content hashes, checked before the packs (ADR 0017 §8.3).
     pub(crate) shredded: std::collections::BTreeSet<ContentHash>,
+    /// Content hashes with a GC ledger entry (ADR 0019 §5.3): they read
+    /// `Collected` unless a live record serves them.
+    pub(crate) collected: std::collections::BTreeSet<ContentHash>,
     /// Segments holding a valid plaintext record (pre-P9).
     pub(crate) plaintext: usize,
 }
@@ -141,6 +147,45 @@ pub(crate) fn parse_all(
                 pos = at + ENC_HEADER + len as usize;
             }
             None => pos = at + 1,
+        }
+    }
+    out
+}
+/// Byte ranges of the encrypted records compaction drops (ADR 0019 §5.5):
+/// a record whose hash is `dead` (shredded or collected) and that does not
+/// authenticate under its hash's live key. A range never overlaps a record
+/// that authenticates, so a damaged length cannot take a live record with
+/// it, and a record is never dropped only because its key is missing.
+pub(crate) fn dead_records(
+    data: &[u8],
+    dead: &dyn Fn(&ContentHash) -> bool,
+    key: &dyn Fn(&ContentHash) -> Option<Key>,
+) -> Vec<(usize, usize)> {
+    let valid: Vec<(usize, usize)> = (parse_all(data, key).into_iter())
+        .map(|(_, offset, len, nonce)| {
+            let header = if nonce.is_some() { ENC_HEADER } else { HEADER };
+            (offset as usize - header, offset as usize + len as usize)
+        })
+        .collect();
+    let overlaps = |a: usize, b: usize| valid.iter().any(|(s, e)| a < *e && *s < b);
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(at) = (data.get(pos..))
+        .and_then(|d| d.windows(4).position(|w| w == ENC_MAGIC))
+        .map(|p| p + pos)
+    {
+        let record = data.get(at + 4..at + ENC_HEADER).and_then(|h| {
+            let len = u32::from_le_bytes(h[..4].try_into().expect("4 bytes")) as usize;
+            let hash: ContentHash = h[4..36].try_into().expect("32 bytes");
+            let end = (at + ENC_HEADER).checked_add(len)?;
+            (end <= data.len()).then_some((hash, end))
+        });
+        match record {
+            Some((hash, end)) if dead(&hash) && !overlaps(at, end) => {
+                out.push((at, end));
+                pos = end;
+            }
+            _ => pos = at + 1,
         }
     }
     out
@@ -266,6 +311,23 @@ impl PackIndex {
                 nonce,
             },
         );
+    }
+    /// Collected and not staged again (ADR 0019 §5.3): a ledger entry and
+    /// no live record; never a shredded hash.
+    pub(crate) fn is_collected(&self, hash: &ContentHash) -> bool {
+        self.collected.contains(hash)
+            && !self.map.contains_key(hash)
+            && !self.shredded.contains(hash)
+    }
+    /// The bytes a packed record occupies, header included.
+    pub(crate) fn record_size(&self, hash: &ContentHash) -> Option<u64> {
+        let loc = self.map.get(hash)?;
+        let header = if loc.nonce.is_some() {
+            ENC_HEADER
+        } else {
+            HEADER
+        };
+        Some(loc.len as u64 + header as u64)
     }
     /// Path and range of a packed payload, with the nonce and key of an
     /// encrypted record (`None` key: the key is gone).

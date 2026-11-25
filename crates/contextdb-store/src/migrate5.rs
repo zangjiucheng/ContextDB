@@ -396,7 +396,7 @@ pub(crate) fn packs(
             if !new.is_empty() {
                 let n = keys::next_number(&keylog);
                 let kp = key_dir.join(keys::segment_name(n));
-                let mut bytes = keys::header(keys::Kind::Append, Epoch(0));
+                let mut bytes = keys::header(keys::Kind::Append, Epoch(0), 0);
                 for (h, key) in &new {
                     bytes.extend(keys::record(h, key));
                 }

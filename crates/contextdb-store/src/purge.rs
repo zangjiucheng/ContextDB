@@ -93,6 +93,28 @@ pub fn set_through(conn: &Connection, epoch: Epoch) -> rusqlite::Result<()> {
     )?;
     Ok(())
 }
+const COLLECT_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS ctx_collect(id INTEGER PRIMARY KEY CHECK (id = 0), through INTEGER NOT NULL);";
+/// The last GC generation this projection purged (ADR 0019 §5.2 step 4),
+/// kept beside `purged_through`: 0 for none.
+pub fn collected_through(conn: &Connection) -> rusqlite::Result<u64> {
+    conn.execute_batch(COLLECT_SCHEMA)?;
+    Ok(conn
+        .query_row("SELECT through FROM ctx_collect WHERE id = 0", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .optional()?
+        .unwrap_or(0) as u64)
+}
+/// Records GC generation `generation` as purged.
+pub fn set_collected_through(conn: &Connection, generation: u64) -> rusqlite::Result<()> {
+    conn.execute_batch(COLLECT_SCHEMA)?;
+    conn.execute(
+        "INSERT INTO ctx_collect(id, through) VALUES (0, ?1)
+         ON CONFLICT(id) DO UPDATE SET through = excluded.through",
+        params![generation as i64],
+    )?;
+    Ok(())
+}
 /// How long [`compact`] waits for readers to leave the WAL.
 const CHECKPOINT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Checkpoints the WAL into the database file and truncates it (and syncs

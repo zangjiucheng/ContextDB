@@ -17,6 +17,10 @@ pub struct TruncationPlan {
     pub dropped_txn_ids: Vec<[u8; 16]>,
     /// Some dropped bytes could not be read as frames: more acked epochs may be lost.
     pub unreadable_tail: bool,
+    /// The highest cutoff a payload GC used, when the new tail is below it
+    /// (ADR 0019 §5.5): a collected content may have been live there, so
+    /// only a forced truncation runs. Read from the GC ledger alone.
+    pub collected_cutoff: Option<Epoch>,
     cut: Option<(PathBuf, u64)>,
     later_segments: Vec<PathBuf>,
 }
@@ -39,6 +43,7 @@ pub fn plan_truncate_before(
         dropped_epochs: Vec::new(),
         dropped_txn_ids: Vec::new(),
         unreadable_tail: false,
+        collected_cutoff: None,
         cut: None,
         later_segments: Vec::new(),
     };
@@ -110,6 +115,7 @@ pub fn plan_truncate_before(
         // Nothing at or after `epoch`: the log already ends before it.
         plan.keep_through = Epoch(next.0 - 1);
     }
+    plan.collected_cutoff = crate::gc::max_cutoff(disk, dir)?.filter(|c| plan.keep_through < *c);
     Ok(plan)
 }
 /// Records every readable frame from `pos` on as dropped.
@@ -125,16 +131,32 @@ fn dropped(plan: &mut TruncationPlan, bytes: &[u8], pos: usize, format: u32) {
 }
 /// Executes a plan: truncates the cut segment, removes later segments and
 /// snapshots beyond the new tail, and syncs. Projections are rebuilt at open.
+/// A plan below a GC cutoff is refused (`TruncationBelowCollected`).
 pub fn truncate_before(
     disk: &dyn Durability,
     dir: &Path,
     plan: &TruncationPlan,
+) -> Result<(), StoreError> {
+    truncate_before_with(disk, dir, plan, false)
+}
+/// [`truncate_before`]; `force` (`ctx doctor --force`) also truncates below
+/// a GC cutoff.
+pub fn truncate_before_with(
+    disk: &dyn Durability,
+    dir: &Path,
+    plan: &TruncationPlan,
+    force: bool,
 ) -> Result<(), StoreError> {
     let _lock = crate::store::lock(disk, dir)?;
     crate::migrate5::refuse_marked(disk, dir)?;
     // The log must still be exactly what the operator reviewed.
     if plan_truncate_before(disk, dir, Epoch(plan.keep_through.0 + 1))? != *plan {
         return Err(StoreError::PlanOutdated);
+    }
+    if let Some(cutoff) = plan.collected_cutoff
+        && !force
+    {
+        return Err(StoreError::TruncationBelowCollected { cutoff });
     }
     let log_dir = dir.join("log");
     if let Some((seg, pos)) = &plan.cut

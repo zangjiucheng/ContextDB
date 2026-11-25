@@ -3899,6 +3899,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         contextdb_store::Unavailable::Missing => "missing",
                         contextdb_store::Unavailable::Corrupt => "corrupt",
                         contextdb_store::Unavailable::Shredded => "shredded",
+                        contextdb_store::Unavailable::Collected => "collected",
                     }
                     .to_owned(),
                 ),
