@@ -54,6 +54,7 @@ const PLAIN_ERRORS: &[&str] = &[
     "MissingBlob",
     "ReadSetConflict",
     "SessionOfAnotherPrincipal",
+    "Settling",
     "Timeout",
     "Unauthorized",
     "Unavailable",

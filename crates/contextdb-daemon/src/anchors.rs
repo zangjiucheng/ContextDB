@@ -1,7 +1,7 @@
 //! P5a trusted routing, bounded registry and local live evidence.
 use crate::{
     actor::Snapshot,
-    service::{Identity, Service, resolve_branch},
+    service::{Identity, Need, Service, need, resolve_branch},
 };
 use contextdb_anchors::{AnchorDescriptor, Repo, capture::MAX_ANCHORS};
 use contextdb_core::{BranchView, IssueRequest, LogLink};
@@ -326,12 +326,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
         expected_head: &[u8],
         expected_position: &[u8],
         snap: &Arc<Snapshot<D>>,
-    ) -> Response {
+    ) -> (Response, Option<Need>) {
         if id.channel != Channel::Admin {
-            return Response::Error {
+            let refused = Response::Error {
                 code: "ChannelRestricted".into(),
                 detail: "range check requires admin".into(),
             };
+            return (refused, None);
         }
         // Protocol 4 has no branch for this admin check: `main`.
         let db = &snap.view(MAIN);
@@ -347,12 +348,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 position != expected_position || head != expected_head
             })
         {
-            return range_response(
-                Validation::Unknown {
-                    lag: vec![scope.into()],
-                },
-                None,
-            );
+            let lag = Validation::Unknown {
+                lag: vec![scope.into()],
+            };
+            return (range_response(lag, None), None);
         }
         let live = evidence
             .into_iter()
@@ -416,7 +415,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .collect();
         let checksum = match snap.log.checksum_at(snap.epoch) {
             Ok(c) => c,
-            Err(e) => return err(format!("{e:?}")),
+            Err(e) => return (err(format!("{e:?}")), None),
         };
         let request = IssueRequest {
             session_id: self.range_session_id(),
@@ -450,8 +449,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             },
         ) {
             Ok(v) => v,
-            Err(e) => return err(format!("{e:?}")),
+            Err(e) => return (err(format!("{e:?}")), None),
         };
+        // Its entries' heads settled first: a gate pulls (ADR 0019 §3.7).
+        // A valid verdict implies they are.
+        let need = need(snap, MAIN, entries.iter().map(|e| e.rev));
         let (validation, cert) = if matches!(
             validation,
             Validation::Valid | Validation::ValidRecertified { .. }
@@ -459,16 +461,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
             match db.issue_certificate(&request, &entries, &live) {
                 Ok(c) => {
                     if let Err(response) = self.audit_range(&c, scope) {
-                        return response;
+                        return (response, None);
                     }
                     (Validation::Valid, Some(Box::new(c)))
                 }
-                Err(e) => return err(format!("{e:?}")),
+                Err(e) => return (err(format!("{e:?}")), None),
             }
         } else {
             (validation, None)
         };
-        range_response(validation, cert)
+        (range_response(validation, cert), need)
     }
 }
 /// Whether an anchor spelling lies in the daemon's data directory. Capture

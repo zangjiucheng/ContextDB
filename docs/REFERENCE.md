@@ -66,7 +66,7 @@ ctx export <dir>        # export as EventLog v0 JSONL
 - **Three sockets**: `<dir>/run/agent.sock`, `observer.sock`, `admin.sock` (in a temporary directory if the path would be too long), mode 0600 with a peer-uid check. The socket determines the channel; request parameters cannot forge an identity. Controlled semantic validation (`ctx validate`, which an authorised maintenance agent may run) and `shutdown` are admin-only; raw batches are not accepted from agents.
 - **Trust boundary**: P3 promises only a cooperative boundary. A malicious agent that can run a shell as the same OS user can still connect to the observer/admin sockets; hard isolation comes with principals and ACLs in P9.
 - **Sessions**: sessions, read ledgers and certificates are written to a separate session log (`<dir>/sessions/`), grouped and hash-chained like the op_log, so sessions survive a daemon restart. Read events are durable within 100 ms; `SessionStart`, `CertIssued` and `SessionEnd` sync immediately.
-- **Timeouts and overload**: a full write queue returns `Busy`. A request over 30 s returns `Timeout`; a timed-out write may still commit, and `ctx_txn_status` with its `client_txn_id` tells you whether it did.
+- **Timeouts and overload**: a full write queue returns `Busy`. A request over 30 s returns `Timeout`; a timed-out write may still commit, and `ctx_txn_status` with its `client_txn_id` tells you whether it did. A read that needs an epoch still settling can return `Settling` (P11, see [Lazy maintenance](#lazy-maintenance-p11)); retry it.
 
 **MCP**: `ctx-mcp <dir>` serves JSON-RPC 2.0 over stdio (one message per line) and finds the agent socket through `<dir>/ctxd.lease`.
 
@@ -385,5 +385,17 @@ read_settle_ms = 50    # how long a certified read waits for the epoch to settle
 ```
 
 A missing file means the defaults; an invalid one stops `ctxd` from starting, with the reason. The file is read at start.
+
+**Reads while an epoch settles.** A record the pending maintenance can still change reads `PENDING(StructuralUnknown)`, so it is never certified early; records it cannot reach read as usual. Reads that need such a record settled first ask `ctxd` to settle it and wait:
+
+| Read | Waits up to | If it is still settling |
+|---|---|---|
+| `ctx_read` / `ctx_recall` in certified mode, `ctx_check`, handoffs | `read_settle_ms` | the record reads `PENDING(StructuralUnknown)`: `NotCertified`, a withheld item, or a `Pending` verdict |
+| `ctx_why`, `ctx_why_not`, `ctx diff` at the settling epoch | `read_settle_ms` | error `Settling` |
+| the hook gate's check, the pre-push range check | 250 ms | a `Pending` verdict |
+| `ctx mirror export` | 30 s | error `Settling`; no tree is rendered |
+| advisory reads | no wait | the record reads `PENDING(StructuralUnknown)` |
+
+`Settling` (detail `epoch e: maintenance still settling; retry`) is retryable: the same request answers once epoch `e` has settled. Writes never see a settling epoch: `ctxd` settles it before the next write, so `expect_cert_valid` and `require_certified` merges judge the settled state.
 
 **Upgrade note**: P11 raises the IPC protocol to 9. Upgrade every binary together.

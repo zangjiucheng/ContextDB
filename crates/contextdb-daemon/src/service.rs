@@ -23,6 +23,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
+    time::{Duration, Instant},
 };
 
 /// A recall's eligibility test (ADR 0016 §3.2), shared by its rankers and
@@ -133,6 +134,15 @@ impl<D: Durability + Clone + 'static> Eligibility<'_, '_, D> {
     }
 }
 
+/// What a recall found on one snapshot (`Service::recall_found`).
+struct RecallFound {
+    items: Vec<Item>,
+    withheld: Vec<Item>,
+    omitted: u32,
+    estimate: Option<String>,
+    /// The live anchor positions its summaries used.
+    live: BTreeMap<String, Vec<u8>>,
+}
 /// Transport-bound identity of a connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -297,6 +307,9 @@ pub struct Service<D: Durability> {
         Mutex<BTreeMap<ContentHash, contextdb_anchors::AnchorDescriptor>>,
     /// Deadline of one live anchor sample (ADR 0011 §3: 40 ms by default).
     pub(crate) anchor_live_timeout: Mutex<std::time::Duration>,
+    /// How long a mirror export waits for its pull to settle the pending
+    /// commit (ADR 0019 §3.7): the request timeout by default.
+    export_settle: Mutex<Duration>,
     hooks: Mutex<Hooks>,
     /// Serialises outbox deliveries (stream marks) across sweeper and hooks.
     facts_lock: Mutex<()>,
@@ -732,6 +745,71 @@ fn submit_err(e: SubmitError) -> Response {
         ),
     }
 }
+/// How long the hook gate's check waits for a pull (ADR 0019 §3.7): half
+/// the hooks' default `timeout_ms` (500 ms), so the answer still reaches
+/// the hook in time.
+const GATE_SETTLE: Duration = Duration::from_millis(250);
+/// What a read waits for (ADR 0019 §3.7): the pending commit's epoch,
+/// settled through rank `through` (`None`: to the end).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Need {
+    epoch: Epoch,
+    through: Option<usize>,
+}
+/// The `Need` of a read touching `revs` on `branch`: the highest rank
+/// among them still unsettled; `None` when every one is settled.
+pub(crate) fn need<D: Durability>(
+    snap: &Snapshot<D>,
+    branch: BranchId,
+    revs: impl IntoIterator<Item = RevisionId>,
+) -> Option<Need> {
+    let (_, epoch) = snap.kernel.frontier()?;
+    let view = snap.view(branch);
+    let through = (revs.into_iter())
+        .filter(|r| !view.settled(*r))
+        .filter_map(|r| view.rank(r))
+        .max()?;
+    Some(Need {
+        epoch,
+        through: Some(through),
+    })
+}
+/// [`need`] over the heads of `logicals`.
+fn need_heads<D: Durability>(
+    snap: &Snapshot<D>,
+    branch: BranchId,
+    logicals: impl IntoIterator<Item = LogicalId>,
+) -> Option<Need> {
+    let view = snap.view(branch);
+    need(
+        snap,
+        branch,
+        logicals.into_iter().filter_map(|l| view.head(l)),
+    )
+}
+/// A read that needs every node settled; `None` without a frontier.
+fn need_all<D: Durability>(snap: &Snapshot<D>) -> Option<Need> {
+    let (_, epoch) = snap.kernel.frontier()?;
+    Some(Need {
+        epoch,
+        through: None,
+    })
+}
+/// `Settling{epoch}` (SPEC §6.2), retryable: the nodes a read needs were
+/// not settled within its wait.
+fn settling(epoch: Epoch) -> Response {
+    err("Settling", settling_detail(epoch))
+}
+pub(crate) fn settling_detail(epoch: Epoch) -> String {
+    format!("epoch {}: maintenance still settling; retry", epoch.0)
+}
+/// A kernel read error; `Unsettled` is the pending epoch's `Settling`.
+fn read_err<D: Durability>(e: &TxError, snap: &Snapshot<D>) -> Response {
+    match (e, snap.kernel.frontier()) {
+        (TxError::Unsettled, Some((_, epoch))) => settling(epoch),
+        _ => err(&code(e), format!("{e:?}")),
+    }
+}
 fn handle_of(cert: &Certificate, index: usize) -> String {
     let hex: String = cert.cert_id[..6]
         .iter()
@@ -944,7 +1022,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         *self.data_dir.lock().expect("data dir") = Some(dir);
     }
     /// `ctx mirror` (ADR 0016 §8), on the admin socket.
-    fn mirror(&self, action: MirrorAction, snap: &Arc<Snapshot<D>>) -> Response {
+    fn mirror(&self, action: MirrorAction, snap: Arc<Snapshot<D>>) -> Response {
         let _one = self.mirror_lock.lock().expect("mirror");
         let data = self.data_dir.lock().expect("data dir").clone();
         let (project, branch) = match &action {
@@ -963,12 +1041,27 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 None => return err("UnknownBranch", format!("no branch named {name}")),
             },
         };
-        let mut m =
-            match crate::mirror::Mirror::new(snap, std::path::Path::new(&project), data.as_deref())
-            {
-                Ok(m) => m,
-                Err(e) => return err(e.code(), e.detail()),
-            };
+        // An export renders only a settled snapshot: it pulls to the end
+        // (ADR 0019 §3.6).
+        let snap = match &action {
+            MirrorAction::Export { .. } => {
+                let wait = *self.export_settle.lock().expect("export settle");
+                let snap = self.pulled(snap, wait, |snap| ((), need_all(snap))).0;
+                if let Some(Need { epoch, .. }) = need_all(&snap) {
+                    return settling(epoch);
+                }
+                snap
+            }
+            _ => snap,
+        };
+        let mut m = match crate::mirror::Mirror::new(
+            &snap,
+            std::path::Path::new(&project),
+            data.as_deref(),
+        ) {
+            Ok(m) => m,
+            Err(e) => return err(e.code(), e.detail()),
+        };
         let done = match action {
             MirrorAction::Export {
                 force,
@@ -1017,6 +1110,10 @@ impl<D: Durability + Clone + 'static> Service<D> {
     /// production budget is measured by `anchor_bench` on a real daemon.
     pub fn set_anchor_live_timeout(&self, timeout: std::time::Duration) {
         *self.anchor_live_timeout.lock().expect("timeout") = timeout;
+    }
+    /// Overrides how long a mirror export waits for settlement.
+    pub fn set_export_settle(&self, wait: Duration) {
+        *self.export_settle.lock().expect("export settle") = wait;
     }
     /// Trusted repository routes; also prepares the outbox announce record
     /// (ADR 0011 §9.3). A failure there only leaves live evidence Unknown.
@@ -1094,6 +1191,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             anchor_repos: Mutex::new(BTreeMap::new()),
             anchor_descriptors: Mutex::new(BTreeMap::new()),
             anchor_live_timeout: Mutex::new(contextdb_anchors::capture::LIVE_TIMEOUT),
+            export_settle: Mutex::new(crate::actor::REQUEST_TIMEOUT),
             hooks: Mutex::new(Hooks::default()),
             facts_lock: Mutex::new(()),
             attach_lock: Mutex::new(()),
@@ -1494,7 +1592,15 @@ impl<D: Durability + Clone + 'static> Service<D> {
         }
         let snap = self.actor.snapshot();
         let epoch = snap.epoch;
-        (epoch, self.dispatch(id, req, snap))
+        match self.dispatch(id, req, snap) {
+            // A kernel's `Unsettled` reaches a client as the retryable
+            // `Settling`, never as an internal error (ADR 0019 §3.6).
+            Response::Error { code, .. } if code == "Unsettled" => {
+                let frontier = self.actor.snapshot().kernel.frontier();
+                (epoch, settling(frontier.map_or(epoch, |(_, e)| e)))
+            }
+            response => (epoch, response),
+        }
     }
     /// Takes the snapshot by value: write paths release it before waiting for
     /// their group, so a queued writer never pins a replica the actor wants
@@ -1607,7 +1713,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                         &opts,
                         mode,
                         limit as usize,
-                        &snap,
+                        snap,
                     )
                 }
                 Err(r) => r,
@@ -1616,7 +1722,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 if id.channel != Channel::Admin {
                     return err("ChannelRestricted", "ctx mirror requires the admin socket");
                 }
-                self.mirror(action, &snap)
+                self.mirror(action, snap)
             }
             Request::SetAccess { doc, client_txn_id } => {
                 drop(snap);
@@ -1872,7 +1978,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 mode,
                 level,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.read(b, &target, mode, level, &snap),
+                Ok(b) => self.read(b, &target, mode, level, snap),
                 Err(r) => r,
             },
             Request::Record {
@@ -1921,27 +2027,13 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 ),
                 Err(r) => r,
             },
-            Request::Why { target, depth } => match self.resolve_plain(id.principal, &target, db) {
-                Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
-                    target: target_text(&target),
-                },
-                Ok((_, r)) => match db.why_depth(r, depth as usize) {
-                    Ok(proof) => Response::Why { proof },
-                    Err(e) => err(&code(&e), format!("{e:?}")),
-                },
-                Err(r) => r,
-            },
+            Request::Why { target, depth } => self.explain(id, &target, branch, snap, |db, r| {
+                (db.why_depth(r, depth as usize)).map(|proof| Response::Why { proof })
+            }),
             Request::WhyNot { target, depth } => {
-                match self.resolve_plain(id.principal, &target, db) {
-                    Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
-                        target: target_text(&target),
-                    },
-                    Ok((_, r)) => match db.why_not(r, depth as usize) {
-                        Ok(why_not) => Response::WhyNot { why_not },
-                        Err(e) => err(&code(&e), format!("{e:?}")),
-                    },
-                    Err(r) => r,
-                }
+                self.explain(id, &target, branch, snap, |db, r| {
+                    (db.why_not(r, depth as usize)).map(|why_not| Response::WhyNot { why_not })
+                })
             }
             Request::Impact { target } => match self.resolve_plain(id.principal, &target, db) {
                 Ok((l, _)) if !db.authorizes(id.principal, l) => Response::Unavailable {
@@ -1991,16 +2083,24 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 harness_version,
                 strict,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.check_gated(
-                    b,
-                    cert_id,
-                    live_pos.into_iter().collect(),
-                    action,
-                    mode,
-                    harness_version,
-                    strict,
-                    &snap,
-                ),
+                Ok(b) => {
+                    // The hook gate has its own deadline (ADR 0019 §3.7).
+                    let wait = match mode {
+                        Some(_) => GATE_SETTLE,
+                        None => self.actor.read_settle,
+                    };
+                    let snap = self.settle_session(snap, &b, cert_id, wait);
+                    self.check_gated(
+                        b,
+                        cert_id,
+                        live_pos.into_iter().collect(),
+                        action,
+                        mode,
+                        harness_version,
+                        strict,
+                        &snap,
+                    )
+                }
                 Err(r) => r,
             },
             Request::HandoffBegin {
@@ -2009,34 +2109,43 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 to_agent,
                 to,
             } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.handoff_begin(b, summary, to_agent, to, &snap),
+                Ok(b) => {
+                    let snap = self.settle_session(snap, &b, None, self.actor.read_settle);
+                    self.handoff_begin(b, summary, to_agent, to, &snap)
+                }
                 Err(r) => r,
             },
             Request::HandoffAccept { binding, id: h } => match self.bind(id, &binding, &snap) {
-                Ok(b) => self.handoff_accept(b, h, &snap),
+                Ok(b) => self.handoff_accept(b, h, snap),
                 Err(r) => r,
             },
             // Handled by `handle`, which pins no snapshot while it waits.
             Request::Changes { .. } => err("InvalidArgument", "ctx_changes cannot be nested"),
+            // At the frontier's epoch a diff needs every node settled.
             Request::Diff { from, to } => {
-                let result = if from.min(to) >= db.initial_epoch() {
-                    db.diff(from, to)
-                } else {
-                    match snap.log.replay_kernel_to(from.max(to)) {
-                        Ok(full) => match full.branch(branch) {
-                            Some(v) => v.diff(from, to),
-                            None => Err(TxError::UnknownBranch),
-                        },
-                        Err(e) => {
-                            let (c, d) = store_code(&e);
-                            return err(&c, d);
+                let diff = |snap: &Arc<Snapshot<D>>| {
+                    let db = snap.view(branch);
+                    let result = if from.min(to) >= db.initial_epoch() {
+                        db.diff(from, to)
+                    } else {
+                        match snap.log.replay_kernel_to(from.max(to)) {
+                            Ok(full) => match full.branch(branch) {
+                                Some(v) => v.diff(from, to),
+                                None => Err(TxError::UnknownBranch),
+                            },
+                            Err(e) => {
+                                let (c, d) = store_code(&e);
+                                return (err(&c, d), None);
+                            }
                         }
+                    };
+                    match result {
+                        Ok(diff) => (Response::Diff { diff }, None),
+                        Err(e @ TxError::Unsettled) => (read_err(&e, snap), need_all(snap)),
+                        Err(e) => (read_err(&e, snap), None),
                     }
                 };
-                match result {
-                    Ok(diff) => Response::Diff { diff },
-                    Err(e) => err(&code(&e), format!("{e:?}")),
-                }
+                self.pulled(snap, self.actor.read_settle, diff).1
             }
             Request::AnchorState { scope, branch } => {
                 self.anchor_state(id, &scope, branch.as_deref(), &snap)
@@ -2046,14 +2155,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
                 paths,
                 expected_head,
                 expected_position,
-            } => self.check_anchors(
-                id,
-                &scope,
-                &paths,
-                &expected_head,
-                &expected_position,
-                &snap,
-            ),
+            } => {
+                let check = |snap: &Arc<Snapshot<D>>| {
+                    self.check_anchors(id, &scope, &paths, &expected_head, &expected_position, snap)
+                };
+                self.pulled(snap, GATE_SETTLE, check).1
+            }
             Request::OnBranch { branch, request } => {
                 let on = match branch {
                     BranchSel::Named(name) => match snap.kernel.branch_by_name(&name) {
@@ -2834,6 +2941,101 @@ impl<D: Durability + Clone + 'static> Service<D> {
             }
         }
     }
+    /// The pull (ADR 0019 §3.7), the one way a read waits for settlement.
+    /// `read` answers on a snapshot and names what it still needs. While it
+    /// needs something and `wait` allows, the snapshot is dropped, the
+    /// actor is asked to settle that far, and `read` runs again on the next
+    /// publication. Returns the last snapshot with its answer: settled, or
+    /// the read's fallback once the wait is spent or the queue is full. A
+    /// zero `wait` (advisory reads) only sends the request.
+    fn pulled<T>(
+        &self,
+        snap: Arc<Snapshot<D>>,
+        wait: Duration,
+        mut read: impl FnMut(&Arc<Snapshot<D>>) -> (T, Option<Need>),
+    ) -> (Arc<Snapshot<D>>, T) {
+        let deadline = Instant::now() + wait;
+        let (mut snap, mut asked, mut out) = (snap, false, false);
+        loop {
+            let (answer, need) = read(&snap);
+            let Some(Need { epoch, through }) = need else {
+                return (snap, answer);
+            };
+            let left = deadline.saturating_duration_since(Instant::now());
+            if out || left.is_zero() {
+                if !asked {
+                    let _ = self.actor.submit(Message::Settle { epoch, through });
+                }
+                return (snap, answer);
+            }
+            let generation = snap.generation;
+            drop(snap);
+            asked = true;
+            out = !self.actor.pull(epoch, through, generation, left);
+            snap = self.actor.snapshot();
+        }
+    }
+    /// WHY / WHY_NOT of `target` on `branch` (ADR 0019 §3.6): they need its
+    /// closure settled, so they pull through its rank; `Settling` when the
+    /// wait runs out.
+    fn explain(
+        &self,
+        id: Identity,
+        target: &Target,
+        branch: BranchId,
+        snap: Arc<Snapshot<D>>,
+        answer: impl Fn(&BranchView<'_>, RevisionId) -> Result<Response, TxError>,
+    ) -> Response {
+        let read = |snap: &Arc<Snapshot<D>>| {
+            let db = &snap.view(branch);
+            match self.resolve_plain(id.principal, target, db) {
+                Ok((l, _)) if !db.authorizes(id.principal, l) => (
+                    Response::Unavailable {
+                        target: target_text(target),
+                    },
+                    None,
+                ),
+                Ok((_, r)) => match answer(db, r) {
+                    Ok(response) => (response, None),
+                    Err(e @ TxError::Unsettled) => (read_err(&e, snap), need(snap, branch, [r])),
+                    Err(e) => (read_err(&e, snap), None),
+                },
+                Err(response) => (response, None),
+            }
+        };
+        self.pulled(snap, self.actor.read_settle, read).1
+    }
+    /// How long a read in `mode` waits for its pull: a certified read up
+    /// to `read_settle_ms`; an advisory one only asks (ADR 0019 §3.7).
+    fn read_wait(&self, mode: Mode) -> Duration {
+        match mode {
+            Mode::Certified => self.actor.read_settle,
+            Mode::Advisory => Duration::ZERO,
+        }
+    }
+    /// Settles what a session's check validates and re-issues: the heads
+    /// of its agent's ledger, its session certificate and `cert_id`'s.
+    fn settle_session(
+        &self,
+        snap: Arc<Snapshot<D>>,
+        (_, s, agent, _): &Bound,
+        cert_id: Option<ContentHash>,
+        wait: Duration,
+    ) -> Arc<Snapshot<D>> {
+        let (branch, logicals) = {
+            let s = s.lock().expect("session");
+            let certs = (s.agents.get(agent).and_then(|a| a.session_cert.as_ref()))
+                .into_iter()
+                .chain(s.certs.iter().filter(|c| Some(c.cert_id) == cert_id));
+            let logicals: BTreeSet<LogicalId> = (s.view_with_agents(agent).into_keys())
+                .chain(certs.flat_map(|c| c.entries.iter().map(|e| e.logical)))
+                .collect();
+            (s.branch, logicals)
+        };
+        let need =
+            |snap: &Arc<Snapshot<D>>| ((), need_heads(snap, branch, logicals.iter().copied()));
+        self.pulled(snap, wait, need).0
+    }
     fn checksum(&self, epoch: Epoch) -> Result<ContentHash, Response> {
         self.actor.snapshot().log.checksum_at(epoch).map_err(|e| {
             let (c, d) = store_code(&e);
@@ -3212,10 +3414,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let e = cert.entries.get(index).filter(|e| e.required)?;
         Some((e.logical, e.rev, cert.cert_id))
     }
+    /// A recall's items on one snapshot, before anything is recorded.
     #[allow(clippy::too_many_arguments)]
-    fn recall(
+    fn recall_found(
         &self,
-        (session, s, agent, _): Bound,
+        branch: BranchId,
+        principal: PrincipalId,
         channel: Channel,
         query: &str,
         scope: &str,
@@ -3223,13 +3427,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         mode: Mode,
         limit: usize,
         snap: &Arc<Snapshot<D>>,
-    ) -> Response {
-        let limit_clamped = limit > MAX_RECALL;
-        let limit = limit.clamp(1, MAX_RECALL);
-        let (branch, principal) = {
-            let s = s.lock().expect("session");
-            (s.branch, s.principal)
-        };
+    ) -> RecallFound {
         let db = &snap.view(branch);
         let live = self.anchor_live(db);
         let mut elig = Eligibility {
@@ -3359,7 +3557,6 @@ impl<D: Durability + Clone + 'static> Service<D> {
             .filter_map(|l| decided.remove(&l).flatten())
             .take(limit)
             .collect();
-        (self.recall_items).fetch_add(items.len() as u64, Ordering::Relaxed);
         // Packing (ADR 0016 §5.2). Without a level or a budget the
         // response keeps the header-only shape.
         let (mut omitted, mut estimate) = (0, None);
@@ -3376,6 +3573,53 @@ impl<D: Durability + Clone + 'static> Service<D> {
             omitted = left_out as u32;
             estimate = opts.budget_tokens.map(|_| packing::ESTIMATE.to_string());
         }
+        RecallFound {
+            items,
+            withheld,
+            omitted,
+            estimate,
+            live,
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn recall(
+        &self,
+        (session, s, agent, _): Bound,
+        channel: Channel,
+        query: &str,
+        scope: &str,
+        opts: &RecallOpts,
+        mode: Mode,
+        limit: usize,
+        snap: Arc<Snapshot<D>>,
+    ) -> Response {
+        let limit_clamped = limit > MAX_RECALL;
+        let limit = limit.clamp(1, MAX_RECALL);
+        let (branch, principal) = {
+            let s = s.lock().expect("session");
+            (s.branch, s.principal)
+        };
+        // Certified items pull for their heads; advisory ones only ask
+        // (ADR 0019 §3.6, §3.7).
+        let find = |snap: &Arc<Snapshot<D>>| {
+            let found = self.recall_found(
+                branch, principal, channel, query, scope, opts, mode, limit, snap,
+            );
+            let revs = (found.items.iter()).chain(&found.withheld).map(|i| i.rev);
+            let need = need(snap, branch, revs);
+            (found, need)
+        };
+        let (snap, found) = self.pulled(snap, self.read_wait(mode), find);
+        let RecallFound {
+            mut items,
+            withheld,
+            omitted,
+            estimate,
+            live,
+        } = found;
+        let snap = &snap;
+        let db = &snap.view(branch);
+        (self.recall_items).fetch_add(items.len() as u64, Ordering::Relaxed);
         let mut s = s.lock().expect("session");
         let required = mode == Mode::Certified;
         let mut events = Vec::new();
@@ -3554,33 +3798,44 @@ impl<D: Durability + Clone + 'static> Service<D> {
         target: &Target,
         mode: Mode,
         level: Option<levels::Level>,
-        snap: &Arc<Snapshot<D>>,
+        snap: Arc<Snapshot<D>>,
     ) -> Response {
         let level = level.unwrap_or(levels::Level::Full);
-        let db = &snap.view(s.lock().expect("session").branch);
-        let resolved = match target {
-            Target::Handle(h) => {
-                let s = s.lock().expect("session");
-                match self.resolve_handle(&s, h) {
-                    Some((l, r, _)) => Ok((l, r)),
-                    None => Err(err(
-                        "InvalidDep",
-                        "handle is not in a certificate of this session",
-                    )),
-                }
-            }
-            other => {
-                let principal = s.lock().expect("session").principal;
-                self.resolve_plain(principal, other, db)
-            }
+        let (branch, principal) = {
+            let s = s.lock().expect("session");
+            (s.branch, s.principal)
         };
+        // The target's head settled first: a certified read pulls, an
+        // advisory one only asks (ADR 0019 §3.6, §3.7).
+        let resolve = |snap: &Arc<Snapshot<D>>| {
+            let db = &snap.view(branch);
+            let resolved = match target {
+                Target::Handle(h) => {
+                    let s = s.lock().expect("session");
+                    match self.resolve_handle(&s, h) {
+                        Some((l, r, _)) => Ok((l, r)),
+                        None => Err(err(
+                            "InvalidDep",
+                            "handle is not in a certificate of this session",
+                        )),
+                    }
+                }
+                other => self.resolve_plain(principal, other, db),
+            };
+            let need = (resolved.as_ref().ok())
+                .filter(|(l, _)| db.authorizes(principal, *l))
+                .and_then(|(_, r)| need(snap, branch, [*r]));
+            (resolved, need)
+        };
+        let (snap, resolved) = self.pulled(snap, self.read_wait(mode), resolve);
+        let snap = &snap;
+        let db = &snap.view(branch);
         let (l, r) = match resolved {
             Ok(v) => v,
             Err(resp) => return resp,
         };
         // A hidden logical: the target echoed, no item, no ledger entry,
         // no certificate (ADR 0017 §5.2).
-        let principal = s.lock().expect("session").principal;
         if !db.authorizes(principal, l) {
             return Response::Unavailable {
                 target: target_text(target),

@@ -74,6 +74,9 @@ pub enum MirrorError {
     Readable { git_dir: String, mode: u32 },
     /// Git or the cache failed.
     Failed(String),
+    /// The snapshot still has a pending commit's maintenance (ADR 0019
+    /// §3.6): a tree is rendered only from a settled one.
+    Settling(Epoch),
 }
 impl MirrorError {
     pub fn code(&self) -> &'static str {
@@ -83,6 +86,7 @@ impl MirrorError {
             Self::Raced { .. } => "MirrorRaced",
             Self::Readable { .. } => "MirrorReadable",
             Self::Failed(_) => "MirrorFailed",
+            Self::Settling(_) => "Settling",
         }
     }
     pub fn detail(&self) -> String {
@@ -107,6 +111,7 @@ impl MirrorError {
                  exported body; restrict it (chmod go-rwx) or pass --readable-ok"
             ),
             Self::Failed(m) => m.clone(),
+            Self::Settling(e) => crate::service::settling_detail(*e),
         }
     }
 }
@@ -956,6 +961,9 @@ impl<'a, D: Durability> Mirror<'a, D> {
     /// The branch rendered at the snapshot.
     pub fn render_now(&mut self, branch: BranchId) -> Result<Rendered> {
         let snap = self.snap;
+        if let Some((_, e)) = snap.kernel.frontier() {
+            return Err(MirrorError::Settling(e));
+        }
         let epochs = self.epochs()?.clone();
         let view = snap
             .kernel

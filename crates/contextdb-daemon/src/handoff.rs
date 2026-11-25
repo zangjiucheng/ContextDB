@@ -218,7 +218,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
         &self,
         (session, s, agent, _): Bound,
         id: Option<[u8; 16]>,
-        snap: &Arc<Snapshot<D>>,
+        snap: Arc<Snapshot<D>>,
     ) -> Response {
         if let Some(r) = self.handoff_unavailable() {
             return r;
@@ -351,7 +351,11 @@ impl<D: Durability + Clone + 'static> Service<D> {
             x.dropped,
         );
         drop(h);
-        // The handoff certificate's verdict now, as `ctx_check{cert_id}`.
+        // The handoff certificate's verdict now, as `ctx_check{cert_id}`:
+        // its heads pulled first (ADR 0019 §3.7).
+        let logicals: Vec<LogicalId> = cert.entries.iter().map(|e| e.logical).collect();
+        let heads = |snap: &Arc<Snapshot<D>>| ((), need_heads(snap, branch, logicals.iter().copied()));
+        let snap = &self.pulled(snap, self.actor.read_settle, heads).0;
         let db = &snap.view(branch);
         let live = self.anchor_live(db);
         let link = match (self.checksum(cert.issued_epoch), self.checksum(snap.epoch)) {

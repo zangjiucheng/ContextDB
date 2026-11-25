@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **P11 milestone 3: ctxd runs lazy maintenance** (on by default; `<data>/ctxd.toml` `[maintenance] lazy = false` turns it off).
+  - A large cascade is acknowledged after the budget, with `settling: true`, and finishes while ctxd is idle or when a read needs it.
+  - Reads that need an unsettled record wait up to `read_settle_ms` (50 ms by default) for it to settle. They then answer exactly as eager maintenance would, or fail closed: PENDING(StructuralUnknown) for certified reads, `Settling{epoch}` for WHY, DIFF and mirror export.
+  - **Upgrade note:** IPC protocol 9. Install all binaries together and restart ctxd and the agent sessions.
 - **P11 milestone 2: the store side of lazy maintenance.** Off by default; ctxd does not enable it yet.
   - op_log format 7 marks a commit acknowledged before its maintenance finished (`settling`) and stores exactly that acknowledgement. Existing format-6 segments are kept as they are, with their checksums.
   - The first commit after the upgrade starts a format-7 segment, so an older binary refuses the store instead of misreading it.

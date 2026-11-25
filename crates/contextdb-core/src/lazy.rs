@@ -277,6 +277,11 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             None
         }
     }
+    /// `r`'s rank in the topological order, which a pull settles through
+    /// (ADR 0019 §3.7); `None` for an unknown revision.
+    pub fn rank(&self, r: RevisionId) -> Option<usize> {
+        (r.index() < self.revisions.len()).then(|| self.pk.rank(&CycleNode::Revision(r)))
+    }
     /// `settled(r)` (ADR 0019 §3.4): nothing the frontier can still change
     /// reaches `r`. True below the cursor; otherwise a backward search over
     /// the topology's in-edges, through nodes at or above the cursor, must

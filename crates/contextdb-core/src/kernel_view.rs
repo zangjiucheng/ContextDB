@@ -259,6 +259,23 @@ impl<'a, M: Maintainer, S: StatsSink> BranchView<'a, M, S> {
     pub fn revision_content(&self, r: RevisionId) -> Result<ContentHash, TxError> {
         self.b.db.revision_content(self.lr(r)?)
     }
+
+    // Lazy maintenance (ADR 0019 §3.4, §3.7): what a pull asks for.
+    /// Whether nothing the branch's frontier can still change reaches `r`;
+    /// true for a revision the branch does not know.
+    pub fn settled(&self, r: RevisionId) -> bool {
+        self.lr(r).ok().is_none_or(|l| self.b.db.settled(l))
+    }
+    /// `r`'s rank in the branch database's topological order.
+    pub fn rank(&self, r: RevisionId) -> Option<usize> {
+        self.b.db.rank(self.lr(r).ok()?)
+    }
+    pub fn cursor(&self) -> Option<usize> {
+        self.b.db.cursor()
+    }
+    pub fn frontier_epoch(&self) -> Option<Epoch> {
+        self.b.db.frontier_epoch()
+    }
     pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
         self.b.db.is_base(self.lr(r)?)
     }
