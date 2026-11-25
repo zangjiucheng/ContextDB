@@ -56,6 +56,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<R, TxError>,
     ) -> Result<R, TxError> {
+        self.refuse_unsettled()?;
         // A materialized snapshot is set aside rather than patched.
         let derived = std::mem::take(&mut self.derived);
         let (epoch, stats, history) = (self.epoch, self.stats.clone(), self.history.len());

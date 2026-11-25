@@ -300,6 +300,11 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
         blobs: &dyn BlobPresence,
         publish: bool,
     ) -> Result<(CommitResult, Option<MergeReport>), TxError> {
+        // I-L1 (ADR 0019 §3.5): every op kind, merges and forks included, so
+        // no branch ever shares a frontier and ranks never move under one.
+        for branch in &self.branches {
+            branch.db.refuse_unsettled()?;
+        }
         // Batch level, in the §6.2 P6 order.
         let branch = self
             .branches
@@ -570,6 +575,7 @@ impl<M: Maintainer, S: StatsSink> Kernel<M, S> {
             shredded: Some(shredded),
             reserved: true,
             mirror: Some(&lookup),
+            lazy: None,
         };
         // Which global ids a batch's staged objects receive is known only
         // after staging, since a staged object may be an import. A batch

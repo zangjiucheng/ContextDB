@@ -535,6 +535,12 @@ impl<'a, T> Row<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    pub fn get(&self, n: usize) -> Option<&'a T> {
+        match self.base.get(n) {
+            Some(x) => Some(x),
+            None => self.extra.get(n - self.base.len()),
+        }
+    }
     pub fn first(&self) -> Option<&'a T> {
         self.base.first().or(self.extra.first())
     }

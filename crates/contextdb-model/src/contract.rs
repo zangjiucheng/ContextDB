@@ -591,6 +591,10 @@ pub enum TxError {
     /// A commit on, or archive of, a branch another principal created
     /// (ADR 0017 §6.2 rule 6).
     BranchOfAnotherPrincipal,
+    /// P11: a batch or dry run reached a kernel whose maintenance frontier
+    /// is not drained (ADR 0019 §3.5, I-L1). The store drains before every
+    /// kernel entry, so this is a caller bug; debug builds panic instead.
+    Unsettled,
 }
 /// What a write needs on a logical (ADR 0017 §6.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

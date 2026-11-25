@@ -92,7 +92,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 .collect(),
             ..Allocations::default()
         };
-        let result = self.publish(parts, pk_mark, allocations, epoch, stats);
+        let result = self.publish(parts, pk_mark, allocations, epoch, stats, None);
         self.anchor_unobserved.extend(&plan.unobserved);
         Ok(result)
     }

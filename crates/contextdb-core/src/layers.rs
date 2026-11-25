@@ -190,7 +190,7 @@ impl LayerColumns {
         resize(&mut self.conflicted, n, false);
     }
     /// Marks an incidence for re-evaluation; returns its conclusion when newly marked.
-    fn mark_incidence(
+    pub(crate) fn mark_incidence(
         &mut self,
         i: &impl InputView,
         index: &Indexes,
@@ -249,55 +249,70 @@ impl LayerColumns {
         }
         out
     }
-    /// Re-evaluates the dirty incidences and rules concluding `r`, then `r`'s
-    /// node columns. Premises and Sem heads rank below `r`, so they are final.
-    pub(crate) fn refresh(
+    pub(crate) fn take_pending_inc(&mut self, r: RevisionId) -> Vec<IncId> {
+        self.pending_inc.remove(&r).unwrap_or_default()
+    }
+    pub(crate) fn take_pending_rule(&mut self, r: RevisionId) -> Vec<RuleId> {
+        self.pending_rule.remove(&r).unwrap_or_default()
+    }
+    /// Re-evaluates one dirty incidence of the popped node. Premises and Sem
+    /// heads rank below it, so they are final (P-1). Adds a unit per item
+    /// and per rule newly marked.
+    pub(crate) fn drain_incidence(
+        &mut self,
+        i: &impl InputView,
+        index: &Indexes,
+        id: IncId,
+        units: &mut u64,
+    ) {
+        *units += 1;
+        self.dirty_inc[id.index()] = false;
+        let j = index.inc_rule[id.index()];
+        let p = index.incidence(i, id.index());
+        let old = self.lit[id.index()];
+        let mut now = 0;
+        for level in 0..2 {
+            if self.literal(i, p, level) {
+                now |= 1 << level;
+            }
+        }
+        if now != old {
+            self.lit[id.index()] = now;
+            for level in 0..2 {
+                let (was, is) = (old >> level & 1 == 1, now >> level & 1 == 1);
+                if was != is {
+                    let u = &mut self.unsat[j.index()][level];
+                    *u = if is {
+                        u.checked_sub(1).expect("layer unsat underflow")
+                    } else {
+                        u.checked_add(1).expect("layer unsat overflow")
+                    };
+                }
+            }
+            if self.mark_rule(i, j).is_some() {
+                *units += 1;
+            }
+        }
+    }
+    /// Re-evaluates one dirty rule of the popped node.
+    pub(crate) fn drain_rule(&mut self, i: &impl InputView, j: RuleId, units: &mut u64) {
+        *units += 1;
+        self.dirty_rule[j.index()] = false;
+        let sem = semantic(i, j);
+        self.sem[j.index()] = sem;
+        for level in 0..2 {
+            self.active[j.index()][level] =
+                i.fires(j) && gate(sem, level) && self.unsat[j.index()][level] == 0;
+        }
+    }
+    /// Node columns of `r` from its rules' columns.
+    pub(crate) fn node(
         &mut self,
         i: &impl InputView,
         c: &CountingState,
         index: &Indexes,
         r: RevisionId,
     ) {
-        for id in self.pending_inc.remove(&r).unwrap_or_default() {
-            self.dirty_inc[id.index()] = false;
-            let j = index.inc_rule[id.index()];
-            let p = index.incidence(i, id.index());
-            let old = self.lit[id.index()];
-            let mut now = 0;
-            for level in 0..2 {
-                if self.literal(i, p, level) {
-                    now |= 1 << level;
-                }
-            }
-            if now != old {
-                self.lit[id.index()] = now;
-                for level in 0..2 {
-                    let (was, is) = (old >> level & 1 == 1, now >> level & 1 == 1);
-                    if was != is {
-                        let u = &mut self.unsat[j.index()][level];
-                        *u = if is {
-                            u.checked_sub(1).expect("layer unsat underflow")
-                        } else {
-                            u.checked_add(1).expect("layer unsat overflow")
-                        };
-                    }
-                }
-                self.mark_rule(i, j);
-            }
-        }
-        for j in self.pending_rule.remove(&r).unwrap_or_default() {
-            self.dirty_rule[j.index()] = false;
-            let sem = semantic(i, j);
-            self.sem[j.index()] = sem;
-            for level in 0..2 {
-                self.active[j.index()][level] =
-                    i.fires(j) && gate(sem, level) && self.unsat[j.index()][level] == 0;
-            }
-        }
-        self.node(i, c, index, r);
-    }
-    /// Node columns of `r` from its rules' columns.
-    fn node(&mut self, i: &impl InputView, c: &CountingState, index: &Indexes, r: RevisionId) {
         let n = r.index();
         let base = i.base(r);
         let conflicted = index.conflicted(r);
@@ -358,27 +373,6 @@ impl LayerColumns {
         } else {
             self.reason[p.premise.index()].clone()
         }
-    }
-    /// After `r` is popped: marks downstream incidences when `r`'s truth or
-    /// stale reason changed (reason-only changes still propagate, ADR 0008 §7).
-    /// Returns the conclusions to push.
-    pub(crate) fn propagate(
-        &mut self,
-        i: &impl InputView,
-        index: &Indexes,
-        r: RevisionId,
-    ) -> Vec<RevisionId> {
-        let mut out = Vec::new();
-        for id in index.rules_by_premise.row(r.index()) {
-            out.extend(self.mark_incidence(i, index, *id));
-        }
-        let logical = i.revision_logical(r);
-        if i.head(logical) == r {
-            for id in index.sem_by_logical.row(logical.index()) {
-                out.extend(self.mark_incidence(i, index, *id));
-            }
-        }
-        out
     }
     /// The node's full published state.
     pub(crate) fn node_state(

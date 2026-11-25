@@ -4,6 +4,7 @@ mod full;
 use crate::{Indexes, PearceKelly, StatsSink};
 use contextdb_model::*;
 pub use counting::Counting;
+pub(crate) use counting::Pass;
 pub use full::FullRecompute;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,6 +62,16 @@ pub trait Maintainer: Clone + std::fmt::Debug + Default + Send + Sync {
         stats: &mut S,
     ) -> Maintenance;
     fn state(&self) -> &CountingState;
+    /// The incremental maintainer, whose pass the interleaved driver steps
+    /// through (ADR 0019 §3.1); `None` for a mode that recomputes.
+    fn counting(&mut self) -> Option<&mut Counting> {
+        None
+    }
+    /// Whether `r` waits in the counting heap (a frontier member at or
+    /// above the cursor, ADR 0019 §3.4).
+    fn is_queued(&self, _: RevisionId) -> bool {
+        false
+    }
     fn retained_bytes(&self) -> usize;
     /// Starts journalling what the next [`Self::update`] writes (WHAT_IF,
     /// ADR 0013 §5).

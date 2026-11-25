@@ -48,7 +48,7 @@ fn t05_t30_locality_and_no_downstream_visit_after_alternative_insert() {
     .unwrap();
     assert_eq!(db.stats().popped_nodes, vec![RevisionId(0), RevisionId(1)]);
     assert_eq!(db.stats().incidences_visited, 1);
-    assert!(db.current_l0(LogicalId(3)).unwrap().1);
+    assert_eq!(db.current_l0(LogicalId(3)).unwrap().1, Some(true));
 }
 
 #[test]

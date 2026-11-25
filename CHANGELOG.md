@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **P11 milestone 1: lazy maintenance in the core.** Not yet used by `ctxd`.
+  - Counting and the status walk now run as one pass, interleaved by rank. The pass can stop after a work budget, leaving a frontier for `Db::drain`. Once drained, results match eager maintenance exactly.
+  - While a frontier exists, an unsettled node reads `PENDING(StructuralUnknown)`.
+  - Commits, dry runs and `Kernel::run` refuse a store with an undrained frontier (`TxError::Unsettled`).
+  - The default budget is 1,000,000 units, about 43–48 ms for a 1M-revision cascade on the baseline machine.
+  - Tested by PROP1-lazy at 10,000 seeds ([gate](docs/gates/P11.md)).
+
 - **Docs: team exchange day to day.** The reference now says which git commands sync a team (a fetch or pull from the team's remote imports; a push to it, by name, publishes; other remotes, bare URLs and dry runs do neither) and that `ctx team sync` and `lag_check` only re-read refs already fetched.
 
 ## 0.4.2 — 2026-11-24

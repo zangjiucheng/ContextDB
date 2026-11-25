@@ -27,6 +27,8 @@ pub fn summarize(d: &Dimensions) -> Summary {
 pub use memory::MemoryFootprint;
 pub mod engine;
 mod layers;
+mod lazy;
+pub use lazy::{Budget, CHUNK, Drain, LAZY_BUDGET, SEARCH, Settled};
 mod query;
 pub use query::Proof;
 use std::sync::OnceLock;
@@ -87,6 +89,9 @@ pub struct CommitContext<'a> {
     /// Receives the revisions and rules the batch staged, in staging order,
     /// whether it commits or fails: the kernel gives them global ids.
     pub staged: Option<&'a std::cell::RefCell<Staged>>,
+    /// Cascade-bounded maintenance (ADR 0019 §3): stop after this budget
+    /// and leave the rest as the frontier. `None` runs to the end.
+    pub lazy: Option<Budget>,
 }
 /// The objects a batch staged that the kernel may map to existing global
 /// objects (cross-branch dedup, SPEC §6.1 contract 5 and ADR 0013 §11a).
@@ -125,6 +130,8 @@ pub struct Db<M: Maintainer = Counting, S: StatsSink = NoStats> {
     /// yet seen (ADR 0013 §6.2, SD14b): they read `PENDING(ObservationLag)`
     /// until a watermark for their scope commits here.
     anchor_unobserved: std::collections::BTreeSet<LogicalId>,
+    /// The pending rest of the last commit's maintenance (ADR 0019 §3.3).
+    frontier: Option<Box<lazy::Frontier<S>>>,
     #[cfg(feature = "timing")]
     timing: Option<CommitTiming>,
 }
@@ -141,6 +148,7 @@ pub struct RuleSemantic {
 }
 impl<M: Maintainer, S: StatsSink> DerivedView for Db<M, S> {
     fn derived(&self) -> &DerivedSnapshot {
+        crate::invariant_assert!(self.frontier.is_none(), "whole-state read with a frontier");
         self.derived.get_or_init(|| self.snapshot())
     }
 }
@@ -168,6 +176,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             initial_epoch: Epoch(0),
             journal: None,
             anchor_unobserved: Default::default(),
+            frontier: None,
             #[cfg(feature = "timing")]
             timing: None,
         }
@@ -271,6 +280,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         self.pk.diagnostic_order()
     }
     pub fn digest(&self) -> ContentHash {
+        crate::invariant_assert!(self.frontier.is_none(), "whole-state read with a frontier");
         let mut h = blake3::Hasher::new();
         h.update(&self.inputs().canonical_bytes());
         h.update(&self.derived().canonical_bytes());
@@ -285,6 +295,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         *h.finalize().as_bytes()
     }
     pub fn derived_digest(&self) -> ContentHash {
+        crate::invariant_assert!(self.frontier.is_none(), "whole-state read with a frontier");
         *blake3::hash(&self.derived().canonical_bytes()).as_bytes()
     }
     fn view(&self) -> view::StoredView<'_> {
@@ -295,9 +306,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             rules: &self.rules,
         }
     }
+    /// A node's derived state: the one override point for reads while a
+    /// frontier exists (ADR 0019 §3.6), where an unsettled node reads as
+    /// [`Self::withheld`].
     pub fn node(&self, r: RevisionId) -> Result<NodeState, TxError> {
         if r.index() >= self.revisions.len() {
             return Err(TxError::UnknownRef);
+        }
+        if !self.settled(r) {
+            return Ok(self.withheld(r));
         }
         Ok(self
             .layers
@@ -344,6 +361,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     /// mismatching revision. The graph is acyclic, so each node is checked
     /// against its own premises.
     pub fn verify_counting_sample(&self, sample: &[RevisionId]) -> Result<(), RevisionId> {
+        crate::invariant_assert!(self.frontier.is_none(), "whole-state read with a frontier");
         let view = self.view();
         let c = self.maintainer.state();
         for r in sample {
@@ -556,21 +574,36 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             .then(|| self.revisions.content(r))
             .ok_or(TxError::UnknownRef)
     }
-    pub fn current_l0(&self, l: LogicalId) -> Result<(RevisionId, bool), TxError> {
+    /// The head and its L0, or `None` while it is unsettled (ADR 0019
+    /// §3.6): callers treat that as not CURRENT.
+    pub fn current_l0(&self, l: LogicalId) -> Result<(RevisionId, Option<bool>), TxError> {
         let r = *self
             .tables
             .heads
             .get(l.index())
             .ok_or(TxError::UnknownRef)?;
-        Ok((r, self.maintainer.state().s[r.index()]))
+        let l0 = self
+            .settled(r)
+            .then(|| self.maintainer.state().s[r.index()]);
+        Ok((r, l0))
+    }
+    /// WHY / WHY_NOT need settled state for every node they touch; the
+    /// closure upstream of a settled node is settled (ADR 0019 §3.4).
+    fn settled_read(&self, r: RevisionId) -> Result<(), TxError> {
+        if r.index() < self.revisions.len() && !self.settled(r) {
+            return Err(TxError::Unsettled);
+        }
+        Ok(())
     }
     pub fn status(&self, r: RevisionId) -> Result<Summary, TxError> {
         Ok(contextdb_oracle::summarize(&self.node(r)?.dimensions))
     }
     pub fn why(&self, r: RevisionId) -> Result<Explanation, TxError> {
+        self.settled_read(r)?;
         query::why(&self.view(), self.maintainer.state(), &self.indexes, r)
     }
     pub fn why_depth(&self, r: RevisionId, depth: usize) -> Result<Proof, TxError> {
+        self.settled_read(r)?;
         query::proof(
             &self.view(),
             self.maintainer.state(),
@@ -580,6 +613,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         )
     }
     pub fn why_not(&self, r: RevisionId, depth: usize) -> Result<WhyNot, TxError> {
+        self.settled_read(r)?;
         query::why_not(
             &self.view(),
             self.maintainer.state(),
@@ -595,6 +629,19 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     }
     pub fn commit(&mut self, b: &Batch) -> Result<CommitResult, TxError> {
         self.commit_with(b, &AllPresent)
+    }
+    /// A commit whose maintenance stops after `budget` (ADR 0019 §3). With a
+    /// frontier left, the result's `l0_flips` and `status_diff` are empty
+    /// and [`Self::drain`] reports them.
+    pub fn commit_lazy(&mut self, b: &Batch, budget: Budget) -> Result<CommitResult, TxError> {
+        self.commit_in(
+            b,
+            &AllPresent,
+            &CommitContext {
+                lazy: Some(budget),
+                ..CommitContext::default()
+            },
+        )
     }
     /// Commit with payload availability for `MissingBlob` (P2 store; replay uses AllPresent).
     pub fn commit_with(
@@ -628,6 +675,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         blobs: &dyn BlobPresence,
         ctx: &CommitContext<'_>,
     ) -> Result<CommitResult, TxError> {
+        self.refuse_unsettled()?;
         if b.branch != MAIN && !ctx.kernel {
             return Err(TxError::UnknownRef);
         }
@@ -652,7 +700,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             if let Some(staged) = ctx.staged {
                 *staged.borrow_mut() = Staged::default();
             }
-            return self.commit_mutable(b, next);
+            return self.commit_mutable(b, next, ctx.lazy);
         }
         self.commit_structural(b, blobs, next, ctx)
     }
@@ -722,7 +770,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                 return Err(error);
             }
         };
-        Ok(self.publish(parts, pk_mark, allocations, epoch, stats))
+        Ok(self.publish(parts, pk_mark, allocations, epoch, stats, ctx.lazy))
     }
     /// Publishes a validated stage (ADR 0007): append, apply overrides while
     /// recording pre-states, then maintenance and the status walk.
@@ -733,6 +781,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         allocations: Allocations,
         epoch: Epoch,
         stats: S,
+        lazy: Option<Budget>,
     ) -> CommitResult {
         let stage::Parts {
             attached: _,
@@ -918,9 +967,15 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             old_revisions,
             epoch,
             stats,
+            lazy,
         )
     }
-    fn commit_mutable(&mut self, b: &Batch, epoch: Epoch) -> Result<CommitResult, TxError> {
+    fn commit_mutable(
+        &mut self,
+        b: &Batch,
+        epoch: Epoch,
+        lazy: Option<Budget>,
+    ) -> Result<CommitResult, TxError> {
         let undo = fast::Undo::stage(
             &mut self.tables,
             &self.logicals,
@@ -940,100 +995,17 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             old_revisions,
             epoch,
             S::default(),
+            lazy,
         ))
     }
-    /// Counting mode: the rank-ordered status walker. Each popped node first
-    /// gets its pre-state from the unchanged columns, then its dirty rules and
-    /// incidences are re-evaluated (SPEC §3.4 Phase 3b). Changes in any of
-    /// L0/L1/L2 or the stale reason propagate downstream (ADR 0008 §7).
-    #[allow(clippy::too_many_arguments)]
-    fn walk(
-        &mut self,
-        undo: &fast::Undo,
-        update: &engine::Maintenance,
-        mut seeds: std::collections::BTreeSet<RevisionId>,
-        delta: &NetDelta,
-        revalidated: &[RuleId],
-        old_revisions: usize,
-        stats: &mut S,
-    ) -> (Vec<NodeChange>, Vec<RevisionId>) {
-        use std::{cmp::Reverse, collections::BinaryHeap};
-        let view = view::StoredView {
-            tables: &self.tables,
-            logicals: &self.logicals,
-            revisions: &self.revisions,
-            rules: &self.rules,
-        };
-        let before_view = fast::Before {
-            view: view::StoredView {
-                tables: &self.tables,
-                logicals: &self.logicals,
-                revisions: &self.revisions,
-                rules: &self.rules,
-            },
-            undo,
-        };
-        let state = self.maintainer.state();
-        self.layers.grow(&view, &self.indexes);
-        seeds.extend(self.layers.seed(&view, &self.indexes, delta, revalidated));
-        let mut heap = BinaryHeap::new();
-        for r in &seeds {
-            heap.push(Reverse((self.pk.rank(&CycleNode::Revision(*r)), *r)));
+    /// I-L1 (ADR 0019 §3.5): no batch or dry run enters a kernel with a
+    /// frontier. Debug builds panic; release builds refuse.
+    pub(crate) fn refuse_unsettled(&self) -> Result<(), TxError> {
+        if self.frontier.is_some() {
+            crate::invariant_assert!(false, "a kernel entry with an undrained frontier");
+            return Err(TxError::Unsettled);
         }
-        let mut changes = Vec::new();
-        let mut visited = Vec::new();
-        while let Some(Reverse((_, r))) = heap.pop() {
-            stats.record(stats::Work::Status(r));
-            visited.push(r);
-            let before = (r.index() < old_revisions).then(|| {
-                let old = update
-                    .before
-                    .get(&r)
-                    .copied()
-                    .unwrap_or_else(|| state.row(r));
-                self.layers.node_state(&before_view, r, old)
-            });
-            if let Some(journal) = &mut self.journal
-                && let Some(rows) = self.layers.footprint(&self.indexes, r, journal.layer_lens)
-            {
-                journal.layer_rows.push(rows);
-            }
-            self.layers.refresh(&view, state, &self.indexes, r);
-            let after = self.layers.node_state(&view, r, state.row(r));
-            let propagates = before.as_ref().is_none_or(|before| {
-                before.l0 != after.l0
-                    || before.l1 != after.l1
-                    || before.l2 != after.l2
-                    || before.dimensions.stale_reason != after.dimensions.stale_reason
-            });
-            if propagates {
-                for c in self.layers.propagate(&view, &self.indexes, r) {
-                    if seeds.insert(c) {
-                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
-                    }
-                }
-                // Conclusions whose incidences were already dirty still need a
-                // visit for inherited stale reasons.
-                for id in self.indexes.rules_by_premise.row(r.index()) {
-                    let c = view.conclusion(self.indexes.inc_rule[id.index()]);
-                    if seeds.insert(c) {
-                        heap.push(Reverse((self.pk.rank(&CycleNode::Revision(c)), c)));
-                    }
-                }
-            }
-            if before.as_ref() != Some(&after) {
-                changes.push(NodeChange {
-                    revision: r,
-                    before,
-                    after: Some(after),
-                });
-            }
-        }
-        #[cfg(any(debug_assertions, feature = "paranoid"))]
-        self.layers
-            .assert_matches_rebuild(&view, state, &self.indexes, &self.pk);
-        changes.sort_by_key(|c| c.revision);
-        (changes, visited)
+        Ok(())
     }
     /// FullRecompute mode: rebuild every L1/L2 column and compare every node.
     fn recompute_layers(
@@ -1084,9 +1056,11 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             })
             .collect()
     }
-    /// Shared publication tail: counting maintenance, the status walker from
-    /// net-delta seeds (revisions at or above `old_revisions` are new and have
-    /// no pre-state), snapshot patching, history and epoch.
+    /// Shared publication tail: the ChangeLog at ack, then counting
+    /// maintenance and the status walk as one interleaved pass from the
+    /// net-delta seeds (revisions at or above `old_revisions` are new and
+    /// have no pre-state), snapshot patching, history and epoch. With a
+    /// `lazy` budget the pass may stop early (ADR 0019 §3).
     #[allow(clippy::too_many_arguments)]
     fn finish(
         &mut self,
@@ -1099,94 +1073,65 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         old_revisions: usize,
         epoch: Epoch,
         mut stats: S,
+        lazy: Option<Budget>,
     ) -> CommitResult {
         let mut seeds = fast::status_seeds(&self.view(), &self.indexes, &delta);
         seeds.extend(extra);
-        let view = view::StoredView {
-            tables: &self.tables,
-            logicals: &self.logicals,
-            revisions: &self.revisions,
-            rules: &self.rules,
-        };
-        let update = self
-            .maintainer
-            .update(&view, &self.indexes, &self.pk, &delta, &mut stats);
-        // Counter/witness-only changes must be reported, even without S flips.
-        seeds.extend(update.before.keys().copied());
-        let (changes, visited) = if M::INCREMENTAL_LAYERS {
-            self.walk(
-                &undo,
-                &update,
-                seeds,
-                &delta,
-                &revalidated,
-                old_revisions,
-                &mut stats,
-            )
-        } else {
-            (
-                self.recompute_layers(&undo, &update, old_revisions),
-                Vec::new(),
-            )
-        };
-        if M::INCREMENTAL_LAYERS {
-            // Preserve an already materialized public snapshot: extend it for
-            // new revisions/rules and patch changed rows. Rebuilding is O(N).
-            if let Some(snapshot) = self.derived.get_mut() {
-                for change in &changes {
-                    let after = change.after.as_ref().expect("post-state").clone();
-                    let n = change.revision.index();
-                    if n < snapshot.nodes.len() {
-                        snapshot.nodes[n] = after;
-                    } else {
-                        crate::invariant_assert!(n == snapshot.nodes.len());
-                        snapshot.nodes.push(after);
-                    }
-                }
-                let added = delta.new_rules.len();
-                memory::grow(&mut snapshot.sat, added);
-                memory::grow(&mut snapshot.unsat, added);
-                memory::grow(&mut snapshot.active, added);
-                memory::grow(&mut snapshot.layer_active, added);
-                memory::grow(&mut snapshot.sem, added);
-                for j in delta.new_rules.iter() {
-                    crate::invariant_assert!(j.index() == snapshot.sat.len());
-                    snapshot
-                        .sat
-                        .push(vec![false; self.indexes.rule_incidences(*j).len()]);
-                    snapshot.unsat.push(0);
-                    snapshot.active.push(false);
-                    snapshot.layer_active.push([false; 2]);
-                    snapshot.sem.push(SemState::NotRequired);
-                }
-                let c = self.maintainer.state();
-                for r in &visited {
-                    for j in self.indexes.rules_by_concl.row(r.index()) {
-                        let n = j.index();
-                        snapshot.sat[n].copy_from_slice(&c.sat[self.indexes.rule_incidences(*j)]);
-                        snapshot.unsat[n] = c.unsat[n];
-                        snapshot.active[n] = c.counted[n];
-                        snapshot.layer_active[n] = self.layers.layer_active(*j);
-                        snapshot.sem[n] = self.layers.sem(*j);
-                    }
-                }
-            }
-        } else {
-            self.derived = OnceLock::new();
-        }
+        // Input-level, so recorded at ack (ADR 0019 §3.3).
         self.changes
             .record(epoch, &delta, &watermark_moves, old_revisions);
-        if let Some(journal) = &mut self.journal {
-            journal.record = Some((epoch, delta.clone(), watermark_moves, old_revisions));
-            journal.undo = Some(undo);
-        }
-        let l0_flips = update.flips;
-        let status_diff = changes.iter().map(|c| c.revision).collect();
-        self.record(epoch, changes);
         self.epoch = epoch;
-        self.stats = stats;
-        #[cfg(feature = "paranoid")]
-        assert_eq!(self.derived(), &contextdb_oracle::jacobi(&self.inputs()));
+        if !M::INCREMENTAL_LAYERS {
+            let view = view::StoredView {
+                tables: &self.tables,
+                logicals: &self.logicals,
+                revisions: &self.revisions,
+                rules: &self.rules,
+            };
+            let update = self
+                .maintainer
+                .update(&view, &self.indexes, &self.pk, &delta, &mut stats);
+            let changes = self.recompute_layers(&undo, &update, old_revisions);
+            self.derived = OnceLock::new();
+            if let Some(journal) = &mut self.journal {
+                journal.record = Some((epoch, delta.clone(), watermark_moves, old_revisions));
+                journal.undo = Some(undo);
+            }
+            let status_diff = changes.iter().map(|c| c.revision).collect();
+            self.record(epoch, changes);
+            self.stats = stats;
+            #[cfg(feature = "paranoid")]
+            assert_eq!(self.derived(), &contextdb_oracle::jacobi(&self.inputs()));
+            return CommitResult {
+                epoch,
+                allocations,
+                net_delta: delta,
+                l0_flips: update.flips,
+                status_diff,
+            };
+        }
+        // Dry runs are always eager (ADR 0019 §3.5 item 4).
+        crate::invariant_assert!(lazy.is_none() || self.journal.is_none());
+        let done = self.begin_pass(
+            undo,
+            &delta,
+            seeds,
+            &revalidated,
+            old_revisions,
+            epoch,
+            stats,
+            lazy,
+        );
+        let (l0_flips, status_diff) = match done {
+            Some(done) => {
+                if let Some(journal) = &mut self.journal {
+                    journal.record = Some((epoch, delta.clone(), watermark_moves, old_revisions));
+                    journal.undo = Some(done.undo);
+                }
+                (done.settled.l0_flips, done.settled.status_diff)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
         CommitResult {
             epoch,
             allocations,

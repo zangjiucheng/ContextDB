@@ -175,6 +175,40 @@ impl PearceKelly {
             .enumerate()
             .all(|(n, edges)| edges.iter().all(|v| self.rank[n] < self.rank[*v as usize]))
     }
+    /// Backward search from `start` over in-edges, through nodes of rank ≥
+    /// `floor` (ADR 0019 §3.4): `Some(true)` when it reaches a revision
+    /// `member` accepts (`start` included), `Some(false)` when it reaches
+    /// none, `None` when it would visit more than `limit` nodes.
+    pub(crate) fn reaches_back(
+        &self,
+        start: RevisionId,
+        floor: usize,
+        limit: usize,
+        member: impl Fn(RevisionId) -> bool,
+    ) -> Option<bool> {
+        let first = self.lookup(&CycleNode::Revision(start))?;
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![first];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            if seen.len() > limit {
+                return None;
+            }
+            if let CycleNode::Revision(r) = self.nodes[n]
+                && member(r)
+            {
+                return Some(true);
+            }
+            for prev in &self.incoming[n] {
+                if self.rank[*prev as usize] as usize >= floor {
+                    stack.push(*prev as usize);
+                }
+            }
+        }
+        Some(false)
+    }
     pub(crate) fn diagnostic_order(&self) -> NaiveTopo {
         NaiveTopo {
             order: self.order().cloned().collect(),

@@ -16,6 +16,9 @@ pub struct CommitStats {
     pub pk_backward: u64,
     pub pk_reordered: u64,
     pub transient_resets: u64,
+    /// Maintenance work units (ADR 0019 §3.2), the same whether the pass
+    /// ran at once or in slices.
+    pub units: u64,
     pub status_nodes: Vec<RevisionId>,
     pub seed_nodes: Vec<RevisionId>,
     pub popped_nodes: Vec<RevisionId>,
@@ -35,6 +38,8 @@ pub enum Work {
     PkForward,
     PkBackward,
     PkReorder,
+    /// The epoch's work units, recorded once when its pass completes.
+    Units(u64),
 }
 pub trait StatsSink: Clone + std::fmt::Debug + Default {
     fn reset(&mut self);
@@ -65,6 +70,7 @@ impl StatsSink for CommitStats {
             Work::PkForward => self.pk_forward += 1,
             Work::PkBackward => self.pk_backward += 1,
             Work::PkReorder => self.pk_reordered += 1,
+            Work::Units(n) => self.units += n,
         }
     }
 }

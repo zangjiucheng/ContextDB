@@ -87,6 +87,36 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             changes: retained,
         });
     }
+    /// Opens the epoch's transition at ack (ADR 0019 §3.3): changes join it
+    /// as the walk produces them, in pop order.
+    pub(crate) fn open_transition(&mut self, epoch: Epoch) {
+        self.history.push(Transition {
+            epoch,
+            changes: Vec::new(),
+        });
+    }
+    pub(crate) fn append_change(&mut self, c: &NodeChange) {
+        crate::invariant_assert!({
+            let previous = self
+                .history
+                .iter()
+                .rev()
+                .find_map(|t| t.changes.iter().find(|(r, _)| *r == c.revision))
+                .map(|(_, s)| s);
+            c.before.as_ref() == previous && c.after.is_some()
+        });
+        let open = self.history.last_mut().expect("an open transition");
+        open.changes
+            .push((c.revision, c.after.clone().expect("post-state")));
+    }
+    /// At full drain: the transition in eager order (by revision) and with
+    /// an exact-size buffer.
+    pub(crate) fn close_transition(&mut self, epoch: Epoch) {
+        let open = self.history.last_mut().expect("an open transition");
+        crate::invariant_assert!(open.epoch == epoch);
+        open.changes.sort_by_key(|(r, _)| *r);
+        open.changes.shrink_to_fit();
+    }
     /// First epoch whose post-states this database retains (SPEC §6.1 read modes;
     /// earlier epochs are served by the store's log replay, ADR 0006 §8).
     pub fn initial_epoch(&self) -> Epoch {
@@ -109,6 +139,14 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     /// `ReadMode::Historical(e)`: status of a revision as of `e`, head or not.
     pub fn read_historical(&self, r: RevisionId, e: Epoch) -> Result<NodeState, TxError> {
         self.retained(e)?;
+        // At the frontier's epoch only settled nodes are exact (ADR 0019
+        // §3.6); an unsettled one may not have its transition yet.
+        if self.frontier_epoch().is_some_and(|f| e >= f)
+            && r.index() < self.revisions.len()
+            && !self.settled(r)
+        {
+            return Ok(self.withheld(r));
+        }
         self.state_at(r, e).cloned().ok_or(TxError::UnknownRef)
     }
     /// `ReadMode::Snapshot(e)`: the logical's head as of `e` and its status then.
@@ -119,6 +157,17 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         e: Epoch,
     ) -> Result<(RevisionId, NodeState), TxError> {
         self.retained(e)?;
+        // At the frontier's epoch the head comes from the inputs: a moved
+        // head's old revision may not have been walked yet and would still
+        // read Current (ADR 0019 §3.6).
+        if self.frontier_epoch().is_some_and(|f| e >= f) {
+            let r = *self
+                .tables
+                .heads
+                .get(l.index())
+                .ok_or(TxError::UnknownRef)?;
+            return Ok((r, self.read_historical(r, e)?));
+        }
         (0..self.revisions.len() as u32)
             .map(RevisionId)
             .filter(|r| self.revisions.logical(*r) == l)
@@ -137,6 +186,9 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
             || to > self.epoch
         {
             return Err(TxError::UnknownRef);
+        }
+        if self.frontier_epoch().is_some_and(|f| from.max(to) >= f) {
+            return Err(TxError::Unsettled);
         }
         Ok(diff_rows(
             from,
