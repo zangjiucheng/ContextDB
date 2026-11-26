@@ -1,0 +1,6 @@
+id	hypothesis	change	before	after	delta	tests	verdict	note
+A1	radix heap cheapens heap push/pop on wide fronts	BinaryHeap -> monotone radix heap (44fd484)	hub eager 1068.5ms	935.7ms	-12.4%	gates green	reverted	<15%; chain drain +5.8% outside band
+A2	packed rows shrink heap and improve locality	CountingState rows 8B/rev, 2B/rule (c82d7ec)	hub heap 189.09 B/inc	186.43	-1.4%	gates green	reverted	far below 15%; times flat
+A3	arena removes B-tree inserts and per-revision Vec allocs	pending BTreeMaps -> per-revision circular lists (4866184)	hub eager 1068.5ms	794.0ms	-25.7%	gates green	reverted	heap +17.7% hub/+19.5% multi (retained tail index and node capacity)
+A3'	free arenas between passes	paged tail index, nothing kept between passes (16203b3)	hub eager 1009.6ms / chain commit p99 1833ns	772.8ms / 3083ns	-23.5% / +68%	gates green	pending-fix	heap equal to base; chain commit p99 outside band (per-commit alloc+zero)
+A3''	bounded cache removes per-commit allocation	keep dir + <=8 pages + <=4096 nodes per arena (d8109a6)	hub eager 1021.7ms / heap 189.09 / chain commit p99 2125ns	757.6ms / 189.18 / 2500ns	-25.8% / +0.05% / +18% (inside 45% band)	gates green	kept	adopted; commit p99 up on all shapes (+0.4-0.75us) inside bands, P1 budget 1ms

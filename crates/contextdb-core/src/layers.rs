@@ -5,9 +5,9 @@
 //! node changes, and are re-evaluated when their conclusion is popped (rank
 //! order, so premises and Sem heads are final). FullRecompute mode rebuilds
 //! every column in topological order with direct literal evaluation.
+use crate::pending::{Cursor, Pending};
 use crate::{Indexes, InputView, PearceKelly, engine::CountingRow, engine::CountingState};
 use contextdb_model::*;
-use std::collections::BTreeMap;
 
 pub(crate) fn vectors(i: &impl InputView, j: RuleId) -> (HeadVector, HeadVector) {
     let mut asserted: Vec<_> = i
@@ -58,8 +58,8 @@ pub(crate) struct LayerColumns {
     conflicted: Vec<bool>,
     dirty_inc: Vec<bool>,
     dirty_rule: Vec<bool>,
-    pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
-    pending_rule: BTreeMap<RevisionId, Vec<RuleId>>,
+    pending_inc: Pending<IncId>,
+    pending_rule: Pending<RuleId>,
 }
 /// Pre-values of one popped revision's footprint in the layer columns: its
 /// node columns, the rules concluding it and their literals (`refresh`
@@ -201,7 +201,7 @@ impl LayerColumns {
         }
         self.dirty_inc[id.index()] = true;
         let c = i.conclusion(index.inc_rule[id.index()]);
-        self.pending_inc.entry(c).or_default().push(id);
+        self.pending_inc.push(c, id);
         Some(c)
     }
     fn mark_rule(&mut self, i: &impl InputView, j: RuleId) -> Option<RevisionId> {
@@ -210,7 +210,7 @@ impl LayerColumns {
         }
         self.dirty_rule[j.index()] = true;
         let c = i.conclusion(j);
-        self.pending_rule.entry(c).or_default().push(j);
+        self.pending_rule.push(c, j);
         Some(c)
     }
     /// Phase 3b seeds (SPEC §3.4). Returns the conclusions to push.
@@ -249,11 +249,22 @@ impl LayerColumns {
         }
         out
     }
-    pub(crate) fn take_pending_inc(&mut self, r: RevisionId) -> Vec<IncId> {
-        self.pending_inc.remove(&r).unwrap_or_default()
+    pub(crate) fn take_pending_inc(&mut self, r: RevisionId) -> Cursor {
+        self.pending_inc.take(r)
     }
-    pub(crate) fn take_pending_rule(&mut self, r: RevisionId) -> Vec<RuleId> {
-        self.pending_rule.remove(&r).unwrap_or_default()
+    pub(crate) fn take_pending_rule(&mut self, r: RevisionId) -> Cursor {
+        self.pending_rule.take(r)
+    }
+    pub(crate) fn next_pending_inc(&self, at: &mut Cursor) -> Option<IncId> {
+        self.pending_inc.next(at)
+    }
+    pub(crate) fn next_pending_rule(&self, at: &mut Cursor) -> Option<RuleId> {
+        self.pending_rule.next(at)
+    }
+    /// Ends a walk: every pending list has been drained.
+    pub(crate) fn end_pass(&mut self) {
+        self.pending_inc.reset();
+        self.pending_rule.reset();
     }
     /// Re-evaluates one dirty incidence of the popped node. Premises and Sem
     /// heads rank below it, so they are final (P-1). Adds a unit per item

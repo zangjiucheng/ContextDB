@@ -1,5 +1,6 @@
 use super::{CountingRow, CountingState, Maintainer, Maintenance};
 use crate::InputView;
+use crate::pending::{Cursor, Pending};
 use crate::{Indexes, PearceKelly, StatsSink, stats::Work};
 use contextdb_model::*;
 use std::{
@@ -14,8 +15,8 @@ pub struct Counting {
     dirty_inc: Vec<bool>,
     dirty_rule: Vec<bool>,
     queued: Vec<bool>,
-    pending_inc: BTreeMap<RevisionId, Vec<IncId>>,
-    pending_rule: BTreeMap<RevisionId, Vec<RuleId>>,
+    pending_inc: Pending<IncId>,
+    pending_rule: Pending<RuleId>,
     journal: Option<Journal>,
 }
 /// Pre-values of everything one `update` wrote. A popped revision's
@@ -91,7 +92,7 @@ impl Counting {
             *units += 1;
             let j = index.inc_rule[id.index()];
             let c = i.conclusion(j);
-            self.pending_inc.entry(c).or_default().push(id);
+            self.pending_inc.push(c, id);
             self.queue(c, topo, heap, stats, seed, units);
         }
     }
@@ -99,10 +100,7 @@ impl Counting {
         if !self.dirty_rule[j.index()] {
             self.dirty_rule[j.index()] = true;
             *units += 1;
-            self.pending_rule
-                .entry(i.conclusion(j))
-                .or_default()
-                .push(j);
+            self.pending_rule.push(i.conclusion(j), j);
         }
     }
 }
@@ -236,11 +234,17 @@ impl Counting {
         }));
         Some(r)
     }
-    pub(crate) fn take_pending_inc(&mut self, r: RevisionId) -> Vec<IncId> {
-        self.pending_inc.remove(&r).unwrap_or_default()
+    pub(crate) fn take_pending_inc(&mut self, r: RevisionId) -> Cursor {
+        self.pending_inc.take(r)
     }
-    pub(crate) fn take_pending_rule(&mut self, r: RevisionId) -> Vec<RuleId> {
-        self.pending_rule.remove(&r).unwrap_or_default()
+    pub(crate) fn take_pending_rule(&mut self, r: RevisionId) -> Cursor {
+        self.pending_rule.take(r)
+    }
+    pub(crate) fn next_pending_inc(&self, at: &mut Cursor) -> Option<IncId> {
+        self.pending_inc.next(at)
+    }
+    pub(crate) fn next_pending_rule(&self, at: &mut Cursor) -> Option<RuleId> {
+        self.pending_rule.next(at)
     }
     /// Re-evaluates one pending incidence of the popped node.
     pub(crate) fn drain_incidence<S: StatsSink, V: InputView>(
@@ -357,6 +361,8 @@ impl Counting {
     /// Closes an emptied pass (DA5 for the counting rows).
     pub(crate) fn end(&mut self, pass: Pass) -> Maintenance {
         crate::invariant_assert!(pass.heap.is_empty());
+        self.pending_inc.reset();
+        self.pending_rule.reset();
         for r in &pass.popped {
             self.queued[r.index()] = false;
         }
@@ -441,10 +447,12 @@ impl Maintainer for Counting {
         let units = &mut 0;
         let mut pass = self.begin(i, index, topo, delta, stats, units);
         while let Some(r) = self.pop(&mut pass, i, index, topo, stats, units) {
-            for id in self.take_pending_inc(r) {
+            let mut items = self.take_pending_inc(r);
+            while let Some(id) = self.next_pending_inc(&mut items) {
                 self.drain_incidence(id, i, index, stats, units);
             }
-            for j in self.take_pending_rule(r) {
+            let mut items = self.take_pending_rule(r);
+            while let Some(j) = self.next_pending_rule(&mut items) {
                 self.drain_rule(r, j, i, stats, units);
             }
             if self.conclude(r, &mut pass, i, index, stats) {

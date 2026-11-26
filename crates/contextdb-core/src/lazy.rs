@@ -8,8 +8,8 @@
 //! result, as long as no input changes in between. What it leaves is the
 //! *frontier*. `lazy: None` runs the same code to the end.
 use crate::{
-    Db, Maintainer, StatsSink, engine::Pass, fast, history::NodeChange, stats::Work,
-    view::StoredView,
+    Db, Maintainer, StatsSink, engine::Pass, fast, history::NodeChange, pending::Cursor,
+    stats::Work, view::StoredView,
 };
 use contextdb_model::*;
 use std::{
@@ -97,14 +97,15 @@ struct Paused {
 }
 #[derive(Clone, Debug)]
 enum Step {
-    /// Counting fan-in: pending incidences, then pending rules.
-    CountInc(Vec<IncId>, usize),
-    CountRule(Vec<RuleId>, usize),
+    /// Counting fan-in: pending incidences, then pending rules; the rest of
+    /// the taken list and the items drained so far.
+    CountInc(Cursor, usize),
+    CountRule(Cursor, usize),
     /// Counting fan-out of a node whose S flipped.
     CountOut(usize),
     /// Walk fan-in.
-    WalkInc(Option<NodeState>, Vec<IncId>, usize),
-    WalkRule(Option<NodeState>, Vec<RuleId>, usize),
+    WalkInc(Option<NodeState>, Cursor, usize),
+    WalkRule(Option<NodeState>, Cursor, usize),
     /// Walk fan-out: 0 marks premise incidences, 1 marks Sem incidences of
     /// a head, 2 queues every conclusion.
     WalkOut {
@@ -447,24 +448,24 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
         let index = &self.indexes;
         loop {
             p.step = match p.step {
-                Step::CountInc(items, mut pos) => {
+                Step::CountInc(mut items, mut pos) => {
                     let c = self.maintainer.counting().expect("incremental maintainer");
-                    while pos < items.len() {
-                        c.drain_incidence(items[pos], &view, index, &mut f.stats, &mut f.units);
+                    while let Some(id) = c.next_pending_inc(&mut items) {
+                        c.drain_incidence(id, &view, index, &mut f.stats, &mut f.units);
                         pos += 1;
-                        if full(f) && pos < items.len() {
+                        if full(f) && !items.is_done() {
                             p.step = Step::CountInc(items, pos);
                             return Some(p);
                         }
                     }
                     Step::CountRule(c.take_pending_rule(r), 0)
                 }
-                Step::CountRule(items, mut pos) => {
+                Step::CountRule(mut items, mut pos) => {
                     let c = self.maintainer.counting().expect("incremental maintainer");
-                    while pos < items.len() {
-                        c.drain_rule(r, items[pos], &view, &mut f.stats, &mut f.units);
+                    while let Some(j) = c.next_pending_rule(&mut items) {
+                        c.drain_rule(r, j, &view, &mut f.stats, &mut f.units);
                         pos += 1;
-                        if full(f) && pos < items.len() {
+                        if full(f) && !items.is_done() {
                             p.step = Step::CountRule(items, pos);
                             return Some(p);
                         }
@@ -497,23 +498,22 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
                     self.counted(f, r);
                     return None;
                 }
-                Step::WalkInc(before, items, mut pos) => {
-                    while pos < items.len() {
-                        self.layers
-                            .drain_incidence(&view, index, items[pos], &mut f.units);
+                Step::WalkInc(before, mut items, mut pos) => {
+                    while let Some(id) = self.layers.next_pending_inc(&mut items) {
+                        self.layers.drain_incidence(&view, index, id, &mut f.units);
                         pos += 1;
-                        if full(f) && pos < items.len() {
+                        if full(f) && !items.is_done() {
                             p.step = Step::WalkInc(before, items, pos);
                             return Some(p);
                         }
                     }
                     Step::WalkRule(before, self.layers.take_pending_rule(r), 0)
                 }
-                Step::WalkRule(before, items, mut pos) => {
-                    while pos < items.len() {
-                        self.layers.drain_rule(&view, items[pos], &mut f.units);
+                Step::WalkRule(before, mut items, mut pos) => {
+                    while let Some(j) = self.layers.next_pending_rule(&mut items) {
+                        self.layers.drain_rule(&view, j, &mut f.units);
                         pos += 1;
-                        if full(f) && pos < items.len() {
+                        if full(f) && !items.is_done() {
                             p.step = Step::WalkRule(before, items, pos);
                             return Some(p);
                         }
@@ -628,6 +628,7 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     fn complete(&mut self, mut f: Frontier<S>) -> Done {
         let counting = self.maintainer.counting().expect("incremental maintainer");
         let maintenance = counting.end(f.pass);
+        self.layers.end_pass();
         #[cfg(any(debug_assertions, feature = "paranoid"))]
         self.layers.assert_matches_rebuild(
             &self.view(),
