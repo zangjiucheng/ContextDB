@@ -169,6 +169,7 @@ impl Daemon {
         service.set_anchor_routes(dir.join("anchors.routes"));
         service.set_data_dir(dir.clone());
         service.set_gc_keep_epochs(config.gc.keep_epochs);
+        service.set_exe();
         if let Some(timeout) = options.anchor_live_timeout {
             service.set_anchor_live_timeout(timeout);
         }

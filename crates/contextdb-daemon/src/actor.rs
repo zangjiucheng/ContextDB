@@ -243,6 +243,9 @@ pub struct ActorStats {
     pub idle_catchups: AtomicU64,
     /// `Drain` steps replayed by publications (idle catch-ups excluded).
     pub replayed_drains: AtomicU64,
+    /// Whether the replica is ready: caught up to the published snapshot,
+    /// so the next publication replays only its own steps.
+    pub spare_ready: std::sync::atomic::AtomicBool,
 }
 #[derive(Clone)]
 pub struct ActorHandle<D: Durability> {
@@ -262,6 +265,8 @@ pub struct ActorHandle<D: Durability> {
     pub team_live: team::LiveMap,
     /// K5: the epochs live snapshots hold.
     pub held: Arc<HeldEpochs>,
+    /// The store's commit budget (`None`: eager).
+    pub lazy: Option<Budget>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum SubmitError {
@@ -495,6 +500,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
     teams: std::collections::BTreeMap<TeamId, team::Joined>,
 ) -> Result<ActorHandle<D>, StoreError> {
     let kernel = store.kernel()?.clone();
+    let lazy = store.lazy();
     store.record_steps();
     let held = Arc::new(HeldEpochs::default());
     let snapshot = Snapshot {
@@ -549,6 +555,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
         read_settle: READ_SETTLE,
         team_live,
         held,
+        lazy,
     })
 }
 impl<D: Durability + Clone> Actor<D> {
@@ -963,6 +970,7 @@ impl<D: Durability + Clone> Actor<D> {
             snapshot: self.published.swap(snapshot),
             behind: current,
         });
+        self.stats.spare_ready.store(false, Ordering::Relaxed);
         let (m, c) = &*self.epochs;
         *m.lock().expect("epochs") = published;
         c.notify_all();
@@ -983,6 +991,7 @@ impl<D: Durability + Clone> Actor<D> {
                         return;
                     }
                     self.stats.idle_catchups.fetch_add(1, Ordering::Relaxed);
+                    self.stats.spare_ready.store(true, Ordering::Relaxed);
                     Some(Replica::Ready(Box::new(db)))
                 }
             },

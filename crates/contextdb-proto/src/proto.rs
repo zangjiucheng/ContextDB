@@ -725,6 +725,14 @@ pub enum Request {
         keep_epochs: Option<u64>,
         apply: bool,
     },
+    /// `ctx g6 checkpoint` (admin, P11 G6): after a full settle, one
+    /// published snapshot's epoch, op_log checksum, per-branch digests and
+    /// the verdict of every certificate ctxd holds, with `live_pos` (`None`:
+    /// each certificate's branch watermarks at that epoch). `Settling` when
+    /// the frontier does not drain within the wait.
+    Checkpoint {
+        live_pos: Option<Vec<(String, Vec<u8>)>>,
+    },
     /// P10 `ctx team sync` (ADR 0018 §8.1): import every joined team (or
     /// one), then catch every open branch up. Store owner only.
     TeamSync {
@@ -904,6 +912,107 @@ wire_struct!(GcSummary {
     now,
     purged
 });
+/// A G6 checkpoint (P11 G6 B): what one settled snapshot says, so an
+/// offline eager replay of the same op_log prefix can be compared with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointReport {
+    pub epoch: Epoch,
+    /// The op_log frame checksum at `epoch` (it chains every earlier frame).
+    pub log_checksum: ContentHash,
+    pub protocol: u16,
+    pub log_format: u32,
+    /// `[maintenance]` as this ctxd runs it: the lazy budget (`None`:
+    /// eager) and `read_settle_ms`; `[gc] keep_epochs`.
+    pub lazy_budget: Option<u64>,
+    pub read_settle_ms: u64,
+    pub keep_epochs: u64,
+    pub pid: u32,
+    /// The executable this process runs, as `current_exe` named it at start,
+    /// and the BLAKE3 of the file opened then (`unavailable: <reason>`).
+    pub exe: String,
+    pub exe_blake3: String,
+    /// The request gave `live_pos`; otherwise each certificate was checked
+    /// with its branch's watermarks.
+    pub live_pos_given: bool,
+    pub branches: Vec<CheckpointBranch>,
+    /// Ordered by `cert_id`; a certificate kept in several places once.
+    pub certs: Vec<CheckpointCert>,
+}
+wire_struct!(CheckpointReport {
+    epoch,
+    log_checksum,
+    protocol,
+    log_format,
+    lazy_budget,
+    read_settle_ms,
+    keep_epochs,
+    pid,
+    exe,
+    exe_blake3,
+    live_pos_given,
+    branches,
+    certs
+});
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointBranch {
+    pub id: BranchId,
+    pub name: String,
+    pub kernel_digest: ContentHash,
+    pub derived_digest: ContentHash,
+}
+wire_struct!(CheckpointBranch {
+    id,
+    name,
+    kernel_digest,
+    derived_digest
+});
+/// One certificate ctxd holds, the `live_pos` it was checked with, and the
+/// answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointCert {
+    /// Where ctxd keeps it: `session`, `root_proof`, `session_cert`,
+    /// `handoff`.
+    pub sources: Vec<String>,
+    pub cert: Certificate,
+    pub live_pos: Vec<(String, Vec<u8>)>,
+    pub check: CertCheck,
+}
+wire_struct!(CheckpointCert {
+    sources,
+    cert,
+    live_pos,
+    check
+});
+/// `validate_certificate`'s answer: a verdict, or the history a strict
+/// check needs is older than the kernel's first epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CertCheck {
+    Verdict(Validation),
+    HistoryUnavailable { since: Epoch },
+}
+impl Wire for CertCheck {
+    fn encode(&self, o: &mut Vec<u8>) {
+        match self {
+            Self::Verdict(v) => {
+                0u8.encode(o);
+                v.encode(o);
+            }
+            Self::HistoryUnavailable { since } => {
+                1u8.encode(o);
+                since.encode(o);
+            }
+        }
+    }
+    fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match u8::decode(i)? {
+            0 => Self::Verdict(Wire::decode(i)?),
+            1 => Self::HistoryUnavailable {
+                since: Wire::decode(i)?,
+            },
+            _ => return Err(WireError::InvalidEncoding),
+        })
+    }
+}
 /// One `ctx_changes` item: revision `rev` of `key` changed status at
 /// `epoch`, to `summary`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1425,6 +1534,10 @@ pub enum Response {
     /// `ctx gc`: the dry run's plan, or what `--apply` collected.
     Gc {
         report: GcSummary,
+    },
+    /// `ctx g6 checkpoint`.
+    Checkpoint {
+        report: Box<CheckpointReport>,
     },
     /// P10 (ADR 0018 §6.2): the write is a team proposal, now queued;
     /// it publishes on the next `git push`.
@@ -2343,6 +2456,10 @@ impl Wire for Request {
                 keep_epochs.encode(o);
                 apply.encode(o);
             }
+            Self::Checkpoint { live_pos } => {
+                60u8.encode(o);
+                live_pos.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -2651,6 +2768,9 @@ impl Wire for Request {
                 keep_epochs: Wire::decode(i)?,
                 apply: Wire::decode(i)?,
             },
+            60 => Self::Checkpoint {
+                live_pos: Wire::decode(i)?,
+            },
             _ => return Err(WireError::InvalidEncoding),
         })
     }
@@ -2952,6 +3072,10 @@ impl Wire for Response {
                 42u8.encode(o);
                 report.encode(o);
             }
+            Self::Checkpoint { report } => {
+                43u8.encode(o);
+                report.encode(o);
+            }
         }
     }
     fn decode(i: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -3136,6 +3260,9 @@ impl Wire for Response {
             },
             42 => Self::Gc {
                 report: Wire::decode(i)?,
+            },
+            43 => Self::Checkpoint {
+                report: Box::new(Wire::decode(i)?),
             },
             _ => return Err(WireError::InvalidEncoding),
         })
@@ -3482,6 +3609,10 @@ mod tests {
             Request::Gc {
                 keep_epochs: None,
                 apply: false,
+            },
+            Request::Checkpoint { live_pos: None },
+            Request::Checkpoint {
+                live_pos: Some(vec![("repo".into(), vec![7])]),
             },
             Request::AccessCheck {
                 principal: "bob".into(),
@@ -3830,6 +3961,45 @@ mod tests {
                     now: Epoch(302),
                     purged: true,
                 },
+            },
+            Response::Checkpoint {
+                report: Box::new(CheckpointReport {
+                    epoch: Epoch(12),
+                    log_checksum: [4; 32],
+                    protocol: PROTOCOL_VERSION,
+                    log_format: 7,
+                    lazy_budget: Some(1_000_000),
+                    read_settle_ms: 50,
+                    keep_epochs: 10_000,
+                    pid: 77,
+                    exe: "/bin/ctxd".into(),
+                    exe_blake3: "ab".repeat(32),
+                    live_pos_given: false,
+                    branches: vec![CheckpointBranch {
+                        id: MAIN,
+                        name: "main".into(),
+                        kernel_digest: [1; 32],
+                        derived_digest: [2; 32],
+                    }],
+                    certs: vec![CheckpointCert {
+                        sources: vec!["session".into()],
+                        cert: Certificate {
+                            cert_id: [5; 32],
+                            session_id: [6; 16],
+                            principal: PrincipalId::STORE_OWNER,
+                            branch: MAIN,
+                            issued_epoch: Epoch(3),
+                            log_checksum_at_issue: [7; 32],
+                            code_commit: String::new(),
+                            watermarks: Vec::new(),
+                            entries: Vec::new(),
+                            vector: Vec::new(),
+                            strict_no_aba: false,
+                        },
+                        live_pos: vec![("repo".into(), vec![1])],
+                        check: CertCheck::Verdict(Validation::Valid),
+                    }],
+                }),
             },
             Response::Shred {
                 targets: vec![ShredTarget {

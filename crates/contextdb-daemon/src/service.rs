@@ -364,6 +364,8 @@ pub struct Service<D: Durability> {
     multi_user: std::sync::OnceLock<crate::principals::MultiUser>,
     /// `[gc] keep_epochs` (ADR 0019 O3).
     gc_keep_epochs: AtomicU64,
+    /// The executable this process runs (`ctx g6 checkpoint`).
+    exe: std::sync::OnceLock<ExeImage>,
 }
 impl<D: Durability> Drop for Service<D> {
     fn drop(&mut self) {
@@ -1224,6 +1226,7 @@ impl<D: Durability + Clone + 'static> Service<D> {
             principals: std::sync::RwLock::new(Arc::default()),
             multi_user: std::sync::OnceLock::new(),
             gc_keep_epochs: AtomicU64::new(crate::config::KEEP_EPOCHS),
+            exe: std::sync::OnceLock::new(),
         };
         // Persist every newly detected log cut before serving (closure N1).
         let broken = service.replay(events);
@@ -1781,6 +1784,16 @@ impl<D: Durability + Clone + 'static> Service<D> {
                     return err("ChannelRestricted", "ctx gc requires the admin socket");
                 }
                 self.gc(keep_epochs, apply)
+            }
+            Request::Checkpoint { live_pos } => {
+                drop(snap);
+                if id.channel != Channel::Admin {
+                    return err(
+                        "ChannelRestricted",
+                        "ctx g6 checkpoint requires the admin socket",
+                    );
+                }
+                self.checkpoint(live_pos)
             }
             Request::TeamSync { team } => {
                 if id.channel != Channel::Admin {
@@ -5274,3 +5287,4 @@ const LAZY_SYNC: std::time::Duration = std::time::Duration::from_millis(100);
 include!("anchor_checks.rs");
 include!("handoff.rs");
 include!("gc.rs");
+include!("checkpoint.rs");

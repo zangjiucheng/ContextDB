@@ -3,6 +3,7 @@
 mod access;
 mod anchors;
 mod daemon;
+mod g6;
 mod gc;
 mod githooks;
 mod p4;
@@ -61,6 +62,15 @@ Usage (via a running ctxd, admin socket):
                                        payload GC: report what would be collected (dry
                                        run), or collect it with --apply; keeps what the
                                        last N epochs named (default [gc] keep_epochs)
+  ctx g6 checkpoint <dir> [--out FILE] [--live-pos SCOPE=HEX]...
+                                       P11 G6: after a full settle, the epoch, op_log
+                                       checksum, branch digests and the verdict of every
+                                       certificate ctxd holds, saved as JSON
+  ctx g6 verify <dir> <checkpoint.json> [--work DIR]
+                                       replay the checkpoint's op_log prefix eagerly in an
+                                       isolated copy and compare every field (read-only
+                                       on <dir>; safe while ctxd runs); exit 1 on a
+                                       mismatch or error
   ctx reindex <dir> [--fts|--vectors|--all]
                                        rebuild a retrieval projection in the background
   ctx mirror export <dir> [--branch B] [--project <repo>] [--force] [--adopt]
@@ -323,6 +333,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         Some("shred") => shred::run(dir(1)?, &args[2..]),
         Some("gc") => gc::run(dir(1)?, &args[2..]),
+        Some("g6") => g6::run(&args[1..]),
         Some("git-hook") => githooks::run(&args[1..]),
         Some("team") => {
             let sub = args.get(1).cloned().unwrap_or_default();

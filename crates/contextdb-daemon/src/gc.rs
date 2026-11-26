@@ -19,19 +19,12 @@ impl<D: Durability + Clone + 'static> Service<D> {
     pub fn set_gc_keep_epochs(&self, n: u64) {
         self.gc_keep_epochs.store(n, Ordering::Relaxed);
     }
-    /// K4 (ADR 0019 §5.1): the contents of every revision named in the
-    /// `vector` or `entries` of a certificate ctxd keeps: each session's
+    /// Every certificate ctxd keeps, with where: each session's
     /// certificates and RootProofs (live and recently ended sessions), each
     /// agent's proofs and session certificate, and the certificate of every
-    /// pending handoff. Called after phase 1 took its snapshot: a
-    /// certificate issued later came from a snapshot K5 bounded or one at
-    /// an epoch ≥ e0, which phase 2's re-check covers.
-    fn gc_pins(&self, snap: &Snapshot<D>) -> BTreeSet<ContentHash> {
-        let mut named: Vec<(BranchId, RevisionId)> = Vec::new();
-        let mut add = |c: &Certificate| {
-            named.extend(c.vector.iter().map(|v| (c.branch, v.rev)));
-            named.extend(c.entries.iter().map(|e| (c.branch, e.rev)));
-        };
+    /// pending handoff.
+    fn held_certificates(&self) -> Vec<(&'static str, Certificate)> {
+        let mut out = Vec::new();
         // One lock at a time: the maps, then each session.
         let live: Vec<Arc<Mutex<Session>>> = (self.sessions.lock().expect("sessions"))
             .values()
@@ -40,18 +33,36 @@ impl<D: Durability + Clone + 'static> Service<D> {
         let ended: Vec<Arc<Mutex<Session>>> = (self.hooks.lock().expect("hooks").ended.iter())
             .map(|(_, s)| s.clone())
             .collect();
-        for s in live.iter().chain(&ended) {
+        let sessions = (live.iter().map(|s| (s, ["session", "root_proof", "session_cert"])))
+            .chain(ended.iter().map(|s| {
+                let names = ["ended_session", "ended_root_proof", "ended_session_cert"];
+                (s, names)
+            }));
+        for (s, [certs, proofs, session_cert]) in sessions {
             let s = s.lock().expect("session");
-            s.certs.iter().for_each(&mut add);
-            s.proof_history.iter().for_each(|p| add(&p.cert));
+            out.extend(s.certs.iter().map(|c| (certs, c.clone())));
+            out.extend(s.proof_history.iter().map(|p| (proofs, p.cert.clone())));
             for a in s.agents.values() {
-                a.proofs.values().for_each(|p| add(&p.cert));
-                a.session_cert.iter().for_each(&mut add);
+                out.extend(a.proofs.values().map(|p| (proofs, p.cert.clone())));
+                out.extend(a.session_cert.iter().map(|c| (session_cert, c.clone())));
             }
         }
         (self.handoffs.lock().expect("handoffs").map.values())
             .filter(|h| h.accepted.is_none())
-            .for_each(|h| add(&h.cert));
+            .for_each(|h| out.push(("handoff", h.cert.clone())));
+        out
+    }
+    /// K4 (ADR 0019 §5.1): the contents of every revision named in the
+    /// `vector` or `entries` of a certificate ctxd keeps. Called after
+    /// phase 1 took its snapshot: a certificate issued later came from a
+    /// snapshot K5 bounded or one at an epoch ≥ e0, which phase 2's
+    /// re-check covers.
+    fn gc_pins(&self, snap: &Snapshot<D>) -> BTreeSet<ContentHash> {
+        let mut named: Vec<(BranchId, RevisionId)> = Vec::new();
+        for (_, c) in self.held_certificates() {
+            named.extend(c.vector.iter().map(|v| (c.branch, v.rev)));
+            named.extend(c.entries.iter().map(|e| (c.branch, e.rev)));
+        }
         let k = &snap.kernel;
         named
             .into_iter()

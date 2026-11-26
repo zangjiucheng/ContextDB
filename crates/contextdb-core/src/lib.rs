@@ -561,6 +561,10 @@ impl<M: Maintainer, S: StatsSink> Db<M, S> {
     pub fn watermark(&self, scope: &str) -> Option<&[u8]> {
         self.tables.watermarks.get(scope).map(Vec::as_slice)
     }
+    /// Every scope's committed observer position.
+    pub fn watermarks(&self) -> &std::collections::BTreeMap<String, Vec<u8>> {
+        &self.tables.watermarks
+    }
     /// Current base bit of a revision (store projections, base_history).
     pub fn is_base(&self, r: RevisionId) -> Result<bool, TxError> {
         self.tables

@@ -400,7 +400,6 @@ fn an_idle_spare_catches_up_so_the_next_publication_replays_no_drain() {
     let a = actor(&d);
     hub(a);
     let stats = &a.stats;
-    let catchups = stats.idle_catchups.load(Ordering::Relaxed);
     assert!(
         a.write(Vec::new(), toggle(false))
             .unwrap()
@@ -408,10 +407,13 @@ fn an_idle_spare_catches_up_so_the_next_publication_replays_no_drain() {
             .settling
     );
     settled(a);
-    // A reader may have held the spare when the actor went idle: each
-    // barrier gives it another idle turn.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while stats.idle_catchups.load(Ordering::Relaxed) == catchups {
+    // Wait on the replica's state, not on the catch-up counter: a catch-up
+    // left over from the hub load can move the counter before the
+    // cascade's last slice is caught up (a race CI hit). A reader may hold
+    // the spare when the actor goes idle; each barrier gives it another
+    // idle turn.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !stats.spare_ready.load(Ordering::Relaxed) {
         assert!(Instant::now() < deadline, "the spare never caught up");
         barrier(a);
     }

@@ -436,3 +436,12 @@ keep_epochs = 10000    # keep every body the last N epochs named; at least 100
 **Reporting.** `ctx doctor` counts unavailable payloads by reason. A collected payload is not a problem, but a head that reads `Collected` is. `ctx team status` reports a mirror head that reads `Collected` as a problem too.
 
 **Truncation.** `ctx doctor <data dir> --truncate-before <epoch>` below the highest GC cutoff needs `--force`: at that epoch a collected payload may have been live.
+
+### G6 checkpoints
+
+Two commands for P11 G6 evidence ([docs/gates/p11-g6/README.md](gates/p11-g6/README.md)).
+
+| Command | Effect |
+|---|---|
+| `ctx g6 checkpoint <data dir> [--out FILE] [--live-pos SCOPE=HEX]...` | Through the admin socket. `ctxd` settles fully (it answers `Settling` after 10 s, and the CLI asks again for up to 10 minutes), then reports one snapshot: its epoch and op_log checksum, each branch's kernel and derived digest, and the verdict of every certificate it holds. Each certificate is checked with the given positions, or with its branch's own watermarks. The CLI saves this as JSON with the UTC time and the `ctxd.toml` it read. |
+| `ctx g6 verify <data dir> <checkpoint.json> [--work DIR]` | Offline and read-only on the data directory, safe while `ctxd` runs. Copies the op_log up to the checkpoint's epoch and the payload files into a private directory, replays them eagerly, and compares every field of the file with the replay. Exit 0 with `mismatches=0 errors=0`, else 1. |
