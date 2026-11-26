@@ -1,0 +1,3 @@
+rewrote 1 pack segment(s): 500 record(s) dropped, 100390 bytes reclaimed
+ledger: 500 entries before, 500 after
+replay check: the reopened store equals a full replay

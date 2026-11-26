@@ -1,0 +1,3 @@
+replay epoch=42 frames_replayed=42 snapshot=None blob_bytes_copied=371 ms=10882
+payloads heads=1000001 contents=2 available=2 shredded=0 unavailable=0
+g6 verify epoch=42 branches=1 certs=4 non_empty=4 mismatches=0 errors=0

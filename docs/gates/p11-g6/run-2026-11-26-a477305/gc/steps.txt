@@ -1,0 +1,14 @@
+ 13:34:39  up  0:36,  5 users,  load average: 6.22, 7.02, 13.34
+p11_g6 item=gc step=start pid=37528 ctxd_blake3=684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182 ctxd_file_blake3=684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182 exe=<repo>/target/release/ctxd protocol=9 log_format=7 lazy_budget=1000000 read_settle_ms=50 keep_epochs=100 epoch=0 start_ms=60 errors=0
+p11_g6 item=gc step=load shape=records n=2000 superseded=500 pinned=1 filler=110 keep_epochs=100 blob_bytes=513592 errors=0
+p11_g6 item=gc step=checkpoint_before_gc epoch=117 branches=1 certs=1 non_empty=1 mismatches=0 errors=0 payloads heads=2111 contents=2111 available=2111 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=14 verify_ms=55 file=<evidence>/gc-evidence/before_gc.json errors=0
+p11_g6 item=gc step=gc_dry_run exit=0 collectable=Some(500) cutoff=Some(17) want=500 polls=9 k5_wait_ms=4117 errors=0
+p11_g6 item=gc step=checkpoint_after_apply epoch=117 branches=1 certs=1 non_empty=1 mismatches=0 errors=0 payloads heads=2111 contents=2111 available=2111 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=14 verify_ms=59 file=<evidence>/gc-evidence/after_apply.json errors=0
+p11_g6 item=gc step=gc_apply exit=0 collected=Some(500) collected_read=true pinned_read=true kept_read=true missing_blob=true same_epoch_digests=true errors=0
+p11_g6 item=gc step=gc_compact exit=0 records_dropped=Some(500) bytes_reclaimed=Some(100390) blob_bytes_before=513592 blob_bytes_after=413202 restart_ms=56 errors=0
+p11_g6 item=gc step=checkpoint_after_compact epoch=117 branches=1 certs=1 non_empty=1 mismatches=0 errors=0 payloads heads=2111 contents=2111 available=2111 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=20 verify_ms=61 file=<evidence>/gc-evidence/after_compact.json errors=0
+p11_g6 item=gc step=restage collected_after_restart=true pinned_after_restart=true restaged=true readable_again=true errors=0
+p11_g6 item=gc step=checkpoint_after_restage epoch=118 branches=1 certs=1 non_empty=1 mismatches=0 errors=0 payloads heads=2111 contents=2111 available=2111 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=14 verify_ms=58 file=<evidence>/gc-evidence/after_restage.json errors=0
+p11_g6 item=gc n=2000 evidence=<evidence>/gc-evidence data=removed errors=0
+target/release/p11_g6 gc --evidence $S/gc-evidence  5.41s user 0.46s system 102% cpu 5.737 total
+gc exit=0

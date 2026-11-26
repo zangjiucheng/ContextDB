@@ -1,0 +1,6 @@
+collected 500 payload(s), 100390 bytes, at epoch 117 (generation 1)
+cutoff epoch 17, set by keep_epochs 100
+kept: K1 2111 live, K2 0 documents, K3 100 named after the cutoff, K4 1 pinned by certificates; K5: the oldest held snapshot is at epoch 117
+1 candidate(s) kept by the re-check (named, pinned or staged again since the plan)
+projections purged
+disk space returns with `ctx gc <dir> --compact` while ctxd is stopped

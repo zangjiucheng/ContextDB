@@ -1,0 +1,106 @@
+{
+  "branches": [
+    {
+      "derived_digest": "b7908bfd67bc890668671c369a88eff66dc3d9a01c9f93e9ce97dd79deaddee6",
+      "id": 0,
+      "kernel_digest": "7d99580a9716b7199913a4ba37912c1c82ddfffbba0189237a28abe0ddb49486",
+      "name": "main"
+    }
+  ],
+  "certs": [
+    {
+      "branch": 0,
+      "cert": "1aad33fbf8708177122e08856ce948da920bc3ed7f5f8ce0cd733238f2b3e3257585ce3f3fc53c65dbd827118caea5210100000000002900000000000000096a65fff363d434ebcac45de3add7f91c5e3ad844ac6445fa56c1ad00812d440100000068000000000100000040420f0040420f00010029000000000000000100000040420f0040420f00290000000000000000",
+      "cert_id": "1aad33fbf8708177122e08856ce948da920bc3ed7f5f8ce0cd733238f2b3e325",
+      "entries": 1,
+      "history_unavailable_since": null,
+      "issued_epoch": 41,
+      "live_pos": {},
+      "principal": 1,
+      "sources": [
+        "root_proof"
+      ],
+      "strict_no_aba": false,
+      "verdict": "Valid",
+      "verdict_wire": "07"
+    },
+    {
+      "branch": 0,
+      "cert": "4f66136e1ceac292d53f290c1b10bf447c60f37ca4d3e761cc9628bb1ca2d4ef7585ce3f3fc53c65dbd827118caea5210100000000002a00000000000000d233b86e30dafb6e9f97ccafe67af80ee7b4bbb2c00849608c74957658d697650100000068000000000100000040420f0040420f0001002a000000000000000100000040420f0040420f002a0000000000000000",
+      "cert_id": "4f66136e1ceac292d53f290c1b10bf447c60f37ca4d3e761cc9628bb1ca2d4ef",
+      "entries": 1,
+      "history_unavailable_since": null,
+      "issued_epoch": 42,
+      "live_pos": {},
+      "principal": 1,
+      "sources": [
+        "root_proof"
+      ],
+      "strict_no_aba": false,
+      "verdict": "Valid",
+      "verdict_wire": "07"
+    },
+    {
+      "branch": 0,
+      "cert": "795d332d5cc9c5dde87b9616a907741e07194e4701f6080c56bf2f4e24b4294e7585ce3f3fc53c65dbd827118caea5210100000000002900000000000000096a65fff363d434ebcac45de3add7f91c5e3ad844ac6445fa56c1ad00812d44010000006800000000010000003f420f003f420f0001002900000000000000040000000000000000000000290000000000000001000000010000002900000000000000020000000200000029000000000000003f420f003f420f00290000000000000000",
+      "cert_id": "795d332d5cc9c5dde87b9616a907741e07194e4701f6080c56bf2f4e24b4294e",
+      "entries": 1,
+      "history_unavailable_since": null,
+      "issued_epoch": 41,
+      "live_pos": {},
+      "principal": 1,
+      "sources": [
+        "root_proof"
+      ],
+      "strict_no_aba": false,
+      "verdict": "Invalid",
+      "verdict_wire": "0100010000003f420f00013f420f00013f420f00010201"
+    },
+    {
+      "branch": 0,
+      "cert": "83bfe72719cc4e810d4a3d135653ded6b24ba838615b8df271c0f26b6328dec07585ce3f3fc53c65dbd827118caea5210100000000002900000000000000096a65fff363d434ebcac45de3add7f91c5e3ad844ac6445fa56c1ad00812d44010000006800000000020000003f420f003f420f000100290000000000000040420f0040420f0001002900000000000000050000000000000000000000290000000000000001000000010000002900000000000000020000000200000029000000000000003f420f003f420f00290000000000000040420f0040420f00290000000000000000",
+      "cert_id": "83bfe72719cc4e810d4a3d135653ded6b24ba838615b8df271c0f26b6328dec0",
+      "entries": 2,
+      "history_unavailable_since": null,
+      "issued_epoch": 41,
+      "live_pos": {},
+      "principal": 1,
+      "sources": [
+        "session",
+        "session_cert"
+      ],
+      "strict_no_aba": false,
+      "verdict": "Invalid",
+      "verdict_wire": "0100010000003f420f00013f420f00013f420f00010201"
+    }
+  ],
+  "counts": {
+    "by_verdict": {
+      "Invalid": 2,
+      "Valid": 2
+    },
+    "certs": 4,
+    "history_unavailable": 0,
+    "non_empty": 4
+  },
+  "ctxd": {
+    "exe": "<repo>/target/release/ctxd",
+    "exe_blake3": "684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182",
+    "keep_epochs": 10000,
+    "lazy_budget": 1000000,
+    "pid": 27319,
+    "read_settle_ms": 50
+  },
+  "epoch": 42,
+  "format": "contextdb.g6.checkpoint/1",
+  "live_pos_given": false,
+  "log_checksum": "d233b86e30dafb6e9f97ccafe67af80ee7b4bbb2c00849608c74957658d69765",
+  "log_format": 7,
+  "meta": {
+    "ctxd_toml_now": null,
+    "data_dir": "/private/var/folders/xr/jcwbtfrn00l1yqyh7s7242qr0000gn/T/p11g6-hub-27318/data",
+    "exe_file_blake3_now": "684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182",
+    "taken_at_utc": "2026-11-26T18:32:28Z"
+  },
+  "protocol": 9
+}

@@ -1,0 +1,4 @@
+dry run at epoch 117: 500 payload(s) collectable, 100390 bytes
+cutoff epoch 17, set by keep_epochs 100
+kept: K1 2111 live, K2 0 documents, K3 100 named after the cutoff, K4 1 pinned by certificates; K5: the oldest held snapshot is at epoch 117
+run again with --apply to collect them

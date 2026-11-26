@@ -1,0 +1,19 @@
+ 13:32:02  up  0:33,  5 users,  load average: 12.23, 7.26, 14.68
+p11_g6 item=hub step=start pid=27319 ctxd_blake3=684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182 ctxd_file_blake3=684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182 exe=<repo>/target/release/ctxd protocol=9 log_format=7 lazy_budget=1000000 read_settle_ms=50 keep_epochs=10000 epoch=0 start_ms=280 errors=0
+p11_g6 item=hub step=load shape=hub n=1000000 bases=3 rules=999997 incidences=2999991 chunk=50000 requests=40 settling_acks=0 load_ms=18901 settle_ms=440 epoch=40 errors=0
+p11_g6 item=hub step=certificate cert_id=83bfe72719cc reads=2 verdict=Valid errors=0
+p11_g6 item=hub step=retract_frontier epoch=42 settling_ack=true ack_ms=18.2 rounds=7 settle_ms=333 settled_epoch=42 frontier_answers=14 false_positives=0 gate.Invalid=2 gate.Pending=5 gate_decision.Some(Deny)=2 gate_decision.Some(Warn)=5 read_hub.pending=3 read_hub.stale=4 read_unrelated.certified=7 validate.Invalid=1 validate.Pending=6 errors=0
+p11_g6 item=hub step=retract_settled frontier_answers=0 false_positives=0 gate.Invalid=1 gate_decision.Some(Deny)=1 read_hub.stale=1 read_unrelated.certified=1 validate.Invalid=1 errors=0
+p11_g6 item=hub step=checkpoint_retract_settled epoch=42 branches=1 certs=4 non_empty=4 mismatches=0 errors=0 payloads heads=1000001 contents=2 available=2 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=643 verify_ms=12056 file=<evidence>/hub-evidence/retract_settled.json errors=0
+p11_g6 item=hub step=restore_frontier epoch=43 settling_ack=true ack_ms=23.2 rounds=7 settle_ms=507 settled_epoch=43 frontier_answers=13 false_positives=0 gate.Pending=5 gate.Valid=2 gate_decision.Some(Allow)=2 gate_decision.Some(Warn)=5 read_hub.certified=5 read_hub.pending=2 read_unrelated.certified=7 validate.Pending=6 validate.Valid=1 errors=0
+p11_g6 item=hub step=restore_settled frontier_answers=0 false_positives=0 gate.Valid=1 gate_decision.Some(Allow)=1 read_hub.certified=1 read_unrelated.certified=1 validate.Valid=1 errors=0
+p11_g6 item=hub step=checkpoint_restore_settled epoch=43 branches=1 certs=14 non_empty=14 mismatches=0 errors=0 payloads heads=1000001 contents=2 available=2 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=405 verify_ms=19753 file=<evidence>/hub-evidence/restore_settled.json errors=0
+p11_g6 item=hub step=next_write epoch=44 settling_ack=false ack_ms=396.4 errors=0
+p11_g6 item=hub step=mirror epoch=45 settling_ack=true during=exported export_ms=36644 after_settle=unchanged errors=0
+p11_g6 item=hub step=kill signal=SIGKILL epoch=46 settling_ack=true status="signal: 9 (SIGKILL)" errors=0
+p11_g6 item=hub step=restart restart_ms=10915 acked=46 present=46 errors=0
+p11_g6 item=hub step=checkpoint_restart epoch=46 branches=1 certs=14 non_empty=14 mismatches=0 errors=0 payloads heads=1000002 contents=3 available=3 shredded=0 unavailable=0 verify_exit=0 checkpoint_ms=505 verify_ms=18571 file=<evidence>/hub-evidence/restart.json errors=0
+p11_g6 item=hub n=1000000 evidence=<evidence>/hub-evidence data=removed errors=0
+target/release/p11_g6 hub --evidence $S/hub-evidence  223.14s user 68.09s system 184% cpu 2:37.59 total
+hub exit=0
+ 13:34:39  up  0:36,  5 users,  load average: 6.22, 7.02, 13.34

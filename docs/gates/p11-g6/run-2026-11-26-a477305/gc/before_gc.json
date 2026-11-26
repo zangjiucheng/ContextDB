@@ -1,0 +1,58 @@
+{
+  "branches": [
+    {
+      "derived_digest": "f33edc445fd7ca3fb3c4b0405ec6878589b5799c371cdea7d88b3bf1041991af",
+      "id": 0,
+      "kernel_digest": "fa6c27d005d38cbc6c71f4c44c8aacc216d4d4c7c0b401872b074e3f915d2129",
+      "name": "main"
+    }
+  ],
+  "certs": [
+    {
+      "branch": 0,
+      "cert": "2f33d08784d048c4ba6c635fed0daa113f784ae7079c505119ea903f3945a4e545d47e98c0dc76038ef8ba86aede891c0100000000000600000000000000a4e38ee8a96fdadb0d5e7591ed3b8c138d14ee16a6b22bd07f2bfb8538c17c0101000000680000000001000000d0070000c40900000100060000000000000001000000d0070000c4090000060000000000000000",
+      "cert_id": "2f33d08784d048c4ba6c635fed0daa113f784ae7079c505119ea903f3945a4e5",
+      "entries": 1,
+      "history_unavailable_since": null,
+      "issued_epoch": 6,
+      "live_pos": {},
+      "principal": 1,
+      "sources": [
+        "root_proof",
+        "session",
+        "session_cert"
+      ],
+      "strict_no_aba": false,
+      "verdict": "Invalid",
+      "verdict_wire": "010001000000d007000001c409000001c5090000010201"
+    }
+  ],
+  "counts": {
+    "by_verdict": {
+      "Invalid": 1
+    },
+    "certs": 1,
+    "history_unavailable": 0,
+    "non_empty": 1
+  },
+  "ctxd": {
+    "exe": "<repo>/target/release/ctxd",
+    "exe_blake3": "684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182",
+    "keep_epochs": 100,
+    "lazy_budget": 1000000,
+    "pid": 37528,
+    "read_settle_ms": 50
+  },
+  "epoch": 117,
+  "format": "contextdb.g6.checkpoint/1",
+  "live_pos_given": false,
+  "log_checksum": "e6c9150fe72e7d31d506d731038b4e6d60fdcbadb47af01bf9fdaf9155c9a1d7",
+  "log_format": 7,
+  "meta": {
+    "ctxd_toml_now": "[gc]\nkeep_epochs = 100\n",
+    "data_dir": "/private/var/folders/xr/jcwbtfrn00l1yqyh7s7242qr0000gn/T/p11g6-gc-37527/data",
+    "exe_file_blake3_now": "684ada17bba9b7f91faf425567e8e02da849ac34922248309a84df18cc6b1182",
+    "taken_at_utc": "2026-11-26T18:34:40Z"
+  },
+  "protocol": 9
+}
