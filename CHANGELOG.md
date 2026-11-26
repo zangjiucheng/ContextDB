@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **P11 G6 defined (SPEC v1.11.2).** A 1M hub scenario through ctxd, isolated GC / compaction coverage, and at least two local real-agent deployments running lazy for at least 72 hours each, with daily certificate and digest checks against eager replay. Requirements only; execution and G6 acceptance remain pending.
 - **P11 milestone 4: payload GC.**
   - `ctx gc <dir>` reports what could be collected. `--apply` collects payloads that nothing needs: not the current state, not the last `keep_epochs` epochs (10,000 by default, at least 100), not a certificate a session or handoff holds, not a snapshot a reader holds.
   - `ctx gc <dir> --compact`, run with ctxd stopped, reclaims the disk space.

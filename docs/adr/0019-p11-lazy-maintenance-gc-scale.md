@@ -1,6 +1,6 @@
 # ADR 0019 — P11 cascade-bounded lazy maintenance, payload GC and scale
 
-Status: **Accepted (r0.7), G0 passed 2026-11-20.** SPEC v1.11.0 incorporates §11; [P11 gate](../gates/P11.md) records the design acceptance. Implementation and G1–G8 remain pending, and G6 is to be set by the owner (SPEC §4.1 requires one; §9 does not define it). r0.5 answered the owner's review of r0.4 (§12.6), r0.6 answered the review of r0.5 (§12.7), and r0.7 answers the review of r0.6 (§12.8).
+Status: **Accepted (r0.7), G0 passed 2026-11-20.** SPEC v1.11.0 incorporates §11; [P11 gate](../gates/P11.md) records design acceptance and subsequent implementation evidence. G1–G8 remain pending. The G6 supplement below was defined on 2026-11-26 under the owner's delegation and incorporated into SPEC v1.11.2; it records requirements, not completed runs. r0.5 answered the owner's review of r0.4 (§12.6), r0.6 answered the review of r0.5 (§12.7), and r0.7 answers the review of r0.6 (§12.8).
 
 The independent final check of r0.4 found no blocker or major in either
 part. Its two implementation notes are in §3.7 and §5.1 K5. The owner
@@ -1364,6 +1364,41 @@ calibrated at the gate:
     and chain;
   - `ctx gc` phase 1 and phase 2 times;
   - reopen time.
+
+### G6 (supplement, 2026-11-26)
+
+The owner delegated the missing scenario / dogfood definition to the
+maintaining agent. G6 is required, not waived. SPEC §P11 is normative;
+the execution checklist and evidence status are in the P11 gate's G6
+section. Both layers must pass:
+
+- **Scenario:** a hub with at least 1M revisions, through a real ctxd and
+  its client protocol, with an observed frontier. Cover support withdrawal
+  and restoration, STRICT reads and certificates across the frontier,
+  hook gating, mirror export, settlement, the next write, and daemon
+  restart / recovery of acknowledged writes. Compare settled certificate
+  payloads, kernel digest and derived digest against an independent eager
+  replay of the same epoch and log prefix, with the same principal,
+  branch and live positions. During settlement use §3.6's partial
+  aggregation contract. An isolated CLI / ctxd GC scenario covers dry
+  run, apply, pinned payloads, Collected / MissingBlob, re-staging,
+  offline compaction and reopen; GC leaves both digests unchanged at the
+  same epoch.
+- **Dogfood:** at least two local deployments used by real agents, each
+  with at least 72 hours of effective lazy runtime across at least three
+  days with real agent reads and writes. Record UTC boundaries; exclude
+  downtime. Compare certificates and both digests at start, end and on
+  every active day, at matched epochs / prefixes, using isolated eager
+  replay copies. Empty checks and an idle daemon do not replace real
+  usage. Record versions, settings, usage, waits, latency and incidents.
+
+No mismatched comparisons, false positive certificates, lost acknowledged
+writes or missing kept payloads are accepted. Unexplained errors and
+crashes must be resolved; insufficient duration or samples keeps G6
+pending. Pending / Settling responses are reported, not counted as
+correctness failures. G5 remains a separate obligation. A fix affecting
+verified behaviour restarts the affected deployment's 72-hour window.
+Destructive GC exercises run only in isolated scenario data.
 
 ### G7 and G8
 

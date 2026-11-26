@@ -1,6 +1,6 @@
 # ContextDB — Project Specification
 
-> Version: 1.11.1 · Date: 2026-11-25 · Status: **normative**（本文件是唯一权威 spec）
+> Version: 1.11.2 · Date: 2026-11-26 · Status: **normative**（本文件是唯一权威 spec）
 > 语言：中文为主，保留 English systems terminology
 > 取代：`docs/research/` 下的 `ContextDB_RESEARCH.md` v0.1、`IMPLEMENTATION_PLAN.md`、`PROJECT_PLAN.md`（归档为背景与证据，**不具规范性**；本文件自足，不依赖它们定义任何义务）
 
@@ -834,7 +834,10 @@ P0 → P1 → P2 → P3 → P4 → P5a → P5b ─┬→ P7 → P8
 - G3：PROP1-lazy；STRICT 读 == oracle 按 §6.4 P11 补充的校验契约解读：全部 settled 时与 oracle 在类别、原因与全部字段上相等；未 settled 且 oracle 结果只由输入决定时类别与原因相同，字段可不完整；否则为已确认逐条目结果按 §6.4 聚合得到的暂时负面结果（可为 `Pending`、`Unknown{lag}` 或已确认的 `Conflicted`、`Denied`、`Invalid`）；永不给出 oracle 不给的正面结论。PROP2/PROP2b 在 settle 后的 diff 上、PROP11 在 settled 状态上运行；校验契约的配套性质；PROP10 在格式 6/7 混合日志上运行；PROP20；变异覆盖扩展到切片、settled、settle 与发布、settling 帧、keep set、ledger 与 §6.2 的 GC `MissingBlob`。
 - G4：fuzz 格式 7 帧结果解码器、GC ledger 与 kind-2 key-log 头；deferred commit、idle drain、settle 时投影写入、`--apply`（含完整 ledger 追加后 sync 失败 → poison → reopen）、`--compact` 与版本屏障的 kill points；降级 golden：v0.4.1 二进制在只做过 `ctx gc --apply` 或只做过 `--compact` 的存储上以 `FormatTooNew` 拒绝，且 `keys/`、`gc/`、`blobs/` 之后逐字节不变。
 - G5（本地基线机，1M revisions；初始预算，gate 时校准）：multi_support 与 hub 上的 P1 预算；默认 `E` 下 hub 与 chain 的级联提交 ack（store、文件投影）≤150 ms；完整 settle 总时间 ≤1.25 × eager；推迟级联的帧 ≤1 KiB；报告 base toggle 与被 10⁵ 条 Sem 规则引用的 SetHead 的 seeding 时间、级联后下一次提交的 ack（有无空闲间隔）、`clone_fallbacks`、hub/chain 上 Certified 读返回 StructuralUnknown 的比例、`ctx gc` 两阶段时间与 reopen 时间。
-- G6：§4.1 要求的端到端场景与真实 agent dogfood 尚未定义（ADR 0019 §9 未给出），由 owner 在里程碑 6 之前确定。
+- G6（2026-11-26，owner 授权维护 agent 确定）：不跳过；以下两层都须通过，执行证据与报告见 `docs/gates/P11.md` 的 G6 清单。
+  - **端到端场景**：在隔离数据目录经真实 ctxd 与客户端协议运行 ≥1,000,000 revisions 的 hub 级联（不得只调用 core / Store）。确认确实产生 frontier；覆盖撤销与恢复支持、级联中的 STRICT / 证书 / hook gate / 镜像导出、完整 settle、下一次写入、daemon 重启与已 ack 事务恢复。在同一 epoch、同一 op_log 前缀与相同 principal / branch / live_pos 下，与独立 eager 重放比较：settle 后证书全字段、kernel digest 与 derived digest 相等；未 settle 时遵守 §6.4 的部分聚合契约，永无错误的正面结论。另在隔离场景经 CLI / ctxd 验证 GC dry run、`--apply`、被 pin 的内容可读、`Collected` / `MissingBlob`、重新提供字节、离线 `--compact` 与重开；GC 前后同一 epoch 的 kernel / derived digest 不变。
+  - **真实 dogfood**：至少两个本机实际使用的部署开启 lazy，每个部署有效运行 ≥72 小时、跨 ≥3 个有真实 agent 读写的自然日。起止时间用 UTC 记录，停机不计入有效时长；仅挂空 daemon 或合成脚本不能满足真实使用要求。启动、结束及期间每个活动日都采集证书和 digest 核对，证据固定到同一 epoch / log 前缀，独立 eager 重放在隔离副本进行；不能以生产库上的 `doctor --rebuild` 代替核对。记录版本、配置、每实例实际时长、真实读写与非 Empty 证书检查数、Pending / Settling / Busy / timeout、延迟及重启 / 异常。GC 破坏性场景留在隔离目录。
+  - **通过条件**：上述场景成功，两个部署的时长与真实使用证据齐全，所有核对均无不一致、错误正面证书、已 ack 事务丢失或应保留 payload 丢失；未解释的崩溃 / 错误必须解决。Pending / Settling 本身不是失败，须如实报告；缺样本或时长不足继续 pending，不据此放宽 G5。缺陷修复影响已验证行为时，旧时段不得证明新版本；受影响部署重新累计 72 小时。
 - G7：此前阶段回归，含 P9 与 P10；团队 `accept` 保持 eager。
 - G8：README、setup、CHANGELOG 与威胁模型（回收的 payload 对无会话持有的旧证书读为 `Collected`；回滚越过 GC 需重新提供字节；回收历史上的镜像按哈希校验）与本 SPEC 同步；非实现者的独立实施复核。
 
@@ -1554,6 +1557,7 @@ shrink 后的失败写入 `proptest-regressions/` 并升级为 golden。
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 1.11.2 | 2026-11-26 | 补齐 P11 G6（owner 授权维护 agent 确定）：经 ctxd 的 1M hub 级联与隔离 GC 端到端场景；至少两个本机实际部署各 ≥72 小时、跨 ≥3 个真实 agent 活动日的 lazy dogfood；同 epoch / op_log 前缀的证书、kernel 与 derived digest 对独立 eager 重放核对。定义通过条件与证据口径，不表示已执行、已部署或 G6 通过。 |
 | 1.11.1 | 2026-11-25 | P11 里程碑 1–3 实现后的澄清（非语义变更）：hook gate 与 pre-push 检查的 pull 期限 250 ms、镜像导出 30 s（owner 决定）；DIFF 与历史读在 frontier epoch 上 pull 后超时为 `Settling{epoch}`；`[maintenance]` 配置位于 `<data>/ctxd.toml`；E 定为 1,000,000 单位（O1，见 `docs/gates/P11.md`）。 |
 | 1.11.0 | 2026-11-20 | P11 G0（ADR 0019 r0.7 accepted，owner 决定 D1–D4、O1–O5）：cascade-bounded lazy 维护收窄 §P11 的逐节点选择——提交工作量超过预算 `E` 才推迟剩余部分，frontier 不持久化，settled 由有界反向 PK 搜索判定，只有 store 续做（I-L1），dry run 与 rebuild 一律 eager（SD14a、§3.4、§6.1 契约 17）；推迟的提交回复 `settling: true`，diff 在 settle 后进入 `diff_log`，`ctx_changes` 只覆盖已 settle 的 epoch（SD8.4、§6.3）；证书校验的 lazy 契约：settled 时与 eager 全字段相等，只由输入决定的结果类别与原因相同，其余为已确认结果的暂时负面聚合，永不为正面（§6.4）；op_log 格式 7（`settling` 帧、格式 6/7 混合日志、版本屏障）与 protocol 9；payload GC：keep set K1–K5、两阶段 `ctx gc --apply`、`gc/ledger` 与 kind-2 key-log 头、ledger 追加后错误即 poison、`Unavailable(Collected)`、离线 `ctx gc --compact`（§7）；回收内容上的 §6.2 Op 返回 `MissingBlob`（团队追平豁免）；E4 修订：GC 不报告 `PayloadGone`，回收正文按哈希与 front matter 校验；新错误 `Unsettled`、`Settling{epoch}`、`ProjectionsBehind`；Postgres 移出 P11；Gate P11 的 G2–G8 按 ADR 0019 §9 改写（G3 按校验契约解读、G5 初始预算）；T61、T67、T107 扩展，新增 PROP1-lazy、PROP20。实现与 G1–G8 尚未开始；安装版仍为格式 6 / protocol 8 |
 | 1.10.1 | 2026-11-18 | Gate P10 通过（owner 验收，非语义变更）：格式 6 / protocol 8 已实现；G1–G8 证据见 `docs/gates/P10.md`。owner 声明的偏离：G4 中 `team_doc` 模糊测试只跑 17.4 h（libFuzzer 4 GB RSS 上限，源于 ASan 分配器保留内存，非目标代码），其余六个目标 24 h，均 0 崩溃；G5 的 `git commit` 预算以 trivial hook 为基线测量；G6 只做 bare-remote 试运行，跳过 ≥ 5 天真实 remote 部分。owner 复核的四项缺陷已修复：独占 op 单独成 entry、rejoin 时 `TeamKeyMismatch`、超过 65,536 个新 revision 的追平分批提交（前缀批不置 base、不推进 watermark）、O4 orphan-branch 回退（`--orphan-branch`）。 |
