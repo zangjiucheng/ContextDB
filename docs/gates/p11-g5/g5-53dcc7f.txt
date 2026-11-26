@@ -1,0 +1,69 @@
+# /tmp/claude-501/p11m5/contextdb-bench multi_support 1000000 1000 uptime= 22:48:17  up 15 days  5:23,  5 users,  load average: 4.96, 8.31, 11.49
+early_witness_only_commit_p99_ns=1750
+retained_allocation_lower_bound=MemoryFootprint { inputs: 153899192, indexes: 70013268, maintenance: 77614628, topology: 103343496, query_cache: 92921972, history: 104177924, history_changes: 2001997 } lower_bound_B_per_incidence=182.38
+shape=multi_support seed=42 stats=ShapeStats { revisions: 1000000, rules: 1300666, incidences: 3300660, bases: 3, alternatives: 300669, max_fan_out: 300673, depth: 164689 }
+samples=1000 load_ms=4169 E_visited_max=0 commit_p99_ns=1334 current_l0_p99_ns=42 why_depth3_p99_ns=2208 baseline_rss_bytes=2064384 loaded_rss_bytes=1469726720 rss_delta_B_per_incidence=444.66
+memory_hot lower=76.04 upper=76.14 budget=90 PASS
+memory_inputs lower=46.63 upper=46.73 budget=50 PASS
+memory_query_cache lower=28.15 upper=28.26 budget=32 PASS
+memory_history_per_change lower=52.04 upper=52.21 budget=58 PASS
+live_heap_bytes=602314252 live_heap_B_per_incidence=182.48 total_budget_bytes=683829346 untracked_bytes=343772 accounting_valid=true
+time_budgets_pass=true memory_scopes_pass=true live_heap_within_total_budget=true
+structural_commit_p99_ns=39917 (create logical + rule, informational)
+# exit=0
+# /tmp/claude-501/p11m5/contextdb-bench hub 1000000 1000 uptime= 22:48:21  up 15 days  5:23,  5 users,  load average: 4.72, 8.21, 11.44
+early_witness_only_commit_p99_ns=1625
+retained_allocation_lower_bound=MemoryFootprint { inputs: 144277784, indexes: 63999888, maintenance: 70999910, topology: 100910780, query_cache: 82999895, history: 104177924, history_changes: 2001997 } lower_bound_B_per_incidence=189.12
+shape=hub seed=42 stats=ShapeStats { revisions: 1000000, rules: 999997, incidences: 2999991, bases: 3, alternatives: 0, max_fan_out: 999997, depth: 1 }
+samples=1000 load_ms=3184 E_visited_max=0 commit_p99_ns=1334 current_l0_p99_ns=42 why_depth3_p99_ns=209 baseline_rss_bytes=2064384 loaded_rss_bytes=1219248128 rss_delta_B_per_incidence=405.73
+memory_hot lower=78.64 upper=78.75 budget=90 PASS
+memory_inputs lower=48.09 upper=48.21 budget=50 PASS
+memory_query_cache lower=27.67 upper=27.78 budget=32 PASS
+memory_history_per_change lower=52.04 upper=52.21 budget=58 PASS
+live_heap_bytes=567709953 live_heap_B_per_incidence=189.24 total_budget_bytes=632114278 untracked_bytes=343772 accounting_valid=true
+time_budgets_pass=true memory_scopes_pass=true live_heap_within_total_budget=true
+structural_commit_p99_ns=46542 (create logical + rule, informational)
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 hub uptime= 22:48:25  up 15 days  5:23,  5 users,  load average: 4.58, 8.12, 11.39
+p11_g5 item=cascade n=1000000 shape=hub E=1000000 ack_ms=12.4 ack_max_ms=26.0 frame_max_bytes=233 settle_ms=6904.8 total_ms=6916.0 eager_ms=4425.3 total_over_eager=1.563 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=false deferred=3/3 status_diff=999998 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 chain uptime= 22:55:14  up 15 days  5:30,  5 users,  load average: 4.65, 8.24, 10.52
+p11_g5 item=cascade n=1000000 shape=chain E=1000000 ack_ms=51.9 ack_max_ms=57.1 frame_max_bytes=233 settle_ms=6156.7 total_ms=6205.8 eager_ms=4440.8 total_over_eager=1.397 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=false deferred=3/3 status_diff=1000000 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 hub uptime= 22:58:54  up 15 days  5:33,  5 users,  load average: 4.43, 6.67, 9.32
+p11_g5 item=cascade n=1000000 shape=hub E=1000000 ack_ms=12.4 ack_max_ms=15.7 frame_max_bytes=233 settle_ms=3485.7 total_ms=3498.1 eager_ms=5099.5 total_over_eager=0.686 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=true deferred=3/3 status_diff=999998 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 chain uptime= 23:46:35  up 15 days  6:21,  5 users,  load average: 4.98, 9.80, 14.50
+p11_g5 item=cascade n=1000000 shape=chain E=1000000 ack_ms=54.9 ack_max_ms=56.2 frame_max_bytes=233 settle_ms=3521.4 total_ms=3576.4 eager_ms=9893.6 total_over_eager=0.361 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=true deferred=3/3 status_diff=1000000 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 hub uptime= 00:25:53  up 15 days  7:00,  5 users,  load average: 4.69, 8.41, 10.86
+p11_g5 item=cascade n=1000000 shape=hub E=1000000 ack_ms=10.1 ack_max_ms=11.7 frame_max_bytes=233 settle_ms=3172.1 total_ms=3183.8 eager_ms=3508.8 total_over_eager=0.907 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=true deferred=3/3 status_diff=999998 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 cascade 1000000 chain uptime= 00:27:50  up 15 days  7:02,  5 users,  load average: 4.93, 7.47, 10.19
+p11_g5 item=cascade n=1000000 shape=chain E=1000000 ack_ms=49.0 ack_max_ms=50.2 frame_max_bytes=233 settle_ms=3060.6 total_ms=3109.6 eager_ms=4182.8 total_over_eager=0.743 ack_le_150ms=true frame_le_1KiB=true total_le_1.25_eager=true deferred=3/3 status_diff=1000000 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 seeding 1000000 hub uptime= 00:33:36  up 15 days  7:08,  5 users,  load average: 4.54, 11.03, 11.60
+p11_g5 item=seeding n=1000000 shape=hub base_seed_ms=0.05 base_units=12999965 base_l0_flips=999998 sem_seed_ms=12.26 sem_rules=100000 sem_units=900004 sem_status_diff=100002 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 next_ack 1000000 hub uptime= 00:33:44  up 15 days  7:08,  5 users,  load average: 4.39, 10.79, 11.51
+p11_g5 item=next_ack n=1000000 shape=hub E=1000000 cascade_ack_ms=734.3 next_ack_ms=3999.3 idle_drain_ms=4748.6 next_ack_after_idle_ms=149.6 deferred=6/6 clone_fallbacks=2 requeued=0 replay_mismatches=0 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 next_ack 1000000 chain uptime= 00:37:03  up 15 days  7:11,  5 users,  load average: 4.87, 8.76, 10.55
+p11_g5 item=next_ack n=1000000 shape=chain E=1000000 cascade_ack_ms=598.8 next_ack_ms=3782.2 idle_drain_ms=4257.1 next_ack_after_idle_ms=117.6 deferred=6/6 clone_fallbacks=2 requeued=0 replay_mismatches=0 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 structural_unknown 1000000 hub uptime= 00:37:52  up 15 days  7:12,  5 users,  load average: 4.55, 8.14, 10.23
+p11_g5 item=structural_unknown n=1000000 shape=hub E=1000000 read_settle_ms=default structural_unknown_fraction=0.237 reads=295 structural_unknown=70 certified=87 not_certified_other=138 read_median_ms=84.9 read_max_ms=364.8 deferred=5/5 clone_fallbacks=30 requeued=0 replay_mismatches=0 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 structural_unknown 1000000 chain uptime= 00:58:24  up 15 days  7:33,  5 users,  load average: 4.79, 8.92, 12.26
+p11_g5 item=structural_unknown n=1000000 shape=chain E=1000000 read_settle_ms=default structural_unknown_fraction=0.206 reads=223 structural_unknown=46 certified=23 not_certified_other=154 read_median_ms=85.2 read_max_ms=1279.3 deferred=5/5 clone_fallbacks=20 requeued=0 replay_mismatches=0 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 gc 1000000 uptime= 01:01:54  up 15 days  7:36,  5 users,  load average: 4.93, 8.09, 11.29
+p11_g5 item=gc n=1000000 gc_plan_ms=995 gc_apply_ms=647 revisions=1000000 superseded=250000 keep_epochs=10000 candidates=250000 collected=250000 collected_bytes=51750000 kept_k1=750001 kept_k3=1 errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 reopen 1000000 hub uptime= 01:02:27  up 15 days  7:37,  5 users,  load average: 4.99, 7.77, 11.04
+p11_g5 item=reopen n=1000000 shape=hub E=1000000 reopen_ms=9539 epoch=8 replayed=8 snapshot_epoch=None errors=0
+# exit=0
+# /tmp/claude-501/p11m5/p11_g5 reopen 1000000 chain uptime= 01:24:41  up 15 days  7:59,  5 users,  load average: 4.78, 8.56, 10.27
+p11_g5 item=reopen n=1000000 shape=chain E=1000000 reopen_ms=8408 epoch=8 replayed=8 snapshot_epoch=None errors=0
+# exit=0
+# done

@@ -6,7 +6,9 @@
 //! published two groups ago is reclaimed, replays the group's batches (results
 //! must match) and is swapped into the store; the store's database becomes the
 //! new published snapshot. A replica still held by a reader after a bounded
-//! wait is replaced by a clone (counted; the fallback trigger of §3.3).
+//! wait is replaced by a clone (counted; the fallback trigger of §3.3). While
+//! the actor is idle, the spare replays the previous publication's steps, so
+//! a publication replays only its own.
 //!
 //! Lazy maintenance (ADR 0019 §3.5, §3.7): the store records every commit
 //! and drain as a step, in execution order, and the replica replays exactly
@@ -237,6 +239,10 @@ pub struct ActorStats {
     /// Writes a settling commit ended the group of, submitted again (ADR
     /// 0019 §3.5 item 3).
     pub requeued: AtomicU64,
+    /// Times the idle actor brought the spare up to date.
+    pub idle_catchups: AtomicU64,
+    /// `Drain` steps replayed by publications (idle catch-ups excluded).
+    pub replayed_drains: AtomicU64,
 }
 #[derive(Clone)]
 pub struct ActorHandle<D: Durability> {
@@ -379,13 +385,23 @@ impl<D: Durability> ActorHandle<D> {
         self.wait(rx)
     }
 }
+/// The kernel the next publication swaps into the store, replayed to the
+/// store's state first.
+enum Replica<D: Durability> {
+    /// The snapshot published before the current one: at the state before
+    /// `behind`, the steps of the current publication.
+    Spare {
+        snapshot: Arc<Snapshot<D>>,
+        behind: Vec<Step>,
+    },
+    /// Caught up while idle: at the published snapshot's state.
+    Ready(Box<Kernel>),
+}
 struct Actor<D: Durability> {
     store: Store<D>,
     published: Arc<Published<Snapshot<D>>>,
-    spare: Option<Arc<Snapshot<D>>>,
-    /// The store's steps of the previous publication: the spare is two
-    /// publications behind the store and must replay them too.
-    previous: Vec<Step>,
+    /// None before the first publication and after a replay mismatch.
+    replica: Option<Replica<D>>,
     stats: Arc<ActorStats>,
     epochs: Arc<(Mutex<(Epoch, u64)>, Condvar)>,
     /// P10: joined teams; only the actor reads or writes them.
@@ -505,8 +521,7 @@ pub fn spawn_with_teams<D: Durability + Clone + 'static>(
     let mut actor = Actor {
         store,
         published: published.clone(),
-        spare: None,
-        previous: Vec::new(),
+        replica: None,
         stats: stats.clone(),
         epochs: epochs.clone(),
         teams,
@@ -547,13 +562,18 @@ impl<D: Durability + Clone> Actor<D> {
         let mut requeued: std::collections::VecDeque<WriteRequest> = Default::default();
         loop {
             let busy = !impacts.is_empty() || !requeued.is_empty() || self.pending();
-            let first = if busy {
-                rx.try_recv().ok()
-            } else {
-                match rx.recv() {
-                    Ok(m) => Some(m),
-                    Err(_) => return None,
+            let first = match rx.try_recv() {
+                Ok(m) => Some(m),
+                Err(_) if busy => None,
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Idle: the spare catches up now, off the next ack's path.
+                    self.catch_up();
+                    match rx.recv() {
+                        Ok(m) => Some(m),
+                        Err(_) => return None,
+                    }
                 }
+                Err(mpsc::TryRecvError::Disconnected) => return None,
             };
             let idle = first.is_none() && requeued.is_empty();
             let mut writes: Vec<WriteRequest> = requeued.drain(..).collect();
@@ -897,30 +917,28 @@ impl<D: Durability + Clone> Actor<D> {
         rest
     }
     /// Publishes the store's database and keeps a caught-up replica in the
-    /// store: the replica replays the previous publication's steps and
-    /// `current`, the store's steps since then.
+    /// store: the replica replays the steps it is behind and `current`, the
+    /// store's steps since the last publication.
     fn publish(&mut self, current: Vec<Step>) {
-        // The spare was published one publication ago, so it is at the state
-        // before the previous one: replay the previous steps, then these.
-        let previous = std::mem::replace(&mut self.previous, current);
-        let lazy = self.store.lazy();
-        let replica = match self.reclaim() {
-            Some(mut db) => {
-                let agrees =
-                    (previous.iter().chain(&self.previous)).all(|step| replay(&mut db, step, lazy));
-                if !agrees {
-                    // A replica that replays differently is a kernel bug:
-                    // fail stop, never publish either state (§3.3).
-                    self.stats.replay_mismatches.fetch_add(1, Ordering::Relaxed);
-                    let _ = self.store.fail_stop();
-                    return;
-                }
-                Some(db)
-            }
+        let reclaimed = match self.replica.take() {
+            Some(Replica::Ready(db)) => Some((*db, Vec::new())),
+            Some(Replica::Spare {
+                mut snapshot,
+                behind,
+            }) => (self.reclaim(&mut snapshot, RECLAIM_WAIT)).map(|db| (db, behind)),
             None => None,
         };
-        let replica = match replica {
-            Some(db) => db,
+        let replica = match reclaimed {
+            Some((mut db, behind)) => {
+                let drains = (behind.iter().chain(&current))
+                    .filter(|s| matches!(s, Step::Drain(_)))
+                    .count();
+                (self.stats.replayed_drains).fetch_add(drains as u64, Ordering::Relaxed);
+                if !self.replay(&mut db, behind.iter().chain(&current)) {
+                    return;
+                }
+                db
+            }
             None => {
                 self.stats.clone_fallbacks.fetch_add(1, Ordering::Relaxed);
                 match self.store.kernel() {
@@ -941,16 +959,51 @@ impl<D: Durability + Clone> Actor<D> {
             generation: self.published.load().generation + 1,
         });
         let published = (snapshot.epoch, snapshot.generation);
-        self.spare = Some(self.published.swap(snapshot));
+        self.replica = Some(Replica::Spare {
+            snapshot: self.published.swap(snapshot),
+            behind: current,
+        });
         let (m, c) = &*self.epochs;
         *m.lock().expect("epochs") = published;
         c.notify_all();
     }
-    /// The replica published two groups ago, once no reader holds it.
-    fn reclaim(&mut self) -> Option<Kernel> {
-        let mut spare = self.spare.take()?;
+    /// While idle: the spare, when no reader holds it, replays the steps it
+    /// is behind and becomes ready. Its snapshot drops, so its epoch is no
+    /// longer held (K5); the ready kernel is at the published epoch, which
+    /// the published snapshot holds.
+    fn catch_up(&mut self) {
+        self.replica = match self.replica.take() {
+            Some(Replica::Spare {
+                mut snapshot,
+                behind,
+            }) => match self.reclaim(&mut snapshot, Duration::ZERO) {
+                None => Some(Replica::Spare { snapshot, behind }),
+                Some(mut db) => {
+                    if !self.replay(&mut db, &behind) {
+                        return;
+                    }
+                    self.stats.idle_catchups.fetch_add(1, Ordering::Relaxed);
+                    Some(Replica::Ready(Box::new(db)))
+                }
+            },
+            other => other,
+        };
+    }
+    /// Replays `steps` on `db`. A replica that replays differently is a
+    /// kernel bug: fail stop, never publish either state (§3.3).
+    fn replay<'a>(&mut self, db: &mut Kernel, steps: impl IntoIterator<Item = &'a Step>) -> bool {
+        let lazy = self.store.lazy();
+        if steps.into_iter().all(|step| replay(db, step, lazy)) {
+            return true;
+        }
+        self.stats.replay_mismatches.fetch_add(1, Ordering::Relaxed);
+        let _ = self.store.fail_stop();
+        false
+    }
+    /// The spare's kernel once no reader holds it, waiting at most `wait`.
+    fn reclaim(&self, spare: &mut Arc<Snapshot<D>>, wait: Duration) -> Option<Kernel> {
         let start = Instant::now();
-        let s = publish::reclaim(&mut spare, || start.elapsed() >= RECLAIM_WAIT)?;
+        let s = publish::reclaim(spare, || start.elapsed() >= wait)?;
         let waited = start.elapsed().as_micros() as u64;
         self.stats
             .reclaim_wait_micros

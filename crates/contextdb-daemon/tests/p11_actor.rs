@@ -390,3 +390,42 @@ fn an_invalid_ctxd_toml_refuses_to_start() {
         Ok(_) => panic!("started"),
     }
 }
+
+/// Once a cascade is settled and the actor is idle, the spare catches up
+/// off the ack path: the next publication replays only its own commit, no
+/// `Drain` of the settled cascade.
+#[test]
+fn an_idle_spare_catches_up_so_the_next_publication_replays_no_drain() {
+    let d = start("catchup", SMALL);
+    let a = actor(&d);
+    hub(a);
+    let stats = &a.stats;
+    let catchups = stats.idle_catchups.load(Ordering::Relaxed);
+    assert!(
+        a.write(Vec::new(), toggle(false))
+            .unwrap()
+            .unwrap()
+            .settling
+    );
+    settled(a);
+    // A reader may have held the spare when the actor went idle: each
+    // barrier gives it another idle turn.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while stats.idle_catchups.load(Ordering::Relaxed) == catchups {
+        assert!(Instant::now() < deadline, "the spare never caught up");
+        barrier(a);
+    }
+    let drains = stats.replayed_drains.load(Ordering::Relaxed);
+    let (x, bx) = create("catchup/x");
+    let acked = a.write(vec![x], bx).unwrap().unwrap();
+    assert!(!acked.settling);
+    assert_eq!(stats.replayed_drains.load(Ordering::Relaxed), drains);
+    assert_eq!(stats.replay_mismatches.load(Ordering::Relaxed), 0);
+    let snap = a.snapshot();
+    assert_eq!(snap.epoch, acked.result.epoch);
+    let eager = snap.log.replay_kernel_to(snap.epoch).unwrap();
+    assert_eq!(
+        snap.kernel.branch(MAIN).unwrap().digest(),
+        eager.branch(MAIN).unwrap().digest()
+    );
+}
