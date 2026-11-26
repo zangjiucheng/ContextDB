@@ -20,9 +20,13 @@ reviewed_external = ["rusqlite", "blake3", "nix", "chacha20poly1305", "getrandom
 # publication, and blake3 for payload hashes. IPC uses the model's Wire
 # encoding, so serde stays out of the daemon. ADR 0015 §4.4: rusqlite
 # (bundled, as in contextdb-store) for the operational job table
-# jobs.sqlite, which is never truth and never derived state.
+# jobs.sqlite, which is never truth and never derived state. ADR 0019 §8
+# (P11, owner approval 2026-11-26): toml parses <data>/ctxd.toml
+# ([maintenance], [gc]) with the same pin and features (parse, std, serde;
+# no serde_derive) ctxd already links through contextdb-validate, so it
+# adds no code to the daemon.
 [daemon]
-reviewed_external = ["nix", "arc-swap", "blake3", "rusqlite"]
+reviewed_external = ["nix", "arc-swap", "blake3", "rusqlite", "toml"]
 
 # ADR 0008 §10: hand-rolled JSON-RPC over stdio (owner decision).
 [mcp]
